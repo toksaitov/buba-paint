@@ -16,11 +16,13 @@ export class ClobFeed extends BaseFeed {
     this.downTokenId = downTokenId;
     this.bookState = { up: null, down: null };
 
-    if (this.getStatus() === "connected") {
-      this.sendSubscription();
-    } else {
-      this.connect();
+    // Force reconnect: the CLOB server does not honor a second subscription
+    // on the same WebSocket connection. Disconnecting and reconnecting
+    // ensures we get a fresh book snapshot for the new tokens.
+    if (this.getStatus() === "connected" || this.getStatus() === "connecting") {
+      this.disconnect();
     }
+    this.connect();
   }
 
   protected onConnected(): void {
@@ -39,15 +41,30 @@ export class ClobFeed extends BaseFeed {
   }
 
   protected onMessage(data: string): void {
-    const raw = JSON.parse(data);
+    if (!data || data.trim() === "") return;
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(data);
+    } catch {
+      this.log.debug("Non-JSON CLOB message", data.slice(0, 200));
+      return;
+    }
+
+    if (raw === null || typeof raw !== "object") {
+      this.log.debug("Unexpected CLOB message type", typeof raw);
+      return;
+    }
 
     if (Array.isArray(raw)) {
       // Batch message — process each item
       for (const item of raw) {
-        this.handleEvent(item);
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          this.handleEvent(item as Record<string, unknown>);
+        }
       }
     } else {
-      this.handleEvent(raw);
+      this.handleEvent(raw as Record<string, unknown>);
     }
   }
 
@@ -61,6 +78,8 @@ export class ClobFeed extends BaseFeed {
     } else if (event.asset_id && (event.bids || event.asks)) {
       // Initial book snapshot (no event_type field) or explicit book event
       this.handleBook(event);
+    } else {
+      this.log.debug("Unhandled CLOB event", event);
     }
   }
 

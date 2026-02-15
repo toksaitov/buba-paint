@@ -1,7 +1,11 @@
 node_modules/
 dist/
 data/
+runs/
 *.db
 *.db-journal
 *.db-wal
+*.png
+bot.log
+bot.pid
 .env

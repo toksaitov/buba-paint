@@ -69,6 +69,7 @@ export class PositionManager extends EventEmitter {
     const trades = this.db.getOpenTradesForMarket(window.marketId);
     if (trades.length === 0) {
       log.info("No open trades to resolve for this window");
+      this.db.resolveMarket(window.marketId, "resolved");
       return;
     }
 

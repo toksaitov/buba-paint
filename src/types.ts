@@ -112,7 +112,7 @@ export interface StrategyContext {
 
 export interface Strategy {
   readonly name: string;
-  evaluate(ctx: StrategyContext): Signal | null;
+  evaluate(ctx: StrategyContext): Signal | Signal[] | null;
 }
 
 // === Position Manager ===

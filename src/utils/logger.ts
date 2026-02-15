@@ -8,11 +8,17 @@ function shouldLog(level: Level): boolean {
   return LEVELS[level] >= LEVELS[CONFIG.LOG_LEVEL];
 }
 
+function serialize(data: unknown): string {
+  if (typeof data === "string") return data;
+  if (data instanceof Error) return data.stack ?? data.message;
+  return JSON.stringify(data);
+}
+
 function fmt(level: Level, module: string, msg: string, data?: unknown): string {
   const ts = new Date().toISOString();
   const base = `[${ts}] [${level.toUpperCase().padEnd(5)}] [${module}] ${msg}`;
   if (data !== undefined) {
-    return `${base} ${typeof data === "string" ? data : JSON.stringify(data)}`;
+    return `${base} ${serialize(data)}`;
   }
   return base;
 }

@@ -16,7 +16,9 @@ const log = createLogger("main");
 async function main(): Promise<void> {
   log.info("=== buba-paint paper trading bot ===");
   log.info(`Config: momentum_threshold=${CONFIG.LATENCY_ARB_MOMENTUM_THRESHOLD}, ` +
+    `momentum_window=${CONFIG.MOMENTUM_WINDOW_MS}ms, ` +
     `spread_threshold=${CONFIG.SPREAD_CAPTURE_THRESHOLD}, ` +
+    `cooldown=${CONFIG.LATENCY_ARB_COOLDOWN_MS}ms, ` +
     `position_size=$${CONFIG.POSITION_SIZE}`);
 
   // 1. Database
@@ -44,6 +46,55 @@ async function main(): Promise<void> {
 
   // Track Chainlink price at window open for settlement
   let windowOpenPrice: number | null = null;
+  let currentWindowId: string | null = null;
+
+  // === Strategy Evaluation (shared by Binance + CLOB triggers) ===
+
+  let lastEvalTime = 0;
+  const EVAL_INTERVAL_MS = 200;
+
+  function runStrategies(): void {
+    const now = Date.now();
+    if (now - lastEvalTime < EVAL_INTERVAL_MS) return;
+    lastEvalTime = now;
+
+    const window = discovery.getCurrentWindow();
+    if (!window) return;
+
+    const binPrice = binanceFeed.getPrice();
+    if (binPrice === null) return;
+
+    // Fix startup race: if windowOpenPrice is still null and we have a
+    // current window, capture it now from the first available price.
+    if (windowOpenPrice === null && currentWindowId === window.marketId) {
+      windowOpenPrice = chainlinkFeed.getPrice() ?? binanceFeed.getPrice();
+      if (windowOpenPrice !== null) {
+        log.info(`Window open price (late capture): $${windowOpenPrice.toFixed(2)}`);
+      }
+    }
+
+    const ctx: StrategyContext = {
+      binancePrice: binPrice,
+      binanceMomentum: binanceFeed.getMomentum(),
+      chainlinkPrice: chainlinkFeed.getPrice(),
+      bookState: clobFeed.getBookState(),
+      windowTimeRemainingMs: window.endTime - now,
+    };
+
+    for (const strategy of strategies) {
+      const result = strategy.evaluate(ctx);
+      if (result === null) continue;
+
+      const signals = Array.isArray(result) ? result : [result];
+      for (const signal of signals) {
+        log.info(`SIGNAL: ${signal.strategy} => ${signal.direction} | ` +
+          `momentum=${(ctx.binanceMomentum * 100).toFixed(4)}% | ` +
+          `UP ask=${signal.upAsk.toFixed(3)} DOWN ask=${signal.downAsk.toFixed(3)}`);
+        db.logSignal(signal);
+        positionManager.tryOpen(signal, window);
+      }
+    }
+  }
 
   // === Event Wiring ===
 
@@ -59,12 +110,17 @@ async function main(): Promise<void> {
   discovery.on("newWindow", (window: MarketWindow) => {
     db.upsertMarket(window);
     clobFeed.resubscribe(window.upTokenId, window.downTokenId);
+    currentWindowId = window.marketId;
     windowOpenPrice = chainlinkFeed.getPrice();
     if (windowOpenPrice !== null) {
       log.info(`Window open price (Chainlink): $${windowOpenPrice.toFixed(2)}`);
     } else {
-      log.warn("Chainlink price unavailable at window open — using Binance fallback");
       windowOpenPrice = binanceFeed.getPrice();
+      if (windowOpenPrice !== null) {
+        log.warn(`Chainlink unavailable at window open — Binance fallback: $${windowOpenPrice.toFixed(2)}`);
+      } else {
+        log.warn("No price available at window open — will capture on first tick");
+      }
     }
   });
 
@@ -79,46 +135,18 @@ async function main(): Promise<void> {
     if (windowOpenPrice !== null && closePrice !== null) {
       positionManager.resolveWindow(window, windowOpenPrice, closePrice);
     } else {
-      log.error("Cannot resolve window: missing price data");
+      log.warn("Cannot resolve window: missing price data — marking as closed");
+      db.resolveMarket(window.marketId, "closed");
     }
 
     windowOpenPrice = null;
+    currentWindowId = null;
   });
 
-  // Strategy evaluation — throttled to avoid excessive evaluation on high-frequency ticks
-  let lastEvalTime = 0;
-  const EVAL_INTERVAL_MS = 200; // Evaluate at most every 200ms
-
-  binanceFeed.on("tick", () => {
-    const now = Date.now();
-    if (now - lastEvalTime < EVAL_INTERVAL_MS) return;
-    lastEvalTime = now;
-
-    const window = discovery.getCurrentWindow();
-    if (!window) return;
-
-    const binPrice = binanceFeed.getPrice();
-    if (binPrice === null) return;
-
-    const ctx: StrategyContext = {
-      binancePrice: binPrice,
-      binanceMomentum: binanceFeed.getMomentum(),
-      chainlinkPrice: chainlinkFeed.getPrice(),
-      bookState: clobFeed.getBookState(),
-      windowTimeRemainingMs: window.endTime - now,
-    };
-
-    for (const strategy of strategies) {
-      const signal = strategy.evaluate(ctx);
-      if (signal) {
-        log.info(`SIGNAL: ${signal.strategy} => ${signal.direction} | ` +
-          `momentum=${(ctx.binanceMomentum * 100).toFixed(4)}% | ` +
-          `UP ask=${signal.upAsk.toFixed(3)} DOWN ask=${signal.downAsk.toFixed(3)}`);
-        db.logSignal(signal);
-        positionManager.tryOpen(signal, window);
-      }
-    }
-  });
+  // Strategy evaluation triggers
+  binanceFeed.on("tick", runStrategies);
+  clobFeed.on("book", runStrategies);
+  clobFeed.on("priceChange", runStrategies);
 
   // === Start Everything ===
   log.info("Connecting feeds...");
