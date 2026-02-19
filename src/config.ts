@@ -27,6 +27,11 @@ export const CONFIG = {
   CLOB_PING_INTERVAL: 10_000,
   RTDS_PING_INTERVAL: 5_000,
 
+  // Chainlink staleness detection (ms) — if no update arrives within this
+  // window, getPrice() returns null (falls back to Binance) and the feed
+  // force-reconnects to get a fresh subscription.
+  CHAINLINK_STALE_MS: envInt("CHAINLINK_STALE_MS", 30_000),
+
   // Reconnect backoff
   RECONNECT_BASE_DELAY: 1_000,
   RECONNECT_MAX_DELAY: 30_000,
@@ -37,6 +42,7 @@ export const CONFIG = {
   // Strategy A: Latency Arb
   LATENCY_ARB_MOMENTUM_THRESHOLD: envFloat("LATENCY_ARB_MOMENTUM_THRESHOLD", 0.0015),
   LATENCY_ARB_MAX_ASK: envFloat("LATENCY_ARB_MAX_ASK", 0.60),
+  LATENCY_ARB_MIN_ASK: envFloat("LATENCY_ARB_MIN_ASK", 0.30),
   LATENCY_ARB_COOLDOWN_MS: envInt("LATENCY_ARB_COOLDOWN_MS", 60_000),
 
   // Strategy B: Spread Capture
@@ -46,12 +52,27 @@ export const CONFIG = {
   // Momentum calculation
   MOMENTUM_WINDOW_MS: envInt("MOMENTUM_WINDOW_MS", 30_000),
 
-  // Simulated trading
-  POSITION_SIZE: envFloat("POSITION_SIZE", 100),
+  // Bankroll management
+  STARTING_BALANCE: envFloat("STARTING_BALANCE", 150),
+  MAX_POSITION_FRACTION: envFloat("MAX_POSITION_FRACTION", 0.15),
+  MIN_BALANCE_THRESHOLD: envFloat("MIN_BALANCE_THRESHOLD", 20),
+  MAX_DRAWDOWN_PCT: envFloat("MAX_DRAWDOWN_PCT", 0.50),
+
+  // Kelly criterion
+  KELLY_FRACTION: envFloat("KELLY_FRACTION", 0.5),
+  MIN_WIN_RATE_FOR_KELLY: envFloat("MIN_WIN_RATE_FOR_KELLY", 0.52),
+  MIN_TRADES_FOR_KELLY: envInt("MIN_TRADES_FOR_KELLY", 10),
+
+  // Position limits
   MAX_OPEN_POSITIONS: envInt("MAX_OPEN_POSITIONS", 5),
 
   // Minimum time remaining in window to enter a trade (ms)
   MIN_WINDOW_TIME_MS: envInt("MIN_WINDOW_TIME_MS", 30_000),
+
+  // Trend filter (experimental, off by default)
+  TREND_FILTER_ENABLED: env("TREND_FILTER_ENABLED", "false") === "true",
+  TREND_FILTER_THRESHOLD: envFloat("TREND_FILTER_THRESHOLD", 0.30),
+  TREND_FILTER_WINDOW: envInt("TREND_FILTER_WINDOW", 10),
 
   // Logging
   LOG_LEVEL: env("LOG_LEVEL", "info") as "debug" | "info" | "warn" | "error",

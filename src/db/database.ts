@@ -19,6 +19,8 @@ export class Database {
   private stmtUpdateMarketStatus: BetterSqlite3.Statement;
   private stmtGetOpenTrades: BetterSqlite3.Statement;
   private stmtGetMarketBySlug: BetterSqlite3.Statement;
+  private stmtInsertBalance: BetterSqlite3.Statement;
+  private stmtGetLatestBalance: BetterSqlite3.Statement;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -67,6 +69,15 @@ export class Database {
 
     this.stmtGetMarketBySlug = this.db.prepare(
       `SELECT * FROM markets WHERE slug = ?`
+    );
+
+    this.stmtInsertBalance = this.db.prepare(
+      `INSERT INTO balance_log (timestamp, event, trade_id, amount, balance)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+
+    this.stmtGetLatestBalance = this.db.prepare(
+      `SELECT balance FROM balance_log ORDER BY id DESC LIMIT 1`
     );
   }
 
@@ -129,6 +140,15 @@ export class Database {
       size: row.size as number,
       status: row.status as SimulatedTrade["status"],
     }));
+  }
+
+  logBalanceEvent(event: string, tradeId: number | null, amount: number, balance: number): void {
+    this.stmtInsertBalance.run(Date.now(), event, tradeId, amount, balance);
+  }
+
+  getLatestBalance(): number | null {
+    const row = this.stmtGetLatestBalance.get() as { balance: number } | undefined;
+    return row?.balance ?? null;
   }
 
   resolveMarket(marketId: string, status: string): void {

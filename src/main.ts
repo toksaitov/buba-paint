@@ -7,46 +7,59 @@ import { MarketDiscovery } from "./market-discovery.js";
 import { LatencyArbStrategy } from "./strategies/latency-arb.js";
 import { SpreadCaptureStrategy } from "./strategies/spread-capture.js";
 import { PositionManager } from "./position-manager.js";
+import { BankrollManager } from "./bankroll-manager.js";
+import { TrendTracker } from "./trend-tracker.js";
 import { TickLogger } from "./tick-logger.js";
 import { createLogger } from "./utils/logger.js";
-import type { StrategyContext, MarketWindow, Strategy } from "./types.js";
+import type { StrategyContext, MarketWindow, Strategy, SignalDirection } from "./types.js";
 
 const log = createLogger("main");
 
 async function main(): Promise<void> {
-  log.info("=== buba-paint paper trading bot ===");
-  log.info(`Config: momentum_threshold=${CONFIG.LATENCY_ARB_MOMENTUM_THRESHOLD}, ` +
-    `momentum_window=${CONFIG.MOMENTUM_WINDOW_MS}ms, ` +
-    `spread_threshold=${CONFIG.SPREAD_CAPTURE_THRESHOLD}, ` +
+  log.info("=== buba-paint paper trading bot v0.2 ===");
+  log.info(`Config: momentum=${CONFIG.LATENCY_ARB_MOMENTUM_THRESHOLD}, ` +
+    `window=${CONFIG.MOMENTUM_WINDOW_MS}ms, ` +
     `cooldown=${CONFIG.LATENCY_ARB_COOLDOWN_MS}ms, ` +
-    `position_size=$${CONFIG.POSITION_SIZE}`);
+    `min_ask=${CONFIG.LATENCY_ARB_MIN_ASK}, ` +
+    `balance=$${CONFIG.STARTING_BALANCE}, ` +
+    `max_fraction=${(CONFIG.MAX_POSITION_FRACTION * 100).toFixed(0)}%, ` +
+    `kelly=${CONFIG.KELLY_FRACTION}`);
 
   // 1. Database
   const db = new Database(CONFIG.DB_PATH);
 
-  // 2. Feeds
+  // 2. Bankroll manager
+  const bankroll = new BankrollManager(CONFIG.STARTING_BALANCE, db);
+
+  // 3. Feeds
   const binanceFeed = new BinanceFeed();
   const clobFeed = new ClobFeed();
   const chainlinkFeed = new ChainlinkFeed();
 
-  // 3. Market discovery
+  // 4. Market discovery
   const discovery = new MarketDiscovery();
 
-  // 4. Strategies
+  // 5. Strategies
   const strategies: Strategy[] = [
     new LatencyArbStrategy(),
     new SpreadCaptureStrategy(),
   ];
 
-  // 5. Position manager
-  const positionManager = new PositionManager(db);
+  // 6. Position manager (with bankroll)
+  const positionManager = new PositionManager(db, bankroll);
 
-  // 6. Tick logger
+  // 7. Trend tracker
+  const trendTracker = new TrendTracker();
+
+  // 8. Tick logger
   const tickLogger = new TickLogger(db, binanceFeed, clobFeed, chainlinkFeed);
 
   // Track Chainlink price at window open for settlement
   let windowOpenPrice: number | null = null;
   let currentWindowId: string | null = null;
+
+  // Periodic spread diagnostic (every 60s, debug level)
+  let lastSpreadLogTime = 0;
 
   // === Strategy Evaluation (shared by Binance + CLOB triggers) ===
 
@@ -81,17 +94,35 @@ async function main(): Promise<void> {
       windowTimeRemainingMs: window.endTime - now,
     };
 
+    // Periodic spread diagnostic
+    if (now - lastSpreadLogTime > 60_000 && ctx.bookState.up && ctx.bookState.down) {
+      const totalAsk = ctx.bookState.up.bestAsk + ctx.bookState.down.bestAsk;
+      log.debug(`Spread check: UP ask=${ctx.bookState.up.bestAsk.toFixed(3)} + ` +
+        `DOWN ask=${ctx.bookState.down.bestAsk.toFixed(3)} = ${totalAsk.toFixed(4)} ` +
+        `(threshold: ${CONFIG.SPREAD_CAPTURE_THRESHOLD})`);
+      lastSpreadLogTime = now;
+    }
+
     for (const strategy of strategies) {
       const result = strategy.evaluate(ctx);
       if (result === null) continue;
 
       const signals = Array.isArray(result) ? result : [result];
+      const isBatch = Array.isArray(result) && result.length > 1;
       for (const signal of signals) {
+        // Trend filter (experimental, off by default)
+        if (trendTracker.shouldSuppress(signal.direction)) {
+          log.info(`SIGNAL SUPPRESSED (trend): ${signal.strategy} => ${signal.direction}`);
+          db.logSignal(signal);
+          continue;
+        }
+
         log.info(`SIGNAL: ${signal.strategy} => ${signal.direction} | ` +
+          `confidence=${signal.confidence.toFixed(2)} | ` +
           `momentum=${(ctx.binanceMomentum * 100).toFixed(4)}% | ` +
           `UP ask=${signal.upAsk.toFixed(3)} DOWN ask=${signal.downAsk.toFixed(3)}`);
         db.logSignal(signal);
-        positionManager.tryOpen(signal, window);
+        positionManager.tryOpen(signal, window, isBatch);
       }
     }
   }
@@ -103,6 +134,7 @@ async function main(): Promise<void> {
   binanceFeed.on("disconnected", () => log.warn("Binance feed disconnected"));
   chainlinkFeed.on("connected", () => log.info("Chainlink feed connected"));
   chainlinkFeed.on("disconnected", () => log.warn("Chainlink feed disconnected"));
+  chainlinkFeed.on("stale", () => log.warn("Chainlink feed stale — prices will fall back to Binance until reconnect"));
   clobFeed.on("connected", () => log.info("CLOB feed connected"));
   clobFeed.on("disconnected", () => log.warn("CLOB feed disconnected"));
 
@@ -124,7 +156,7 @@ async function main(): Promise<void> {
     }
   });
 
-  // Window closed — resolve positions
+  // Window closed — resolve positions and log balance
   discovery.on("windowClosed", (window: MarketWindow) => {
     let closePrice = chainlinkFeed.getPrice();
     if (closePrice === null) {
@@ -139,9 +171,30 @@ async function main(): Promise<void> {
       db.resolveMarket(window.marketId, "closed");
     }
 
+    // Log bankroll status after each window
+    const stats = bankroll.getStats();
+    log.info(
+      `BANKROLL: $${stats.currentBalance.toFixed(2)} | ` +
+      `P&L=$${stats.totalPnl.toFixed(2)} | ` +
+      `W/L=${stats.wins}/${stats.losses} (${(stats.winRate * 100).toFixed(0)}%) | ` +
+      `drawdown=${(stats.maxDrawdownPct * 100).toFixed(1)}%`,
+    );
+
     windowOpenPrice = null;
     currentWindowId = null;
   });
+
+  // Wire trade resolution to trend tracker via a wrapper
+  const origResolve = positionManager.resolveWindow.bind(positionManager);
+  positionManager.resolveWindow = (window: MarketWindow, openPrice: number, closePrice: number) => {
+    const outcome: SignalDirection = closePrice >= openPrice ? "UP" : "DOWN";
+    const trades = db.getOpenTradesForMarket(window.marketId);
+    origResolve(window, openPrice, closePrice);
+    // Record outcomes for trend tracker
+    for (const trade of trades) {
+      trendTracker.recordOutcome(trade.side, trade.side === outcome);
+    }
+  };
 
   // Strategy evaluation triggers
   binanceFeed.on("tick", runStrategies);
@@ -167,6 +220,13 @@ async function main(): Promise<void> {
     shuttingDown = true;
 
     log.info("Shutting down...");
+    const stats = bankroll.getStats();
+    log.info(
+      `FINAL BANKROLL: $${stats.currentBalance.toFixed(2)} | ` +
+      `P&L=$${stats.totalPnl.toFixed(2)} | ` +
+      `W/L=${stats.wins}/${stats.losses} | ` +
+      `max drawdown=${(stats.maxDrawdownPct * 100).toFixed(1)}%`,
+    );
     tickLogger.stop();
     discovery.stop();
     binanceFeed.disconnect();

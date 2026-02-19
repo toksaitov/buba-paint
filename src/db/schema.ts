@@ -74,6 +74,17 @@ const MIGRATIONS = [
     resolved_at      INTEGER NOT NULL,
     FOREIGN KEY (trade_id) REFERENCES simulated_trades(id)
   )`,
+
+  `CREATE TABLE IF NOT EXISTS balance_log (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    event     TEXT NOT NULL,
+    trade_id  INTEGER,
+    amount    REAL NOT NULL,
+    balance   REAL NOT NULL,
+    FOREIGN KEY (trade_id) REFERENCES simulated_trades(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_balance_ts ON balance_log(timestamp)`,
 ];
 
 export function runMigrations(db: BetterSqlite3.Database): void {

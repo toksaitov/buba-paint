@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { CONFIG } from "./config.js";
 import { createLogger } from "./utils/logger.js";
 import type { Database } from "./db/database.js";
+import type { BankrollManager } from "./bankroll-manager.js";
 import type { Signal, SimulatedTrade, TradeResult, MarketWindow } from "./types.js";
 
 const log = createLogger("positions");
@@ -9,29 +10,60 @@ const log = createLogger("positions");
 export class PositionManager extends EventEmitter {
   private openCount = 0;
 
-  constructor(private db: Database) {
+  constructor(private db: Database, private bankroll: BankrollManager) {
     super();
   }
 
-  tryOpen(signal: Signal, window: MarketWindow): SimulatedTrade | null {
+  tryOpen(signal: Signal, window: MarketWindow, isBatch = false): SimulatedTrade | null {
     // Guard: max open positions
     if (this.openCount >= CONFIG.MAX_OPEN_POSITIONS) {
       log.debug("Max open positions reached, skipping signal");
       return null;
     }
 
-    // Guard: check if we already have a position in this market + strategy + direction
-    const existing = this.db.getOpenTradesForMarket(window.marketId);
-    const duplicate = existing.find(
-      (t) => t.strategy === signal.strategy && t.side === signal.direction,
-    );
-    if (duplicate) {
-      log.debug(`Already have ${signal.strategy} ${signal.direction} position in ${window.marketId}`);
+    // Guard: bankroll allows trading
+    if (!this.bankroll.canTrade()) {
       return null;
+    }
+
+    // Guard: duplicate / opposing position prevention
+    const existing = this.db.getOpenTradesForMarket(window.marketId);
+    if (isBatch) {
+      // Batch signals (e.g., spread-capture buys both sides atomically):
+      // only block exact duplicates (same strategy + same direction)
+      const duplicate = existing.find(
+        (t) => t.strategy === signal.strategy && t.side === signal.direction,
+      );
+      if (duplicate) {
+        log.debug(
+          `Already have ${duplicate.strategy} ${duplicate.side} in ${window.marketId}, skipping duplicate`,
+        );
+        return null;
+      }
+    } else {
+      // Single signals: block ANY position from the same strategy in this market
+      // (prevents opposing UP+DOWN bets that guarantee a net loss)
+      const sameStrategyTrade = existing.find(
+        (t) => t.strategy === signal.strategy,
+      );
+      if (sameStrategyTrade) {
+        log.debug(
+          `Already have ${sameStrategyTrade.strategy} ${sameStrategyTrade.side} in ${window.marketId}, ` +
+          `blocking ${signal.direction} (opposing position prevention)`,
+        );
+        return null;
+      }
     }
 
     const entryPrice = signal.direction === "UP" ? signal.upAsk : signal.downAsk;
     const tokenId = signal.direction === "UP" ? window.upTokenId : window.downTokenId;
+
+    // Bankroll-aware position sizing
+    const size = this.bankroll.reserveCapital(entryPrice, signal.confidence);
+    if (size <= 0) {
+      log.debug(`Bankroll rejected trade: insufficient capital or no edge`);
+      return null;
+    }
 
     const trade: SimulatedTrade = {
       timestamp: signal.timestamp,
@@ -40,7 +72,7 @@ export class PositionManager extends EventEmitter {
       side: signal.direction,
       tokenId,
       entryPrice,
-      size: CONFIG.POSITION_SIZE,
+      size,
       status: "open",
     };
 
@@ -48,9 +80,10 @@ export class PositionManager extends EventEmitter {
     trade.id = id;
     this.openCount++;
 
+    const cost = (entryPrice * size).toFixed(2);
     log.info(
       `TRADE OPENED #${id}: ${trade.strategy} ${trade.side} @ ${trade.entryPrice.toFixed(3)} ` +
-      `($${trade.size} notional) [market: ${window.question}]`,
+      `(${size} tokens, $${cost} cost) [market: ${window.question}]`,
     );
 
     this.emit("tradeOpened", trade);
@@ -93,6 +126,9 @@ export class PositionManager extends EventEmitter {
 
       this.db.closeTrade(trade.id!, result);
       this.openCount = Math.max(0, this.openCount - 1);
+
+      // Update bankroll
+      this.bankroll.applyTradeResult(trade.id!, trade.entryPrice, trade.size, settlementPrice);
 
       const emoji = won ? "WIN" : "LOSS";
       log.info(

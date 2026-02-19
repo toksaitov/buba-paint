@@ -93,6 +93,7 @@ export interface Signal {
   timestamp: number;
   strategy: string;
   direction: SignalDirection;
+  confidence: number;
   binancePrice: number;
   chainlinkPrice: number;
   upAsk: number;

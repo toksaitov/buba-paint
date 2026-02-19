@@ -32,12 +32,18 @@ export class SpreadCaptureStrategy implements Strategy {
       spreadEdge: 1.0 - totalAsk,
     };
 
+    // Confidence = how far below threshold (bigger edge = higher confidence)
+    const edge = 1.0 - totalAsk;
+    const maxEdge = 1.0 - CONFIG.SPREAD_CAPTURE_THRESHOLD;
+    const confidence = Math.min(1.0, 0.5 + 0.5 * (edge / maxEdge));
+
     // True arbitrage: buy BOTH sides for guaranteed profit at settlement
     return [
       {
         timestamp: now,
         strategy: this.name,
         direction: "UP" as const,
+        confidence,
         binancePrice,
         chainlinkPrice: chainlinkPrice ?? 0,
         upAsk,
@@ -50,6 +56,7 @@ export class SpreadCaptureStrategy implements Strategy {
         timestamp: now,
         strategy: this.name,
         direction: "DOWN" as const,
+        confidence,
         binancePrice,
         chainlinkPrice: chainlinkPrice ?? 0,
         upAsk,

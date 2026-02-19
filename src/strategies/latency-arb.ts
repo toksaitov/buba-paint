@@ -38,12 +38,23 @@ export class LatencyArbStrategy implements Strategy {
 
     if (!direction) return null;
 
+    // Minimum entry price filter: cheap tokens (< 0.30) lost 100% in testing
+    const entryAsk = direction === "UP" ? upAsk : downAsk;
+    if (entryAsk < CONFIG.LATENCY_ARB_MIN_ASK) return null;
+
+    // Confidence: how far above threshold the momentum is
+    // Range [0.5, 1.0]: barely-above = 0.5, 3x threshold = 1.0
+    const absMomentum = Math.abs(binanceMomentum);
+    const ratio = absMomentum / CONFIG.LATENCY_ARB_MOMENTUM_THRESHOLD;
+    const confidence = Math.min(1.0, 0.25 + 0.25 * ratio);
+
     this.lastSignalTime = now;
 
     return {
       timestamp: now,
       strategy: this.name,
       direction,
+      confidence,
       binancePrice,
       chainlinkPrice: chainlinkPrice ?? 0,
       upAsk,
@@ -54,6 +65,8 @@ export class LatencyArbStrategy implements Strategy {
         momentum: binanceMomentum,
         momentumThreshold: CONFIG.LATENCY_ARB_MOMENTUM_THRESHOLD,
         maxAsk: CONFIG.LATENCY_ARB_MAX_ASK,
+        minAsk: CONFIG.LATENCY_ARB_MIN_ASK,
+        confidence,
         cooldownMs: CONFIG.LATENCY_ARB_COOLDOWN_MS,
         windowTimeRemainingMs,
       },
