@@ -1,4 +1,5 @@
 import { CONFIG } from "./config.js";
+import { now as clockNow } from "./clock.js";
 import { createLogger } from "./utils/logger.js";
 import type { Database } from "./db/database.js";
 
@@ -273,7 +274,7 @@ export class BankrollManager {
     // Trailing peak drawdown pause: if balance dropped ≥30% from all-time high,
     // pause trading for 1 hour to let volatility subside and prevent cascading losses.
     const peakDd = this.getDrawdownPct();
-    const now = Date.now();
+    const now = clockNow();
     if (peakDd >= CONFIG.PEAK_DD_PAUSE_PCT) {
       if (this.peakDdPauseUntil === 0) {
         // First trigger — start the pause timer

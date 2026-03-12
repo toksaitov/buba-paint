@@ -56,7 +56,7 @@ The system is a single Node.js process with these components:
     - `latency-arb.ts` -- fires when momentum is high but CLOB odds are stale.
     - `spread-capture.ts` -- fires when UP ask + DOWN ask < threshold.
 - `bankroll-manager.ts` -- tracks balance, sizes positions using per-strategy
-  half-Kelly criterion (after 10 trades; fixed fraction before that) with a
+  half-Kelly criterion (after 20 trades; fixed fraction before that) with a
   rolling-window win rate (last 30 trades per strategy). Enforces a hard position
   size cap (20% of balance), steeper confidence curve (signals below 0.55
   confidence get zero size), drawdown limit, and minimum balance threshold.
@@ -86,7 +86,7 @@ independently on a 1-second timer.
 ### Three Live Feeds
 
 | Feed                      | URL                                                    | Data                                                  | Rate             |
-|                           |                                                        |                                                       |                  |
+| ------------------------- | ------------------------------------------------------ | ----------------------------------------------------- | ---------------- |
 | Binance aggTrade          | `wss://stream.binance.com:9443/ws/btcusdt@aggTrade`    | Per-trade BTC/USDT price and quantity                 | ~20-100 msgs/sec |
 | Polymarket CLOB           | `wss://ws-subscriptions-clob.polymarket.com/ws/market` | Order book snapshots and price changes for UP/DOWN    | Variable         |
 | Polymarket RTDS Chainlink | `wss://ws-live-data.polymarket.com`                    | Chainlink BTC/USD oracle price (settlement reference) | ~1 msg/sec       |
@@ -156,6 +156,7 @@ buba-paint/
     main.ts                 # Orchestrator: startup, event wiring, shutdown
     config.ts               # All constants from env vars with defaults
     types.ts                # Shared TypeScript interfaces
+    clock.ts                # Injectable clock (Date.now for live, manual for backtest)
     bankroll-manager.ts     # Per-strategy Kelly sizing, position caps, rolling WR
     position-manager.ts     # Trade open/resolve, spread sizing, opposing guard
     circuit-breaker.ts      # Consecutive loss detection, trading pause
@@ -174,6 +175,14 @@ buba-paint/
     strategies/
       latency-arb.ts        # Momentum vs stale odds, adaptive threshold, cooldown
       spread-capture.ts     # UP ask + DOWN ask < threshold, buys both sides
+    backtest/
+      run.ts                # CLI: single backtest run
+      runner.ts             # Core replay loop: ticks → strategies → trades
+      sweep.ts              # CLI: parameter sweep with tick caching
+      tick-replay.ts        # Reads tick_data, groups by 10ms tolerance
+      window-manager.ts     # Replays market windows from DB
+      feed-state.ts         # Simulated feed state for strategies
+      momentum.ts           # Offline momentum calculator
     utils/
       logger.ts             # Timestamped structured logger with level filter
   scripts/
@@ -184,8 +193,12 @@ buba-paint/
     pnl_curve.py
     signal_frequency.py
     binance_vs_chainlink.py
-  data/                     # .gitignored; SQLite DB created at runtime
-  runs/                     # .gitignored; named run directories (001, 002, etc.)
+  data/
+    build-market-db.ts      # Merges per-run DBs into market-data.db
+    market-data.db          # Merged tick data (Git LFS)
+  backtest/
+    results/                # Sweep CSVs and validation DBs
+  runs/                     # Historical run data (001-007), DBs via Git LFS
 ```
 
 ## Setup
@@ -311,7 +324,7 @@ SQLite database (WAL mode, safe for concurrent reads from Python).
 Sampled every `TICK_INTERVAL` ms (default 1 second) from all feeds.
 
 | Column    | Type    | Description                               |
-|           |         |                                           |
+| --------- | ------- | ----------------------------------------- |
 | timestamp | INTEGER | Unix ms                                   |
 | source    | TEXT    | binance, clob_up, clob_down, or chainlink |
 | price     | REAL    | Spot price (binance, chainlink rows only)  |
@@ -325,7 +338,7 @@ Sampled every `TICK_INTERVAL` ms (default 1 second) from all feeds.
 One row per 5-minute window the bot observed.
 
 | Column        | Type    | Description                                   |
-|               |         |                                               |
+| ------------- | ------- | --------------------------------------------- |
 | market_id     | TEXT    | Gamma API market ID (unique)                  |
 | question      | TEXT    | e.g. "Bitcoin Up or Down - Feb 14, 7:55-8 ET" |
 | condition_id  | TEXT    | On-chain condition ID                         |
@@ -341,7 +354,7 @@ One row per 5-minute window the bot observed.
 Every strategy detection, whether or not a trade was opened.
 
 | Column          | Type    | Description                            |
-|                 |         |                                        |
+| --------------- | ------- | -------------------------------------- |
 | timestamp       | INTEGER | Unix ms                                |
 | strategy        | TEXT    | latency-arb or spread-capture          |
 | direction       | TEXT    | UP or DOWN                             |
@@ -358,7 +371,7 @@ Every strategy detection, whether or not a trade was opened.
 Opened when a signal passes position manager guards and bankroll approval.
 
 | Column      | Type    | Description                             |
-|             |         |                                         |
+| ----------- | ------- | --------------------------------------- |
 | timestamp   | INTEGER | Unix ms                                 |
 | market_id   | TEXT    | FK to markets                           |
 | strategy    | TEXT    | Which strategy opened this              |
@@ -373,7 +386,7 @@ Opened when a signal passes position manager guards and bankroll approval.
 One row per resolved trade, joined to simulated_trades on trade_id.
 
 | Column           | Type    | Description                           |
-|                  |         |                                       |
+| ---------------- | ------- | ------------------------------------- |
 | trade_id         | INTEGER | FK to simulated_trades                |
 | exit_price       | REAL    | 1.0 (win) or 0.0 (loss)              |
 | settlement_price | REAL    | Same as exit_price for binary markets |
@@ -388,7 +401,7 @@ One row per resolved trade, joined to simulated_trades on trade_id.
 Tracks every balance change for recovery on restart and post-run analysis.
 
 | Column    | Type    | Description                                |
-|           |         |                                            |
+| --------- | ------- | ------------------------------------------ |
 | timestamp | INTEGER | Unix ms                                    |
 | event     | TEXT    | init, trade_open, or trade_close           |
 | trade_id  | INTEGER | FK to simulated_trades (null for init)     |
@@ -402,7 +415,7 @@ All settings via environment variables. Defaults shown.
 ### Core
 
 | Variable            | Default              | Description                           |
-|                     |                      |                                       |
+| ------------------- | -------------------- | ------------------------------------- |
 | DB_PATH             | ./data/buba-paint.db | SQLite database file path             |
 | LOG_LEVEL           | info                 | debug, info, warn, or error           |
 | TICK_INTERVAL       | 1000                 | Tick sampling interval in ms          |
@@ -412,7 +425,7 @@ All settings via environment variables. Defaults shown.
 ### Strategy A: Latency Arb
 
 | Variable                       | Default | Description                                  |
-|                                |         |                                              |
+| ------------------------------ | ------- | -------------------------------------------- |
 | LATENCY_ARB_MOMENTUM_THRESHOLD | 0.0015  | Min Binance momentum fraction (0.0015 = 0.15%) |
 | LATENCY_ARB_MAX_ASK            | 0.55    | Max CLOB ask to consider "stale" odds        |
 | LATENCY_ARB_MIN_ASK            | 0.30    | Min ask to enter (rejects cheap tokens)      |
@@ -422,14 +435,14 @@ All settings via environment variables. Defaults shown.
 ### Strategy B: Spread Capture
 
 | Variable                  | Default | Description                                  |
-|                           |         |                                              |
+| ------------------------- | ------- | -------------------------------------------- |
 | SPREAD_CAPTURE_THRESHOLD  | 0.998   | Max UP+DOWN ask sum to fire spread capture   |
 | SPREAD_CAPTURE_MIN_ASK    | 0.15    | Reject degenerate book sides below this      |
 
 ### Bankroll Management
 
 | Variable                 | Default | Description                                   |
-|                          |         |                                               |
+| ------------------------ | ------- | --------------------------------------------- |
 | STARTING_BALANCE         | 150     | Initial paper balance in USD                  |
 | MAX_POSITION_FRACTION    | 0.10    | Max fraction of balance per trade (10%)       |
 | MAX_POSITION_USD_FRACTION| 0.20    | Hard cap: no single trade > 20% of balance    |
@@ -439,7 +452,7 @@ All settings via environment variables. Defaults shown.
 ### Kelly Criterion
 
 | Variable               | Default | Description                                  |
-|                        |         |                                              |
+| ---------------------- | ------- | -------------------------------------------- |
 | KELLY_FRACTION         | 0.5     | Kelly multiplier (0.5 = half-Kelly)          |
 | MIN_WIN_RATE_FOR_KELLY | 0.52    | Min observed win rate to apply Kelly         |
 | MIN_TRADES_FOR_KELLY   | 20      | Use fixed fraction until this many per-strategy trades |
@@ -450,28 +463,28 @@ All settings via environment variables. Defaults shown.
 ### Position Limits
 
 | Variable           | Default | Description                                   |
-|                    |         |                                               |
+| ------------------ | ------- | --------------------------------------------- |
 | MAX_OPEN_POSITIONS | 5       | Max concurrent simulated positions            |
 | MIN_WINDOW_TIME_MS | 90000   | Don't enter trades with less than 90s left    |
 
 ### Circuit Breaker
 
 | Variable                | Default  | Description                                 |
-|                         |          |                                             |
+| ----------------------- | -------- | ------------------------------------------- |
 | CIRCUIT_BREAKER_LOSSES  | 3        | Pause after this many consecutive losses    |
 | CIRCUIT_BREAKER_PAUSE_MS| 900000   | Pause duration in ms (15 minutes)           |
 
 ### Peak Drawdown Pause
 
 | Variable                | Default  | Description                                 |
-|                         |          |                                             |
+| ----------------------- | -------- | ------------------------------------------- |
 | PEAK_DD_PAUSE_PCT       | 0.30     | Pause when balance drops 30% from peak      |
 | PEAK_DD_PAUSE_MS        | 3600000  | Pause duration in ms (1 hour)               |
 
 ### Trend Filter (experimental, off by default)
 
 | Variable                | Default | Description                                 |
-|                         |         |                                             |
+| ----------------------- | ------- | ------------------------------------------- |
 | TREND_FILTER_ENABLED    | false   | Enable counter-trend signal suppression     |
 | TREND_FILTER_THRESHOLD  | 0.30    | Directional bias threshold to suppress      |
 | TREND_FILTER_WINDOW     | 10      | Number of recent outcomes to consider       |
@@ -479,7 +492,7 @@ All settings via environment variables. Defaults shown.
 ### Regime Detection (experimental, off by default)
 
 | Variable                   | Default | Description                                 |
-|                            |         |                                             |
+| -------------------------- | ------- | ------------------------------------------- |
 | REGIME_DETECTION_ENABLED   | false   | Enable market regime classification         |
 
 ## Analysis Scripts
@@ -542,6 +555,74 @@ distribution. Stats box with mean, std, max lag.
 
 Key metrics printed: mean, std, max, min delta.
 Output file: `binance_vs_chainlink.png`.
+
+## Backtesting
+
+A tick-level backtesting engine replays historical tick data (~6M+ rows) through
+the real strategy code. This enables fast iteration without waiting for live
+runs.
+
+### Merged Market Database
+
+Run data from individual runs is merged into a single `data/market-data.db` via:
+
+```bash
+npx tsx data/build-market-db.ts
+```
+
+This copies `tick_data` and `markets` tables from each run DB into a unified
+database, deduplicating overlapping timestamps.
+
+### Single Backtest
+
+```bash
+npx tsx src/backtest/run.ts \
+  --data data/market-data.db \
+  --out backtest/results/test.db \
+  --start 2026-02-20T03:13 --end 2026-03-04T04:26 \
+  --balance 200
+```
+
+Replays ticks through latency-arb and spread-capture strategies with full
+bankroll management, circuit breaker, and Kelly sizing. Results are written to a
+SQLite database compatible with the analysis scripts.
+
+### Parameter Sweep
+
+```bash
+npx tsx src/backtest/sweep.ts \
+  --data data/market-data.db \
+  --out backtest/results/sweep-001.csv \
+  --start 2026-02-20T03:13 --end 2026-02-28T00:00 \
+  --balance 200 \
+  --param LATENCY_ARB_MOMENTUM_THRESHOLD=0.0010:0.0030:0.0002 \
+  --param LATENCY_ARB_MAX_ASK=0.55,0.60,0.65 \
+  --param MAX_POSITION_FRACTION=0.05,0.075,0.10,0.125 \
+  --set SPREAD_CAPTURE_THRESHOLD=0.50
+```
+
+- `--param NAME=start:end:step` generates a range; `--param NAME=a,b,c` enumerates values
+- `--set NAME=value` fixes a parameter without sweeping it
+- Ticks are loaded once and cached across all combinations
+- Results CSV has one row per combination with PnL, win rate, trades, max drawdown
+
+The 275-combination sweep from run 006 data completed in ~56 minutes.
+
+### Walk-Forward Validation
+
+To avoid overfitting, split data into train/test periods:
+
+1. **Train**: sweep on earlier data (e.g., Feb 20 -- Feb 28)
+2. **Test**: run top candidates on later data (e.g., Feb 28 -- Mar 4)
+3. Parameters good on both = robust; good on train only = overfit
+
+### Key Limitations
+
+- **Spread-capture overcounts ~18x**: 1-second tick sampling captures transient
+  sub-threshold CLOB states that the event-driven live bot doesn't trigger on.
+  Disable for sweeps with `--set SPREAD_CAPTURE_THRESHOLD=0.50`.
+- **Latency-arb reproduction is excellent**: 257 vs 260 trades, 149 vs 149 wins
+  (56.0% vs 57.3% WR) against run 006 live data.
 
 ## Data Collection Guide
 
@@ -803,7 +884,7 @@ To add a new strategy:
 ### Common Issues
 
 | Symptom                             | Cause                            | Fix                                                   |
-|                                     |                                  |                                                       |
+| ----------------------------------- | -------------------------------- | ----------------------------------------------------- |
 | "No active 5-min BTC market found"  | Between windows or API hiccup    | Retries automatically. Check polymarket.com/crypto/5M  |
 | Chainlink price unavailable at open | Chainlink WS connects after      | Falls back to Binance price; captures on first tick    |
 |                                     | discovery fires                  | if both unavailable at window open                     |
@@ -819,12 +900,13 @@ To add a new strategy:
 ### Run History
 
 | Run | Duration  | Signals | Trades | Win Rate | P&L (0%) | P&L (3%) | Notes                        |
-|     |           |         |        |          |          |          |                              |
+| --- | --------- | ------- | ------ | -------- | -------- | -------- | ---------------------------- |
 | 002 | 5 hours   | 12      | 9      | 55.6%    | +$69.00  | +$56.07  | v0.1, fixed 100-token bets   |
 | 003 | 1 hour    | 1       | 1      | 0%       | -$11.00  | -$11.33  | v0.2, bankroll-aware sizing  |
 | 004 | 96 hours  | 161     | 76     | 51.3%    | +$719    | --       | v0.2, $200→$919, peak $1556  |
 | 005 | 25 hours  | 37      | 11     | 36.4%    | -$4.86   | -$7.29   | v0.3, over-filtering bug     |
 | 006 | 267 hours | 583     | 292    | 56.5%    | +$4,565  | +$3,467  | v0.4, $200→$4,765, peak $9,678, 50.8% max DD |
+| 007 | ongoing   | --      | --     | --       | --       | --       | v0.5, $200 start, deployed Mar 10             |
 
 ## Out of Scope (for now)
 

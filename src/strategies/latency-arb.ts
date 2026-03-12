@@ -1,4 +1,5 @@
 import { CONFIG } from "../config.js";
+import { now } from "../clock.js";
 import type { Strategy, StrategyContext, Signal, SignalDirection } from "../types.js";
 
 export class LatencyArbStrategy implements Strategy {
@@ -25,8 +26,8 @@ export class LatencyArbStrategy implements Strategy {
     if (!bookState.up || !bookState.down) return null;
 
     // Cooldown: suppress signals for COOLDOWN_MS after the last one
-    const now = Date.now();
-    if (now - this.lastSignalTime < CONFIG.LATENCY_ARB_COOLDOWN_MS) return null;
+    const t = now();
+    if (t - this.lastSignalTime < CONFIG.LATENCY_ARB_COOLDOWN_MS) return null;
 
     const upAsk = bookState.up.bestAsk;
     const downAsk = bookState.down.bestAsk;
@@ -37,7 +38,7 @@ export class LatencyArbStrategy implements Strategy {
     if (upAsk <= 0 || downAsk <= 0) return null;
 
     // Use adaptive threshold: max(static config, 85th percentile of recent momentum)
-    const effectiveThreshold = this.getAdaptiveThreshold(now);
+    const effectiveThreshold = this.getAdaptiveThreshold(t);
 
     let direction: SignalDirection | null = null;
 
@@ -63,10 +64,10 @@ export class LatencyArbStrategy implements Strategy {
     const ratio = absMomentum / effectiveThreshold;
     const confidence = Math.min(1.0, 0.40 + 0.30 * ratio);
 
-    this.lastSignalTime = now;
+    this.lastSignalTime = t;
 
     return {
-      timestamp: now,
+      timestamp: t,
       strategy: this.name,
       direction,
       confidence,
@@ -90,9 +91,9 @@ export class LatencyArbStrategy implements Strategy {
   }
 
   /** Compute adaptive threshold: max(static, 85th percentile of recent momentum). Cached for 10s. */
-  private getAdaptiveThreshold(now: number): number {
-    if (now - this.lastThresholdCalc < 10_000) return this.adaptiveThreshold;
-    this.lastThresholdCalc = now;
+  private getAdaptiveThreshold(t: number): number {
+    if (t - this.lastThresholdCalc < 10_000) return this.adaptiveThreshold;
+    this.lastThresholdCalc = t;
 
     // Need at least 60 samples (~1 minute) before adapting
     if (this.momentumBuffer.length < 60) {

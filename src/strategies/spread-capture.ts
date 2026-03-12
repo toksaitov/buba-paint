@@ -1,4 +1,5 @@
 import { CONFIG } from "../config.js";
+import { now } from "../clock.js";
 import type { Strategy, StrategyContext, Signal } from "../types.js";
 
 export class SpreadCaptureStrategy implements Strategy {
@@ -25,7 +26,7 @@ export class SpreadCaptureStrategy implements Strategy {
     // If sum of asks is at or above threshold, no spread to capture
     if (totalAsk >= CONFIG.SPREAD_CAPTURE_THRESHOLD) return null;
 
-    const now = Date.now();
+    const t = now();
     const sharedMeta = {
       totalAsk,
       threshold: CONFIG.SPREAD_CAPTURE_THRESHOLD,
@@ -40,7 +41,7 @@ export class SpreadCaptureStrategy implements Strategy {
     // True arbitrage: buy BOTH sides for guaranteed profit at settlement
     return [
       {
-        timestamp: now,
+        timestamp: t,
         strategy: this.name,
         direction: "UP" as const,
         confidence,
@@ -53,7 +54,7 @@ export class SpreadCaptureStrategy implements Strategy {
         metadata: sharedMeta,
       },
       {
-        timestamp: now,
+        timestamp: t,
         strategy: this.name,
         direction: "DOWN" as const,
         confidence,

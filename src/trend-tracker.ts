@@ -1,4 +1,5 @@
 import { CONFIG } from "./config.js";
+import { now as clockNow } from "./clock.js";
 import { createLogger } from "./utils/logger.js";
 import type { SignalDirection } from "./types.js";
 
@@ -14,7 +15,7 @@ export class TrendTracker {
   private recentOutcomes: Outcome[] = [];
 
   recordOutcome(direction: SignalDirection, won: boolean): void {
-    this.recentOutcomes.push({ direction, won, timestamp: Date.now() });
+    this.recentOutcomes.push({ direction, won, timestamp: clockNow() });
     if (this.recentOutcomes.length > CONFIG.TREND_FILTER_WINDOW) {
       this.recentOutcomes.shift();
     }
