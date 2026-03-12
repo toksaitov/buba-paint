@@ -8,6 +8,8 @@ import { LatencyArbStrategy } from "./strategies/latency-arb.js";
 import { SpreadCaptureStrategy } from "./strategies/spread-capture.js";
 import { PositionManager } from "./position-manager.js";
 import { BankrollManager } from "./bankroll-manager.js";
+import { CircuitBreaker } from "./circuit-breaker.js";
+import { RegimeDetector } from "./regime-detector.js";
 import { TrendTracker } from "./trend-tracker.js";
 import { TickLogger } from "./tick-logger.js";
 import { createLogger } from "./utils/logger.js";
@@ -16,14 +18,16 @@ import type { StrategyContext, MarketWindow, Strategy, SignalDirection } from ".
 const log = createLogger("main");
 
 async function main(): Promise<void> {
-  log.info("=== buba-paint paper trading bot v0.2 ===");
+  log.info("=== buba-paint paper trading bot v0.5 ===");
   log.info(`Config: momentum=${CONFIG.LATENCY_ARB_MOMENTUM_THRESHOLD}, ` +
     `window=${CONFIG.MOMENTUM_WINDOW_MS}ms, ` +
     `cooldown=${CONFIG.LATENCY_ARB_COOLDOWN_MS}ms, ` +
     `min_ask=${CONFIG.LATENCY_ARB_MIN_ASK}, ` +
     `balance=$${CONFIG.STARTING_BALANCE}, ` +
     `max_fraction=${(CONFIG.MAX_POSITION_FRACTION * 100).toFixed(0)}%, ` +
-    `kelly=${CONFIG.KELLY_FRACTION}`);
+    `max_pos_usd=${(CONFIG.MAX_POSITION_USD_FRACTION * 100).toFixed(0)}%, ` +
+    `kelly=${CONFIG.KELLY_FRACTION}, ` +
+    `circuit_breaker=${CONFIG.CIRCUIT_BREAKER_LOSSES}L/${(CONFIG.CIRCUIT_BREAKER_PAUSE_MS / 60_000).toFixed(0)}min`);
 
   // 1. Database
   const db = new Database(CONFIG.DB_PATH);
@@ -53,6 +57,13 @@ async function main(): Promise<void> {
 
   // 8. Tick logger
   const tickLogger = new TickLogger(db, binanceFeed, clobFeed, chainlinkFeed);
+
+  // 9. Circuit breaker — pauses trading after consecutive losses
+  const circuitBreaker = new CircuitBreaker();
+
+  // 10. Regime detector (experimental, off by default)
+  const regimeDetector = CONFIG.REGIME_DETECTION_ENABLED ? new RegimeDetector() : null;
+  if (regimeDetector) log.info("Regime detection ENABLED");
 
   // Track Chainlink price at window open for settlement
   let windowOpenPrice: number | null = null;
@@ -103,26 +114,60 @@ async function main(): Promise<void> {
       lastSpreadLogTime = now;
     }
 
+    // Circuit breaker: skip signal processing if paused
+    if (!circuitBreaker.canTrade()) return;
+
+    // Feed regime detector (experimental)
+    if (regimeDetector) {
+      regimeDetector.addPrice(binPrice, now);
+    }
+
     for (const strategy of strategies) {
       const result = strategy.evaluate(ctx);
       if (result === null) continue;
 
-      const signals = Array.isArray(result) ? result : [result];
-      const isBatch = Array.isArray(result) && result.length > 1;
-      for (const signal of signals) {
-        // Trend filter (experimental, off by default)
-        if (trendTracker.shouldSuppress(signal.direction)) {
-          log.info(`SIGNAL SUPPRESSED (trend): ${signal.strategy} => ${signal.direction}`);
-          db.logSignal(signal);
+      // Regime filter: suppress latency-arb in choppy markets
+      if (regimeDetector && strategy.name === "latency-arb") {
+        const regime = regimeDetector.getRegime();
+        if (regime === "choppy") {
+          const signals = Array.isArray(result) ? result : [result];
+          for (const signal of signals) {
+            log.info(`SIGNAL SUPPRESSED (choppy regime): ${signal.strategy} => ${signal.direction}`);
+            db.logSignal(signal);
+          }
           continue;
         }
+      }
 
-        log.info(`SIGNAL: ${signal.strategy} => ${signal.direction} | ` +
-          `confidence=${signal.confidence.toFixed(2)} | ` +
-          `momentum=${(ctx.binanceMomentum * 100).toFixed(4)}% | ` +
-          `UP ask=${signal.upAsk.toFixed(3)} DOWN ask=${signal.downAsk.toFixed(3)}`);
-        db.logSignal(signal);
-        positionManager.tryOpen(signal, window, isBatch);
+      const signals = Array.isArray(result) ? result : [result];
+      const isBatch = Array.isArray(result) && result.length > 1;
+
+      if (isBatch) {
+        // Batch signals (spread-capture): balanced sizing, skip trend filter
+        for (const signal of signals) {
+          log.info(`SIGNAL: ${signal.strategy} => ${signal.direction} | ` +
+            `confidence=${signal.confidence.toFixed(2)} | ` +
+            `UP ask=${signal.upAsk.toFixed(3)} DOWN ask=${signal.downAsk.toFixed(3)} | ` +
+            `totalAsk=${(signal.upAsk + signal.downAsk).toFixed(4)}`);
+          db.logSignal(signal);
+        }
+        positionManager.tryOpenSpread(signals, window);
+      } else {
+        for (const signal of signals) {
+          // Trend filter (experimental, off by default)
+          if (trendTracker.shouldSuppress(signal.direction)) {
+            log.info(`SIGNAL SUPPRESSED (trend): ${signal.strategy} => ${signal.direction}`);
+            db.logSignal(signal);
+            continue;
+          }
+
+          log.info(`SIGNAL: ${signal.strategy} => ${signal.direction} | ` +
+            `confidence=${signal.confidence.toFixed(2)} | ` +
+            `momentum=${(ctx.binanceMomentum * 100).toFixed(4)}% | ` +
+            `UP ask=${signal.upAsk.toFixed(3)} DOWN ask=${signal.downAsk.toFixed(3)}`);
+          db.logSignal(signal);
+          positionManager.tryOpen(signal, window);
+        }
       }
     }
   }
@@ -184,15 +229,17 @@ async function main(): Promise<void> {
     currentWindowId = null;
   });
 
-  // Wire trade resolution to trend tracker via a wrapper
+  // Wire trade resolution to trend tracker + circuit breaker via a wrapper
   const origResolve = positionManager.resolveWindow.bind(positionManager);
   positionManager.resolveWindow = (window: MarketWindow, openPrice: number, closePrice: number) => {
     const outcome: SignalDirection = closePrice >= openPrice ? "UP" : "DOWN";
     const trades = db.getOpenTradesForMarket(window.marketId);
     origResolve(window, openPrice, closePrice);
-    // Record outcomes for trend tracker
+    // Record outcomes for trend tracker + circuit breaker
     for (const trade of trades) {
-      trendTracker.recordOutcome(trade.side, trade.side === outcome);
+      const won = trade.side === outcome;
+      trendTracker.recordOutcome(trade.side, won);
+      circuitBreaker.recordResult(won);
     }
   };
 

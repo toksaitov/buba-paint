@@ -58,8 +58,8 @@ export class PositionManager extends EventEmitter {
     const entryPrice = signal.direction === "UP" ? signal.upAsk : signal.downAsk;
     const tokenId = signal.direction === "UP" ? window.upTokenId : window.downTokenId;
 
-    // Bankroll-aware position sizing
-    const size = this.bankroll.reserveCapital(entryPrice, signal.confidence);
+    // Bankroll-aware position sizing (per-strategy)
+    const size = this.bankroll.reserveCapital(entryPrice, signal.confidence, signal.strategy);
     if (size <= 0) {
       log.debug(`Bankroll rejected trade: insufficient capital or no edge`);
       return null;
@@ -88,6 +88,83 @@ export class PositionManager extends EventEmitter {
 
     this.emit("tradeOpened", trade);
     return trade;
+  }
+
+  /**
+   * Open a spread-capture pair (both UP and DOWN) with balanced sizing.
+   */
+  tryOpenSpread(signals: Signal[], window: MarketWindow): SimulatedTrade[] {
+    // Guard: max open positions (need room for both legs)
+    if (this.openCount + 2 > CONFIG.MAX_OPEN_POSITIONS) {
+      log.debug("Not enough position slots for spread, skipping");
+      return [];
+    }
+
+    if (!this.bankroll.canTrade()) return [];
+
+    const upSignal = signals.find((s) => s.direction === "UP");
+    const downSignal = signals.find((s) => s.direction === "DOWN");
+    if (!upSignal || !downSignal) return [];
+
+    // Guard: duplicate prevention
+    const existing = this.db.getOpenTradesForMarket(window.marketId);
+    for (const signal of [upSignal, downSignal]) {
+      const duplicate = existing.find(
+        (t) => t.strategy === signal.strategy && t.side === signal.direction,
+      );
+      if (duplicate) {
+        log.debug(`Already have ${duplicate.strategy} ${duplicate.side}, skipping spread`);
+        return [];
+      }
+    }
+
+    // Balanced sizing: both legs sized together
+    const { upTokens, downTokens } = this.bankroll.reserveSpreadCapital(
+      upSignal.upAsk,
+      downSignal.downAsk,
+      upSignal.confidence,
+    );
+    if (upTokens <= 0 || downTokens <= 0) {
+      log.debug("Bankroll rejected spread: insufficient capital");
+      return [];
+    }
+
+    const trades: SimulatedTrade[] = [];
+    const legs: Array<{ signal: Signal; size: number }> = [
+      { signal: upSignal, size: upTokens },
+      { signal: downSignal, size: downTokens },
+    ];
+
+    for (const { signal, size } of legs) {
+      const entryPrice = signal.direction === "UP" ? signal.upAsk : signal.downAsk;
+      const tokenId = signal.direction === "UP" ? window.upTokenId : window.downTokenId;
+
+      const trade: SimulatedTrade = {
+        timestamp: signal.timestamp,
+        marketId: window.marketId,
+        strategy: signal.strategy,
+        side: signal.direction,
+        tokenId,
+        entryPrice,
+        size,
+        status: "open",
+      };
+
+      const id = this.db.openTrade(trade);
+      trade.id = id;
+      this.openCount++;
+
+      const cost = (entryPrice * size).toFixed(2);
+      log.info(
+        `TRADE OPENED #${id}: ${trade.strategy} ${trade.side} @ ${trade.entryPrice.toFixed(3)} ` +
+        `(${size} tokens, $${cost} cost) [spread pair]`,
+      );
+
+      this.emit("tradeOpened", trade);
+      trades.push(trade);
+    }
+
+    return trades;
   }
 
   resolveWindow(window: MarketWindow, openPrice: number, closePrice: number): void {
@@ -127,8 +204,8 @@ export class PositionManager extends EventEmitter {
       this.db.closeTrade(trade.id!, result);
       this.openCount = Math.max(0, this.openCount - 1);
 
-      // Update bankroll
-      this.bankroll.applyTradeResult(trade.id!, trade.entryPrice, trade.size, settlementPrice);
+      // Update bankroll (per-strategy tracking)
+      this.bankroll.applyTradeResult(trade.id!, trade.entryPrice, trade.size, settlementPrice, trade.strategy);
 
       const emoji = won ? "WIN" : "LOSS";
       log.info(

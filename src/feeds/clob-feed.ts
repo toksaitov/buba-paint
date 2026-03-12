@@ -19,9 +19,8 @@ export class ClobFeed extends BaseFeed {
     // Force reconnect: the CLOB server does not honor a second subscription
     // on the same WebSocket connection. Disconnecting and reconnecting
     // ensures we get a fresh book snapshot for the new tokens.
-    if (this.getStatus() === "connected" || this.getStatus() === "connecting") {
-      this.disconnect();
-    }
+    // Always disconnect first (safe even if already disconnected), then connect.
+    this.disconnect();
     this.connect();
   }
 

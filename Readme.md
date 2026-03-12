@@ -1,10 +1,10 @@
-# buba-paint v0.2
+# buba-paint v0.5
 
 Paper-trading system for Polymarket 5-minute BTC Up/Down prediction markets.
 Connects to three live WebSocket feeds, detects latency-arbitrage and
 spread-capture opportunities, simulates trades with bankroll-aware position
-sizing (half-Kelly criterion), logs everything to SQLite, and produces analysis
-visualizations.
+sizing (per-strategy half-Kelly criterion), logs everything to SQLite, and
+produces analysis visualizations.
 
 No real orders, no wallet, no private keys. This is a data-collection and
 strategy-validation tool.
@@ -20,16 +20,18 @@ Polymarket CLOB order book reprices. When Binance shows strong momentum
 (configurable threshold, default 0.15% over 30 seconds) but the CLOB still
 shows stale odds, the bot logs a simulated directional buy at the current best
 ask. Features a 60-second cooldown between signals, a minimum entry price
-filter (rejects tokens below $0.30 which historically lost 100%), and confidence
-scoring that scales position size by momentum strength.
+filter (rejects tokens below $0.30 which historically lost 100%), adaptive
+momentum threshold (85th percentile of recent momentum, ensures signals only
+fire on unusually strong moves), and confidence scoring that scales position
+size by momentum strength.
 
 **Strategy B -- Spread Capture.** When the sum of the best ask for the UP token
 and the best ask for the DOWN token falls below $1.00 (configurable threshold,
 default $0.998), the market is theoretically mispriced. The bot buys BOTH sides
-simultaneously for a guaranteed profit at settlement regardless of outcome. This
-strategy has not fired yet in production (the CLOB is too efficient at current
-5-minute intervals), but is kept alive for future 1-minute markets where less
-efficient market making may create brief spread collapses.
+simultaneously (with balanced equal-token sizing) for a guaranteed profit at
+settlement regardless of outcome. Rejects entries where either side is below
+$0.15 to avoid extreme tail bets. This strategy fired 13 times in run 004 with
++$484 P&L, proving that brief spread collapses do occur.
 
 At each 5-minute window close, open positions are resolved using the Chainlink
 settlement price, and P&L is computed under four fee assumptions (0%, 1%, 2%,
@@ -53,17 +55,26 @@ The system is a single Node.js process with these components:
 - On each Binance tick and CLOB book update, two strategies evaluate the state:
     - `latency-arb.ts` -- fires when momentum is high but CLOB odds are stale.
     - `spread-capture.ts` -- fires when UP ask + DOWN ask < threshold.
-- `bankroll-manager.ts` -- tracks balance, sizes positions as a percentage of
-  current bankroll using half-Kelly criterion (after 10 trades; fixed fraction
-  before that), enforces drawdown and minimum balance limits, persists balance
-  to SQLite for recovery on restart.
+- `bankroll-manager.ts` -- tracks balance, sizes positions using per-strategy
+  half-Kelly criterion (after 10 trades; fixed fraction before that) with a
+  rolling-window win rate (last 30 trades per strategy). Enforces a hard position
+  size cap (20% of balance), steeper confidence curve (signals below 0.55
+  confidence get zero size), drawdown limit, and minimum balance threshold.
+  Balanced spread-capture sizing ensures both legs get equal token counts.
+  Persists balance to SQLite for recovery on restart.
 - `position-manager.ts` opens simulated trades from signals (using
   bankroll-aware sizing), blocks opposing positions from the same strategy in
   the same window (while allowing batch signals like spread-capture to open
-  both sides atomically), resolves trades at window close using Chainlink
-  price, computes P&L at 4 fee levels.
+  both sides atomically via `tryOpenSpread()`), resolves trades at window close
+  using Chainlink price, computes P&L at 4 fee levels.
+- `circuit-breaker.ts` -- pauses all trading for 15 minutes after 3 consecutive
+  losses, preventing runaway loss streaks.
 - `trend-tracker.ts` -- experimental (off by default) filter that suppresses
   counter-trend signals based on rolling win rates by direction.
+- `regime-detector.ts` -- experimental (off by default) market regime classifier.
+  Tracks 1-minute return reversals over a 2-hour window; classifies the market as
+  trending, choppy, or unknown. When enabled and regime is choppy, suppresses
+  latency-arb signals.
 - `tick-logger.ts` samples all feeds every 1s into the `tick_data` table.
 - All data is persisted to a SQLite database (WAL mode).
 
@@ -108,13 +119,27 @@ The `BankrollManager` controls all position sizing. Key mechanics:
 
 - **Starting balance**: configurable (default $150), recoverable from DB on
   restart.
-- **Position sizing**: each trade uses at most `MAX_POSITION_FRACTION` (15%) of
-  current balance. With $150, that's $22.50 max per trade.
-- **Kelly criterion**: after `MIN_TRADES_FOR_KELLY` (10) trades, switches from
-  fixed fraction to half-Kelly (`f* = (bp - q) / b` scaled by 0.5), capped at
-  `MAX_POSITION_FRACTION`. Requires observed win rate > 52% to bet.
-- **Confidence scaling**: signal confidence (0.5 to 1.0) further scales the
-  position fraction. Weak momentum signals get smaller bets.
+- **Position sizing**: each trade uses at most `MAX_POSITION_FRACTION` (10%) of
+  current balance AND at most `MAX_POSITION_USD_FRACTION` (20%) as a hard cap.
+- **Per-strategy Kelly criterion**: after `MIN_TRADES_FOR_KELLY` (10) trades,
+  switches from fixed fraction to half-Kelly (`f* = (bp - q) / b` scaled by
+  0.5), computed using each strategy's own win rate (not a global average).
+  Requires observed win rate > 52% to bet.
+- **Rolling window win rate**: uses the last `KELLY_ROLLING_WINDOW` (30) trades
+  per strategy for faster adaptation when edge decays, falling back to lifetime
+  stats when rolling data is insufficient.
+- **Steeper confidence curve**: `multiplier = max(0, (confidence - 0.5) * 2.5)`.
+  Signals at 0.50 confidence get zero size (filtered out), 0.60 → 25% of Kelly,
+  0.90 → 100%. This naturally filters weak signals without changing strategy
+  logic.
+- **Balanced spread sizing**: spread-capture pairs are sized together via
+  `reserveSpreadCapital()`, ensuring both legs get equal token counts based on
+  total pair cost.
+- **Circuit breaker**: after `CIRCUIT_BREAKER_LOSSES` (3) consecutive losses,
+  all trading pauses for `CIRCUIT_BREAKER_PAUSE_MS` (15 minutes / 3 windows).
+- **Peak drawdown pause**: if balance drops 30% below the all-time high water
+  mark, all trading pauses for 1 hour to prevent cascading losses at large
+  bet sizes.
 - **Safety limits**: stops trading if balance drops below $20 or drawdown
   exceeds 50%.
 - **Balance persistence**: every balance change is logged to the `balance_log`
@@ -131,11 +156,13 @@ buba-paint/
     main.ts                 # Orchestrator: startup, event wiring, shutdown
     config.ts               # All constants from env vars with defaults
     types.ts                # Shared TypeScript interfaces
-    bankroll-manager.ts     # Balance tracking, Kelly sizing, safety limits
-    position-manager.ts     # Trade open/resolve, opposing position guard
+    bankroll-manager.ts     # Per-strategy Kelly sizing, position caps, rolling WR
+    position-manager.ts     # Trade open/resolve, spread sizing, opposing guard
+    circuit-breaker.ts      # Consecutive loss detection, trading pause
     market-discovery.ts     # Gamma API event lookup by slug, window lifecycle
     tick-logger.ts          # 1s interval sampling all feeds to SQLite
     trend-tracker.ts        # Experimental directional trend filter
+    regime-detector.ts      # Experimental market regime classifier
     db/
       schema.ts             # 6 SQLite tables with indexes
       database.ts           # better-sqlite3 wrapper, prepared statements
@@ -145,12 +172,13 @@ buba-paint/
       clob-feed.ts          # Book snapshots + price_change, top-of-book state
       chainlink-feed.ts     # RTDS subscribe, staleness detection, auto-reconnect
     strategies/
-      latency-arb.ts        # Momentum vs stale odds, cooldown, min-ask filter
+      latency-arb.ts        # Momentum vs stale odds, adaptive threshold, cooldown
       spread-capture.ts     # UP ask + DOWN ask < threshold, buys both sides
     utils/
       logger.ts             # Timestamped structured logger with level filter
   scripts/
     setup-ubuntu.sh         # AWS/Ubuntu 24.04 setup (apt + npm + typecheck)
+    chart-run.py            # 6-panel dashboard + trade detail chart
     latency_distribution.py
     spread_over_time.py
     pnl_curve.py
@@ -237,9 +265,10 @@ disconnect, DB closes cleanly).
 ### What to Expect on Startup
 
 ```
-[INFO] [main]      === buba-paint paper trading bot v0.2 ===
+[INFO] [main]      === buba-paint paper trading bot v0.5 ===
 [INFO] [main]      Config: momentum=0.0015, window=30000ms, cooldown=60000ms,
-                   min_ask=0.3, balance=$150, max_fraction=15%, kelly=0.5
+                   min_ask=0.3, balance=$150, max_fraction=10%, max_pos_usd=20%,
+                   kelly=0.5, circuit_breaker=3L/15min
 [INFO] [db]        Database initialized at runs/004/buba-paint.db
 [INFO] [bankroll]  Initialized with $150.00
 [INFO] [chainlink] Connected
@@ -385,7 +414,7 @@ All settings via environment variables. Defaults shown.
 | Variable                       | Default | Description                                  |
 |                                |         |                                              |
 | LATENCY_ARB_MOMENTUM_THRESHOLD | 0.0015  | Min Binance momentum fraction (0.0015 = 0.15%) |
-| LATENCY_ARB_MAX_ASK            | 0.60    | Max CLOB ask to consider "stale" odds        |
+| LATENCY_ARB_MAX_ASK            | 0.55    | Max CLOB ask to consider "stale" odds        |
 | LATENCY_ARB_MIN_ASK            | 0.30    | Min ask to enter (rejects cheap tokens)      |
 | LATENCY_ARB_COOLDOWN_MS        | 60000   | Cooldown between signals in ms               |
 | MOMENTUM_WINDOW_MS             | 30000   | Rolling window for momentum calc in ms       |
@@ -395,16 +424,17 @@ All settings via environment variables. Defaults shown.
 | Variable                  | Default | Description                                  |
 |                           |         |                                              |
 | SPREAD_CAPTURE_THRESHOLD  | 0.998   | Max UP+DOWN ask sum to fire spread capture   |
-| SPREAD_CAPTURE_MIN_ASK    | 0.03    | Reject degenerate book sides below this      |
+| SPREAD_CAPTURE_MIN_ASK    | 0.15    | Reject degenerate book sides below this      |
 
 ### Bankroll Management
 
-| Variable              | Default | Description                                   |
-|                       |         |                                               |
-| STARTING_BALANCE      | 150     | Initial paper balance in USD                  |
-| MAX_POSITION_FRACTION | 0.15    | Max fraction of balance per trade (15%)       |
-| MIN_BALANCE_THRESHOLD | 20      | Stop trading below this balance               |
-| MAX_DRAWDOWN_PCT      | 0.50    | Stop trading at 50% drawdown from peak        |
+| Variable                 | Default | Description                                   |
+|                          |         |                                               |
+| STARTING_BALANCE         | 150     | Initial paper balance in USD                  |
+| MAX_POSITION_FRACTION    | 0.10    | Max fraction of balance per trade (10%)       |
+| MAX_POSITION_USD_FRACTION| 0.20    | Hard cap: no single trade > 20% of balance    |
+| MIN_BALANCE_THRESHOLD    | 20      | Stop trading below this balance               |
+| MAX_DRAWDOWN_PCT         | 0.50    | Stop trading at 50% drawdown from peak        |
 
 ### Kelly Criterion
 
@@ -412,14 +442,31 @@ All settings via environment variables. Defaults shown.
 |                        |         |                                              |
 | KELLY_FRACTION         | 0.5     | Kelly multiplier (0.5 = half-Kelly)          |
 | MIN_WIN_RATE_FOR_KELLY | 0.52    | Min observed win rate to apply Kelly         |
-| MIN_TRADES_FOR_KELLY   | 10      | Use fixed fraction until this many trades    |
+| MIN_TRADES_FOR_KELLY   | 20      | Use fixed fraction until this many per-strategy trades |
+| KELLY_ROLLING_WINDOW   | 30      | Use last N trades per strategy for win rate  |
+| MIN_KELLY_FLOOR        | 0.03    | Min fraction when Kelly says 0 (3% floor)    |
+| MIN_BET_USD            | 5       | Min bet size in USD (prevents dust bets)     |
 
 ### Position Limits
 
 | Variable           | Default | Description                                   |
 |                    |         |                                               |
 | MAX_OPEN_POSITIONS | 5       | Max concurrent simulated positions            |
-| MIN_WINDOW_TIME_MS | 30000   | Don't enter trades with less than 30s left    |
+| MIN_WINDOW_TIME_MS | 90000   | Don't enter trades with less than 90s left    |
+
+### Circuit Breaker
+
+| Variable                | Default  | Description                                 |
+|                         |          |                                             |
+| CIRCUIT_BREAKER_LOSSES  | 3        | Pause after this many consecutive losses    |
+| CIRCUIT_BREAKER_PAUSE_MS| 900000   | Pause duration in ms (15 minutes)           |
+
+### Peak Drawdown Pause
+
+| Variable                | Default  | Description                                 |
+|                         |          |                                             |
+| PEAK_DD_PAUSE_PCT       | 0.30     | Pause when balance drops 30% from peak      |
+| PEAK_DD_PAUSE_MS        | 3600000  | Pause duration in ms (1 hour)               |
 
 ### Trend Filter (experimental, off by default)
 
@@ -428,6 +475,12 @@ All settings via environment variables. Defaults shown.
 | TREND_FILTER_ENABLED    | false   | Enable counter-trend signal suppression     |
 | TREND_FILTER_THRESHOLD  | 0.30    | Directional bias threshold to suppress      |
 | TREND_FILTER_WINDOW     | 10      | Number of recent outcomes to consider       |
+
+### Regime Detection (experimental, off by default)
+
+| Variable                   | Default | Description                                 |
+|                            |         |                                             |
+| REGIME_DETECTION_ENABLED   | false   | Enable market regime classification         |
 
 ## Analysis Scripts
 
@@ -765,11 +818,13 @@ To add a new strategy:
 
 ### Run History
 
-| Run | Duration | Signals | Trades | Win Rate | P&L (0%) | P&L (3%) | Notes                       |
-|     |          |         |        |          |          |          |                             |
-| 002 | 5 hours  | 12      | 9      | 55.6%    | +$69.00  | +$56.07  | v0.1, fixed 100-token bets  |
-| 003 | 1 hour   | 1       | 1      | 0%       | -$11.00  | -$11.33  | v0.2, bankroll-aware sizing |
-| 004 | ongoing  | --      | --     | --       | --       | --       | v0.2 + staleness fix, $200  |
+| Run | Duration  | Signals | Trades | Win Rate | P&L (0%) | P&L (3%) | Notes                        |
+|     |           |         |        |          |          |          |                              |
+| 002 | 5 hours   | 12      | 9      | 55.6%    | +$69.00  | +$56.07  | v0.1, fixed 100-token bets   |
+| 003 | 1 hour    | 1       | 1      | 0%       | -$11.00  | -$11.33  | v0.2, bankroll-aware sizing  |
+| 004 | 96 hours  | 161     | 76     | 51.3%    | +$719    | --       | v0.2, $200→$919, peak $1556  |
+| 005 | 25 hours  | 37      | 11     | 36.4%    | -$4.86   | -$7.29   | v0.3, over-filtering bug     |
+| 006 | 267 hours | 583     | 292    | 56.5%    | +$4,565  | +$3,467  | v0.4, $200→$4,765, peak $9,678, 50.8% max DD |
 
 ## Out of Scope (for now)
 

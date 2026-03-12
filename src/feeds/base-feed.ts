@@ -63,11 +63,19 @@ export abstract class BaseFeed extends EventEmitter {
     this.clearReconnect();
     this.cleanup();
     if (this.ws) {
-      this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-        this.ws.close(1000, "shutdown");
-      }
+      const ws = this.ws;
       this.ws = null;
+      // Attach a no-op error handler BEFORE closing to prevent unhandled
+      // 'error' events (e.g. closing a CONNECTING socket throws).
+      ws.removeAllListeners();
+      ws.on("error", () => {});
+      try {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, "shutdown");
+        }
+      } catch {
+        // Ignore — socket is already closing or closed
+      }
     }
     this.status = "disconnected";
     this.log.info("Disconnected (manual)");
