@@ -10,7 +10,7 @@ export {};  // Module for top-level await
  *     --sweep LATENCY_ARB_MOMENTUM_THRESHOLD=0.001:0.003:0.0005 \
  *     --sweep LATENCY_ARB_MAX_ASK=0.45:0.60:0.05 \
  *     --sweep MAX_POSITION_FRACTION=0.05:0.15:0.025 \
- *     --output backtest/results/sweep.csv
+ *     --output data/sweeps/001/sweep.csv
  *
  * Sweep format: PARAM=start:end:step
  */
@@ -45,7 +45,7 @@ function getAllArgs(name: string): string[] {
 const dataPath = getArg("data", "data/market-data.db");
 const startStr = getArg("start");
 const endStr = getArg("end");
-const outputPath = getArg("output", "backtest/results/sweep.csv");
+const outputPath = getArg("output", "data/sweeps/001/sweep.csv");
 const startingBalance = parseFloat(getArg("balance", "200"));
 
 // Fixed parameter overrides (not swept)
@@ -173,7 +173,7 @@ for (let i = 0; i < combinations.length; i++) {
   (CONFIG as Record<string, unknown>).STARTING_BALANCE = startingBalance;
   (CONFIG as Record<string, unknown>).LOG_LEVEL = "error";
 
-  const resultsDbPath = `backtest/results/sweep-${String(i).padStart(4, "0")}.db`;
+  const resultsDbPath = `/tmp/buba-sweep-${String(i).padStart(4, "0")}.db`;
 
   const label = combo.map(({ param, value }) => `${param}=${value}`).join(" ");
   process.stdout.write(`[${i + 1}/${totalRuns}] ${label} ... `);

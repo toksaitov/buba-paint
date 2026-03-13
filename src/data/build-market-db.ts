@@ -1,6 +1,6 @@
 /**
  * Builds the merged market-data.db from individual run databases.
- * Usage: npx tsx data/build-market-db.ts
+ * Usage: npx tsx src/data/build-market-db.ts (or: npm run build-data)
  *
  * This script is idempotent — it deletes and rebuilds the output DB from scratch.
  * Original run DBs are never modified.
@@ -10,7 +10,7 @@ import BetterSqlite3 from "better-sqlite3";
 import { existsSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
-const PROJECT_ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
+const PROJECT_ROOT = resolve(dirname(new URL(import.meta.url).pathname), "../..");
 
 const RUNS: Array<{ number: number; version: string; path: string }> = [
   { number: 4, version: "v0.2", path: "runs/004/buba-paint.db" },

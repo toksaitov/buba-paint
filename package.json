@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "backtest": "tsx src/backtest/run.ts",
+    "sweep": "tsx src/backtest/sweep.ts",
+    "build-data": "tsx src/data/build-market-db.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

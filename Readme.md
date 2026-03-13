@@ -183,22 +183,32 @@ buba-paint/
       window-manager.ts     # Replays market windows from DB
       feed-state.ts         # Simulated feed state for strategies
       momentum.ts           # Offline momentum calculator
+    data/
+      build-market-db.ts    # Merges per-run DBs into market-data.db
     utils/
       logger.ts             # Timestamped structured logger with level filter
-  scripts/
-    setup-ubuntu.sh         # AWS/Ubuntu 24.04 setup (apt + npm + typecheck)
-    chart-run.py            # 6-panel dashboard + trade detail chart
-    latency_distribution.py
-    spread_over_time.py
-    pnl_curve.py
-    signal_frequency.py
-    binance_vs_chainlink.py
-  data/
-    build-market-db.ts      # Merges per-run DBs into market-data.db
-    market-data.db          # Merged tick data (Git LFS)
-  backtest/
-    results/                # Sweep CSVs and validation DBs
-  runs/                     # Historical run data (001-007), DBs via Git LFS
+  scripts/                    # Python analysis + infra
+    chart-run.py              # 6-panel dashboard + trade detail chart
+    pnl_curve.py, spread_over_time.py, latency_distribution.py
+    signal_frequency.py, binance_vs_chainlink.py
+    setup-ubuntu.sh           # AWS/Ubuntu 24.04 setup
+    run-006/                  # Run-specific deep analysis
+      chart-analysis.py, chart-deep.py, deep_analysis.py
+  data/                       # Derived data (computed, reproducible)
+    market-data.db            # Merged tick data from all runs (Git LFS)
+    sweeps/                   # Parameter sweep campaign results
+      001/sweep.csv           # INVALID — stale DB contamination
+      001/notes.md
+      002/sweep.csv           # Valid, but throttled by peak DD pause
+      002/notes.md
+      003/sweep.csv           # Baseline — DD pause disabled, matches live
+      003/notes.md
+    experiments/              # Validation & walk-forward results
+      validate-006/           # Backtester accuracy validation
+      wf-split-a/             # Walk-forward: train Feb 20-28, test Feb 28-Mar 4
+      wf-split-b/             # Walk-forward: test on run 007 data
+  runs/                       # Primary data — collected live (Git LFS)
+    001/ ... 007/             # Each: buba-paint.db, bot.log, analysis PNGs
 ```
 
 ## Setup
@@ -567,7 +577,7 @@ runs.
 Run data from individual runs is merged into a single `data/market-data.db` via:
 
 ```bash
-npx tsx data/build-market-db.ts
+npm run build-data
 ```
 
 This copies `tick_data` and `markets` tables from each run DB into a unified
@@ -576,9 +586,9 @@ database, deduplicating overlapping timestamps.
 ### Single Backtest
 
 ```bash
-npx tsx src/backtest/run.ts \
+npm run backtest -- \
   --data data/market-data.db \
-  --out backtest/results/test.db \
+  --out data/experiments/test.db \
   --start 2026-02-20T03:13 --end 2026-03-04T04:26 \
   --balance 200
 ```
@@ -590,14 +600,14 @@ SQLite database compatible with the analysis scripts.
 ### Parameter Sweep
 
 ```bash
-npx tsx src/backtest/sweep.ts \
+npm run sweep -- \
   --data data/market-data.db \
-  --out backtest/results/sweep-001.csv \
+  --output data/sweeps/002/sweep.csv \
   --start 2026-02-20T03:13 --end 2026-02-28T00:00 \
   --balance 200 \
-  --param LATENCY_ARB_MOMENTUM_THRESHOLD=0.0010:0.0030:0.0002 \
-  --param LATENCY_ARB_MAX_ASK=0.55,0.60,0.65 \
-  --param MAX_POSITION_FRACTION=0.05,0.075,0.10,0.125 \
+  --sweep LATENCY_ARB_MOMENTUM_THRESHOLD=0.0010:0.0030:0.0002 \
+  --sweep LATENCY_ARB_MAX_ASK=0.55,0.60,0.65 \
+  --sweep MAX_POSITION_FRACTION=0.05,0.075,0.10,0.125 \
   --set SPREAD_CAPTURE_THRESHOLD=0.50
 ```
 
@@ -606,7 +616,21 @@ npx tsx src/backtest/sweep.ts \
 - Ticks are loaded once and cached across all combinations
 - Results CSV has one row per combination with PnL, win rate, trades, max drawdown
 
-The 275-combination sweep from run 006 data completed in ~56 minutes.
+The 275-combination sweep from run 006 data completed in ~40 minutes.
+
+### Sweep Results
+
+| Sweep | Status | Best PnL | Notes |
+|---|---|---|---|
+| 001 | INVALID | $14,602 | Contaminated by stale temp DBs — inflated starting balance |
+| 002 | Valid (throttled) | $1,282 | v0.5 peak DD pause triggers at $60 loss from $200 start |
+| 003 | **Baseline** | $4,070 | DD pause disabled — matches live results, mom=0.0012 dominates |
+
+**Peak DD pause vs backtesting:** The v0.5 `PEAK_DD_PAUSE_PCT=0.30` fires after
+~$60 loss on a $200 balance, pausing for 1 hour and missing windows. Live run 006
+(v0.4, no DD pause) made $4,765. Disabling the pause in backtests
+(`--set PEAK_DD_PAUSE_PCT=1.0`) reproduces live-like results (PnL=$3,314,
+peak=$4,780). Always disable for parameter sweeps.
 
 ### Walk-Forward Validation
 

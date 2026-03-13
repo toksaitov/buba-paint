@@ -1,13 +1,13 @@
 .DS_Store
 node_modules/
 dist/
-runs/*/*.db-journal
-runs/*/*.db-wal
-runs/*/*.db-shm
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
-backtest/results/
-bot.log
-bot.pid
 .env
+
+# SQLite temp files (everywhere)
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Bot runtime (root-level only; runs/*/bot.log is LFS-tracked)
+/bot.log
+/bot.pid
