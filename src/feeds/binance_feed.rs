@@ -1,0 +1,142 @@
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{error, info, warn};
+
+use super::FeedMessage;
+use crate::config::Config;
+
+use super::util::backoff_delay;
+
+/// Run the Binance aggTrade WebSocket feed.
+///
+/// Connects to the Binance aggTrade stream, parses trade messages, and sends
+/// `FeedMessage::BinanceTick` updates through `tx`. On disconnect the feed
+/// waits with exponential backoff and reconnects automatically.
+///
+/// This function runs forever (or until the channel is closed).
+pub async fn run_binance_feed(
+    config: &Config,
+    tx: mpsc::Sender<FeedMessage>,
+) -> anyhow::Result<()> {
+    let url = &config.binance_ws_url;
+    let base_delay = config.reconnect_base_delay;
+    let max_delay = config.reconnect_max_delay;
+    let mut attempt: u32 = 0;
+
+    loop {
+        info!(feed = "binance", "connecting to {url}");
+
+        match tokio_tungstenite::connect_async(url).await {
+            Ok((ws_stream, _response)) => {
+                attempt = 0;
+                if tx
+                    .send(FeedMessage::FeedConnected("binance".to_string()))
+                    .await
+                    .is_err()
+                {
+                    // Receiver dropped — shut down.
+                    return Ok(());
+                }
+
+                let (mut write, mut read) = ws_stream.split();
+
+                loop {
+                    match read.next().await {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Err(e) = process_binance_message(&text, &tx).await {
+                                warn!(feed = "binance", "failed to process message: {e}");
+                            }
+                        }
+                        Some(Ok(Message::Ping(data))) => {
+                            // Respond to server-initiated pings.
+                            if write.send(Message::Pong(data)).await.is_err() {
+                                warn!(feed = "binance", "failed to send pong");
+                                break;
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            info!(feed = "binance", "server sent close frame");
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            error!(feed = "binance", "websocket error: {e}");
+                            break;
+                        }
+                        None => {
+                            info!(feed = "binance", "stream ended");
+                            break;
+                        }
+                        // Binary, Pong, Frame — ignore.
+                        Some(Ok(_)) => {}
+                    }
+                }
+            }
+            Err(e) => {
+                error!(feed = "binance", "connection failed: {e}");
+            }
+        }
+
+        // Disconnected — notify and backoff.
+        let _ = tx
+            .send(FeedMessage::FeedDisconnected("binance".to_string()))
+            .await;
+
+        let delay = backoff_delay(attempt, base_delay, max_delay);
+        warn!(
+            feed = "binance",
+            "reconnecting in {}ms (attempt {})",
+            delay.as_millis(),
+            attempt + 1
+        );
+        tokio::time::sleep(delay).await;
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+/// Parse a Binance aggTrade JSON value into (price, timestamp).
+///
+/// Returns `None` if the event type is not `aggTrade` or required fields are
+/// missing.
+pub(crate) fn parse_agg_trade(raw: &serde_json::Value) -> Option<(f64, u64)> {
+    if raw.get("e").and_then(|e| e.as_str()) != Some("aggTrade") {
+        return None;
+    }
+
+    let price: f64 = raw
+        .get("p")
+        .and_then(|p| p.as_str())
+        .and_then(|s| s.parse().ok())?;
+
+    let timestamp = raw
+        .get("T")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| raw.get("E").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0);
+
+    Some((price, timestamp))
+}
+
+/// Parse a raw WebSocket text frame into a `FeedMessage`.
+///
+/// Pure function -- no I/O, no channels.
+pub(crate) fn process_binance_text(text: &str) -> Option<super::FeedMessage> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let (price, timestamp) = parse_agg_trade(&v)?;
+    Some(super::FeedMessage::BinanceTick { price, timestamp })
+}
+
+/// Parse a single Binance aggTrade JSON message and send it on the channel.
+async fn process_binance_message(text: &str, tx: &mpsc::Sender<FeedMessage>) -> anyhow::Result<()> {
+    if let Some(FeedMessage::BinanceTick { price, timestamp }) = process_binance_text(text) {
+        tx.send(FeedMessage::BinanceTick { price, timestamp })
+            .await
+            .map_err(|_| anyhow::anyhow!("channel closed"))?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "tests/binance_feed_tests.rs"]
+mod tests;

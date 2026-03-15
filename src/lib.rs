@@ -1,0 +1,16 @@
+pub mod backtest;
+pub mod bankroll;
+pub mod circuit_breaker;
+pub mod cli;
+pub mod clock;
+pub mod config;
+pub mod db;
+pub mod errors;
+pub mod feeds;
+pub mod live;
+pub mod market_discovery;
+pub mod position_manager;
+pub mod strategies;
+pub mod tick_logger;
+pub mod trend_tracker;
+pub mod types;

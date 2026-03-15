@@ -1,0 +1,259 @@
+use std::time::Duration;
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{error, info, warn};
+
+use super::FeedMessage;
+use crate::config::Config;
+
+use super::util::backoff_delay;
+
+/// Run the Chainlink (RTDS) price feed.
+///
+/// Connects to the Polymarket RTDS WebSocket, subscribes to BTC/USD Chainlink
+/// prices, and sends `FeedMessage::ChainlinkPrice` updates through `tx`.
+///
+/// If no price update arrives within `config.chainlink_stale_ms`, sends a
+/// `FeedMessage::ChainlinkStale` event and forces a reconnect.
+///
+/// This function runs forever (or until the channel is closed).
+#[allow(clippy::too_many_lines)] // will be split in Phase 2
+pub async fn run_chainlink_feed(
+    config: &Config,
+    tx: mpsc::Sender<FeedMessage>,
+) -> anyhow::Result<()> {
+    let url = &config.rtds_ws_url;
+    let ping_interval_ms = config.rtds_ping_interval;
+    let stale_ms = config.chainlink_stale_ms;
+    let base_delay = config.reconnect_base_delay;
+    let max_delay = config.reconnect_max_delay;
+    let mut attempt: u32 = 0;
+
+    loop {
+        info!(feed = "chainlink", "connecting to {url}");
+
+        match tokio_tungstenite::connect_async(url).await {
+            Ok((ws_stream, _response)) => {
+                attempt = 0;
+                if tx
+                    .send(FeedMessage::FeedConnected("chainlink".to_string()))
+                    .await
+                    .is_err()
+                {
+                    return Ok(());
+                }
+
+                let (mut write, mut read) = ws_stream.split();
+
+                // Send subscription message.
+                let sub_msg = serde_json::json!({
+                    "action": "subscribe",
+                    "subscriptions": [{
+                        "topic": "crypto_prices_chainlink",
+                        "type": "*",
+                        "filters": "{\"symbol\":\"btc/usd\"}"
+                    }]
+                });
+                if let Err(e) = write.send(Message::Text(sub_msg.to_string().into())).await {
+                    error!(feed = "chainlink", "failed to send subscription: {e}");
+                    let _ = tx
+                        .send(FeedMessage::FeedDisconnected("chainlink".to_string()))
+                        .await;
+                    let delay = backoff_delay(attempt, base_delay, max_delay);
+                    tokio::time::sleep(delay).await;
+                    attempt = attempt.saturating_add(1);
+                    continue;
+                }
+
+                let mut ping_timer = tokio::time::interval(Duration::from_millis(ping_interval_ms));
+                let stale_duration = Duration::from_millis(stale_ms);
+                let stale_sleep = tokio::time::sleep(stale_duration);
+                tokio::pin!(stale_sleep);
+
+                loop {
+                    tokio::select! {
+                        msg = read.next() => {
+                            match msg {
+                                Some(Ok(Message::Text(text))) => {
+                                    match process_chainlink_message(&text, &tx).await {
+                                        Ok(true) => {
+                                            // Got a price update — reset staleness timer.
+                                            stale_sleep.as_mut().reset(
+                                                tokio::time::Instant::now() + stale_duration
+                                            );
+                                        }
+                                        Ok(false) => {
+                                            // Non-price message — no reset needed.
+                                        }
+                                        Err(e) => {
+                                            warn!(feed = "chainlink", "failed to process message: {e}");
+                                        }
+                                    }
+                                }
+                                Some(Ok(Message::Ping(data))) => {
+                                    if write.send(Message::Pong(data)).await.is_err() {
+                                        warn!(feed = "chainlink", "failed to send pong");
+                                        break;
+                                    }
+                                }
+                                Some(Ok(Message::Close(_))) => {
+                                    info!(feed = "chainlink", "server sent close frame");
+                                    break;
+                                }
+                                Some(Err(e)) => {
+                                    error!(feed = "chainlink", "websocket error: {e}");
+                                    break;
+                                }
+                                None => {
+                                    info!(feed = "chainlink", "stream ended");
+                                    break;
+                                }
+                                Some(Ok(_)) => {}
+                            }
+                        }
+                        _ = ping_timer.tick() => {
+                            if write.send(Message::Ping(Vec::new().into())).await.is_err() {
+                                warn!(feed = "chainlink", "failed to send ping");
+                                break;
+                            }
+                        }
+                        () = &mut stale_sleep => {
+                            warn!(feed = "chainlink", "no update in {stale_ms}ms — stale");
+                            let _ = tx.send(FeedMessage::ChainlinkStale).await;
+                            // Force reconnect.
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!(feed = "chainlink", "connection failed: {e}");
+            }
+        }
+
+        // Disconnected — notify and backoff.
+        let _ = tx
+            .send(FeedMessage::FeedDisconnected("chainlink".to_string()))
+            .await;
+
+        let delay = backoff_delay(attempt, base_delay, max_delay);
+        warn!(
+            feed = "chainlink",
+            "reconnecting in {}ms (attempt {})",
+            delay.as_millis(),
+            attempt + 1
+        );
+        tokio::time::sleep(delay).await;
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+/// Parse a Chainlink/RTDS JSON message into a list of (price, timestamp) pairs.
+///
+/// Handles two formats:
+/// - **Regular update**: `{topic: "crypto_prices_chainlink", payload: {value, timestamp}}`
+/// - **Initial data dump**: `{payload: {data: [{value, timestamp}, ...]}}`
+///
+/// Returns an empty vec for unrecognised messages.
+pub(crate) fn parse_chainlink_payload(msg: &serde_json::Value) -> Vec<(f64, u64)> {
+    let mut results = Vec::new();
+
+    // Format 1: Regular update.
+    if msg.get("topic").and_then(serde_json::Value::as_str) == Some("crypto_prices_chainlink") {
+        if let Some(payload) = msg.get("payload") {
+            let price = parse_f64_field(payload, "value");
+            let timestamp = payload
+                .get("timestamp")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+
+            if let Some(p) = price {
+                results.push((p, timestamp));
+                return results;
+            }
+        }
+    }
+
+    // Format 2: Initial data dump.
+    if let Some(data) = msg
+        .get("payload")
+        .and_then(|p| p.get("data"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for entry in data {
+            let price = parse_f64_field(entry, "value");
+            let timestamp = entry
+                .get("timestamp")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+
+            if let Some(p) = price {
+                results.push((p, timestamp));
+            }
+        }
+    }
+
+    results
+}
+
+/// Parse a raw WebSocket text frame into price updates.
+///
+/// Pure function -- no I/O, no channels.
+/// If the top-level value is a JSON array, each element is processed.
+/// Otherwise delegates to `parse_chainlink_payload`.
+pub(crate) fn process_chainlink_text(text: &str) -> Vec<(f64, u64)> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return vec![];
+    };
+
+    if let Some(arr) = v.as_array() {
+        let mut results = Vec::new();
+        for item in arr {
+            results.extend(parse_chainlink_payload(item));
+        }
+        results
+    } else {
+        parse_chainlink_payload(&v)
+    }
+}
+
+/// Process a single Chainlink/RTDS message.
+///
+/// Returns `Ok(true)` if a price was extracted and sent (caller should reset
+/// the staleness timer), `Ok(false)` for non-price messages, and `Err` on
+/// parse failures.
+async fn process_chainlink_message(
+    text: &str,
+    tx: &mpsc::Sender<FeedMessage>,
+) -> anyhow::Result<bool> {
+    let pairs = process_chainlink_text(text);
+
+    if pairs.is_empty() {
+        return Ok(false);
+    }
+
+    for (price, timestamp) in &pairs {
+        tx.send(FeedMessage::ChainlinkPrice {
+            price: *price,
+            timestamp: *timestamp,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("channel closed"))?;
+    }
+
+    Ok(true)
+}
+
+/// Parse a JSON field that may be either a number or a string-encoded number.
+fn parse_f64_field(v: &serde_json::Value, field: &str) -> Option<f64> {
+    v.get(field).and_then(|val| {
+        val.as_f64()
+            .or_else(|| val.as_str().and_then(|s| s.parse::<f64>().ok()))
+    })
+}
+
+#[cfg(test)]
+#[path = "tests/chainlink_feed_tests.rs"]
+mod tests;

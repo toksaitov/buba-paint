@@ -11,3 +11,6 @@ dist/
 # Bot runtime (root-level only; runs/*/bot.log is LFS-tracked)
 /bot.log
 /bot.pid
+
+# Added by cargo
+/target
