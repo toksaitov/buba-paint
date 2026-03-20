@@ -26,6 +26,9 @@ fn default_values_match_typescript() {
     // Reconnection
     assert_eq!(cfg.reconnect_base_delay, 1_000);
     assert_eq!(cfg.reconnect_max_delay, 30_000);
+    assert_eq!(cfg.reconnect_min_stable_ms, 5_000);
+    assert_eq!(cfg.reconnect_max_failures, 20);
+    assert_eq!(cfg.reconnect_pause_ms, 300_000);
 
     // Database
     assert_eq!(cfg.db_path, "./data/buba-paint.db");
@@ -69,6 +72,7 @@ fn default_values_match_typescript() {
     // Peak drawdown pause
     assert!((cfg.peak_dd_pause_pct - 0.30).abs() < f64::EPSILON);
     assert_eq!(cfg.peak_dd_pause_ms, 3_600_000);
+    assert!((cfg.dd_pause_recovery_pct - 0.05).abs() < f64::EPSILON);
 
     // Trend filter
     assert!(!cfg.trend_filter_enabled);
@@ -192,6 +196,20 @@ fn set_param_peak_dd_pause_pct() {
 }
 
 #[test]
+fn set_param_dd_pause_recovery_pct() {
+    let mut cfg = Config::default();
+    assert!(cfg.set_param("DD_PAUSE_RECOVERY_PCT", 0.10));
+    assert!((cfg.dd_pause_recovery_pct - 0.10).abs() < f64::EPSILON);
+}
+
+#[test]
+fn set_param_reconnect_min_stable_ms() {
+    let mut cfg = Config::default();
+    assert!(cfg.set_param("RECONNECT_MIN_STABLE_MS", 10_000.0));
+    assert_eq!(cfg.reconnect_min_stable_ms, 10_000);
+}
+
+#[test]
 fn set_param_cooldown_ms_u64_cast() {
     let mut cfg = Config::default();
     assert!(cfg.set_param("LATENCY_ARB_COOLDOWN_MS", 30_000.0));
@@ -230,6 +248,7 @@ fn set_param_all_f64_params() {
         "SPREAD_CAPTURE_THRESHOLD",
         "SPREAD_CAPTURE_MIN_ASK",
         "PEAK_DD_PAUSE_PCT",
+        "DD_PAUSE_RECOVERY_PCT",
         "STARTING_BALANCE",
         "MAX_POSITION_USD_FRACTION",
         "MIN_BALANCE_THRESHOLD",
@@ -262,6 +281,9 @@ fn set_param_all_u64_params() {
         "CIRCUIT_BREAKER_LOSSES",
         "CIRCUIT_BREAKER_PAUSE_MS",
         "TREND_FILTER_WINDOW",
+        "RECONNECT_MIN_STABLE_MS",
+        "RECONNECT_MAX_FAILURES",
+        "RECONNECT_PAUSE_MS",
     ];
     for param in u64_params {
         assert!(
@@ -312,6 +334,7 @@ fn from_env_smoke_test() {
     assert!((cfg.min_kelly_floor - default.min_kelly_floor).abs() < f64::EPSILON);
     assert!((cfg.min_bet_usd - default.min_bet_usd).abs() < f64::EPSILON);
     assert!((cfg.peak_dd_pause_pct - default.peak_dd_pause_pct).abs() < f64::EPSILON);
+    assert!((cfg.dd_pause_recovery_pct - default.dd_pause_recovery_pct).abs() < f64::EPSILON);
     assert!((cfg.trend_filter_threshold - default.trend_filter_threshold).abs() < f64::EPSILON);
 
     // u64 paths
@@ -349,6 +372,7 @@ fn from_env_smoke_test() {
     assert_eq!(cfg.rtds_ping_interval, default.rtds_ping_interval);
     assert_eq!(cfg.reconnect_base_delay, default.reconnect_base_delay);
     assert_eq!(cfg.reconnect_max_delay, default.reconnect_max_delay);
+    assert_eq!(cfg.reconnect_min_stable_ms, default.reconnect_min_stable_ms);
     assert_eq!(cfg.gamma_market_limit, default.gamma_market_limit);
 }
 

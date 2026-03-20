@@ -963,6 +963,113 @@ fn strategy_stats_zero_total_returns_zero_wr() {
     );
 }
 
+// -- DD pause hysteresis -------------------------------------------------
+
+#[test]
+fn dd_pause_does_not_retrigger_at_threshold() {
+    let mut cfg = test_config();
+    cfg.peak_dd_pause_pct = 0.30;
+    cfg.dd_pause_recovery_pct = 0.05;
+    cfg.peak_dd_pause_ms = 10_000;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    // Drive to 35% DD (balance = 130, HWM = 200)
+    mgr.current_balance = 130.0;
+
+    // First call triggers pause until 11_000
+    assert!(!mgr.can_trade(&cfg, &clock));
+
+    // Advance past pause expiry, DD still at 35%
+    clock.set(12_000);
+    // Pause expired, dd_pause_armed becomes false
+    assert!(mgr.can_trade(&cfg, &clock));
+
+    // Call again — should NOT re-trigger because armed=false
+    clock.set(13_000);
+    assert!(mgr.can_trade(&cfg, &clock));
+}
+
+#[test]
+fn dd_pause_retriggers_after_full_recovery() {
+    let mut cfg = test_config();
+    cfg.peak_dd_pause_pct = 0.30;
+    cfg.dd_pause_recovery_pct = 0.05;
+    cfg.peak_dd_pause_ms = 10_000;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    // Trigger DD pause
+    mgr.current_balance = 130.0; // 35% DD
+    assert!(!mgr.can_trade(&cfg, &clock));
+
+    // Let pause expire
+    clock.set(12_000);
+    assert!(mgr.can_trade(&cfg, &clock)); // armed=false now
+
+    // Recover below 25% (recovery threshold = 30% - 5% = 25%)
+    mgr.current_balance = 160.0; // 20% DD
+    clock.set(15_000);
+    assert!(mgr.can_trade(&cfg, &clock)); // arms again
+
+    // Relapse to 35% DD
+    mgr.current_balance = 130.0;
+    clock.set(16_000);
+    // Should re-trigger because armed=true after recovery
+    assert!(!mgr.can_trade(&cfg, &clock));
+}
+
+#[test]
+fn dd_pause_zero_recovery_pct_still_breaks_loop() {
+    let mut cfg = test_config();
+    cfg.peak_dd_pause_pct = 0.30;
+    cfg.dd_pause_recovery_pct = 0.0; // recovery threshold = 30% - 0% = 30%
+    cfg.peak_dd_pause_ms = 10_000;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    mgr.current_balance = 130.0; // 35% DD
+    assert!(!mgr.can_trade(&cfg, &clock));
+
+    // Let pause expire
+    clock.set(12_000);
+    // With recovery_pct=0, recovery threshold equals trigger threshold.
+    // DD (35%) is NOT below 30%, so armed stays false.
+    assert!(mgr.can_trade(&cfg, &clock));
+
+    // Still not re-triggered
+    clock.set(13_000);
+    assert!(mgr.can_trade(&cfg, &clock));
+}
+
+#[test]
+fn dd_pause_disabled_at_100_pct() {
+    let mut cfg = test_config();
+    cfg.peak_dd_pause_pct = 1.0; // disabled (as in sweeps)
+    cfg.dd_pause_recovery_pct = 0.05;
+    cfg.peak_dd_pause_ms = 10_000;
+    cfg.max_drawdown_pct = 1.0; // also disable max DD guard
+    cfg.min_balance_threshold = 1.0; // also lower min balance
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    mgr.current_balance = 10.0; // 95% DD - extreme
+    // Should still allow trading (DD < 100%, DD pause disabled)
+    assert!(mgr.can_trade(&cfg, &clock));
+}
+
 // -- Getter tests --------------------------------------------------------
 
 #[test]
@@ -1088,6 +1195,255 @@ fn confidence_above_one_clamped_by_max_fraction() {
     assert!(
         cost <= max_notional + 1e-10,
         "cost {cost} should not exceed max_notional {max_notional}"
+    );
+}
+
+// -- Phase 3: log_blocked rate-limiting tests ----------------------------
+
+#[test]
+fn log_blocked_updates_timestamp() {
+    let mut cfg = test_config();
+    cfg.min_balance_threshold = 500.0; // balance (200) < threshold
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    mgr.can_trade(&cfg, &clock);
+    assert_eq!(mgr.last_blocked_log_ms, 1_000);
+}
+
+#[test]
+fn log_blocked_rate_limited() {
+    let mut cfg = test_config();
+    cfg.min_balance_threshold = 500.0; // balance (200) < threshold
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    mgr.can_trade(&cfg, &clock);
+    assert_eq!(mgr.last_blocked_log_ms, 1_000);
+
+    // 30 seconds later — should NOT update (rate limited to 60s)
+    clock.set(31_000);
+    mgr.can_trade(&cfg, &clock);
+    assert_eq!(mgr.last_blocked_log_ms, 1_000); // unchanged
+
+    // 61 seconds later — should update
+    clock.set(62_000);
+    mgr.can_trade(&cfg, &clock);
+    assert_eq!(mgr.last_blocked_log_ms, 62_000);
+}
+
+#[test]
+fn log_blocked_max_drawdown_updates_timestamp() {
+    let mut cfg = test_config();
+    cfg.max_drawdown_pct = 0.50;
+    cfg.peak_dd_pause_pct = 1.0; // disable DD pause
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(5_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    // HWM = 200, balance = 100 → DD = 50% >= 50%
+    mgr.current_balance = 100.0;
+    mgr.can_trade(&cfg, &clock);
+    assert_eq!(mgr.last_blocked_log_ms, 5_000);
+}
+
+#[test]
+fn log_blocked_dd_pause_updates_timestamp() {
+    let mut cfg = test_config();
+    cfg.peak_dd_pause_pct = 0.30;
+    cfg.peak_dd_pause_ms = 10_000;
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(2_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    // Drive balance down 35% from HWM (200 → 130): DD = 35% > 30%
+    mgr.current_balance = 130.0;
+    mgr.can_trade(&cfg, &clock);
+    assert_eq!(mgr.last_blocked_log_ms, 2_000);
+}
+
+#[test]
+fn log_blocked_not_set_when_trading_allowed() {
+    let cfg = test_config();
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    // Trading should be allowed with default healthy state.
+    assert!(mgr.can_trade(&cfg, &clock));
+    assert_eq!(mgr.last_blocked_log_ms, 0);
+}
+
+// -- Part D: Bankroll + Circuit Breaker logging edge cases ----------------
+
+#[test]
+fn log_blocked_dd_pause_shows_correct_timestamp() {
+    // Trigger ONLY the DD pause path (not min balance or max DD).
+    // Set min_balance_threshold=0 so the min-balance guard never fires.
+    // Set max_drawdown_pct=1.0 so the max-DD guard never fires.
+    // Set peak_dd_pause_pct=0.30 so a 35% DD triggers the DD pause.
+    let mut cfg = test_config();
+    cfg.min_balance_threshold = 0.0;
+    cfg.max_drawdown_pct = 1.0;
+    cfg.peak_dd_pause_pct = 0.30;
+    cfg.peak_dd_pause_ms = 60_000;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(7_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    // Drive balance down 35% from HWM (200 -> 130): DD = 35% > 30%
+    mgr.current_balance = 130.0;
+
+    assert!(!mgr.can_trade(&cfg, &clock));
+    assert_eq!(
+        mgr.last_blocked_log_ms, 7_000,
+        "DD pause path should set last_blocked_log_ms to current time"
+    );
+}
+
+#[test]
+fn log_blocked_not_updated_when_trading_allowed() {
+    // Healthy state: all guards pass, can_trade returns true.
+    let cfg = test_config();
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(10_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    // Balance = 200, HWM = 200, DD = 0%, no guards triggered.
+    assert!(mgr.can_trade(&cfg, &clock));
+    assert_eq!(
+        mgr.last_blocked_log_ms, 0,
+        "last_blocked_log_ms should remain 0 when trading is allowed"
+    );
+
+    // Call again at a later time — still should remain 0.
+    clock.set(100_000);
+    assert!(mgr.can_trade(&cfg, &clock));
+    assert_eq!(
+        mgr.last_blocked_log_ms, 0,
+        "last_blocked_log_ms must stay 0 when trading is never blocked"
+    );
+}
+
+#[test]
+fn dd_pause_hysteresis_recovery_pct_greater_than_pause_pct() {
+    // Set dd_pause_recovery_pct=0.40, peak_dd_pause_pct=0.30.
+    // Recovery threshold = 0.30 - 0.40 = -0.10.
+    // DD can never be < -0.10 (DD is always >= 0), so recovery_threshold
+    // is always satisfied, meaning dd_pause_armed re-arms immediately.
+    //
+    // However: after the pause expires, armed becomes false. On the NEXT
+    // call, the recovery check (peak_dd < recovery_threshold = -0.10) is
+    // impossible (DD >= 0), so armed stays false. The pause should NOT
+    // re-trigger because armed is false.
+    //
+    // Wait — actually if recovery_threshold is negative, then peak_dd (>= 0)
+    // is NEVER < recovery_threshold, so armed stays false forever after
+    // first expiry.  Let's verify that.
+    let mut cfg = test_config();
+    cfg.peak_dd_pause_pct = 0.30;
+    cfg.dd_pause_recovery_pct = 0.40; // recovery threshold = -0.10
+    cfg.peak_dd_pause_ms = 10_000;
+    cfg.min_balance_threshold = 0.0;
+    cfg.max_drawdown_pct = 1.0;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    // Trigger DD pause: 35% DD.
+    mgr.current_balance = 130.0;
+    assert!(!mgr.can_trade(&cfg, &clock)); // pause triggered
+
+    // Let pause expire.
+    clock.set(12_000);
+    assert!(mgr.can_trade(&cfg, &clock)); // armed becomes false
+
+    // DD is still 35%, but armed=false → no re-trigger.
+    clock.set(13_000);
+    assert!(mgr.can_trade(&cfg, &clock));
+
+    // Even after much more time, should still not re-trigger.
+    clock.set(1_000_000);
+    assert!(
+        mgr.can_trade(&cfg, &clock),
+        "DD pause must never re-trigger when recovery threshold is negative"
+    );
+
+    // Verify armed stays false: reduce DD to 0% and check.
+    // Even at 0% DD, the recovery threshold is -0.10 and DD=0 is NOT < -0.10.
+    mgr.current_balance = 200.0; // DD = 0%
+    clock.set(2_000_000);
+    assert!(mgr.can_trade(&cfg, &clock));
+    // Now push DD above trigger again — should NOT re-trigger.
+    mgr.current_balance = 130.0;
+    clock.set(3_000_000);
+    assert!(
+        mgr.can_trade(&cfg, &clock),
+        "armed should stay false because recovery_threshold is unreachable"
+    );
+}
+
+#[test]
+fn dd_pause_three_full_cycles() {
+    // Run 3 complete trigger → expire → recover → trigger cycles.
+    let mut cfg = test_config();
+    cfg.peak_dd_pause_pct = 0.30;
+    cfg.dd_pause_recovery_pct = 0.05; // recovery threshold = 25%
+    cfg.peak_dd_pause_ms = 10_000;
+    cfg.min_balance_threshold = 0.0;
+    cfg.max_drawdown_pct = 1.0;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    for cycle in 0..3 {
+        let base = (cycle as u64) * 100_000;
+
+        // Step 1: Trigger DD pause (35% DD).
+        mgr.current_balance = 130.0;
+        clock.set(base + 1_000);
+        assert!(
+            !mgr.can_trade(&cfg, &clock),
+            "cycle {cycle}: DD pause should trigger"
+        );
+
+        // Step 2: Let pause expire.
+        clock.set(base + 12_000);
+        assert!(
+            mgr.can_trade(&cfg, &clock),
+            "cycle {cycle}: pause should expire"
+        );
+        // armed is now false.
+
+        // Step 3: Recover below recovery threshold (DD < 25%).
+        mgr.current_balance = 160.0; // DD = (200-160)/200 = 20% < 25%
+        clock.set(base + 20_000);
+        assert!(
+            mgr.can_trade(&cfg, &clock),
+            "cycle {cycle}: recovery should re-arm"
+        );
+        // armed should now be true again.
+    }
+
+    // After 3 full cycles, verify one final trigger still works.
+    mgr.current_balance = 130.0;
+    clock.set(400_000);
+    assert!(
+        !mgr.can_trade(&cfg, &clock),
+        "post-cycles: DD pause should still trigger after 3 full cycles"
     );
 }
 

@@ -12,6 +12,8 @@ pub struct CircuitBreaker {
     pause_until: u64,
     max_losses: u32,
     pause_ms: u64,
+    /// Timestamp of the last rate-limited "trading paused" log message.
+    pub last_paused_log_ms: u64,
 }
 
 impl CircuitBreaker {
@@ -25,6 +27,7 @@ impl CircuitBreaker {
             pause_until: 0,
             max_losses,
             pause_ms,
+            last_paused_log_ms: 0,
         }
     }
 
@@ -54,6 +57,22 @@ impl CircuitBreaker {
     /// Returns `true` when the breaker **is** paused (trading is blocked).
     pub fn is_paused(&self, now: u64) -> bool {
         now < self.pause_until
+    }
+
+    /// Log a rate-limited warning when the circuit breaker is paused.
+    /// Logs at most once per 60 seconds.
+    pub fn log_if_paused(&mut self, now: u64) {
+        if !self.can_trade(now)
+            && (self.last_paused_log_ms == 0
+                || now.saturating_sub(self.last_paused_log_ms) >= 60_000)
+        {
+            tracing::warn!(
+                consecutive_losses = self.max_losses,
+                resumes_in_ms = self.pause_until.saturating_sub(now),
+                "circuit breaker: trading paused"
+            );
+            self.last_paused_log_ms = now;
+        }
     }
 
     /// Current consecutive-loss count (resets to 0 after a win or a trigger).

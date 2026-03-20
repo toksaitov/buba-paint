@@ -33,7 +33,7 @@ impl ClobFeedHandle {
     }
 }
 
-use super::util::backoff_delay;
+use super::util::{backoff_delay, now_ms, should_reset_backoff};
 
 /// Launch the CLOB WebSocket feed as a background tokio task.
 ///
@@ -50,9 +50,23 @@ pub async fn run_clob_feed(
     let ping_interval_ms = config.clob_ping_interval;
     let base_delay = config.reconnect_base_delay;
     let max_delay = config.reconnect_max_delay;
+    let min_stable_ms = config.reconnect_min_stable_ms;
+    let max_failures = config.reconnect_max_failures;
+    let feed_pause_ms = config.reconnect_pause_ms;
 
     let handle = tokio::spawn(async move {
-        clob_feed_loop(url, tx, resub_rx, ping_interval_ms, base_delay, max_delay).await;
+        clob_feed_loop(
+            url,
+            tx,
+            resub_rx,
+            ping_interval_ms,
+            base_delay,
+            max_delay,
+            min_stable_ms,
+            max_failures,
+            feed_pause_ms,
+        )
+        .await;
     });
 
     let feed_handle = ClobFeedHandle {
@@ -67,7 +81,7 @@ pub async fn run_clob_feed(
 /// When a resubscription request arrives the current connection is torn down,
 /// book state is cleared, and a fresh connection with the new subscription is
 /// established.
-#[allow(clippy::too_many_lines)] // will be split in Phase 2
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn clob_feed_loop(
     url: String,
     tx: mpsc::Sender<FeedMessage>,
@@ -75,11 +89,15 @@ async fn clob_feed_loop(
     ping_interval_ms: u64,
     base_delay: u64,
     max_delay: u64,
+    min_stable_ms: u64,
+    max_failures: u32,
+    feed_pause_ms: u64,
 ) {
     let mut up_token: Option<String> = None;
     let mut down_token: Option<String> = None;
     let mut book_state = BookState::default();
     let mut attempt: u32 = 0;
+    let mut rapid_disconnect_count: u32 = 0;
 
     loop {
         // Wait for initial subscription tokens if we don't have any yet.
@@ -106,7 +124,7 @@ async fn clob_feed_loop(
 
         match tokio_tungstenite::connect_async(&url).await {
             Ok((ws_stream, _response)) => {
-                attempt = 0;
+                let connected_at = now_ms();
                 let _ = tx
                     .send(FeedMessage::FeedConnected("clob".to_string()))
                     .await;
@@ -123,9 +141,20 @@ async fn clob_feed_loop(
                     let _ = tx
                         .send(FeedMessage::FeedDisconnected("clob".to_string()))
                         .await;
-                    let delay = backoff_delay(attempt, base_delay, max_delay);
-                    tokio::time::sleep(delay).await;
-                    attempt = attempt.saturating_add(1);
+                    if attempt >= max_failures {
+                        error!(
+                            feed = "clob",
+                            attempts = attempt,
+                            pause_ms = feed_pause_ms,
+                            "feed circuit breaker: pausing"
+                        );
+                        tokio::time::sleep(Duration::from_millis(feed_pause_ms)).await;
+                        attempt = 0;
+                    } else {
+                        let delay = backoff_delay(attempt, base_delay, max_delay);
+                        tokio::time::sleep(delay).await;
+                        attempt = attempt.saturating_add(1);
+                    }
                     continue;
                 }
 
@@ -197,31 +226,70 @@ async fn clob_feed_loop(
                     }
                 }
 
-                if !disconnected {
+                if disconnected {
+                    // Deliberate resubscription -- always reset.
+                    attempt = 0;
+                    rapid_disconnect_count = 0;
+                } else {
+                    let was_stable = should_reset_backoff(connected_at, now_ms(), min_stable_ms);
+                    if was_stable {
+                        attempt = 0;
+                        rapid_disconnect_count = 0;
+                    } else {
+                        rapid_disconnect_count += 1;
+                        if rapid_disconnect_count >= 3 {
+                            warn!(
+                                feed = "clob",
+                                count = rapid_disconnect_count,
+                                "CLOB disconnecting immediately after subscribe — market tokens may be expired"
+                            );
+                        }
+                    }
                     let _ = tx
                         .send(FeedMessage::FeedDisconnected("clob".to_string()))
                         .await;
-                    let delay = backoff_delay(attempt, base_delay, max_delay);
-                    warn!(
-                        feed = "clob",
-                        "reconnecting in {}ms (attempt {})",
-                        delay.as_millis(),
-                        attempt + 1
-                    );
-                    tokio::time::sleep(delay).await;
-                    attempt = attempt.saturating_add(1);
+                    if attempt >= max_failures {
+                        error!(
+                            feed = "clob",
+                            attempts = attempt,
+                            pause_ms = feed_pause_ms,
+                            "feed circuit breaker: pausing"
+                        );
+                        tokio::time::sleep(Duration::from_millis(feed_pause_ms)).await;
+                        attempt = 0;
+                        rapid_disconnect_count = 0;
+                    } else {
+                        let delay = backoff_delay(attempt, base_delay, max_delay);
+                        warn!(
+                            feed = "clob",
+                            "reconnecting in {}ms (attempt {})",
+                            delay.as_millis(),
+                            attempt + 1
+                        );
+                        tokio::time::sleep(delay).await;
+                        attempt = attempt.saturating_add(1);
+                    }
                 }
-                // On resubscription (`disconnected == true`) we skip the backoff
-                // and immediately reconnect at the top of the outer loop.
             }
             Err(e) => {
                 error!(feed = "clob", "connection failed: {e}");
                 let _ = tx
                     .send(FeedMessage::FeedDisconnected("clob".to_string()))
                     .await;
-                let delay = backoff_delay(attempt, base_delay, max_delay);
-                tokio::time::sleep(delay).await;
-                attempt = attempt.saturating_add(1);
+                if attempt >= max_failures {
+                    error!(
+                        feed = "clob",
+                        attempts = attempt,
+                        pause_ms = feed_pause_ms,
+                        "feed circuit breaker: pausing"
+                    );
+                    tokio::time::sleep(Duration::from_millis(feed_pause_ms)).await;
+                    attempt = 0;
+                } else {
+                    let delay = backoff_delay(attempt, base_delay, max_delay);
+                    tokio::time::sleep(delay).await;
+                    attempt = attempt.saturating_add(1);
+                }
             }
         }
     }

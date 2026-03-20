@@ -3,15 +3,15 @@
 ## Project
 
 Polymarket 5-minute BTC Up/Down paper trading bot. Rust, single binary,
-three WebSocket feeds, two strategies, SQLite persistence. 506 tests,
-96.7% line coverage, TDD throughout.
+three WebSocket feeds, two strategies, SQLite persistence. 569 tests,
+91.4% line coverage, TDD throughout.
 
 ## Build & Test
 
 ```bash
 cargo build                        # debug build
 cargo build --release              # release build (use for live/backtest)
-cargo test                         # run all 506 tests
+cargo test                         # run all 569 tests
 cargo clippy -- -D warnings        # lint (must pass with zero warnings)
 cargo fmt --check                  # format check (must pass)
 cargo llvm-cov --all-targets --summary-only  # line coverage report
@@ -59,7 +59,7 @@ cargo run --release -- live --db-path runs/008/buba-paint.db --balance 200
 | `feeds/binance_feed.rs`          | Binance aggTrade WebSocket stream                           |
 | `feeds/chainlink_feed.rs`        | Polymarket RTDS Chainlink prices + staleness detection      |
 | `feeds/clob_feed.rs`             | Polymarket CLOB order book + dynamic resubscription         |
-| `feeds/util.rs`                  | Exponential backoff with jitter                             |
+| `feeds/util.rs`                  | Exponential backoff with jitter, stable connection tracking |
 | `strategies/latency_arb.rs`      | Momentum vs stale odds, adaptive threshold, cooldown        |
 | `strategies/spread_capture.rs`   | UP ask + DOWN ask < threshold, buys both sides              |
 | `backtest/runner.rs`             | Core replay loop: ticks -> strategies -> trades -> settle   |
@@ -70,6 +70,7 @@ cargo run --release -- live --db-path runs/008/buba-paint.db --balance 200
 | `backtest/momentum.rs`           | Rolling window momentum calculator                          |
 | `db/database.rs`                 | rusqlite wrapper, prepared statements, WAL mode             |
 | `db/schema.rs`                   | 6 SQLite tables with indexes                                |
+| `db/build_data.rs`               | Merges run DBs into market-data.db (`build-data` CLI)       |
 
 ## Data Preservation
 
@@ -89,8 +90,9 @@ reproducible from `runs/` data. Safe to regenerate, but valuable to keep.
 - **Integration tests**: `tests/` directory (backtest, feeds, discovery,
   live system, sweep, CLI). Use mock WebSocket servers (`tests/support/mock_ws.rs`)
   and wiremock for HTTP mocking.
-- **Coverage**: 506 tests, 96.7% line coverage. Run `cargo llvm-cov`.
+- **Coverage**: 569 tests, 91.4% line coverage. Run `cargo llvm-cov`.
 - **Sweep parity**: rust-005 == rust-004 byte-for-byte (excluding elapsed_s).
+  rust-006 is the full-range sweep (Feb 15 -- Mar 20, 8.8M ticks).
   Always verify after changes.
 - **Sweep temp DBs**: PID-based paths (`/tmp/buba-sweep-{pid}-NNNN.db`) to
   prevent stale-data contamination between runs.
@@ -121,6 +123,10 @@ reproducible from `runs/` data. Safe to regenerate, but valuable to keep.
 - Kelly criterion: half-Kelly, per-strategy, rolling 30-trade window
 - Confidence curve: `max(0.0, (confidence - 0.5) * 2.5)`
 - Settlement: binary (1.0 or 0.0), close_price >= open_price means UP wins
+- DD pause hysteresis: after pause expires, DD must recover below
+  `peak_dd_pause_pct - dd_pause_recovery_pct` (default 25%) before re-arming.
+- Feed reconnection: backoff only resets if connection lasted >
+  `reconnect_min_stable_ms` (default 5s). Prevents reconnect storms.
 
 ## Key Implementation Details
 
@@ -146,6 +152,9 @@ reproducible from `runs/` data. Safe to regenerate, but valuable to keep.
 | "Balance below minimum"              | Drawdown hit safety limit        | Increase `STARTING_BALANCE`               |
 | Chainlink feed stale                 | RTDS stopped sending, WS open    | Auto-detected, force-reconnects           |
 | Sweep results differ between runs    | Stale temp DBs                   | PID-based paths prevent; check `/tmp/`    |
+| Trades open but never settle         | Window lifecycle race            | Fixed: `known_windows` HashMap in live.rs |
+| DD pause loops forever               | No hysteresis on re-trigger      | Fixed: `dd_pause_armed` + recovery pct    |
+| Feed reconnect storm (100s/hour)     | Backoff resets on short connects | Fixed: `should_reset_backoff` in util.rs  |
 
 ## Useful SQL Queries
 

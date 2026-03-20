@@ -1252,6 +1252,891 @@ async fn live_bot_circuit_breaker_blocks_trading() {
     );
 }
 
+/// TS1: Verify that a rising-price window produces an UP trade that settles
+/// at `settlement_price` = 1.0 with positive `PnL`.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_settles_up_trade_with_correct_settlement() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+
+    let result = run_one_window(
+        config,
+        &db_path,
+        200.0,
+        &binance_mock,
+        &clob_mock,
+        &chainlink_mock,
+        8,
+    )
+    .await;
+    assert!(result.is_ok(), "run_live failed: {result:?}");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Verify trade side is UP.
+    let side: String = conn
+        .query_row(
+            "SELECT side FROM simulated_trades WHERE strategy = 'latency-arb' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        side, "UP",
+        "Expected UP trade from rising prices, got {side}"
+    );
+
+    // Verify settlement_price=1.0 (UP wins when close >= open).
+    let settlement: f64 = conn
+        .query_row(
+            "SELECT settlement_price FROM trade_results LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        (settlement - 1.0).abs() < f64::EPSILON,
+        "Expected settlement_price=1.0 for UP win, got {settlement}"
+    );
+
+    // Verify pnl_0pct > 0.
+    let pnl: f64 = conn
+        .query_row("SELECT pnl_0pct FROM trade_results LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(pnl > 0.0, "Expected positive PnL for UP win, got {pnl}");
+}
+
+/// TS2: Verify that a falling-price window produces a DOWN trade that settles
+/// at `settlement_price` = 1.0 with positive `PnL`.
+/// High initial prices are captured as `open_price`, then falling prices produce
+/// negative momentum for a DOWN signal. At close, latest price < `open_price`
+/// so DOWN wins.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_settles_down_trade_with_correct_settlement() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+
+    // Use unique market/token IDs for this test.
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/events/slug/btc-updown-5m-\d+$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{current_slot}"),
+            "markets": [{
+                "id": "mkt-ts2-down",
+                "question": "Will BTC go up?",
+                "conditionId": "cond-ts2",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-ts2", "tok-down-ts2"],
+                "endDate": end_date
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    // Use a low momentum threshold to make it easier to trigger.
+    config.latency_arb_momentum_threshold = 0.0005;
+    // Allow DOWN asks in the acceptable range.
+    config.latency_arb_max_ask = 0.65;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    // Wait for feeds to connect and discovery.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Phase 1: Send high initial Binance prices. These will be captured as
+    // open_price via window_open_prices.entry().or_insert().
+    for i in 0_u32..10 {
+        let price = 42_000.0 + f64::from(i);
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Send Chainlink price and CLOB book.
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // CLOB book with DOWN ask in acceptable range.
+    clob_mock
+        .send(
+            r#"{"asset_id":"tok-up-ts2","timestamp":1700000000000,"bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.50","size":"100"}]}"#,
+        )
+        .await;
+    clob_mock
+        .send(
+            r#"{"asset_id":"tok-down-ts2","timestamp":1700000000000,"bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.45","size":"100"}]}"#,
+        )
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Phase 2: Send falling Binance prices to create negative momentum.
+    // These prices are well below the open_price (~42000), so at settlement
+    // close < open means DOWN wins.
+    for i in 0_u32..25 {
+        let price = 40_000.0 - f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_001_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_001_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Wait for window to close.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(result.is_ok(), "bot did not shut down within timeout");
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let trade_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE side = 'DOWN'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        trade_count >= 1,
+        "Expected at least 1 DOWN trade, got {trade_count}"
+    );
+
+    // DOWN wins when close < open, so settlement_price = 1.0.
+    let settlement: f64 = conn
+        .query_row(
+            "SELECT tr.settlement_price FROM trade_results tr \
+             JOIN simulated_trades t ON tr.trade_id = t.id \
+             WHERE t.side = 'DOWN' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        (settlement - 1.0).abs() < f64::EPSILON,
+        "Expected settlement_price=1.0 for DOWN win, got {settlement}"
+    );
+
+    let pnl: f64 = conn
+        .query_row(
+            "SELECT tr.pnl_0pct FROM trade_results tr \
+             JOIN simulated_trades t ON tr.trade_id = t.id \
+             WHERE t.side = 'DOWN' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(pnl > 0.0, "Expected positive PnL for DOWN win, got {pnl}");
+}
+
+/// TS3: Verify that settlement `PnL` exactly matches the expected calculation:
+/// `pnl_0pct` = (`settlement_price` - `entry_price`) * size.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_settlement_pnl_matches_expected_calculation() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+
+    let result = run_one_window(
+        config,
+        &db_path,
+        200.0,
+        &binance_mock,
+        &clob_mock,
+        &chainlink_mock,
+        8,
+    )
+    .await;
+    assert!(result.is_ok(), "run_live failed: {result:?}");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Read entry_price and size from the trade.
+    let (entry_price, size): (f64, f64) = conn
+        .query_row(
+            "SELECT entry_price, size FROM simulated_trades WHERE status = 'closed' LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+
+    // Read actual pnl_0pct and settlement_price from results.
+    let (actual_pnl, settlement): (f64, f64) = conn
+        .query_row(
+            "SELECT pnl_0pct, settlement_price FROM trade_results LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+
+    let expected_pnl = (settlement - entry_price) * size;
+    assert!(
+        (actual_pnl - expected_pnl).abs() < 0.01,
+        "PnL mismatch: actual={actual_pnl}, expected={expected_pnl} \
+         (settlement={settlement}, entry={entry_price}, size={size})"
+    );
+}
+
+/// SC1: Verify that book state resets between windows. Window A has CLOB data
+/// and trades; window B has NO CLOB data sent for its tokens, so the stale
+/// book from A must not leak through.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_book_state_resets_between_windows() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let current_slot = (now_secs / 300) * 300;
+    let next_slot = current_slot + 300;
+
+    let end_time_a = now_secs + 12;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_a = chrono::DateTime::from_timestamp(end_time_a as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    let end_time_b = now_secs + 24;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_b = chrono::DateTime::from_timestamp(end_time_b as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    // Register window A on current_slot only (not wildcard).
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{current_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{current_slot}"),
+            "markets": [{
+                "id": "mkt-sys-test",
+                "question": "Will BTC go up?",
+                "conditionId": "cond-sys",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-sys", "tok-down-sys"],
+                "endDate": end_date_a
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Window A: send ticks + CLOB book (uses tok-up-sys/tok-down-sys).
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book(&clob_mock).await;
+
+    // Send additional ticks with unique timestamps to trigger strategy evaluation.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 25_u32..35 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Wait for window A to close.
+    tokio::time::sleep(Duration::from_secs(12)).await;
+
+    // Mount window B with different token IDs.
+    gamma_mock.reset().await;
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{next_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{next_slot}"),
+            "markets": [{
+                "id": "mkt-sc1-b",
+                "question": "Will BTC go up? (B)",
+                "conditionId": "cond-sc1-b",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-sc1b", "tok-down-sc1b"],
+                "endDate": end_date_b
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Send ticks for B but NO CLOB data for B's tokens.
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    send_rising_binance_ticks(&binance_mock, 15).await;
+
+    tokio::time::sleep(Duration::from_secs(14)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(result.is_ok(), "bot did not shut down within timeout");
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Window A (mkt-sys-test) should have trades.
+    let a_trade_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-sys-test'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        a_trade_count >= 1,
+        "Expected trades in window A, got {a_trade_count}"
+    );
+
+    // Window B (mkt-sc1-b) should have 0 trades (no CLOB data, book was reset).
+    let b_trade_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-sc1-b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        b_trade_count, 0,
+        "Expected 0 trades in window B (book should have reset), got {b_trade_count}"
+    );
+}
+
+/// ER1: Verify that no trades are placed when Binance feed sends no data.
+/// The `evaluate_strategies` function requires `binance_price.is_some()`.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_no_trade_when_no_binance_price() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(6);
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    // Wait for feeds to connect and discovery.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Send Chainlink + CLOB but NO Binance ticks at all.
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book(&clob_mock).await;
+
+    // Wait for the window to close.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(result.is_ok(), "bot did not shut down within timeout");
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let trade_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM simulated_trades", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        trade_count, 0,
+        "Expected 0 trades when no Binance price, got {trade_count}"
+    );
+
+    let result_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM trade_results", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        result_count, 0,
+        "Expected 0 trade results when no Binance price, got {result_count}"
+    );
+}
+
+/// BI1: Verify that the drawdown pause blocks trading after a losing trade.
+/// Window A: UP trade loses (close < open). Loss triggers DD pause
+/// (`peak_dd_pause_pct` set very low). Window B: all data present but DD pause
+/// blocks `can_trade()` so 0 trades.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_dd_pause_blocks_trading_in_live() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let current_slot = (now_secs / 300) * 300;
+    let next_slot = current_slot + 300;
+
+    let end_time_a = now_secs + 10;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_a = chrono::DateTime::from_timestamp(end_time_a as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    let end_time_b = now_secs + 22;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_b = chrono::DateTime::from_timestamp(end_time_b as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    // Register window A on current_slot only.
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{current_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{current_slot}"),
+            "markets": [{
+                "id": "mkt-sys-test",
+                "question": "Will BTC go up?",
+                "conditionId": "cond-sys",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-sys", "tok-down-sys"],
+                "endDate": end_date_a
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    config.peak_dd_pause_pct = 0.01;
+    config.peak_dd_pause_ms = 120_000;
+    config.circuit_breaker_losses = 999;
+    config.circuit_breaker_pause_ms = 0;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Window A: rising ticks to open UP trade.
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book(&clob_mock).await;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 25_u32..35 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Falling ticks so close < open (UP loses).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for i in 0_u32..15 {
+        let price = 39_000.0 - f64::from(i) * 10.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_005_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_005_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Wait for window A to close.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // Mount window B.
+    gamma_mock.reset().await;
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{next_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{next_slot}"),
+            "markets": [{
+                "id": "mkt-bi1-b",
+                "question": "Will BTC go up? (B)",
+                "conditionId": "cond-bi1-b",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-sys", "tok-down-sys"],
+                "endDate": end_date_b
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Window B: send all data.
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book(&clob_mock).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 35_u32..50 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    tokio::time::sleep(Duration::from_secs(12)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(result.is_ok(), "bot did not shut down within timeout");
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let a_trades: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-sys-test'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        a_trades >= 1,
+        "Expected at least 1 trade in window A, got {a_trades}"
+    );
+
+    let b_trades: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-bi1-b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        b_trades, 0,
+        "Expected 0 trades in window B (DD pause should block), got {b_trades}"
+    );
+}
+
+/// BI2: Verify that the circuit breaker recovers within the same bot run.
+/// Window A: trade loses -> CB triggers (`circuit_breaker_losses`=1, pause=6s).
+/// Window B: starts after CB pause expires -> new trade opens.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_circuit_breaker_recovers_within_same_run() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let current_slot = (now_secs / 300) * 300;
+    let next_slot = current_slot + 300;
+
+    let end_time_a = now_secs + 8;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_a = chrono::DateTime::from_timestamp(end_time_a as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    let end_time_b = now_secs + 22;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_b = chrono::DateTime::from_timestamp(end_time_b as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    // Register window A on current_slot only.
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{current_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{current_slot}"),
+            "markets": [{
+                "id": "mkt-sys-test",
+                "question": "Will BTC go up?",
+                "conditionId": "cond-sys",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-sys", "tok-down-sys"],
+                "endDate": end_date_a
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    config.circuit_breaker_losses = 1;
+    config.circuit_breaker_pause_ms = 6_000;
+    config.peak_dd_pause_pct = 1.0;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Window A: open UP trade, then crash price.
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book(&clob_mock).await;
+
+    // Send additional ticks with unique timestamps to trigger strategy evaluation.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 25_u32..35 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Falling ticks so close < open (UP loses).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for i in 0_u32..15 {
+        let price = 39_000.0 - f64::from(i) * 10.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_005_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_005_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Wait for window A close + CB to expire (8s close + 8s CB expiry).
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    // Mount window B after CB expired.
+    gamma_mock.reset().await;
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{next_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{next_slot}"),
+            "markets": [{
+                "id": "mkt-bi2-b",
+                "question": "Will BTC go up? (B)",
+                "conditionId": "cond-bi2-b",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-sys", "tok-down-sys"],
+                "endDate": end_date_b
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Window B: send data after CB expired.
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book(&clob_mock).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 35_u32..50 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(result.is_ok(), "bot did not shut down within timeout");
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let a_trades: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-sys-test'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        a_trades >= 1,
+        "Expected at least 1 trade in window A, got {a_trades}"
+    );
+
+    let b_trades: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-bi2-b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        b_trades >= 1,
+        "Expected at least 1 trade in window B after CB recovery, got {b_trades}"
+    );
+}
+
 /// A7: Verify that the bot survives concurrent feed disconnections without
 /// panicking and returns `Ok` on shutdown.
 /// Covers live.rs lines 228-230 (`FeedDisconnected` handling).
@@ -1314,5 +2199,546 @@ async fn live_bot_survives_concurrent_feed_disconnections() {
     assert!(
         run_result.is_ok(),
         "run_live returned an error after feed disconnections: {run_result:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WL: Window Lifecycle integration tests
+// ---------------------------------------------------------------------------
+
+/// Helper: send a CLOB book snapshot for custom token IDs.
+///
+/// Sends both UP and DOWN snapshots as a JSON array so the CLOB feed builds
+/// a full `BookState` (with both sides) in a single WebSocket frame.  This
+/// avoids the 200ms eval throttle eating the first `ClobBook` event (up-only)
+/// and leaving the second (up+down) throttled.
+async fn send_clob_book_for_tokens(clob_mock: &MockWsServer, up_token: &str, down_token: &str) {
+    clob_mock
+        .send(&format!(
+            r#"[{{"asset_id":"{up_token}","timestamp":1700000000000,"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.45","size":"100"}}]}},{{"asset_id":"{down_token}","timestamp":1700000000000,"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.50","size":"100"}}]}}]"#,
+        ))
+        .await;
+}
+
+/// WL1: THE REGRESSION TEST — trades must be settled even when market discovery
+/// has already advanced `current_window` to the next slot before `WindowClosed`
+/// fires for the previous slot.
+///
+/// Without the `known_windows` fix this test fails: window A's trades remain
+/// open because `WindowClosed(A)` fires after `current_window` is already B,
+/// and the old code only checked `current_window`.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_settles_trades_when_next_window_already_discovered() {
+    // 1. Start mock servers.
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    // 2. Compute timing: window A ends T+15s, window B ends T+30s.
+    //    The B discovery is delayed 8s so there is plenty of time (~5s) for
+    //    trades to open in A before B's discovery resets book state.
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let current_slot = (now_secs / 300) * 300;
+    let next_slot = current_slot + 300;
+
+    let end_time_a = now_secs + 15;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_a = chrono::DateTime::from_timestamp(end_time_a as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    let end_time_b = now_secs + 30;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_b = chrono::DateTime::from_timestamp(end_time_b as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    // 3. Register Gamma mocks with path-specific matchers.
+    //    Window A (current_slot) responds immediately.
+    //    Window B (next_slot) is delayed 8 seconds — simulating the production
+    //    race where discovery finds B before A's `WindowClosed` fires.
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{current_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{current_slot}"),
+            "markets": [{
+                "id": "mkt-wl1-a",
+                "question": "Will BTC go up? (WL1 window A)",
+                "conditionId": "cond-wl1-a",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-wl1a", "tok-down-wl1a"],
+                "endDate": end_date_a
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{next_slot}$"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "slug": format!("btc-updown-5m-{next_slot}"),
+                    "markets": [{
+                        "id": "mkt-wl1-b",
+                        "question": "Will BTC go up? (WL1 window B)",
+                        "conditionId": "cond-wl1-b",
+                        "outcomes": ["Up", "Down"],
+                        "clobTokenIds": ["tok-up-wl1b", "tok-down-wl1b"],
+                        "endDate": end_date_b
+                    }]
+                }))
+                .set_delay(Duration::from_secs(8)),
+        )
+        .mount(&gamma_mock)
+        .await;
+
+    // 4. Create temp DB.
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    // 5. Build config.
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    config.latency_arb_momentum_threshold = 0.001;
+
+    // 6. Start the live bot.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    // --- Timeline ---
+    // T=0: Bot starts, discovery finds window A immediately.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // T~2s: Send rising Binance ticks + Chainlink + CLOB book for A's tokens.
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book_for_tokens(&clob_mock, "tok-up-wl1a", "tok-down-wl1a").await;
+
+    // Send additional ticks to trigger strategy evaluation after book arrives.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 25_u32..35 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // T~8.5s: Discovery finds window B (8s delay on the Gamma response).
+    //         current_window is now B, but A still has open trades.
+    //         known_windows = {A, B}.
+
+    // T=15s: WindowClosed(A) fires.  The fix uses known_windows.remove("A")
+    //        to find the window and settle trades, even though current_window=B.
+
+    // Wait for window A to close (15s from start + 2s margin).
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    // Shutdown.
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(
+        result.is_ok(),
+        "bot did not shut down within timeout after shutdown signal"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot task panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    // --- Verify database ---
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Window A's trades must be settled (status='closed').
+    let closed_a: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl1-a' AND status = 'closed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        closed_a >= 1,
+        "Expected at least 1 closed trade for window A (mkt-wl1-a), got {closed_a}. \
+         This is the regression: without the known_windows fix, trades are never settled \
+         when current_window has already advanced to the next window."
+    );
+
+    // trade_results must exist for window A.
+    let results_a: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM trade_results r \
+             JOIN simulated_trades t ON r.trade_id = t.id \
+             WHERE t.market_id = 'mkt-wl1-a'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        results_a >= 1,
+        "Expected at least 1 trade_result for window A, got {results_a}"
+    );
+
+    // Balance should differ from starting 200.0 (trade PnL applied).
+    let final_balance: f64 = conn
+        .query_row(
+            "SELECT balance FROM balance_log ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        (final_balance - 200.0).abs() > f64::EPSILON,
+        "Expected balance to differ from 200.0 after settlement, got {final_balance}"
+    );
+
+    // No open trades should remain for window A.
+    let open_a: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl1-a' AND status = 'open'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        open_a, 0,
+        "Expected 0 open trades for window A after WindowClosed, got {open_a}"
+    );
+}
+
+/// WL2: Two windows are discovered simultaneously; trades open in B (the later
+/// window that becomes `current_window`) and must be settled when B's
+/// `WindowClosed` fires, while A closes gracefully with zero trades.
+/// Verifies that `known_windows` tracks both windows and settles each correctly.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_settles_both_overlapping_windows() {
+    // 1. Start mock servers.
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    // 2. Compute timing: A ends T+8s, B ends T+18s.
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let current_slot = (now_secs / 300) * 300;
+    let next_slot = current_slot + 300;
+
+    let end_time_a = now_secs + 8;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_a = chrono::DateTime::from_timestamp(end_time_a as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    let end_time_b = now_secs + 18;
+    #[allow(clippy::cast_possible_wrap)]
+    let end_date_b = chrono::DateTime::from_timestamp(end_time_b as i64, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    // 3. Gamma mocks: both slots respond immediately.
+    //    A uses current_slot, B uses next_slot.
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{current_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{current_slot}"),
+            "markets": [{
+                "id": "mkt-wl2-a",
+                "question": "Will BTC go up? (WL2 window A)",
+                "conditionId": "cond-wl2-a",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-wl2a", "tok-down-wl2a"],
+                "endDate": end_date_a
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{next_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": format!("btc-updown-5m-{next_slot}"),
+            "markets": [{
+                "id": "mkt-wl2-b",
+                "question": "Will BTC go up? (WL2 window B)",
+                "conditionId": "cond-wl2-b",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up-wl2b", "tok-down-wl2b"],
+                "endDate": end_date_b
+            }]
+        })))
+        .mount(&gamma_mock)
+        .await;
+
+    // 4. Create temp DB.
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    // 5. Build config.
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    config.latency_arb_momentum_threshold = 0.001;
+
+    // 6. Start the live bot.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    // --- Timeline ---
+    // T=0: Bot starts. Discovery finds both A and B immediately (no delay).
+    //      CLOB subscribes to B's tokens (B is the last discovered, becomes current).
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // T~2s: Send data for window B (the current window after both are discovered).
+    //       Discovery processes both slots: A first (NewWindow A), then B (NewWindow B).
+    //       current_window is now B. CLOB is subscribed to B's tokens.
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book_for_tokens(&clob_mock, "tok-up-wl2b", "tok-down-wl2b").await;
+
+    // Additional ticks to trigger evaluation.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 25_u32..35 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // T=8s: WindowClosed(A) fires (A had no trades, just verifies graceful close).
+    // T=18s: WindowClosed(B) fires -> B settled.
+
+    // Wait for both windows to close (18s from start + 4s margin).
+    tokio::time::sleep(Duration::from_secs(16)).await;
+
+    // Shutdown.
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(
+        result.is_ok(),
+        "bot did not shut down within timeout after shutdown signal"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot task panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    // --- Verify database ---
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Both markets should be upserted.
+    let market_count: i64 = conn
+        .query_row("SELECT COUNT(DISTINCT market_id) FROM markets", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(
+        market_count >= 2,
+        "Expected at least 2 markets, got {market_count}"
+    );
+
+    // Window B (the current window, where trades open): settled.
+    let closed_b: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl2-b' AND status = 'closed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        closed_b >= 1,
+        "Expected at least 1 closed trade for window B (mkt-wl2-b), got {closed_b}"
+    );
+
+    // Window B: trade_results exist.
+    let results_b: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM trade_results r \
+             JOIN simulated_trades t ON r.trade_id = t.id \
+             WHERE t.market_id = 'mkt-wl2-b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        results_b >= 1,
+        "Expected at least 1 trade_result for window B, got {results_b}"
+    );
+
+    // Window A: closes gracefully with 0 trades (no CLOB data for A's tokens).
+    let open_a: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl2-a' AND status = 'open'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        open_a, 0,
+        "Expected 0 open trades for window A, got {open_a}"
+    );
+
+    // No open trades should remain for either window.
+    let open_total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE status = 'open'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        open_total, 0,
+        "Expected 0 open trades after both windows closed, got {open_total}"
+    );
+}
+
+/// WL3: A window closes with no trades (no CLOB data sent) — `resolve_window`
+/// is called with 0 trades and the bot returns Ok without errors.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_handles_close_with_no_trades_gracefully() {
+    // 1. Start mock servers.
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    // 2. Compute timing: window ends T+8s.
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+
+    // 3. Register Gamma API.
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    // 4. Create temp DB.
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    // 5. Build config with min_window_time_ms=0.
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+
+    // 6. Start the live bot.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    // 7. Wait for feeds to connect and discovery to find the market.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // 8. Send Binance ticks and Chainlink -- but NO CLOB book.
+    //    Without book data the strategies cannot fire (no ask prices).
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+
+    // DO NOT send any CLOB data. The strategy cannot produce signals
+    // without up/down ask prices.
+
+    // 9. Wait for the window to close (8s + margin).
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // 10. Shutdown.
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(
+        result.is_ok(),
+        "bot did not shut down within timeout after shutdown signal"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot task panicked: {inner:?}");
+    let run_result = inner.unwrap();
+    assert!(
+        run_result.is_ok(),
+        "run_live returned an error when window closed with no trades: {run_result:?}"
+    );
+
+    // 11. Verify database.
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // Market should exist in the DB (discovery found it and upserted it).
+    let market_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM markets", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        market_count > 0,
+        "Expected at least 1 market in DB, got {market_count}"
+    );
+
+    // 0 trades should exist (no CLOB data => no signals => no trades).
+    let trade_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM simulated_trades", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        trade_count, 0,
+        "Expected 0 trades (no CLOB data sent), got {trade_count}"
+    );
+
+    // 0 trade results.
+    let result_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM trade_results", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        result_count, 0,
+        "Expected 0 trade_results, got {result_count}"
+    );
+
+    // Balance should still be 200.0 (no trades = no PnL changes).
+    let final_balance: f64 = conn
+        .query_row(
+            "SELECT balance FROM balance_log ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        (final_balance - 200.0).abs() < f64::EPSILON,
+        "Expected balance to remain 200.0 (no trades), got {final_balance}"
     );
 }

@@ -29,8 +29,12 @@ struct LiveState {
     binance_price: Option<f64>,
     chainlink_price: Option<f64>,
     book_state: BookState,
-    window_open_price: Option<f64>,
     current_window: Option<MarketWindow>,
+    /// Open prices captured per `market_id` (so we can settle any window,
+    /// not just the current one).
+    window_open_prices: std::collections::HashMap<String, f64>,
+    /// All windows we've seen (for resolving trades when window closes).
+    known_windows: std::collections::HashMap<String, MarketWindow>,
     last_eval_time: u64,
 }
 
@@ -40,8 +44,9 @@ impl LiveState {
             binance_price: None,
             chainlink_price: None,
             book_state: BookState::default(),
-            window_open_price: None,
             current_window: None,
+            window_open_prices: std::collections::HashMap::new(),
+            known_windows: std::collections::HashMap::new(),
             last_eval_time: 0,
         }
     }
@@ -170,8 +175,8 @@ pub async fn run_live(
                         }
 
                         // Capture window open price from Binance if not set.
-                        if state.current_window.is_some() && state.window_open_price.is_none() {
-                            state.window_open_price = Some(price);
+                        if let Some(ref w) = state.current_window {
+                            state.window_open_prices.entry(w.market_id.clone()).or_insert(price);
                         }
 
                         // Run strategy evaluation (throttled).
@@ -269,60 +274,66 @@ pub async fn run_live(
                         // Reset book state for new window.
                         state.book_state = BookState::default();
 
-                        // Capture the open price from current Binance price.
-                        state.window_open_price = state.binance_price;
+                        // Track open price and window for later settlement.
+                        if let Some(bp) = state.binance_price {
+                            state.window_open_prices.entry(window.market_id.clone()).or_insert(bp);
+                        }
+                        state.known_windows.insert(window.market_id.clone(), window.clone());
                         state.current_window = Some(window);
                     }
 
                     MarketDiscoveryEvent::WindowClosed(closed_window) => {
                         info!(market_id = %closed_window.market_id, "market window closed");
 
-                        // Resolve positions if we have a window and prices.
-                        if let Some(ref window) = state.current_window {
-                            if window.market_id == closed_window.market_id {
-                                let open_price = state.window_open_price.unwrap_or(0.0);
-                                let close_price = state.binance_price.unwrap_or(open_price);
+                        // Resolve positions for the closed window.  We look it
+                        // up in `known_windows` (not `current_window`) because
+                        // market discovery may have already advanced
+                        // `current_window` to the next slot.
+                        let closed_id = closed_window.market_id.clone();
+                        if let Some(window) = state.known_windows.remove(&closed_id) {
+                            let open_price = state.window_open_prices.remove(&closed_id).unwrap_or(0.0);
+                            let close_price = state.binance_price.unwrap_or(open_price);
 
-                                let resolved = position_manager.resolve_window(
-                                    window,
-                                    open_price,
-                                    close_price,
-                                    &db,
-                                    &mut bankroll,
-                                    &config,
-                                    &clock,
-                                );
+                            let resolved = position_manager.resolve_window(
+                                &window,
+                                open_price,
+                                close_price,
+                                &db,
+                                &mut bankroll,
+                                &config,
+                                &clock,
+                            );
 
-                                let now = clock.now();
-                                for (trade, result) in &resolved {
-                                    let won = result.pnl_0pct > 0.0;
-                                    trend_tracker.record_outcome(trade.side, won, now);
-                                    circuit_breaker.record_result(won, now);
+                            let now = clock.now();
+                            for (trade, result) in &resolved {
+                                let won = result.pnl_0pct > 0.0;
+                                trend_tracker.record_outcome(trade.side, won, now);
+                                circuit_breaker.record_result(won, now);
 
-                                    let outcome = if won { "WIN" } else { "LOSS" };
-                                    info!(
-                                        trade_id = trade.id.unwrap_or(-1),
-                                        strategy = %trade.strategy,
-                                        side = %trade.side,
-                                        pnl = result.pnl_0pct,
-                                        outcome,
-                                        "trade settled"
-                                    );
-                                }
-
-                                let bankroll_stats = bankroll.get_stats();
+                                let outcome = if won { "WIN" } else { "LOSS" };
                                 info!(
-                                    balance = bankroll_stats.current_balance,
-                                    pnl = bankroll_stats.total_pnl,
-                                    trades = bankroll_stats.total_trades,
-                                    win_rate = format!("{:.1}%", bankroll_stats.win_rate * 100.0),
-                                    max_dd = format!("{:.1}%", bankroll_stats.max_drawdown_pct * 100.0),
-                                    "bankroll update"
+                                    trade_id = trade.id.unwrap_or(-1),
+                                    strategy = %trade.strategy,
+                                    side = %trade.side,
+                                    pnl = result.pnl_0pct,
+                                    outcome,
+                                    "trade settled"
                                 );
+                            }
 
-                                // Clear window state.
+                            let bankroll_stats = bankroll.get_stats();
+                            info!(
+                                balance = bankroll_stats.current_balance,
+                                pnl = bankroll_stats.total_pnl,
+                                trades = bankroll_stats.total_trades,
+                                win_rate = format!("{:.1}%", bankroll_stats.win_rate * 100.0),
+                                max_dd = format!("{:.1}%", bankroll_stats.max_drawdown_pct * 100.0),
+                                "bankroll update"
+                            );
+
+                            // If this was the current window, clear it.
+                            if state.current_window.as_ref().is_some_and(|w| w.market_id == closed_id) {
                                 state.current_window = None;
-                                state.window_open_price = None;
                                 state.book_state = BookState::default();
                             }
                         }
@@ -394,6 +405,7 @@ fn evaluate_strategies(
 
     // Circuit breaker check.
     if !circuit_breaker.can_trade(now) {
+        circuit_breaker.log_if_paused(now);
         return;
     }
 

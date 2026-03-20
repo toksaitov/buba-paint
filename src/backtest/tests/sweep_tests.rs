@@ -370,6 +370,33 @@ fn top_n_by_pnl_negative_pnl_sorted_correctly() {
     assert!((top[2].1.total_pnl - (-50.0)).abs() < f64::EPSILON);
 }
 
+// -- Part F: Sweep error path edge cases -----------------------------------
+
+#[test]
+fn parse_sweep_spec_zero_step() {
+    // Step=0 could cause an infinite loop. The code checks `step <= 0.0`
+    // and returns Err.
+    let result = parse_sweep_spec("PARAM=0.001:0.003:0.0");
+    assert!(
+        result.is_err(),
+        "zero step should return Err to prevent infinite loop"
+    );
+}
+
+#[test]
+fn parse_sweep_spec_reversed_range() {
+    // Start > end with a positive step: the while loop condition `v <= end`
+    // is false from the start, so 0 values are generated.
+    let result = parse_sweep_spec("PARAM=0.003:0.001:0.001");
+    assert!(result.is_ok(), "reversed range should not error");
+    let dim = result.unwrap();
+    assert_eq!(
+        dim.values.len(),
+        0,
+        "reversed range (start > end) should produce 0 values"
+    );
+}
+
 #[test]
 fn top_n_by_pnl_n_zero_returns_empty() {
     let results: Vec<(Vec<(&str, f64)>, BacktestResult)> =

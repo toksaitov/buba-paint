@@ -53,3 +53,36 @@ fn attempt_0_base_equals_max() {
     assert!(d.as_millis() >= 5000);
     assert!(d.as_millis() < 5000 + 1250);
 }
+
+// -- should_reset_backoff tests -------------------------------------------
+
+#[test]
+fn should_reset_backoff_stable_connection() {
+    assert!(should_reset_backoff(1000, 10000, 5000));
+}
+
+#[test]
+fn should_reset_backoff_unstable_connection() {
+    assert!(!should_reset_backoff(1000, 2000, 5000));
+}
+
+#[test]
+fn should_reset_backoff_exact_boundary() {
+    assert!(should_reset_backoff(1000, 6000, 5000));
+}
+
+#[test]
+fn should_reset_backoff_zero_duration() {
+    assert!(!should_reset_backoff(1000, 1000, 5000));
+}
+
+#[test]
+fn should_reset_backoff_zero_threshold() {
+    assert!(should_reset_backoff(1000, 1001, 0));
+}
+
+#[test]
+fn should_reset_backoff_overflow_protection() {
+    // disconnected_at < connected_at (clock anomaly)
+    assert!(!should_reset_backoff(u64::MAX, 0, 5000));
+}

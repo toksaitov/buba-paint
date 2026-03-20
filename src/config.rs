@@ -66,6 +66,9 @@ pub struct Config {
     // Reconnection
     pub reconnect_base_delay: u64,
     pub reconnect_max_delay: u64,
+    pub reconnect_min_stable_ms: u64,
+    pub reconnect_max_failures: u32,
+    pub reconnect_pause_ms: u64,
 
     // Database
     pub db_path: String,
@@ -109,6 +112,7 @@ pub struct Config {
     // Peak drawdown pause
     pub peak_dd_pause_pct: f64,
     pub peak_dd_pause_ms: u64,
+    pub dd_pause_recovery_pct: f64,
 
     // Trend filter
     pub trend_filter_enabled: bool,
@@ -141,6 +145,7 @@ impl Config {
             "SPREAD_CAPTURE_MIN_ASK" => self.spread_capture_min_ask = value,
             "PEAK_DD_PAUSE_PCT" => self.peak_dd_pause_pct = value,
             "PEAK_DD_PAUSE_MS" => self.peak_dd_pause_ms = value as u64,
+            "DD_PAUSE_RECOVERY_PCT" => self.dd_pause_recovery_pct = value,
             "STARTING_BALANCE" => self.starting_balance = value,
             "MOMENTUM_WINDOW_MS" => self.momentum_window_ms = value as u64,
             "MAX_POSITION_USD_FRACTION" => self.max_position_usd_fraction = value,
@@ -156,6 +161,9 @@ impl Config {
             "MIN_WINDOW_TIME_MS" => self.min_window_time_ms = value as u64,
             "CIRCUIT_BREAKER_LOSSES" => self.circuit_breaker_losses = value as u64,
             "CIRCUIT_BREAKER_PAUSE_MS" => self.circuit_breaker_pause_ms = value as u64,
+            "RECONNECT_MIN_STABLE_MS" => self.reconnect_min_stable_ms = value as u64,
+            "RECONNECT_MAX_FAILURES" => self.reconnect_max_failures = value as u32,
+            "RECONNECT_PAUSE_MS" => self.reconnect_pause_ms = value as u64,
             "TREND_FILTER_THRESHOLD" => self.trend_filter_threshold = value,
             "TREND_FILTER_WINDOW" => self.trend_filter_window = value as u64,
             _ => {
@@ -190,6 +198,9 @@ impl Config {
 
             reconnect_base_delay: 1_000,
             reconnect_max_delay: 30_000,
+            reconnect_min_stable_ms: env_u64("RECONNECT_MIN_STABLE_MS", 5_000),
+            reconnect_max_failures: env_u64("RECONNECT_MAX_FAILURES", 20) as u32,
+            reconnect_pause_ms: env_u64("RECONNECT_PAUSE_MS", 300_000),
 
             db_path: env_str("DB_PATH", "./data/buba-paint.db"),
 
@@ -224,6 +235,7 @@ impl Config {
 
             peak_dd_pause_pct: env_f64("PEAK_DD_PAUSE_PCT", 0.30),
             peak_dd_pause_ms: env_u64("PEAK_DD_PAUSE_MS", 3_600_000),
+            dd_pause_recovery_pct: env_f64("DD_PAUSE_RECOVERY_PCT", 0.05),
 
             trend_filter_enabled: env_bool("TREND_FILTER_ENABLED", false),
             trend_filter_threshold: env_f64("TREND_FILTER_THRESHOLD", 0.30),
@@ -255,6 +267,9 @@ impl Default for Config {
 
             reconnect_base_delay: 1_000,
             reconnect_max_delay: 30_000,
+            reconnect_min_stable_ms: 5_000,
+            reconnect_max_failures: 20,
+            reconnect_pause_ms: 300_000,
 
             db_path: "./data/buba-paint.db".to_string(),
 
@@ -289,6 +304,7 @@ impl Default for Config {
 
             peak_dd_pause_pct: 0.30,
             peak_dd_pause_ms: 3_600_000,
+            dd_pause_recovery_pct: 0.05,
 
             trend_filter_enabled: false,
             trend_filter_threshold: 0.30,

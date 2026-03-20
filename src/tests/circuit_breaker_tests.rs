@@ -139,3 +139,40 @@ fn losses_exactly_at_max_triggers_pause() {
     );
     assert_eq!(cb.consecutive_losses(), 1, "4th loss starts a new streak");
 }
+
+// -- Phase 3: log_if_paused rate-limiting tests ---------------------------
+
+#[test]
+fn log_if_paused_updates_timestamp() {
+    let mut cb = CircuitBreaker::new(3, 900_000);
+    // Trigger the breaker
+    cb.record_result(false, 1_000);
+    cb.record_result(false, 2_000);
+    cb.record_result(false, 3_000);
+    cb.log_if_paused(4_000);
+    assert_eq!(cb.last_paused_log_ms, 4_000);
+}
+
+#[test]
+fn log_if_paused_rate_limited() {
+    let mut cb = CircuitBreaker::new(3, 900_000);
+    cb.record_result(false, 1_000);
+    cb.record_result(false, 2_000);
+    cb.record_result(false, 3_000);
+    cb.log_if_paused(4_000);
+    assert_eq!(cb.last_paused_log_ms, 4_000);
+
+    cb.log_if_paused(30_000);
+    assert_eq!(cb.last_paused_log_ms, 4_000); // unchanged
+
+    cb.log_if_paused(65_000);
+    assert_eq!(cb.last_paused_log_ms, 65_000); // updated
+}
+
+#[test]
+fn log_if_paused_no_op_when_not_paused() {
+    let mut cb = CircuitBreaker::new(3, 900_000);
+    // Not paused — should not update.
+    cb.log_if_paused(1_000);
+    assert_eq!(cb.last_paused_log_ms, 0);
+}

@@ -217,6 +217,50 @@ fn parse_time_malformed_trailing_dash() {
     assert!(result.is_err(), "malformed trailing dash should return Err");
 }
 
+// -- Part E: CLI error path edge cases ------------------------------------
+
+#[test]
+fn apply_set_override_non_numeric_value() {
+    // Call with a non-numeric value for an arbitrary key. The function
+    // should return Ok (not crash) but the config should remain unchanged.
+    let mut config = Config::default();
+    let original_momentum = config.latency_arb_momentum_threshold;
+    let result = apply_set_override(&mut config, "LATENCY_ARB_MOMENTUM_THRESHOLD=notanumber");
+    assert!(result.is_ok(), "non-numeric value should not return Err");
+    assert!(
+        (config.latency_arb_momentum_threshold - original_momentum).abs() < f64::EPSILON,
+        "config value should be unchanged after non-numeric override"
+    );
+}
+
+#[test]
+fn parse_key_value_missing_equals() {
+    let result = parse_key_value("noequals");
+    assert!(
+        result.is_err(),
+        "parse_key_value with no '=' should return Err"
+    );
+}
+
+#[test]
+fn cli_build_data_subcommand_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "build-data",
+        "--runs-dir",
+        "my_runs",
+        "--output",
+        "my_output.db",
+    ]);
+    match cli.command {
+        Commands::BuildData { runs_dir, output } => {
+            assert_eq!(runs_dir, "my_runs");
+            assert_eq!(output, "my_output.db");
+        }
+        _ => panic!("expected BuildData command"),
+    }
+}
+
 #[test]
 fn cli_live_default_values() {
     let cli = Cli::parse_from(["buba-paint", "live"]);

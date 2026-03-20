@@ -53,6 +53,11 @@ impl PositionManager {
     ) -> Option<SimulatedTrade> {
         // Guard: max open positions.
         if self.open_count >= config.max_open_positions {
+            tracing::debug!(
+                open = self.open_count,
+                max = config.max_open_positions,
+                "max open positions reached"
+            );
             return None;
         }
 

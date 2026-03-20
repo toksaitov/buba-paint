@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use super::FeedMessage;
 use crate::config::Config;
 
-use super::util::backoff_delay;
+use super::util::{backoff_delay, now_ms, should_reset_backoff};
 
 /// Run the Binance aggTrade WebSocket feed.
 ///
@@ -22,6 +22,9 @@ pub async fn run_binance_feed(
     let url = &config.binance_ws_url;
     let base_delay = config.reconnect_base_delay;
     let max_delay = config.reconnect_max_delay;
+    let min_stable_ms = config.reconnect_min_stable_ms;
+    let max_failures = config.reconnect_max_failures;
+    let feed_pause_ms = config.reconnect_pause_ms;
     let mut attempt: u32 = 0;
 
     loop {
@@ -29,7 +32,7 @@ pub async fn run_binance_feed(
 
         match tokio_tungstenite::connect_async(url).await {
             Ok((ws_stream, _response)) => {
-                attempt = 0;
+                let connected_at = now_ms();
                 if tx
                     .send(FeedMessage::FeedConnected("binance".to_string()))
                     .await
@@ -71,6 +74,10 @@ pub async fn run_binance_feed(
                         Some(Ok(_)) => {}
                     }
                 }
+
+                if should_reset_backoff(connected_at, now_ms(), min_stable_ms) {
+                    attempt = 0;
+                }
             }
             Err(e) => {
                 error!(feed = "binance", "connection failed: {e}");
@@ -82,15 +89,26 @@ pub async fn run_binance_feed(
             .send(FeedMessage::FeedDisconnected("binance".to_string()))
             .await;
 
-        let delay = backoff_delay(attempt, base_delay, max_delay);
-        warn!(
-            feed = "binance",
-            "reconnecting in {}ms (attempt {})",
-            delay.as_millis(),
-            attempt + 1
-        );
-        tokio::time::sleep(delay).await;
-        attempt = attempt.saturating_add(1);
+        if attempt >= max_failures {
+            error!(
+                feed = "binance",
+                attempts = attempt,
+                pause_ms = feed_pause_ms,
+                "feed circuit breaker: pausing"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(feed_pause_ms)).await;
+            attempt = 0;
+        } else {
+            let delay = backoff_delay(attempt, base_delay, max_delay);
+            warn!(
+                feed = "binance",
+                "reconnecting in {}ms (attempt {})",
+                delay.as_millis(),
+                attempt + 1
+            );
+            tokio::time::sleep(delay).await;
+            attempt = attempt.saturating_add(1);
+        }
     }
 }
 

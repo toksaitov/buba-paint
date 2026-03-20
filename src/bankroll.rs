@@ -56,9 +56,12 @@ pub struct BankrollManager {
     total_trades: u64,
     reserved_capital: f64,
     peak_dd_pause_until: u64,
+    dd_pause_armed: bool,
     strategy_stats: HashMap<String, StrategyRecord>,
     recent_results: Vec<TradeResultRecord>,
     kelly_rolling_window: usize,
+    /// Timestamp of the last rate-limited "trading blocked" log message.
+    pub last_blocked_log_ms: u64,
 }
 
 impl BankrollManager {
@@ -86,9 +89,11 @@ impl BankrollManager {
             total_trades: 0,
             reserved_capital: 0.0,
             peak_dd_pause_until: 0,
+            dd_pause_armed: true,
             strategy_stats: HashMap::new(),
             recent_results: Vec::new(),
             kelly_rolling_window: config.kelly_rolling_window as usize,
+            last_blocked_log_ms: 0,
         }
     }
 
@@ -267,27 +272,45 @@ impl BankrollManager {
 
     /// Whether trading is allowed right now (balance, drawdown, peak-DD pause).
     pub fn can_trade(&mut self, config: &Config, clock: &dyn Clock) -> bool {
+        let now = clock.now();
+
         if self.current_balance < config.min_balance_threshold {
+            self.log_blocked("below minimum balance", now);
             return false;
         }
         if self.get_drawdown_pct() >= config.max_drawdown_pct {
+            self.log_blocked("max drawdown exceeded", now);
             return false;
         }
 
-        // Peak drawdown pause.
+        // Peak drawdown pause with hysteresis.
         let peak_dd = self.get_drawdown_pct();
-        let now = clock.now();
 
-        if peak_dd >= config.peak_dd_pause_pct {
+        // Recovery hysteresis: if DD drops below (trigger - recovery),
+        // re-arm the pause so it can trigger again later.
+        let recovery_threshold = config.peak_dd_pause_pct - config.dd_pause_recovery_pct;
+        if peak_dd < recovery_threshold {
+            self.dd_pause_armed = true;
+            self.peak_dd_pause_until = 0;
+        }
+
+        if peak_dd >= config.peak_dd_pause_pct && self.dd_pause_armed {
             if self.peak_dd_pause_until == 0 {
                 self.peak_dd_pause_until = now + config.peak_dd_pause_ms;
             }
             if now < self.peak_dd_pause_until {
+                self.log_blocked("peak DD pause active", now);
                 return false;
             }
-            // Timer expired — reset.
+            // Timer expired — disarm until recovery.
             self.peak_dd_pause_until = 0;
-        } else {
+            self.dd_pause_armed = false;
+        } else if peak_dd < config.peak_dd_pause_pct {
+            // DD dropped below the trigger threshold — reset the timer.
+            // Re-arming is handled exclusively by the recovery hysteresis
+            // check above (peak_dd < recovery_threshold).  This prevents
+            // the pause from re-triggering when recovery_pct > pause_pct
+            // makes the recovery threshold negative/unreachable.
             self.peak_dd_pause_until = 0;
         }
 
@@ -358,6 +381,14 @@ impl BankrollManager {
     }
 
     // -- Private helpers -----------------------------------------------------
+
+    /// Rate-limited log when trading is blocked. Logs at most once per 60 seconds.
+    fn log_blocked(&mut self, reason: &str, now: u64) {
+        if self.last_blocked_log_ms == 0 || now.saturating_sub(self.last_blocked_log_ms) >= 60_000 {
+            tracing::warn!(reason, "bankroll: trading blocked");
+            self.last_blocked_log_ms = now;
+        }
+    }
 
     /// Compute the position fraction to risk on a single trade.
     fn get_position_fraction(

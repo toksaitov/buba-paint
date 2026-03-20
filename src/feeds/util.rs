@@ -20,6 +20,27 @@ pub(crate) fn backoff_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration
     Duration::from_millis(capped + jitter_val)
 }
 
+/// Determine whether the backoff attempt counter should reset.
+///
+/// Returns `true` if the connection was "stable" -- i.e. it lasted at least
+/// `min_stable_ms`.  Short-lived connections (connect then immediately
+/// disconnect) should NOT reset the counter, so backoff escalates naturally.
+pub(crate) fn should_reset_backoff(
+    connected_at_ms: u64,
+    disconnected_at_ms: u64,
+    min_stable_ms: u64,
+) -> bool {
+    disconnected_at_ms.saturating_sub(connected_at_ms) >= min_stable_ms
+}
+
+/// Get current time in milliseconds since epoch.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[cfg(test)]
 #[path = "tests/util_tests.rs"]
 mod tests;

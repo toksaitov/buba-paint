@@ -64,6 +64,15 @@ pub enum Commands {
         #[arg(long = "set")]
         sets: Vec<String>,
     },
+    /// Build merged market-data DB from run databases
+    BuildData {
+        /// Directory containing run subdirectories (e.g., runs/)
+        #[arg(long, default_value = "runs")]
+        runs_dir: String,
+        /// Output path for the merged database
+        #[arg(long, default_value = "data/market-data.db")]
+        output: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +169,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             });
 
             crate::live::run_live(config, &db_path, balance, shutdown_rx).await?;
+        }
+        Commands::BuildData { runs_dir, output } => {
+            crate::db::build_data::build_market_data(&runs_dir, &output)?;
         }
     }
 

@@ -6,7 +6,7 @@ spread-capture opportunities, simulates trades with bankroll-aware
 position sizing (per-strategy half-Kelly criterion), and logs everything
 to SQLite. Built in Rust for low-latency execution and fast backtesting
 (275-combo parameter sweep in ~42 seconds via rayon parallelism).
-506 tests, 96.7% line coverage.
+569 tests, 91.4% line coverage.
 
 No real orders, no wallet, no private keys. This is a data-collection
 and strategy-validation tool.
@@ -15,7 +15,7 @@ and strategy-validation tool.
 
 ```bash
 cargo build --release              # optimized binary
-cargo test                         # 506 tests
+cargo test                         # 569 tests
 cargo clippy -- -D warnings        # lint (zero warnings required)
 cargo run --release -- live --db-path runs/008/buba-paint.db --balance 200
 ```
@@ -68,7 +68,7 @@ Built with tokio (async I/O) and rayon (parallel backtesting).
 | `feeds/`               | Three WebSocket feeds with auto-reconnect                     |
 | `strategies/`          | Latency-arb + spread-capture (Strategy trait)                 |
 | `backtest/`            | Tick replay engine, parameter sweep (rayon), window manager   |
-| `db/`                  | SQLite wrapper (WAL mode), schema migrations                  |
+| `db/`                  | SQLite wrapper (WAL mode), schema, `build-data` merge tool    |
 | `config.rs`            | All env-configurable settings                                 |
 
 See `CLAUDE.md` for the full module map and AI development guidelines.
@@ -114,6 +114,7 @@ buba-paint/
     db/                            # SQLite persistence
       database.rs                  #   rusqlite wrapper, WAL mode
       schema.rs                    #   6 tables with indexes
+      build_data.rs                #   Merge run DBs → market-data.db
     tests/                         # Unit tests (via #[path])
     */tests/                       # Unit tests for submodules
   tests/                           # Integration tests
@@ -123,6 +124,7 @@ buba-paint/
     discovery_test.rs              #   Discovery tests (mock HTTP)
     live_system_test.rs            #   Full E2E system test
     cli_test.rs                    #   CLI command dispatch
+    build_data_test.rs             #   Data merge end-to-end
     support/mock_ws.rs             #   Mock WebSocket server
   legacy-ts/                       # Archived TypeScript implementation
   scripts/                         # Python analysis scripts
@@ -131,7 +133,7 @@ buba-paint/
     sweeps/                        #   Parameter sweep results
     experiments/                   #   Walk-forward validation DBs
   runs/                            # Primary live data (IRREPLACEABLE)
-    001/ ... 007/                  #   DB, logs, analysis PNGs (LFS)
+    001/ ... 008/                  #   DB, logs, analysis PNGs (LFS)
 ```
 
 **Data preservation:** `runs/` contains primary data collected during live
@@ -171,6 +173,16 @@ cargo run --release -- sweep \
 
 `--sweep PARAM=start:end:step` generates a range; `--sweep PARAM=a,b,c` enumerates.
 `--set PARAM=value` fixes a parameter without sweeping.
+
+### Build merged market data
+
+```bash
+cargo run --release -- build-data                          # default: runs/ → data/market-data.db
+cargo run --release -- build-data --runs-dir runs --output data/market-data.db
+```
+
+Merges tick data, markets, and trade results from all run DBs into a single
+database for backtesting. Source DBs opened read-only (`?mode=ro`). Idempotent.
 
 ## Configuration
 
@@ -226,14 +238,18 @@ All settings via environment variables or `--set` CLI flag.
 
 ### Position Limits & Safety
 
-| Variable                   | Default   | Description                            |
-| -------------------------- | --------- | -------------------------------------- |
-| `MAX_OPEN_POSITIONS`       | `5`       | Max concurrent positions               |
-| `MIN_WINDOW_TIME_MS`       | `90000`   | Don't enter with < 90s left            |
-| `CIRCUIT_BREAKER_LOSSES`   | `3`       | Pause after N consecutive losses       |
-| `CIRCUIT_BREAKER_PAUSE_MS` | `900000`  | Pause duration (15 min)                |
-| `PEAK_DD_PAUSE_PCT`        | `0.30`    | Pause at 30% drawdown from peak        |
-| `PEAK_DD_PAUSE_MS`         | `3600000` | DD pause duration (1 hour)             |
+| Variable                   | Default   | Description                             |
+| -------------------------- | --------- | --------------------------------------- |
+| `MAX_OPEN_POSITIONS`       | `5`       | Max concurrent positions                |
+| `MIN_WINDOW_TIME_MS`       | `90000`   | Don't enter with < 90s left             |
+| `CIRCUIT_BREAKER_LOSSES`   | `3`       | Pause after N consecutive losses        |
+| `CIRCUIT_BREAKER_PAUSE_MS` | `900000`  | Pause duration (15 min)                 |
+| `PEAK_DD_PAUSE_PCT`        | `0.30`    | Pause at 30% drawdown from peak         |
+| `PEAK_DD_PAUSE_MS`         | `3600000` | DD pause duration (1 hour)              |
+| `DD_PAUSE_RECOVERY_PCT`    | `0.05`    | DD must recover by 5% before re-arming  |
+| `RECONNECT_MIN_STABLE_MS`  | `5000`    | Min connection duration to reset backoff|
+| `RECONNECT_MAX_FAILURES`   | `20`      | Feed circuit breaker threshold          |
+| `RECONNECT_PAUSE_MS`       | `300000`  | Feed circuit breaker pause (5 min)      |
 
 ### Trend Filter (experimental, off by default)
 
@@ -294,6 +310,7 @@ bankroll, and settlement -- identical to the live path.
 | 003 (TS)   | ~40 min | $4,070   | Baseline -- DD pause disabled, matches live        |
 | rust-004   | 42s     | $4,070   | Rust parity validation (identical to 003)          |
 | rust-005   | 42s     | $4,070   | Post-refactor -- identical to rust-004             |
+| rust-006   | 4 min   | $815,678 | Full range (Feb 15 -- Mar 20, 8.8M ticks)          |
 
 Always use `--set PEAK_DD_PAUSE_PCT=1.0` and `--set SPREAD_CAPTURE_THRESHOLD=0.50`
 in sweeps. The DD pause is too aggressive for small starting balances,
@@ -309,7 +326,8 @@ and spread-capture overcounts ~18x due to 1s tick sampling.
 | 004 | 96h      | 76     | 51.3%    | +$719     | v0.2, $200->$919, peak $1,556            |
 | 005 | 25h      | 11     | 36.4%    | -$5       | v0.3, over-filtering bug                 |
 | 006 | 267h     | 292    | 56.5%    | +$4,565   | v0.4, $200->$4,765, peak $9,678          |
-| 007 | ongoing  | --     | --       | --        | v0.5, $200 start, deployed Mar 10        |
+| 007 | 222h     | 187    | 56.7%    | +$5,488   | v0.5 TS, $200→$5,688, peak $8,130        |
+| 008 | ongoing  | --     | --       | --        | v0.6 Rust, $200 start, deployed Mar 20   |
 
 ## Analysis Scripts
 
@@ -327,10 +345,10 @@ Each script produces a `.png` and an interactive matplotlib window.
 ## Development
 
 ```bash
-cargo test                                           # 506 tests (465 unit + 41 integration)
+cargo test                                           # 569 tests (517 unit + 52 integration)
 cargo clippy -- -D warnings                          # pedantic linting
 cargo fmt                                            # auto-format
-cargo llvm-cov --all-targets --summary-only          # 96.7% line coverage
+cargo llvm-cov --all-targets --summary-only          # 91.4% line coverage
 ```
 
 Unit tests live in `src/*/tests/` directories (via `#[path]` attribute).
