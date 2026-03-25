@@ -1,25 +1,25 @@
-# Sweep 003 — Clean baseline (DD pause disabled)
+# Sweep 003, clean baseline (DD pause disabled)
 
-**Date:** 2026-03-13
-**Status:** VALID — first trustworthy sweep baseline
+Date: 2026-03-13
+Status: VALID, first trustworthy sweep baseline
 
 ## Parameters
 
 Same grid as sweeps 001/002 with peak DD pause disabled.
 
-- **Data:** `data/market-data.db` (runs 004-007)
-- **Time range:** 2026-02-20T03:13 → 2026-02-28T00:00 (188.8h)
-- **Ticks:** 2,710,038
-- **Balance:** $200
-- **Swept:**
-  - `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.001 → 0.003, step 0.0002 (11 values)
+- Data: `data/market-data.db` (runs 004-007)
+- Time range: 2026-02-20T03:13 -> 2026-02-28T00:00 (188.8h)
+- Ticks: 2,710,038
+- Balance: $200
+- Swept:
+  - `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.001 -> 0.003, step 0.0002 (11 values)
   - `LATENCY_ARB_MAX_ASK`: 0.45, 0.50, 0.55, 0.60, 0.65 (5 values)
   - `MAX_POSITION_FRACTION`: 0.05, 0.075, 0.10, 0.125, 0.15 (5 values)
-- **Fixed:**
+- Fixed:
   - `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
   - `PEAK_DD_PAUSE_PCT=1.0` (disables peak drawdown pause)
-- **Total:** 275 combinations
-- **Runtime:** 39.7 min (2,383s)
+- Total: 275 combinations
+- Runtime: 39.7 min (2,383s)
 
 ## Command
 
@@ -53,22 +53,19 @@ npm run sweep -- \
 
 ## Key findings
 
-1. **mom=0.0012 is the sweet spot** — dominates top 7 results. Consistent with
-   live run 006 which used v0.4 defaults near this value.
+1. mom=0.0012 is the sweet spot. Dominates top 7 results. Consistent with live run 006 which used v0.4 defaults near this value.
 
-2. **ask=0.60-0.65 required for strong results** — lower thresholds (0.45-0.55)
-   reject too many entries. This contradicts v0.5's reduction to 0.55.
+2. ask=0.60-0.65 required for strong results. Lower thresholds (0.45-0.55) reject too many entries. This contradicts v0.5's reduction to 0.55.
 
-3. **frac=0.10-0.125 optimal** — balances returns vs drawdown.
+3. frac=0.10-0.125 optimal, balances returns vs drawdown.
    - frac=0.075: lower DD (31-32%) but ~40% less PnL
    - frac=0.15: marginal PnL gain with ~5% more DD
 
-4. **Two regimes visible:**
+4. Two regimes visible:
    - High-frequency (mom=0.0012): 238-284 trades, 59-61% WR, best absolute PnL
    - Selective (mom=0.0016-0.0022): 56-150 trades, 63-73% WR, better risk-adjusted
 
-5. **Results align with live trading:** top combo peak $4,741 vs run 006 live
-   peak $9,678 (run 006 was 267h vs 189h here, and used both strategies).
+5. Results align with live trading: top combo peak $4,741 vs run 006 live peak $9,678 (run 006 was 267h vs 189h here, and used both strategies).
 
 ## Comparison with sweep 002
 

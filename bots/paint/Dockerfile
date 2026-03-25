@@ -1,0 +1,17 @@
+FROM rust:1.85-slim AS builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY bots/paint/ bots/paint/
+# Create stub workspace members so cargo doesn't fail
+RUN mkdir -p agent/src && echo 'fn main() {}' > agent/src/main.rs && \
+    mkdir -p dashboard/server/src && echo 'fn main() {}' > dashboard/server/src/main.rs
+COPY agent/Cargo.toml agent/Cargo.toml
+COPY dashboard/server/Cargo.toml dashboard/server/Cargo.toml
+RUN cargo build --release -p buba-paint && rm -rf agent/ dashboard/
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/buba-paint /usr/local/bin/buba-paint
+ENTRYPOINT ["buba-paint"]
+CMD ["live", "--db-path", "/data/paint.db", "--balance", "200"]

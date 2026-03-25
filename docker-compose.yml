@@ -1,0 +1,51 @@
+services:
+  paint:
+    build:
+      context: .
+      dockerfile: bots/paint/Dockerfile
+    volumes:
+      - paint-data:/data
+    environment:
+      DB_PATH: /data/paint.db
+      STARTING_BALANCE: "200"
+      LOG_LEVEL: info
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    ports:
+      - "9090:9090"
+    volumes:
+      - paint-data:/data:ro
+    environment:
+      DB_PATH: /data/paint.db
+      PORT: "9090"
+      POLL_INTERVAL: "2000"
+      AGENT_SECRET: ${AGENT_SECRET:-change-me-agent-secret}
+    depends_on:
+      - paint
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    ports:
+      - "3001:3001"
+    volumes:
+      - dashboard-data:/data
+      - ./dashboard.toml:/etc/dashboard.toml:ro
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      JWT_SECRET: ${JWT_SECRET:-change-me-jwt-secret}
+      DASHBOARD_DB_PATH: /data/dashboard.db
+    depends_on:
+      - agent
+    restart: unless-stopped
+
+volumes:
+  paint-data:
+  dashboard-data:
