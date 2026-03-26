@@ -220,7 +220,17 @@ Always use `--set PEAK_DD_PAUSE_PCT=1.0` and `--set SPREAD_CAPTURE_THRESHOLD=0.5
 - Run 005: 25h, 11 trades, 36.4% WR, -$5. v0.3, over-filtering bug.
 - Run 006: 267h, 292 trades, 56.5% WR, +$4,565, $200->$4,765, peak $9,678. v0.4.
 - Run 007: 222h, 187 trades, 56.7% WR, +$5,488, $200->$5,688, peak $8,130. v0.5 TS.
-- Run 008: ongoing, v0.6 Rust, $200 start, deployed Mar 20.
+- Run 008: ongoing (159h as of Mar 26), 465 trades, 74.2% WR, +$1,415,728, $200->$1,415,928, peak $1,415,928, 20.3% max DD. v0.6 Rust, deployed Mar 20. Latency-arb only (spread-capture disabled via threshold=0.50). Parameters: `LATENCY_ARB_MOMENTUM_THRESHOLD=0.0012`, `LATENCY_ARB_MAX_ASK=0.60`, `MAX_POSITION_FRACTION=0.05`, `SPREAD_CAPTURE_THRESHOLD=0.50`.
+
+Run 008 launch command:
+
+```bash
+./target/release/buba-paint live --db-path runs/008/buba-paint.db --balance 200 \
+  --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0012 \
+  --set LATENCY_ARB_MAX_ASK=0.60 \
+  --set MAX_POSITION_FRACTION=0.05 \
+  --set SPREAD_CAPTURE_THRESHOLD=0.50
+```
 
 ## Testing
 
