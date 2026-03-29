@@ -4,14 +4,14 @@ AI development guidelines for the buba workspace.
 
 ## Project
 
-buba is a paper-trading platform for Polymarket prediction markets. The workspace has four components. paint (`bots/paint`) is the first bot: 5-minute BTC Up/Down, three WebSocket feeds, two strategies, SQLite persistence. The agent (`agent/`) monitors any bot's database and exposes REST + WebSocket APIs. The dashboard has a Rust backend (`dashboard/server/`) that proxies to agents with JWT auth, and a React frontend (`dashboard/client/`) for the UI. Rust, Cargo workspace, TDD throughout. 874 tests (743 Rust + 131 frontend).
+buba is a paper-trading platform for Polymarket prediction markets. The workspace has four components. paint (`bots/paint`) is the first bot: 5-minute BTC Up/Down, three WebSocket feeds, two strategies, SQLite persistence, provisional settlement with deferred Polymarket resolution, order-book liquidity clamping, and dynamic fee modeling. The agent (`agent/`) monitors any bot's database and exposes REST + WebSocket APIs. The dashboard has a Rust backend (`dashboard/server/`) that proxies to agents with JWT auth, and a React frontend (`dashboard/client/`) for the UI. Rust, Cargo workspace, TDD throughout. 903 tests (772 Rust + 131 frontend).
 
 ## Build & Test
 
 ```bash
 cargo build                 # debug build
 cargo build --release       # release build (use for live/backtest)
-cargo test                  # run all 743 Rust tests
+cargo test                  # run all 772 Rust tests
 cargo clippy -- -D warnings # lint (must pass with zero warnings)
 cargo fmt --all --check     # format check (must pass)
 cargo llvm-cov --all-targets --summary-only # line coverage report
@@ -24,7 +24,9 @@ Example commands:
 cargo run -p buba-paint --release -- backtest --data data/market-data.db --start 2026-02-20 --end 2026-03-04
 cargo run -p buba-paint --release -- sweep --data data/market-data.db --start 2026-02-20 --end 2026-03-04 \
   --sweep LATENCY_ARB_MOMENTUM_THRESHOLD=0.001:0.003:0.0005 --output data/sweeps/test/sweep.csv
-cargo run -p buba-paint --release -- live --db-path runs/008/paint.db --balance 200
+cargo run -p buba-paint --release -- live --db-path runs/009/buba-paint.db --balance 200
+cargo run -p buba-paint --release -- init-db --db-path runs/009/buba-paint.db --balance 200
+cargo run -p buba-paint --release -- verify-settlements --db data/market-data.db
 ```
 
 ## Architecture Rules
@@ -39,6 +41,7 @@ cargo run -p buba-paint --release -- live --db-path runs/008/paint.db --balance 
 8. TDD strictly enforced. Write tests before implementation.
 9. When a test fails, fix the code, not the test. The only exception is if the test itself has a wrong expected value; document why before changing it.
 10. Frontend tests use vitest + @testing-library/react, colocated in `__tests__/` directories next to the source files they test.
+11. After every major update (new module, new feature, schema change, new CLI command), all documentation files (CLAUDE.md, Readme.md, sweep notes) must be fully read and revised. Do not append blindly. Remove or correct stale information. The goal is clean, accurate, reasonably sized documents that let any person or LLM rebuild full project context.
 
 ## Documentation Style
 
@@ -56,19 +59,25 @@ When writing or editing `.md` files, code comments, or any prose in this project
 
 ### paint bot (`bots/paint/src/`)
 
-Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`), `live.rs` (live trading loop: feeds + discovery + strategies + settlement), `config.rs` (all env-configurable settings, `set_param` for sweeps).
+Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`, `init-db` command), `live.rs` (live trading loop: feeds + discovery + delayed window activation + strategies + provisional settlement + deferred reconciliation via channel), `config.rs` (all env-configurable settings, `set_param` for sweeps).
 
 Strategies: `strategies/latency_arb.rs` (momentum vs stale odds, adaptive threshold, cooldown), `strategies/spread_capture.rs` (UP ask + DOWN ask < threshold, buys both sides).
 
 Feeds: `feeds/binance_feed.rs` (Binance aggTrade WebSocket stream), `feeds/clob_feed.rs` (Polymarket CLOB order book + dynamic resubscription), `feeds/chainlink_feed.rs` (Polymarket RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
 
-Data: `bankroll.rs` (per-strategy half-Kelly sizing, caps, confidence curve, DD pause), `position_manager.rs` (trade lifecycle: open, guard duplicates, resolve at close), `circuit_breaker.rs` (pause trading after N consecutive losses), `tick_logger.rs` (1s interval tick sampling to SQLite), `trend_tracker.rs` (experimental directional trend filter, off by default), `market_discovery.rs` (Gamma API polling, slug-based window discovery).
+Data: `bankroll.rs` (per-strategy half-Kelly sizing, caps, confidence curve, DD pause, settlement correction), `position_manager.rs` (trade lifecycle: open with debug logging on every rejection path, guard duplicates, resolve at close, liquidity clamping), `circuit_breaker.rs` (pause trading after N consecutive losses), `tick_logger.rs` (1s interval tick sampling to SQLite), `trend_tracker.rs` (experimental directional trend filter, off by default), `market_discovery.rs` (Gamma API polling, slug-based window discovery, resolution polling for deferred settlement).
+
+Execution: `executor.rs` (Executor trait with PaperExecutor and LiveExecutor stub, paper/live abstraction for future real-money trading).
+
+Fees and verification: `fees.rs` (Polymarket dynamic taker fee formula: `fee = shares * price * feeRate * (price * (1-price))^exponent`), `verify.rs` (backfill Polymarket resolutions from Gamma API, compare against Chainlink-derived settlements, `verify-settlements` CLI).
+
+SDK integration: `polymarket.rs` (read-only wrapper around the official `polymarket-client-sdk` crate, queries CLOB API for market resolution via `tokens[].winner` field, no trading capability).
 
 Backtesting: `backtest/runner.rs` (core replay loop: ticks -> strategies -> trades -> settle), `backtest/sweep.rs` (parallel parameter sweep via rayon, PID-based temp DBs), `backtest/tick_replay.rs` (loads tick_data, groups by 10ms tolerance), `backtest/window_manager.rs` (replays market windows from DB), `backtest/feed_state.rs` (simulated feed state for backtest strategies), `backtest/momentum.rs` (rolling window momentum calculator).
 
-Database: `db/database.rs` (rusqlite wrapper, prepared statements, WAL mode), `db/schema.rs` (6 SQLite tables with indexes), `db/build_data.rs` (merges run DBs into market-data.db, `build-data` CLI).
+Database: `db/database.rs` (rusqlite wrapper, prepared statements, WAL mode), `db/schema.rs` (6 SQLite tables with indexes, v0.7/v0.8 column migrations via `add_column_if_missing`), `db/build_data.rs` (merges run DBs into market-data.db, `build-data` CLI).
 
-Shared: `types.rs` (Signal, BookState, MarketWindow), `clock.rs` (Clock trait + SystemClock + BacktestClock), `errors.rs` (thiserror error types).
+Shared: `types.rs` (Signal, BookState, MarketWindow, TradeResult with settlement_status/provisional_pnl), `clock.rs` (Clock trait + SystemClock + BacktestClock), `errors.rs` (thiserror error types).
 
 ### agent (`agent/src/`)
 
@@ -102,13 +111,13 @@ NEVER delete, overwrite, or modify files in `runs/`.
 
 ## Testing Practices
 
-874 tests total: 743 Rust + 131 frontend.
+903 tests total: 772 Rust + 131 frontend.
 
-- paint bot: 569 tests (517 unit + 52 integration). Unit tests in `src/*/tests/` directories, accessed via `#[path]` attribute. Tests retain full access to private internals via `use super::*`. Integration tests in `tests/` directory using mock WebSocket servers (`tests/support/mock_ws.rs`) and wiremock for HTTP mocking.
+- paint bot: 598 tests (546 unit + 52 integration). Unit tests in `src/*/tests/` directories, accessed via `#[path]` attribute. Tests retain full access to private internals via `use super::*`. Integration tests in `tests/` directory using mock WebSocket servers (`tests/support/mock_ws.rs`) and wiremock for HTTP mocking. Includes tests for fees, verify, executor, and polymarket modules.
 - agent: 92 tests (89 unit + 3 integration). Covers REST endpoints, WebSocket polling/broadcast, DB reader, process manager (child + noop), auth middleware, error mapping.
 - dashboard server: 82 tests (80 unit + 2 integration). Covers auth/JWT, bot proxy handlers, WebSocket proxy, config parsing, user management, error mapping. Integration tests use wiremock as mock agent.
 - dashboard client: 131 tests across 27 files. Uses vitest + @testing-library/react + jsdom. Key patterns: `vi.mock("../../lib/api")` for API module mocking, `renderWithProviders` wrapper (QueryClientProvider + MemoryRouter), `useAuthStore.getState()`/`setState()` for Zustand testing, `MockWebSocket` class for WebSocket tests, `vi.useFakeTimers()` for reconnection logic. Setup: `src/test/setup.ts` (localStorage polyfill + jest-dom matchers). Shared wrapper: `src/test/test-utils.tsx`.
-- Sweep parity: rust-005 == rust-004 byte-for-byte (excluding elapsed_s). rust-006 is the full-range sweep (Feb 15 to Mar 20, 8.8M ticks). Always verify after changes.
+- Sweep parity: rust-009 == rust-008 byte-for-byte (excluding elapsed_s), confirming v0.8 backward compatibility. Always verify after changes.
 - Sweep temp DBs: PID-based paths (`/tmp/buba-sweep-{pid}-NNNN.db`) to prevent stale-data contamination between runs.
 
 ## Naming Conventions
@@ -131,6 +140,8 @@ NEVER delete, overwrite, or modify files in `runs/`.
 - Prepared statements via `conn.prepare_cached()`
 - Transactions via `conn.transaction()` for multi-statement atomics
 - `data/market-data.db` (merged ticks) has a different schema from per-run DBs
+- Schema evolution uses `add_column_if_missing` for backward compatibility with old run DBs
+- Never create temporary or test databases inside the project directory. Use `/tmp/` or `tempfile::NamedTempFile` in tests. Stray `.db` files in the project root pollute git status and risk accidental commits.
 
 ## Key Behavioral Constraints
 
@@ -138,17 +149,27 @@ NEVER delete, overwrite, or modify files in `runs/`.
 - Kelly criterion: half-Kelly, per-strategy, rolling 30-trade window
 - Confidence curve: `max(0.0, (confidence - 0.5) * 2.5)`
 - Settlement: binary (1.0 or 0.0), close_price >= open_price means UP wins
-- DD pause hysteresis: after pause expires, DD must recover below `peak_dd_pause_pct - dd_pause_recovery_pct` (default 25%) before re-arming
+- Window activation: market_discovery discovers both current and next 5-minute slots. The live loop only activates a window (sets current_window, resubscribes CLOB, captures open_price) when its start_time has passed. Future windows are stored in known_windows and scheduled for delayed activation via a tokio channel. This prevents trading against a window that hasn't started yet.
+- Provisional settlement: on window close, settle immediately using Binance (fast, in-memory) if a valid open price was captured. Mark as `provisional`. If no open price is available (e.g. Binance feed was down at window start), skip provisional settlement and rely entirely on deferred resolution. Spawn background task to poll Gamma API for authoritative outcome. On confirmation, mark `confirmed`. On mismatch, apply correction to balance and mark `corrected`.
+- Polymarket resolution timing: markets resolve 40 seconds to 4+ minutes after the nominal 5-minute window close. The Gamma API `outcomePrices` field converges to `[1,0]` or `[0,1]` only after the on-chain Chainlink resolution completes. Polling starts 30s after close, retries every 10s for up to 5 minutes (configurable via `RESOLUTION_POLL_RETRIES` and `RESOLUTION_POLL_DELAY_MS`).
+- Liquidity clamping: trade sizes are capped to the available order book depth (`ask_size` from CLOB data) and a hard USD cap (`MAX_POSITION_USD`, default $500).
+- Dynamic fees: Polymarket charges taker fees on crypto markets using formula `fee = shares * price * feeRate * (price * (1-price))^exponent`. Current crypto params: feeRate=0.072, exponent=1, peak 1.80% at $0.50 entry.
+- DD pause hysteresis: after pause expires, DD must recover below `peak_dd_pause_pct - dd_pause_recovery_pct` (default 25%) before re-arming.
 - Feed reconnection: backoff only resets if connection lasted > `reconnect_min_stable_ms` (default 5s). Prevents reconnect storms.
 
 ## Key Implementation Details
 
-- Market discovery slug: `btc-updown-5m-{floor(unix_seconds/300)*300}`. The generic `/markets` endpoint does NOT return these 5-minute markets.
+- Market discovery slug: `btc-updown-5m-{floor(unix_seconds/300)*300}`. The generic `/markets` endpoint does NOT return these 5-minute markets. Discovery fetches both current_slot and next_slot, but only current_slot is activated immediately.
 - CLOB initial book: array of `{asset_id, bids, asks}` (no `event_type`). Subsequent updates: `{event_type: "price_change", price_changes: [...]}`.
 - Chainlink RTDS: initial dump `{payload:{data:[...]}}` (no `topic`), then live `{topic:"crypto_prices_chainlink", payload:{...}}`.
 - Staleness: if no Chainlink data for `CHAINLINK_STALE_MS`, force-reconnect. During staleness, settlement falls back to Binance price.
 - Momentum: `(latest - oldest) / oldest` over rolling window. Guarded against division by zero (oldest price <= 0 returns 0).
-- Opposing position guard: single signals block same-strategy same-window. Batch signals (spread-capture) only block exact duplicates.
+- Opposing position guard: single signals block same-strategy same-window. Batch signals (spread-capture) only block exact duplicates. All rejections are logged at debug level with the reason.
+- Deferred resolution: background tokio task polls Gamma API `/events/slug/{slug}` starting 30s after window close (10s intervals, up to 5 min). Sends `DeferredResolution` message to main loop via `tokio::sync::mpsc` channel. Main loop reconciles provisional settlement.
+- Gamma API `outcomePrices` is a JSON-encoded string (not a JSON array). Parse with `serde_json::from_str::<Vec<String>>`.
+- Official Polymarket Rust SDK (`polymarket-client-sdk` v0.4) integrated for read-only CLOB queries. `Client::new(host, Config::default())` creates unauthenticated client. `client.market(condition_id)` returns `MarketResponse` with `tokens[].winner: bool`.
+- Executor trait abstracts paper vs live trading. Only `PaperExecutor` is implemented. `LiveExecutor` is a stub that panics.
+- `init-db` CLI command creates an empty database with all tables and an initial balance event, without starting the bot. Use this instead of running and killing the bot to seed the DB for the agent.
 
 ## Common Issues
 
@@ -157,9 +178,13 @@ NEVER delete, overwrite, or modify files in `runs/`.
 - "Balance below minimum": drawdown hit safety limit. Increase `STARTING_BALANCE`.
 - Chainlink feed stale: RTDS stopped sending while WS stays open. Auto-detected, force-reconnects.
 - Sweep results differ between runs: stale temp DBs. PID-based paths prevent this; check `/tmp/`.
-- Trades open but never settle: window lifecycle race. Fixed with `known_windows` HashMap in live.rs.
-- DD pause loops forever: no hysteresis on re-trigger. Fixed with `dd_pause_armed` + recovery pct.
-- Feed reconnect storm (100s/hour): backoff resets on short connects. Fixed with `should_reset_backoff` in util.rs.
+- Trades open but never settle: window lifecycle race. Fixed in v0.5 with `known_windows` HashMap.
+- DD pause loops forever: no hysteresis on re-trigger. Fixed: `dd_pause_armed` + recovery pct.
+- Feed reconnect storm (100s/hour): backoff resets on short connects. Fixed: `should_reset_backoff` in util.rs.
+- Gamma resolution polling exhausted: Polymarket takes 40s-4min to resolve. v0.8.1 polls for 5 minutes (30 retries at 10s intervals starting 30s after close). If still unresolved, the provisional settlement stands.
+- Settlement mismatch rate: Binance-based provisional settlement disagrees with Polymarket ~5% of the time (when window timing is correct). Corrections are applied automatically.
+- Signal generated but no trade: check debug logs for the rejection reason. Every guard in `try_open` logs why it rejected. Common causes: duplicate position in the same market, insufficient balance, below min bet after liquidity clamp.
+- Trades assigned to wrong market window: fixed in v0.8.1. Previous versions set current_window to next_slot immediately when discovered (3-5 min early). Now windows are only activated at their start_time via delayed tokio task.
 
 ## Useful SQL Queries
 
@@ -184,9 +209,23 @@ GROUP BY t.strategy;
 SELECT datetime(timestamp/1000, 'unixepoch') AS time,
   event, ROUND(balance, 2) AS balance
 FROM balance_log ORDER BY timestamp;
+
+-- Settlement corrections
+SELECT trade_id, settlement_status, provisional_pnl, pnl_net
+FROM trade_results WHERE settlement_status = 'corrected';
+
+-- Check which window a trade was assigned to vs the correct window
+SELECT t.id, t.side,
+  datetime(t.timestamp/1000, 'unixepoch') as trade_time,
+  m.slug as assigned_window,
+  (SELECT m2.slug FROM markets m2
+   WHERE m2.start_time <= t.timestamp AND m2.end_time > t.timestamp
+   LIMIT 1) as correct_window
+FROM simulated_trades t
+JOIN markets m ON t.market_id = m.market_id;
 ```
 
 ## Cross-compilation
 
 - Dev: macOS aarch64 (Apple Silicon)
-- Prod: Linux aarch64 (AWS t4g.micro, Ubuntu 24.04)
+- Prod: Linux aarch64 (AWS t4g.small, Ubuntu 24.04)

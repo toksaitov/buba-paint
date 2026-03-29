@@ -204,6 +204,10 @@ fn close_trade_updates_status_and_inserts_result() {
         pnl_1pct: 8.73,
         pnl_2pct: 8.23,
         pnl_3pct: 7.73,
+        fee_amount: 0.12,
+        pnl_net: 9.11,
+        settlement_status: "confirmed".to_string(),
+        provisional_pnl: None,
     };
     db.close_trade(trade_id, &result).unwrap();
 
@@ -265,6 +269,10 @@ fn get_open_trades_for_market_filters_correctly() {
         pnl_1pct: 4.5,
         pnl_2pct: 4.0,
         pnl_3pct: 3.5,
+        fee_amount: 0.05,
+        pnl_net: 3.95,
+        settlement_status: "provisional".to_string(),
+        provisional_pnl: Some(3.95),
     };
     db.close_trade(id1, &result).unwrap();
 

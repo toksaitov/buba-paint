@@ -90,6 +90,7 @@ const CREATE_SCHEMA: &str = "
         open_price    REAL,
         close_price   REAL,
         outcome       TEXT,
+        polymarket_outcome TEXT,
         run_id        INTEGER NOT NULL,
         FOREIGN KEY (run_id) REFERENCES runs(id)
     );
@@ -249,17 +250,35 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
     log(&format!("  tick_data: {tick_count} rows"));
 
     // Copy markets (INSERT OR IGNORE to handle duplicates across runs).
+    // Check if source DB has polymarket_outcome column (added by verify-settlements).
+    let has_pm_outcome = conn
+        .prepare("SELECT polymarket_outcome FROM src.markets LIMIT 0")
+        .is_ok();
+
     log("  Copying markets...");
-    conn.execute(
-        &format!(
-            "INSERT OR IGNORE INTO markets (market_id, question, condition_id, slug,
-                up_token_id, down_token_id, start_time, end_time, status, run_id)
-             SELECT market_id, question, condition_id, slug,
-                up_token_id, down_token_id, start_time, end_time, status, {run_id}
-             FROM src.markets"
-        ),
-        [],
-    )?;
+    if has_pm_outcome {
+        conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO markets (market_id, question, condition_id, slug,
+                    up_token_id, down_token_id, start_time, end_time, status, polymarket_outcome, run_id)
+                 SELECT market_id, question, condition_id, slug,
+                    up_token_id, down_token_id, start_time, end_time, status, polymarket_outcome, {run_id}
+                 FROM src.markets"
+            ),
+            [],
+        )?;
+    } else {
+        conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO markets (market_id, question, condition_id, slug,
+                    up_token_id, down_token_id, start_time, end_time, status, run_id)
+                 SELECT market_id, question, condition_id, slug,
+                    up_token_id, down_token_id, start_time, end_time, status, {run_id}
+                 FROM src.markets"
+            ),
+            [],
+        )?;
+    }
 
     let market_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM markets WHERE run_id = ?1",
@@ -377,6 +396,31 @@ fn compute_settlements(conn: &Connection) -> anyhow::Result<()> {
             "  WARNING: {missing} markets without settlement (no chainlink data at boundary)"
         ));
     }
+
+    // Override with authoritative Polymarket outcomes where available.
+    // These were fetched by the verify-settlements tool and stored in
+    // per-run DBs. They are the real on-chain resolution outcomes.
+    let overridden: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM markets WHERE polymarket_outcome IS NOT NULL AND outcome != polymarket_outcome",
+        [],
+        |r| r.get(0),
+    )?;
+    conn.execute_batch(
+        "UPDATE markets SET outcome = polymarket_outcome WHERE polymarket_outcome IS NOT NULL",
+    )?;
+    if overridden > 0 {
+        log(&format!(
+            "  Overrode {overridden} Chainlink outcomes with authoritative Polymarket outcomes"
+        ));
+    }
+    let pm_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM markets WHERE polymarket_outcome IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    log(&format!(
+        "  Polymarket outcomes available: {pm_count}/{total}"
+    ));
 
     Ok(())
 }

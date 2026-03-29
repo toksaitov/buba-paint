@@ -78,8 +78,8 @@ impl WindowManager {
                     row.get::<_, String>(5)?,
                     start_i64,
                     end_i64,
-                    row.get::<_, f64>(8)?,
-                    row.get::<_, f64>(9)?,
+                    row.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
+                    row.get::<_, Option<f64>>(9)?.unwrap_or(0.0),
                     outcome_str,
                 ))
             })

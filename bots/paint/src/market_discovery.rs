@@ -316,6 +316,82 @@ pub(crate) fn parse_end_date(s: &str) -> Option<u64> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Resolution polling
+// ---------------------------------------------------------------------------
+
+/// Poll the Gamma API for a market's resolved outcome.
+///
+/// Retries up to `max_retries` times with `delay_ms` between attempts.
+/// Returns `Some(SignalDirection)` when the market is resolved, or `None`
+/// if resolution could not be determined after all retries.
+pub async fn poll_resolution(
+    gamma_api_url: &str,
+    slug: &str,
+    max_retries: u32,
+    delay_ms: u64,
+) -> Option<crate::types::SignalDirection> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(delay_ms.max(3000)))
+        .connect_timeout(std::time::Duration::from_millis(delay_ms.max(2000)))
+        .build()
+        .unwrap_or_default();
+    let url = format!("{gamma_api_url}/events/slug/{slug}");
+
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+
+        let resp = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(slug, attempt, "resolution poll failed: {e}");
+                continue;
+            }
+        };
+
+        if !resp.status().is_success() {
+            warn!(slug, attempt, status = %resp.status(), "resolution poll HTTP error");
+            continue;
+        }
+
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(slug, attempt, "resolution poll JSON error: {e}");
+                continue;
+            }
+        };
+
+        if let Some(outcome) = crate::verify::parse_gamma_outcome(&body) {
+            let direction = match outcome.as_str() {
+                "UP" => crate::types::SignalDirection::Up,
+                "DOWN" => crate::types::SignalDirection::Down,
+                _ => continue,
+            };
+            info!(
+                slug,
+                ?direction,
+                attempt,
+                "resolution confirmed via Gamma API"
+            );
+            return Some(direction);
+        }
+
+        // Not resolved yet, will retry.
+        if attempt < max_retries {
+            tracing::debug!(slug, attempt, "market not yet resolved, retrying...");
+        }
+    }
+
+    warn!(
+        slug,
+        max_retries, "resolution polling exhausted, market not resolved"
+    );
+    None
+}
+
 #[cfg(test)]
 #[path = "tests/market_discovery_tests.rs"]
 mod tests;

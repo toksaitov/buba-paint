@@ -156,6 +156,8 @@ pub fn run_sweep(
                             total_pnl: 0.0,
                             max_drawdown_pct: 0.0,
                             high_water_mark: starting_balance,
+                            total_fees: 0.0,
+                            pnl_net: 0.0,
                         },
                     )
                 }
@@ -229,6 +231,8 @@ pub(crate) fn build_csv(
         "hwm".to_string(),
         "final_balance".to_string(),
         "signals".to_string(),
+        "total_fees".to_string(),
+        "pnl_net".to_string(),
         "elapsed_s".to_string(),
     ]);
     csv.push_str(&headers.join(","));
@@ -246,6 +250,8 @@ pub(crate) fn build_csv(
         row.push(format!("{}", r.high_water_mark));
         row.push(format!("{}", r.final_balance));
         row.push(format!("{}", r.signals));
+        row.push(format!("{}", r.total_fees));
+        row.push(format!("{}", r.pnl_net));
         row.push(format!("{}", r.elapsed_seconds));
         csv.push_str(&row.join(","));
         csv.push('\n');

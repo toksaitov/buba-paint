@@ -46,6 +46,7 @@ impl PositionManager {
         signal: &Signal,
         window: &MarketWindow,
         is_batch: bool,
+        available_liquidity_tokens: f64,
         db: &Database,
         bankroll: &mut BankrollManager,
         config: &Config,
@@ -63,23 +64,35 @@ impl PositionManager {
 
         // Guard: bankroll allows trading.
         if !bankroll.can_trade(config, clock) {
+            tracing::debug!(
+                strategy = %signal.strategy,
+                "trade rejected: bankroll blocked"
+            );
             return None;
         }
 
         // Guard: duplicate position in the same market.
         let existing = db.get_open_trades_for_market(&window.market_id).ok()?;
         if is_batch {
-            // Block exact duplicates (same strategy + same direction).
             let duplicate = existing
                 .iter()
                 .any(|t| t.strategy == signal.strategy && t.side == signal.direction);
             if duplicate {
+                tracing::debug!(
+                    strategy = %signal.strategy,
+                    market = %window.market_id,
+                    "trade rejected: duplicate batch position"
+                );
                 return None;
             }
         } else {
-            // Block ANY position from the same strategy.
             let same_strategy = existing.iter().any(|t| t.strategy == signal.strategy);
             if same_strategy {
+                tracing::debug!(
+                    strategy = %signal.strategy,
+                    market = %window.market_id,
+                    "trade rejected: duplicate strategy position"
+                );
                 return None;
             }
         }
@@ -95,7 +108,7 @@ impl PositionManager {
         };
 
         // Reserve capital via the bankroll manager.
-        let size = bankroll.reserve_capital(
+        let mut size = bankroll.reserve_capital(
             entry_price,
             signal.confidence,
             &signal.strategy,
@@ -103,6 +116,31 @@ impl PositionManager {
             clock,
         );
         if size <= 0.0 {
+            tracing::debug!(
+                strategy = %signal.strategy,
+                entry_price,
+                "trade rejected: reserve_capital returned 0"
+            );
+            return None;
+        }
+
+        // Clamp to available order book liquidity.
+        if available_liquidity_tokens > 0.0 && size > available_liquidity_tokens {
+            let excess_cost = (size - available_liquidity_tokens) * entry_price;
+            size = available_liquidity_tokens;
+            bankroll.release_reserved(excess_cost);
+        }
+
+        // Check if clamped size is still above minimum bet.
+        if size * entry_price < config.min_bet_usd {
+            let cost = size * entry_price;
+            tracing::debug!(
+                strategy = %signal.strategy,
+                clamped_usd = cost,
+                min_bet = config.min_bet_usd,
+                "trade rejected: below min bet after liquidity clamp"
+            );
+            bankroll.release_reserved(cost);
             return None;
         }
 
@@ -222,10 +260,9 @@ impl PositionManager {
         trades
     }
 
-    /// Settle all open trades in a resolved market window.
-    ///
-    /// Returns a `Vec` of `(trade, result)` pairs.  The caller is responsible
-    /// for feeding these to the circuit breaker and trend tracker.
+    /// Settle all open trades in a resolved market window using open/close
+    /// price comparison (used by the backtester where the outcome is derived
+    /// from Chainlink data).
     #[allow(clippy::too_many_arguments)]
     pub fn resolve_window(
         &mut self,
@@ -242,14 +279,33 @@ impl PositionManager {
         } else {
             SignalDirection::Down
         };
+        self.resolve_window_with_outcome(window, outcome, db, bankroll, config, clock)
+    }
+
+    /// Settle all open trades using a known authoritative outcome (used by the
+    /// live bot after polling the Gamma API for the actual Polymarket resolution).
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_window_with_outcome(
+        &mut self,
+        window: &MarketWindow,
+        outcome: SignalDirection,
+        db: &Database,
+        bankroll: &mut BankrollManager,
+        config: &Config,
+        clock: &dyn Clock,
+    ) -> Vec<(SimulatedTrade, TradeResult)> {
+        let outcome_str = match outcome {
+            SignalDirection::Up => "UP",
+            SignalDirection::Down => "DOWN",
+        };
 
         let Ok(trades) = db.get_open_trades_for_market(&window.market_id) else {
-            let _ = db.resolve_market(&window.market_id, "resolved");
+            let _ = db.resolve_market_with_outcome(&window.market_id, "resolved", outcome_str);
             return Vec::new();
         };
 
         if trades.is_empty() {
-            let _ = db.resolve_market(&window.market_id, "resolved");
+            let _ = db.resolve_market_with_outcome(&window.market_id, "resolved", outcome_str);
             return Vec::new();
         }
 
@@ -264,6 +320,13 @@ impl PositionManager {
             let gross = (settlement_price - trade.entry_price) * trade.size;
             let entry_cost = trade.entry_price * trade.size;
 
+            let fee_amount = crate::fees::compute_taker_fee(
+                trade.entry_price,
+                trade.size,
+                config.taker_fee_rate,
+                config.taker_fee_exponent,
+            );
+
             let result = TradeResult {
                 trade_id,
                 exit_price: settlement_price,
@@ -272,6 +335,10 @@ impl PositionManager {
                 pnl_1pct: gross - entry_cost * 0.01,
                 pnl_2pct: gross - entry_cost * 0.02,
                 pnl_3pct: gross - entry_cost * 0.03,
+                fee_amount,
+                pnl_net: gross - fee_amount,
+                settlement_status: "confirmed".to_string(),
+                provisional_pnl: None,
             };
 
             let _ = db.close_trade(trade_id, &result);
@@ -285,6 +352,7 @@ impl PositionManager {
                 trade.entry_price,
                 trade.size,
                 settlement_price,
+                fee_amount,
                 &trade.strategy,
                 config,
                 db,
@@ -294,7 +362,7 @@ impl PositionManager {
             results.push((trade, result));
         }
 
-        let _ = db.resolve_market(&window.market_id, "resolved");
+        let _ = db.resolve_market_with_outcome(&window.market_id, "resolved", outcome_str);
 
         results
     }

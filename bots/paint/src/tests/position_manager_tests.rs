@@ -104,7 +104,16 @@ fn try_open_returns_trade_with_correct_fields() {
 
     let signal = up_signal();
     let trade = pm
-        .try_open(&signal, &window, false, &db, &mut bankroll, &config, &clock)
+        .try_open(
+            &signal,
+            &window,
+            false,
+            f64::MAX,
+            &db,
+            &mut bankroll,
+            &config,
+            &clock,
+        )
         .expect("should open trade");
 
     assert!(trade.id.is_some());
@@ -134,7 +143,16 @@ fn try_open_blocks_at_max_positions() {
 
     // Open one trade to reach the limit.
     let signal = up_signal();
-    let trade = pm.try_open(&signal, &window, false, &db, &mut bankroll, &config, &clock);
+    let trade = pm.try_open(
+        &signal,
+        &window,
+        false,
+        f64::MAX,
+        &db,
+        &mut bankroll,
+        &config,
+        &clock,
+    );
     assert!(trade.is_some());
     assert_eq!(pm.open_count(), 1);
 
@@ -154,6 +172,7 @@ fn try_open_blocks_at_max_positions() {
         &signal,
         &window2,
         false,
+        f64::MAX,
         &db,
         &mut bankroll,
         &config,
@@ -176,7 +195,16 @@ fn try_open_blocks_same_strategy_non_batch() {
     db.upsert_market(&window).unwrap();
 
     let signal = up_signal();
-    let trade = pm.try_open(&signal, &window, false, &db, &mut bankroll, &config, &clock);
+    let trade = pm.try_open(
+        &signal,
+        &window,
+        false,
+        f64::MAX,
+        &db,
+        &mut bankroll,
+        &config,
+        &clock,
+    );
     assert!(trade.is_some());
 
     // Same strategy, different direction, same market — should be blocked (non-batch).
@@ -185,6 +213,7 @@ fn try_open_blocks_same_strategy_non_batch() {
         &signal2,
         &window,
         false,
+        f64::MAX,
         &db,
         &mut bankroll,
         &config,
@@ -211,6 +240,7 @@ fn try_open_allows_same_strategy_different_direction_batch() {
         &signal_up,
         &window,
         true,
+        f64::MAX,
         &db,
         &mut bankroll,
         &config,
@@ -224,6 +254,7 @@ fn try_open_allows_same_strategy_different_direction_batch() {
         &signal_down,
         &window,
         true,
+        f64::MAX,
         &db,
         &mut bankroll,
         &config,
@@ -280,7 +311,16 @@ fn resolve_window_settles_win_up_outcome() {
     // Open an UP trade.
     let signal = up_signal();
     let trade = pm
-        .try_open(&signal, &window, false, &db, &mut bankroll, &config, &clock)
+        .try_open(
+            &signal,
+            &window,
+            false,
+            f64::MAX,
+            &db,
+            &mut bankroll,
+            &config,
+            &clock,
+        )
         .unwrap();
     let entry_price = trade.entry_price;
     let size = trade.size;
@@ -330,7 +370,16 @@ fn resolve_window_settles_loss() {
     // Open an UP trade.
     let signal = up_signal();
     let trade = pm
-        .try_open(&signal, &window, false, &db, &mut bankroll, &config, &clock)
+        .try_open(
+            &signal,
+            &window,
+            false,
+            f64::MAX,
+            &db,
+            &mut bankroll,
+            &config,
+            &clock,
+        )
         .unwrap();
     let entry_price = trade.entry_price;
     let size = trade.size;
@@ -378,6 +427,7 @@ fn resolve_window_decrements_open_count() {
         &signal_up,
         &window,
         true,
+        f64::MAX,
         &db,
         &mut bankroll,
         &config,
@@ -388,6 +438,7 @@ fn resolve_window_decrements_open_count() {
         &signal_down,
         &window,
         true,
+        f64::MAX,
         &db,
         &mut bankroll,
         &config,
@@ -453,7 +504,16 @@ fn try_open_returns_none_with_tiny_balance() {
     db.upsert_market(&window).unwrap();
 
     let signal = up_signal();
-    let result = pm.try_open(&signal, &window, false, &db, &mut bankroll, &config, &clock);
+    let result = pm.try_open(
+        &signal,
+        &window,
+        false,
+        f64::MAX,
+        &db,
+        &mut bankroll,
+        &config,
+        &clock,
+    );
     assert!(
         result.is_none(),
         "should return None when balance is below min threshold"
@@ -500,6 +560,7 @@ fn resolve_window_mixed_win_and_loss() {
             &signal_up,
             &window,
             true,
+            f64::MAX,
             &db,
             &mut bankroll,
             &config,
@@ -511,6 +572,7 @@ fn resolve_window_mixed_win_and_loss() {
             &signal_down,
             &window,
             true,
+            f64::MAX,
             &db,
             &mut bankroll,
             &config,
@@ -573,7 +635,16 @@ fn try_open_down_direction_uses_correct_token_and_price() {
 
     let signal = down_signal();
     let trade = pm
-        .try_open(&signal, &window, false, &db, &mut bankroll, &config, &clock)
+        .try_open(
+            &signal,
+            &window,
+            false,
+            f64::MAX,
+            &db,
+            &mut bankroll,
+            &config,
+            &clock,
+        )
         .expect("should open DOWN trade");
 
     assert_eq!(trade.side, SignalDirection::Down);
@@ -651,7 +722,16 @@ fn resolve_window_down_outcome() {
 
     let signal = down_signal();
     let _trade = pm
-        .try_open(&signal, &window, false, &db, &mut bankroll, &config, &clock)
+        .try_open(
+            &signal,
+            &window,
+            false,
+            f64::MAX,
+            &db,
+            &mut bankroll,
+            &config,
+            &clock,
+        )
         .unwrap();
 
     // Resolve: close < open → DOWN wins.

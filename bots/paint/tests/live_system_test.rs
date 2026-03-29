@@ -32,6 +32,8 @@ fn test_config(binance_url: &str, clob_url: &str, chainlink_url: &str, gamma_url
         spread_capture_threshold: 0.50,
         momentum_window_ms: 5_000,
         log_level: "warn".to_string(),
+        resolution_poll_retries: 0,
+        resolution_poll_delay_ms: 0,
         ..Config::default()
     }
 }
@@ -236,6 +238,8 @@ async fn live_bot_processes_one_market_window() {
         spread_capture_threshold: 0.50,
         momentum_window_ms: 5_000,
         log_level: "warn".to_string(),
+        resolution_poll_retries: 0,
+        resolution_poll_delay_ms: 0,
         ..Config::default()
     };
 

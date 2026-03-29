@@ -95,7 +95,55 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     for sql in MIGRATIONS {
         tx.execute_batch(sql)?;
     }
-    tx.commit()
+    tx.commit()?;
+
+    // v0.7 schema additions (idempotent, outside the main migration array
+    // so they can safely fail on "duplicate column" for existing databases).
+    add_column_if_missing(conn, "markets", "outcome", "TEXT");
+    add_column_if_missing(conn, "trade_results", "fee_amount", "REAL DEFAULT 0");
+    add_column_if_missing(conn, "trade_results", "pnl_net", "REAL DEFAULT 0");
+    add_column_if_missing(
+        conn,
+        "trade_results",
+        "settlement_status",
+        "TEXT DEFAULT 'confirmed'",
+    );
+    add_column_if_missing(conn, "trade_results", "provisional_pnl", "REAL");
+    // Future live trading columns.
+    add_column_if_missing(
+        conn,
+        "simulated_trades",
+        "execution_mode",
+        "TEXT DEFAULT 'paper'",
+    );
+    add_column_if_missing(conn, "simulated_trades", "order_id", "TEXT");
+    add_column_if_missing(conn, "simulated_trades", "fill_price", "REAL");
+
+    // Settlement audit trail (v0.7).
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS settlement_audit (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_id            INTEGER NOT NULL,
+            market_id           TEXT NOT NULL,
+            our_prediction      TEXT NOT NULL,
+            polymarket_outcome  TEXT NOT NULL,
+            matched             INTEGER NOT NULL,
+            timestamp           INTEGER NOT NULL,
+            FOREIGN KEY (trade_id) REFERENCES simulated_trades(id)
+        )",
+    );
+
+    Ok(())
+}
+
+/// Add a column to a table if it does not already exist.
+fn add_column_if_missing(conn: &rusqlite::Connection, table: &str, column: &str, col_type: &str) {
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {col_type}");
+    match conn.execute_batch(&sql) {
+        Ok(()) => {}
+        Err(e) if e.to_string().contains("duplicate column") => {}
+        Err(e) => tracing::warn!("failed to add column {table}.{column}: {e}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

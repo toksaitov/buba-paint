@@ -36,6 +36,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures-util = "0.3"
 url = "2"
+polymarket-client-sdk = { version = "0.4", features = ["clob"] }
 
 [dev-dependencies]
 proptest = "1"

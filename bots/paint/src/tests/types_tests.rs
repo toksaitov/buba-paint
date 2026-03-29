@@ -321,9 +321,17 @@ fn construct_trade_result() {
         pnl_1pct: 8.73,
         pnl_2pct: 8.23,
         pnl_3pct: 7.73,
+        fee_amount: 0.12,
+        pnl_net: 9.11,
+        settlement_status: "confirmed".to_string(),
+        provisional_pnl: None,
     };
     assert_eq!(result.trade_id, 42);
     assert!((result.pnl_0pct - 9.23).abs() < f64::EPSILON);
+    assert!((result.fee_amount - 0.12).abs() < f64::EPSILON);
+    assert!((result.pnl_net - 9.11).abs() < f64::EPSILON);
+    assert_eq!(result.settlement_status, "confirmed");
+    assert!(result.provisional_pnl.is_none());
 }
 
 // -- FeedStatus --------------------------------------------------------

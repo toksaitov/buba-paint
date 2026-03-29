@@ -261,15 +261,15 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
     let header_cols: Vec<&str> = header.split(',').collect();
     assert_eq!(
         header_cols.len(),
-        12,
-        "expected 12 columns, got {}",
+        14,
+        "expected 14 columns, got {}",
         header_cols.len()
     );
 
     // All data values must be parseable as f64.
     for (row_idx, line) in lines.iter().skip(1).enumerate() {
         let cols: Vec<&str> = line.split(',').collect();
-        assert_eq!(cols.len(), 12);
+        assert_eq!(cols.len(), 14);
         for (col_idx, col) in cols.iter().enumerate() {
             col.parse::<f64>().unwrap_or_else(|e| {
                 panic!(

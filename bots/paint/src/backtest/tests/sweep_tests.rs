@@ -191,6 +191,8 @@ fn result_with_pnl(pnl: f64) -> BacktestResult {
         total_pnl: pnl,
         max_drawdown_pct: 0.05,
         high_water_mark: 200.0 + pnl,
+        total_fees: 0.0,
+        pnl_net: pnl,
     }
 }
 
@@ -204,7 +206,7 @@ fn build_csv_empty_results_just_header() {
     assert_eq!(lines.len(), 1, "empty results should produce only a header");
     assert_eq!(
         lines[0],
-        "MOMENTUM,MAX_ASK,pnl,win_rate,trades,wins,losses,max_dd,hwm,final_balance,signals,elapsed_s"
+        "MOMENTUM,MAX_ASK,pnl,win_rate,trades,wins,losses,max_dd,hwm,final_balance,signals,total_fees,pnl_net,elapsed_s"
     );
 }
 
@@ -221,7 +223,7 @@ fn build_csv_single_result_correct_row() {
     // Verify header columns.
     assert_eq!(
         lines[0],
-        "PARAM_A,pnl,win_rate,trades,wins,losses,max_dd,hwm,final_balance,signals,elapsed_s"
+        "PARAM_A,pnl,win_rate,trades,wins,losses,max_dd,hwm,final_balance,signals,total_fees,pnl_net,elapsed_s"
     );
 
     // Verify the data row starts with the parameter value.
@@ -233,7 +235,7 @@ fn build_csv_single_result_correct_row() {
 
     // Parse the row and check key values.
     let cols: Vec<&str> = lines[1].split(',').collect();
-    assert_eq!(cols.len(), 11, "should have 1 param + 10 metric columns");
+    assert_eq!(cols.len(), 13, "should have 1 param + 12 metric columns");
     assert_eq!(cols[0], "0.5"); // PARAM_A
     assert_eq!(cols[1], "42"); // pnl
     assert_eq!(cols[3], "3"); // trades
@@ -250,8 +252,8 @@ fn build_csv_header_matches_expected_columns() {
     let header = csv.lines().next().unwrap();
     let cols: Vec<&str> = header.split(',').collect();
 
-    // 3 dim params + 10 metric columns = 13.
-    assert_eq!(cols.len(), 13);
+    // 3 dim params + 12 metric columns = 15.
+    assert_eq!(cols.len(), 15);
     assert_eq!(cols[0], "X");
     assert_eq!(cols[1], "Y");
     assert_eq!(cols[2], "Z");
@@ -264,7 +266,9 @@ fn build_csv_header_matches_expected_columns() {
     assert_eq!(cols[9], "hwm");
     assert_eq!(cols[10], "final_balance");
     assert_eq!(cols[11], "signals");
-    assert_eq!(cols[12], "elapsed_s");
+    assert_eq!(cols[12], "total_fees");
+    assert_eq!(cols[13], "pnl_net");
+    assert_eq!(cols[14], "elapsed_s");
 }
 
 #[test]
@@ -277,7 +281,7 @@ fn build_csv_no_dims_only_metrics() {
     assert_eq!(lines.len(), 2);
 
     let header_cols: Vec<&str> = lines[0].split(',').collect();
-    assert_eq!(header_cols.len(), 10); // just the metric columns
+    assert_eq!(header_cols.len(), 12); // just the metric columns
     assert_eq!(header_cols[0], "pnl");
 }
 

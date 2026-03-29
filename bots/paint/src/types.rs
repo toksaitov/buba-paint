@@ -246,6 +246,16 @@ pub struct TradeResult {
     pub pnl_1pct: f64,
     pub pnl_2pct: f64,
     pub pnl_3pct: f64,
+    /// Actual dynamic fee amount computed from Polymarket's fee formula.
+    pub fee_amount: f64,
+    /// Profit/loss after the dynamic fee.
+    pub pnl_net: f64,
+    /// Settlement status: provisional (Binance), confirmed (matches Polymarket),
+    /// or corrected (was provisional, Polymarket disagreed, adjusted).
+    pub settlement_status: String,
+    /// The original Binance-based profit/loss before any Polymarket correction
+    /// (None for backtested trades or trades that were never provisional).
+    pub provisional_pnl: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------

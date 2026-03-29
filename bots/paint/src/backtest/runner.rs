@@ -45,6 +45,8 @@ pub struct BacktestResult {
     pub total_pnl: f64,
     pub max_drawdown_pct: f64,
     pub high_water_mark: f64,
+    pub total_fees: f64,
+    pub pnl_net: f64,
 }
 
 /// How tick data is sourced.
@@ -170,11 +172,12 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             let mw = WindowManager::to_market_window(closed);
             // Upsert market in results DB so PositionManager can find it.
             let _ = results_db.upsert_market(&mw);
-            // Resolve window — returns (trade, result) pairs.
-            let resolved = position_manager.resolve_window(
+            // Resolve window using the authoritative outcome loaded from the DB.
+            // When polymarket_outcome is available, this uses the real on-chain
+            // resolution. Otherwise falls back to the Chainlink-derived outcome.
+            let resolved = position_manager.resolve_window_with_outcome(
                 &mw,
-                closed.open_price,
-                closed.close_price,
+                closed.outcome,
                 &results_db,
                 &mut bankroll,
                 config,
@@ -234,10 +237,23 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
                     }
                     let _ = results_db.log_signal(&signal);
                     signal_count += 1;
+                    let available_tokens = match signal.direction {
+                        crate::types::SignalDirection::Up => feed_state
+                            .book_state
+                            .up
+                            .as_ref()
+                            .map_or(0.0, |b| b.ask_size),
+                        crate::types::SignalDirection::Down => feed_state
+                            .book_state
+                            .down
+                            .as_ref()
+                            .map_or(0.0, |b| b.ask_size),
+                    };
                     position_manager.try_open(
                         &signal,
                         &current_mw,
                         false,
+                        available_tokens,
                         &results_db,
                         &mut bankroll,
                         config,
@@ -282,6 +298,8 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
         total_pnl: stats.total_pnl,
         max_drawdown_pct: stats.max_drawdown_pct,
         high_water_mark: stats.high_water_mark,
+        total_fees: stats.total_fees,
+        pnl_net: stats.total_pnl,
     };
 
     if !options.quiet {

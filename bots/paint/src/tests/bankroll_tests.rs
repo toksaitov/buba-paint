@@ -230,7 +230,7 @@ fn apply_trade_result_win() {
     // Simulate a winning trade: bought 10 tokens at 0.45, settled at 1.0
     // cost = 10 * 0.45 = 4.5, payout = 10 * 1.0 = 10.0, pnl = +5.5
     mgr.reserved_capital = 4.5; // simulate prior reservation
-    mgr.apply_trade_result(1, 0.45, 10.0, 1.0, "latency-arb", &cfg, &db, &clock);
+    mgr.apply_trade_result(1, 0.45, 10.0, 1.0, 0.0, "latency-arb", &cfg, &db, &clock);
 
     assert!(
         (mgr.get_balance() - 205.5).abs() < 1e-10,
@@ -254,7 +254,7 @@ fn apply_trade_result_loss() {
     // Losing trade: bought 10 tokens at 0.55, settled at 0.0
     // cost = 10 * 0.55 = 5.5, payout = 0.0, pnl = -5.5
     mgr.reserved_capital = 5.5;
-    mgr.apply_trade_result(1, 0.55, 10.0, 0.0, "latency-arb", &cfg, &db, &clock);
+    mgr.apply_trade_result(1, 0.55, 10.0, 0.0, 0.0, "latency-arb", &cfg, &db, &clock);
 
     assert!(
         (mgr.get_balance() - 194.5).abs() < 1e-10,
@@ -366,6 +366,7 @@ fn rolling_window_eviction() {
             0.50,
             10.0,
             1.0,
+            0.0,
             "latency-arb",
             &cfg,
             &db,
@@ -376,7 +377,7 @@ fn rolling_window_eviction() {
 
     // Push one more (a loss) — oldest win should be evicted.
     mgr.reserved_capital = 5.0;
-    mgr.apply_trade_result(6, 0.50, 10.0, 0.0, "latency-arb", &cfg, &db, &clock);
+    mgr.apply_trade_result(6, 0.50, 10.0, 0.0, 0.0, "latency-arb", &cfg, &db, &clock);
     assert_eq!(mgr.recent_results.len(), 5);
     // First element should now be the second original win (index 1).
     assert!(mgr.recent_results[0].won); // was originally trade #2, still a win
@@ -405,6 +406,7 @@ fn strategy_win_rate_from_lifetime_stats() {
             0.50,
             10.0,
             settlement,
+            0.0,
             "test-strat",
             &cfg,
             &db,
@@ -437,6 +439,7 @@ fn strategy_win_rate_from_rolling_window() {
             0.50,
             10.0,
             settlement,
+            0.0,
             "test-strat",
             &cfg,
             &db,
@@ -476,6 +479,7 @@ fn strategy_win_rate_rolling_filters_by_strategy() {
             0.50,
             10.0,
             1.0,
+            0.0,
             "strat-a",
             &cfg,
             &db,
@@ -488,6 +492,7 @@ fn strategy_win_rate_rolling_filters_by_strategy() {
             i64::from(i) + 6,
             0.50,
             10.0,
+            0.0,
             0.0,
             "strat-b",
             &cfg,
@@ -576,7 +581,7 @@ fn high_water_mark_updates() {
     let mut mgr = make_manager(&cfg, &db, &clock);
 
     mgr.reserved_capital = 5.0;
-    mgr.apply_trade_result(1, 0.50, 10.0, 1.0, "latency-arb", &cfg, &db, &clock);
+    mgr.apply_trade_result(1, 0.50, 10.0, 1.0, 0.0, "latency-arb", &cfg, &db, &clock);
     // pnl = 10*1.0 - 10*0.50 = 5.0. Balance = 205.0
     assert!(
         (mgr.high_water_mark - 205.0).abs() < 1e-10,
@@ -640,9 +645,9 @@ fn get_stats_snapshot() {
 
     // Record a win and a loss.
     mgr.reserved_capital = 5.0;
-    mgr.apply_trade_result(1, 0.50, 10.0, 1.0, "s", &cfg, &db, &clock);
+    mgr.apply_trade_result(1, 0.50, 10.0, 1.0, 0.0, "s", &cfg, &db, &clock);
     mgr.reserved_capital = 5.0;
-    mgr.apply_trade_result(2, 0.50, 10.0, 0.0, "s", &cfg, &db, &clock);
+    mgr.apply_trade_result(2, 0.50, 10.0, 0.0, 0.0, "s", &cfg, &db, &clock);
 
     let stats = mgr.get_stats();
     assert!((stats.starting_balance - 200.0).abs() < f64::EPSILON);
@@ -711,7 +716,17 @@ fn win_rate_after_trades() {
     for (i, won) in [true, true, true, false].iter().enumerate() {
         mgr.reserved_capital = 5.0;
         let settlement = if *won { 1.0 } else { 0.0 };
-        mgr.apply_trade_result(i as i64 + 1, 0.50, 10.0, settlement, "s", &cfg, &db, &clock);
+        mgr.apply_trade_result(
+            i as i64 + 1,
+            0.50,
+            10.0,
+            settlement,
+            0.0,
+            "s",
+            &cfg,
+            &db,
+            &clock,
+        );
     }
 
     assert!(
@@ -759,7 +774,7 @@ fn apply_trade_result_reserved_capital_clamped_to_zero() {
     // Artificially set reserved_capital below the trade cost.
     mgr.reserved_capital = 1.0;
     // Trade cost = 0.50 * 10 = 5.0 > 1.0 reserved.
-    mgr.apply_trade_result(1, 0.50, 10.0, 1.0, "latency-arb", &cfg, &db, &clock);
+    mgr.apply_trade_result(1, 0.50, 10.0, 1.0, 0.0, "latency-arb", &cfg, &db, &clock);
     assert!(
         mgr.reserved_capital >= 0.0,
         "reserved_capital should never go negative, got {}",
@@ -883,7 +898,7 @@ fn peak_drawdown_tracked_after_loss() {
 
     // Apply a losing trade to create drawdown.
     mgr.reserved_capital = 5.5;
-    mgr.apply_trade_result(1, 0.55, 10.0, 0.0, "latency-arb", &cfg, &db, &clock);
+    mgr.apply_trade_result(1, 0.55, 10.0, 0.0, 0.0, "latency-arb", &cfg, &db, &clock);
     // pnl = -5.5, balance = 194.5, DD = (200-194.5)/200 = 0.0275
     assert!(
         mgr.peak_drawdown_pct > 0.0,
@@ -1099,7 +1114,7 @@ fn get_drawdown_pct_after_loss() {
     // cost = 20 * 0.50 = 10.0, payout = 0.0, pnl = -10.0
     // Balance: 200 - 10 = 190, HWM = 200, DD = (200-190)/200 = 0.05
     mgr.reserved_capital = 10.0;
-    mgr.apply_trade_result(1, 0.50, 20.0, 0.0, "latency-arb", &cfg, &db, &clock);
+    mgr.apply_trade_result(1, 0.50, 20.0, 0.0, 0.0, "latency-arb", &cfg, &db, &clock);
 
     let dd = mgr.get_drawdown_pct();
     assert!(dd > 0.0, "drawdown should be > 0 after a loss, got {dd}");
@@ -1129,6 +1144,7 @@ fn get_win_rate_after_trades() {
             0.50,
             10.0,
             settlement,
+            0.0,
             "latency-arb",
             &cfg,
             &db,

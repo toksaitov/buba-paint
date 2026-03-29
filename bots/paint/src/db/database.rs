@@ -154,8 +154,9 @@ impl Database {
 
         tx.prepare_cached(
             "INSERT INTO trade_results (trade_id, exit_price, settlement_price, \
-             pnl_0pct, pnl_1pct, pnl_2pct, pnl_3pct, resolved_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             pnl_0pct, pnl_1pct, pnl_2pct, pnl_3pct, fee_amount, pnl_net, \
+             settlement_status, provisional_pnl, resolved_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?
         .execute(params![
             trade_id,
@@ -165,6 +166,10 @@ impl Database {
             result.pnl_1pct,
             result.pnl_2pct,
             result.pnl_3pct,
+            result.fee_amount,
+            result.pnl_net,
+            result.settlement_status,
+            result.provisional_pnl,
             resolved_at,
         ])?;
 
@@ -251,6 +256,139 @@ impl Database {
             .conn
             .prepare_cached("UPDATE markets SET status = ?1 WHERE market_id = ?2")?;
         stmt.execute(params![status, market_id])?;
+        Ok(())
+    }
+
+    /// Resolve a market and record the outcome (UP or DOWN).
+    pub fn resolve_market_with_outcome(
+        &self,
+        market_id: &str,
+        status: &str,
+        outcome: &str,
+    ) -> anyhow::Result<()> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("UPDATE markets SET status = ?1, outcome = ?2 WHERE market_id = ?3")?;
+        stmt.execute(params![status, outcome, market_id])?;
+        Ok(())
+    }
+
+    /// Log a settlement audit entry comparing our prediction against Polymarket's outcome.
+    pub fn log_settlement_audit(
+        &self,
+        trade_id: i64,
+        market_id: &str,
+        our_prediction: &str,
+        polymarket_outcome: &str,
+        timestamp: u64,
+    ) -> anyhow::Result<()> {
+        let matched = i32::from(our_prediction == polymarket_outcome);
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO settlement_audit (trade_id, market_id, our_prediction, polymarket_outcome, matched, timestamp) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        #[allow(clippy::cast_possible_wrap)]
+        stmt.execute(params![
+            trade_id,
+            market_id,
+            our_prediction,
+            polymarket_outcome,
+            matched,
+            timestamp as i64,
+        ])?;
+        Ok(())
+    }
+
+    /// Read a single trade by its ID (regardless of status).
+    pub fn get_trade_by_id(&self, trade_id: i64) -> anyhow::Result<Option<SimulatedTrade>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, timestamp, market_id, strategy, side, token_id, entry_price, size, status \
+             FROM simulated_trades WHERE id = ?1",
+        )?;
+        let result = stmt
+            .query_row(params![trade_id], |row| {
+                let side_str: String = row.get(4)?;
+                let status_str: String = row.get(8)?;
+                Ok(SimulatedTrade {
+                    id: Some(row.get(0)?),
+                    timestamp: row.get(1)?,
+                    market_id: row.get(2)?,
+                    strategy: row.get(3)?,
+                    side: SignalDirection::from_str(&side_str).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            4,
+                            rusqlite::types::Type::Text,
+                            Box::from(e),
+                        )
+                    })?,
+                    token_id: row.get(5)?,
+                    entry_price: row.get(6)?,
+                    size: row.get(7)?,
+                    status: TradeStatus::from_str(&status_str).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            8,
+                            rusqlite::types::Type::Text,
+                            Box::from(e),
+                        )
+                    })?,
+                })
+            })
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Read a trade result by its trade ID.
+    pub fn get_trade_result(&self, trade_id: i64) -> anyhow::Result<Option<TradeResult>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT trade_id, exit_price, settlement_price, pnl_0pct, pnl_1pct, pnl_2pct, pnl_3pct, \
+             COALESCE(fee_amount, 0), COALESCE(pnl_net, pnl_0pct), \
+             COALESCE(settlement_status, 'confirmed'), provisional_pnl \
+             FROM trade_results WHERE trade_id = ?1",
+        )?;
+        let result = stmt
+            .query_row(params![trade_id], |row| {
+                Ok(TradeResult {
+                    trade_id: row.get(0)?,
+                    exit_price: row.get(1)?,
+                    settlement_price: row.get(2)?,
+                    pnl_0pct: row.get(3)?,
+                    pnl_1pct: row.get(4)?,
+                    pnl_2pct: row.get(5)?,
+                    pnl_3pct: row.get(6)?,
+                    fee_amount: row.get(7)?,
+                    pnl_net: row.get(8)?,
+                    settlement_status: row.get(9)?,
+                    provisional_pnl: row.get(10)?,
+                })
+            })
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Update a trade result with corrected settlement data.
+    pub fn update_trade_settlement(
+        &self,
+        trade_id: i64,
+        result: &TradeResult,
+        status: &str,
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE trade_results SET \
+             settlement_price = ?1, pnl_0pct = ?2, pnl_1pct = ?3, pnl_2pct = ?4, pnl_3pct = ?5, \
+             fee_amount = ?6, pnl_net = ?7, settlement_status = ?8 \
+             WHERE trade_id = ?9",
+        )?;
+        stmt.execute(params![
+            result.settlement_price,
+            result.pnl_0pct,
+            result.pnl_1pct,
+            result.pnl_2pct,
+            result.pnl_3pct,
+            result.fee_amount,
+            result.pnl_net,
+            status,
+            trade_id,
+        ])?;
         Ok(())
     }
 

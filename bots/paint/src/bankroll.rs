@@ -39,6 +39,7 @@ pub struct BankrollStats {
     pub losses: u64,
     pub win_rate: f64,
     pub total_pnl: f64,
+    pub total_fees: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,7 @@ pub struct BankrollManager {
     reserved_capital: f64,
     peak_dd_pause_until: u64,
     dd_pause_armed: bool,
+    total_fees: f64,
     strategy_stats: HashMap<String, StrategyRecord>,
     recent_results: Vec<TradeResultRecord>,
     kelly_rolling_window: usize,
@@ -90,6 +92,7 @@ impl BankrollManager {
             reserved_capital: 0.0,
             peak_dd_pause_until: 0,
             dd_pause_armed: true,
+            total_fees: 0.0,
             strategy_stats: HashMap::new(),
             recent_results: Vec::new(),
             kelly_rolling_window: config.kelly_rolling_window as usize,
@@ -130,7 +133,10 @@ impl BankrollManager {
 
         let kelly_notional = self.current_balance * fraction;
         let max_position_usd = self.current_balance * config.max_position_usd_fraction;
-        let notional = kelly_notional.min(available).min(max_position_usd);
+        let notional = kelly_notional
+            .min(available)
+            .min(max_position_usd)
+            .min(config.max_position_usd);
 
         let mut token_count = (notional / entry_price).floor();
 
@@ -206,6 +212,7 @@ impl BankrollManager {
         entry_price: f64,
         size: f64,
         settlement_price: f64,
+        fee_amount: f64,
         strategy: &str,
         config: &Config,
         db: &Database,
@@ -213,10 +220,11 @@ impl BankrollManager {
     ) {
         let cost = entry_price * size;
         let payout = settlement_price * size;
-        let pnl = payout - cost;
+        let pnl = payout - cost - fee_amount;
 
         self.reserved_capital = (self.reserved_capital - cost).max(0.0);
         self.current_balance += pnl;
+        self.total_fees += fee_amount;
         self.total_trades += 1;
 
         let won = pnl > 0.0;
@@ -317,6 +325,68 @@ impl BankrollManager {
         true
     }
 
+    /// Apply a settlement correction when the authoritative Polymarket outcome
+    /// disagrees with the provisional Binance-based settlement.
+    ///
+    /// `old_pnl` is what was applied during provisional settlement.
+    /// `new_pnl` is the corrected profit/loss from the authoritative outcome.
+    /// The balance is adjusted by `new_pnl - old_pnl`.
+    pub fn apply_settlement_correction(
+        &mut self,
+        trade_id: i64,
+        old_pnl: f64,
+        new_pnl: f64,
+        db: &Database,
+        clock: &dyn Clock,
+    ) {
+        let delta = new_pnl - old_pnl;
+        self.current_balance += delta;
+        self.total_fees = (self.total_fees + delta).max(0.0); // fees don't change direction
+
+        // Correct win/loss counts.
+        let was_win = old_pnl > 0.0;
+        let is_win = new_pnl > 0.0;
+        if was_win && !is_win {
+            // Was counted as win, now a loss.
+            if self.total_wins > 0 {
+                self.total_wins -= 1;
+            }
+            self.total_losses += 1;
+        } else if !was_win && is_win {
+            // Was counted as loss, now a win.
+            if self.total_losses > 0 {
+                self.total_losses -= 1;
+            }
+            self.total_wins += 1;
+        }
+
+        // Update high-water mark (can only go up, never down from a correction).
+        if self.current_balance > self.high_water_mark {
+            self.high_water_mark = self.current_balance;
+        }
+
+        // Update peak drawdown.
+        let dd = self.get_drawdown_pct();
+        if dd > self.peak_drawdown_pct {
+            self.peak_drawdown_pct = dd;
+        }
+
+        // Log the correction.
+        let _ = db.log_balance_event(
+            clock.now(),
+            "settlement_correction",
+            Some(trade_id),
+            delta,
+            self.current_balance,
+        );
+    }
+
+    /// Release previously reserved capital (used when liquidity clamping
+    /// reduces a trade size below what was originally reserved).
+    pub fn release_reserved(&mut self, amount: f64) {
+        self.reserved_capital = (self.reserved_capital - amount).max(0.0);
+    }
+
     /// Current balance.
     pub fn get_balance(&self) -> f64 {
         self.current_balance
@@ -377,6 +447,7 @@ impl BankrollManager {
             losses: self.total_losses,
             win_rate: self.get_win_rate(),
             total_pnl: self.current_balance - self.starting_balance,
+            total_fees: self.total_fees,
         }
     }
 

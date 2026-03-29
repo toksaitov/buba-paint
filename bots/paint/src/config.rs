@@ -127,6 +127,20 @@ pub struct Config {
 
     // Gamma market discovery
     pub gamma_market_limit: u64,
+
+    // Hard position size cap (USD)
+    pub max_position_usd: f64,
+
+    // Taker fee model (Polymarket dynamic fees)
+    pub taker_fee_rate: f64,
+    pub taker_fee_exponent: u32,
+
+    // Execution mode: "paper" (default) or "live" (future)
+    pub execution_mode: String,
+
+    // Resolution polling (Gamma API after window close)
+    pub resolution_poll_retries: u32,
+    pub resolution_poll_delay_ms: u64,
 }
 
 impl Config {
@@ -141,6 +155,7 @@ impl Config {
             "LATENCY_ARB_MIN_ASK" => self.latency_arb_min_ask = value,
             "LATENCY_ARB_COOLDOWN_MS" => self.latency_arb_cooldown_ms = value as u64,
             "MAX_POSITION_FRACTION" => self.max_position_fraction = value,
+            "MAX_POSITION_USD" => self.max_position_usd = value,
             "SPREAD_CAPTURE_THRESHOLD" => self.spread_capture_threshold = value,
             "SPREAD_CAPTURE_MIN_ASK" => self.spread_capture_min_ask = value,
             "PEAK_DD_PAUSE_PCT" => self.peak_dd_pause_pct = value,
@@ -166,6 +181,8 @@ impl Config {
             "RECONNECT_PAUSE_MS" => self.reconnect_pause_ms = value as u64,
             "TREND_FILTER_THRESHOLD" => self.trend_filter_threshold = value,
             "TREND_FILTER_WINDOW" => self.trend_filter_window = value as u64,
+            "RESOLUTION_POLL_RETRIES" => self.resolution_poll_retries = value as u32,
+            "RESOLUTION_POLL_DELAY_MS" => self.resolution_poll_delay_ms = value as u64,
             _ => {
                 eprintln!("Unknown sweep param: {name}");
                 return false;
@@ -246,6 +263,16 @@ impl Config {
             log_level: env_str("LOG_LEVEL", "info"),
 
             gamma_market_limit: 20,
+
+            max_position_usd: env_f64("MAX_POSITION_USD", 500.0),
+
+            taker_fee_rate: env_f64("TAKER_FEE_RATE", 0.25),
+            taker_fee_exponent: env_f64("TAKER_FEE_EXPONENT", 2.0) as u32,
+
+            execution_mode: env_str("EXECUTION_MODE", "paper"),
+
+            resolution_poll_retries: 30,
+            resolution_poll_delay_ms: 10_000,
         }
     }
 }
@@ -315,6 +342,16 @@ impl Default for Config {
             log_level: "info".to_string(),
 
             gamma_market_limit: 20,
+
+            max_position_usd: 500.0,
+
+            taker_fee_rate: 0.25,
+            taker_fee_exponent: 2,
+
+            execution_mode: "paper".to_string(),
+
+            resolution_poll_retries: 30,
+            resolution_poll_delay_ms: 10_000,
         }
     }
 }

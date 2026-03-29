@@ -73,6 +73,27 @@ pub enum Commands {
         #[arg(long, default_value = "data/market-data.db")]
         output: String,
     },
+    /// Initialize an empty database (creates tables, no trading)
+    InitDb {
+        /// Path to the database file to create
+        #[arg(long)]
+        db_path: String,
+        /// Starting balance to record in the init event
+        #[arg(long, default_value = "200")]
+        balance: f64,
+    },
+    /// Verify settlements against Polymarket's actual resolutions
+    VerifySettlements {
+        /// Path to the database to verify (market-data.db or a run DB)
+        #[arg(long, default_value = "data/market-data.db")]
+        db: String,
+        /// Gamma API base URL
+        #[arg(long, default_value = "https://gamma-api.polymarket.com")]
+        gamma_url: String,
+        /// Number of concurrent API requests
+        #[arg(long, default_value = "10")]
+        concurrency: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +101,7 @@ pub enum Commands {
 // ---------------------------------------------------------------------------
 
 /// Execute a parsed CLI command.
+#[allow(clippy::too_many_lines)]
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Backtest {
@@ -175,6 +197,22 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::BuildData { runs_dir, output } => {
             crate::db::build_data::build_market_data(&runs_dir, &output)?;
+        }
+        Commands::InitDb { db_path, balance } => {
+            let db = crate::db::database::Database::new(&db_path)?;
+            let clock = crate::clock::BacktestClock::new();
+            let config = Config::default();
+            // Write the init balance event so the DB is ready for the agent to read.
+            let _ = crate::bankroll::BankrollManager::new(balance, &config, &db, &clock);
+            db.close();
+            println!("Database initialized at {db_path} with balance ${balance}");
+        }
+        Commands::VerifySettlements {
+            db,
+            gamma_url,
+            concurrency,
+        } => {
+            crate::verify::run_verify_settlements(&db, &gamma_url, concurrency).await?;
         }
     }
 
