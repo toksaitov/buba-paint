@@ -29,6 +29,7 @@ struct Cli {
     static_dir: Option<String>,
 }
 
+/// Starts the dashboard server with the configured agents, auth, and routes.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -43,11 +44,9 @@ async fn main() -> anyhow::Result<()> {
     let config = DashboardConfig::from_file(&cli.config)?;
     let port = cli.port.unwrap_or(config.server.port);
 
-    // Initialize dashboard DB
     let db_path = std::env::var("DASHBOARD_DB_PATH").unwrap_or_else(|_| "dashboard.db".to_string());
     let db = Arc::new(DashboardDb::new(&db_path)?);
 
-    // Seed admin from env vars
     if let (Ok(user), Ok(pass)) = (std::env::var("ADMIN_USER"), std::env::var("ADMIN_PASSWORD")) {
         let hash =
             hash_password(&pass).map_err(|e| anyhow::anyhow!("failed to hash password: {e}"))?;
@@ -88,7 +87,6 @@ async fn main() -> anyhow::Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    // Serve static files if configured
     if let Some(dir) = cli.static_dir {
         app = app.fallback_service(tower_http::services::ServeDir::new(dir));
     }
@@ -102,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Returns a simple liveness payload for load balancers and smoke tests.
 #[allow(clippy::unused_async)]
 async fn health() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({ "ok": true }))

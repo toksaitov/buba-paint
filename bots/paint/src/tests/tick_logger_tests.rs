@@ -1,6 +1,7 @@
 use super::*;
 use crate::types::TopOfBook;
 
+/// Verifies that empty state zero entries.
 #[test]
 fn empty_state_zero_entries() {
     let state = TickLoggerState::default();
@@ -8,6 +9,7 @@ fn empty_state_zero_entries() {
     assert!(entries.is_empty());
 }
 
+/// Verifies that only binance one entry.
 #[test]
 fn only_binance_one_entry() {
     let state = TickLoggerState {
@@ -22,6 +24,7 @@ fn only_binance_one_entry() {
     assert!(entries[0].best_bid.is_none());
 }
 
+/// Verifies that only chainlink one entry.
 #[test]
 fn only_chainlink_one_entry() {
     let state = TickLoggerState {
@@ -35,6 +38,7 @@ fn only_chainlink_one_entry() {
     assert!((entries[0].price.unwrap() - 41_999.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that all sources four entries.
 #[test]
 fn all_sources_four_entries() {
     let state = TickLoggerState {
@@ -79,6 +83,7 @@ fn all_sources_four_entries() {
     assert!((entries[3].best_ask.unwrap() - 0.56).abs() < f64::EPSILON);
 }
 
+/// Verifies that only book up two entries skipped prices.
 #[test]
 fn only_book_up_two_entries_skipped_prices() {
     let state = TickLoggerState {
@@ -100,6 +105,7 @@ fn only_book_up_two_entries_skipped_prices() {
     assert_eq!(entries[0].source, "clob_up");
 }
 
+/// Verifies that prices and one book side three entries.
 #[test]
 fn prices_and_one_book_side_three_entries() {
     let state = TickLoggerState {
@@ -123,6 +129,7 @@ fn prices_and_one_book_side_three_entries() {
     assert_eq!(entries[2].source, "clob_down");
 }
 
+/// Verifies that entry order is deterministic.
 #[test]
 fn entry_order_is_deterministic() {
     let state = TickLoggerState {
@@ -155,8 +162,7 @@ fn entry_order_is_deterministic() {
     );
 }
 
-// -- Phase D: additional edge-case tests ----------------------------------
-
+/// Verifies that only down book one entry clob down.
 #[test]
 fn only_down_book_one_entry_clob_down() {
     let state = TickLoggerState {
@@ -183,6 +189,7 @@ fn only_down_book_one_entry_clob_down() {
     assert!((entries[0].ask_size.unwrap() - 250.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that zero binance price still generates entry.
 #[test]
 fn zero_binance_price_still_generates_entry() {
     let state = TickLoggerState {
@@ -196,6 +203,7 @@ fn zero_binance_price_still_generates_entry() {
     assert!((entries[0].price.unwrap() - 0.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that zero chainlink price still generates entry.
 #[test]
 fn zero_chainlink_price_still_generates_entry() {
     let state = TickLoggerState {
@@ -209,6 +217,7 @@ fn zero_chainlink_price_still_generates_entry() {
     assert!((entries[0].price.unwrap() - 0.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that both books no prices two entries.
 #[test]
 fn both_books_no_prices_two_entries() {
     let state = TickLoggerState {
@@ -237,6 +246,7 @@ fn both_books_no_prices_two_entries() {
     assert_eq!(entries[1].source, "clob_down");
 }
 
+/// Verifies that tick logger state default is all none.
 #[test]
 fn tick_logger_state_default_is_all_none() {
     let state = TickLoggerState::default();

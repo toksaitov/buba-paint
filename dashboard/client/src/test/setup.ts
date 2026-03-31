@@ -1,4 +1,4 @@
-// Polyfill localStorage before any modules load (zustand auth-store reads it at import time)
+
 if (typeof globalThis.localStorage === "undefined" || typeof globalThis.localStorage.getItem !== "function") {
   const store: Record<string, string> = {};
   Object.defineProperty(globalThis, "localStorage", {
@@ -24,3 +24,4 @@ if (typeof globalThis.localStorage === "undefined" || typeof globalThis.localSto
 }
 
 import "@testing-library/jest-dom/vitest";
+

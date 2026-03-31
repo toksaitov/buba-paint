@@ -3,30 +3,18 @@ use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-// ---------------------------------------------------------------------------
-// Fixture helpers
-// ---------------------------------------------------------------------------
-
 type MarketTuple<'a> = (
-    &'a str, // market_id
-    &'a str, // question
-    &'a str, // condition_id
-    &'a str, // slug
-    &'a str, // up_token_id
-    &'a str, // down_token_id
-    i64,     // start_time
-    i64,     // end_time
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    i64,
+    i64,
 );
 
-type TradeTuple<'a> = (
-    i64,     // timestamp
-    &'a str, // strategy
-    &'a str, // side
-    f64,     // entry_price
-    f64,     // size
-    f64,     // settlement_price
-    f64,     // pnl_0pct
-);
+type TradeTuple<'a> = (i64, &'a str, &'a str, f64, f64, f64, f64);
 
 /// Create a minimal source DB mimicking a run's schema.
 fn create_fixture_run_db(
@@ -159,10 +147,7 @@ fn setup_fixture_runs(run_configs: &[RunConfig<'_>]) -> (TempDir, String, String
     )
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
+/// Verifies that creates schema with all tables.
 #[test]
 fn creates_schema_with_all_tables() {
     let dir = TempDir::new().unwrap();
@@ -183,6 +168,7 @@ fn creates_schema_with_all_tables() {
     }
 }
 
+/// Verifies that imports tick data from source db.
 #[test]
 fn imports_tick_data_from_source_db() {
     let ticks: Vec<(i64, &str, f64)> = (0..100)
@@ -202,6 +188,7 @@ fn imports_tick_data_from_source_db() {
     assert_eq!(count, 100, "should import all 100 ticks");
 }
 
+/// Verifies that imports markets with dedup.
 #[test]
 fn imports_markets_with_dedup() {
     let shared_market = (
@@ -235,7 +222,7 @@ fn imports_markets_with_dedup() {
         (
             "005",
             &[(1_100_000, "binance", 42_100.0)],
-            &[shared_market], // duplicate
+            &[shared_market],
             &[],
         ),
     ]);
@@ -246,10 +233,11 @@ fn imports_markets_with_dedup() {
     let count: i64 = db
         .query_row("SELECT COUNT(*) FROM markets", [], |r| r.get(0))
         .unwrap();
-    // INSERT OR IGNORE: shared_market inserted once, unique_market once = 2
+
     assert_eq!(count, 2, "should deduplicate markets by market_id");
 }
 
+/// Verifies that imports historical trades.
 #[test]
 fn imports_historical_trades() {
     let trades = vec![
@@ -272,7 +260,6 @@ fn imports_historical_trades() {
         .unwrap();
     assert_eq!(count, 2, "should import both trades");
 
-    // Verify the "won" field: first trade has pnl > 0, second has pnl < 0
     let won_count: i64 = db
         .query_row(
             "SELECT SUM(won) FROM historical_trades WHERE run_id = 4",
@@ -283,12 +270,9 @@ fn imports_historical_trades() {
     assert_eq!(won_count, 1, "should mark exactly one trade as won");
 }
 
+/// Verifies that computes settlements correctly.
 #[test]
 fn computes_settlements_correctly() {
-    // Market window: 1_000_000 to 1_300_000
-    // Chainlink tick at 999_000 (before start): price = 42_000 -> open_price
-    // Chainlink tick at 1_200_000 (before end):  price = 42_100 -> close_price
-    // close >= open -> outcome = UP
     let ticks = vec![
         (999_000_i64, "chainlink", 42_000.0),
         (1_200_000, "chainlink", 42_100.0),
@@ -329,6 +313,7 @@ fn computes_settlements_correctly() {
     assert_eq!(outcome, "UP");
 }
 
+/// Verifies that settlement down when close below open.
 #[test]
 fn settlement_down_when_close_below_open() {
     let ticks = vec![
@@ -360,6 +345,7 @@ fn settlement_down_when_close_below_open() {
     assert_eq!(outcome, "DOWN");
 }
 
+/// Verifies that settlement up when close equals open.
 #[test]
 fn settlement_up_when_close_equals_open() {
     let ticks = vec![
@@ -391,15 +377,15 @@ fn settlement_up_when_close_equals_open() {
     assert_eq!(outcome, "UP", "close == open should be UP");
 }
 
+/// Verifies that skips missing run db.
 #[test]
 fn skips_missing_run_db() {
     let dir = TempDir::new().unwrap();
     let runs_dir = dir.path().join("runs");
-    // Don't create any run subdirectories
+
     std::fs::create_dir_all(&runs_dir).unwrap();
     let output = dir.path().join("market-data.db");
 
-    // Should not crash, just skip all missing runs
     let result = build_market_data(runs_dir.to_str().unwrap(), output.to_str().unwrap());
     assert!(result.is_ok(), "should succeed even with no run DBs found");
 
@@ -410,13 +396,13 @@ fn skips_missing_run_db() {
     assert_eq!(count, 0, "no runs should be imported");
 }
 
+/// Verifies that source dbs opened read only.
 #[test]
 fn source_dbs_opened_read_only() {
     let ticks = vec![(1_000_000_i64, "binance", 42_000.0)];
 
     let (_dir, runs_dir, output) = setup_fixture_runs(&[("004", &ticks, &[], &[])]);
 
-    // Hash the source file before
     let src_path = std::path::Path::new(&runs_dir)
         .join("004")
         .join("buba-paint.db");
@@ -424,11 +410,11 @@ fn source_dbs_opened_read_only() {
 
     build_market_data(&runs_dir, &output).unwrap();
 
-    // Hash the source file after
     let after = std::fs::read(&src_path).unwrap();
     assert_eq!(before, after, "source DB should not be modified");
 }
 
+/// Verifies that updates run stats.
 #[test]
 fn updates_run_stats() {
     let ticks = vec![
@@ -456,10 +442,11 @@ fn updates_run_stats() {
     assert_eq!(start_time, 1_000_000);
     assert_eq!(end_time, 1_200_000);
     assert_eq!(total_trades, 3);
-    // 2 wins out of 3 trades
+
     assert!((win_rate - 2.0 / 3.0).abs() < 0.001);
 }
 
+/// Verifies that creates indexes.
 #[test]
 fn creates_indexes() {
     let (_dir, runs_dir, output) =
@@ -491,17 +478,15 @@ fn creates_indexes() {
     }
 }
 
+/// Verifies that computes data quality.
 #[test]
 fn computes_data_quality() {
-    // Create ticks spanning 2 hours with a known gap pattern.
-    // Hour boundary: 0..3_600_000 and 3_600_000..7_200_000
     let mut ticks: Vec<(i64, &str, f64)> = Vec::new();
 
-    // First hour: tick every second for first 100 seconds, then a 10s gap, then more
     for i in 0..100 {
         ticks.push((i * 1000, "binance", 42_000.0));
     }
-    // Gap from 100s to 110s (10s gap -> counted as >5s but not >30s)
+
     for i in 110..200 {
         ticks.push((i * 1000, "binance", 42_000.0));
     }
@@ -515,7 +500,6 @@ fn computes_data_quality() {
         .unwrap();
     assert!(count > 0, "data_quality should have entries");
 
-    // Check the specific hour that has our data
     let (tick_count, gap_5s, gap_30s): (i64, i64, i64) = db
         .query_row(
             "SELECT tick_count, gap_count_5s, gap_count_30s FROM data_quality
@@ -529,6 +513,7 @@ fn computes_data_quality() {
     assert_eq!(gap_30s, 0, "should detect 0 gaps >30s");
 }
 
+/// Verifies that output db uses wal mode.
 #[test]
 fn output_db_uses_wal_mode() {
     let dir = TempDir::new().unwrap();
@@ -542,6 +527,7 @@ fn output_db_uses_wal_mode() {
     assert_eq!(mode, "wal");
 }
 
+/// Verifies that multiple runs imported.
 #[test]
 fn multiple_runs_imported() {
     let (_dir, runs_dir, output) = setup_fixture_runs(&[
@@ -579,18 +565,17 @@ fn multiple_runs_imported() {
     assert_eq!(trade_count, 2);
 }
 
+/// Verifies that deletes existing output before rebuild.
 #[test]
 fn deletes_existing_output_before_rebuild() {
     let dir = TempDir::new().unwrap();
     let output = dir.path().join("market-data.db");
 
-    // Create a dummy file at the output path
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     std::fs::write(&output, b"dummy data").unwrap();
 
     build_market_data("nonexistent_dir", output.to_str().unwrap()).unwrap();
 
-    // Output should now be a valid SQLite DB, not the dummy data
     let db = Connection::open(&output).unwrap();
     let count: i64 = db
         .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
@@ -598,6 +583,7 @@ fn deletes_existing_output_before_rebuild() {
     assert_eq!(count, 0);
 }
 
+/// Verifies that creates output parent directories.
 #[test]
 fn creates_output_parent_directories() {
     let dir = TempDir::new().unwrap();
@@ -612,6 +598,7 @@ fn creates_output_parent_directories() {
     assert!(output.exists(), "should create parent dirs for output");
 }
 
+/// Verifies that run versions stored correctly.
 #[test]
 fn run_versions_stored_correctly() {
     let (_dir, runs_dir, output) = setup_fixture_runs(&[
@@ -639,41 +626,9 @@ fn run_versions_stored_correctly() {
     assert_eq!(versions.get(&5).map(String::as_str), Some("v0.3"));
 }
 
-// ---------------------------------------------------------------------------
-// Additional coverage tests
-// ---------------------------------------------------------------------------
-
+/// Verifies that settlement uses correct chainlink prices.
 #[test]
 fn settlement_uses_correct_chainlink_prices() {
-    // 3 markets at different time windows.
-    // Chainlink ticks placed so each market picks up the correct open/close.
-    //
-    // The correlated subquery is:
-    //   open_price  = latest chainlink tick WHERE timestamp <= start_time
-    //   close_price = latest chainlink tick WHERE timestamp <= end_time
-    //
-    // Chainlink ticks:
-    //   t=999_000  -> $40_000    (before market 1 start)
-    //   t=1_200_000 -> $41_000   (between market 1 start and end)
-    //   t=1_500_000 -> $42_000   (between market 2 start and end)
-    //   t=1_900_000 -> $39_000   (between market 3 start and end -- but before close tick)
-    //   t=2_050_000 -> $43_000   (between market 3 start and end -- latest before end)
-    //
-    // Market 1: start=1_000_000, end=1_300_000
-    //   open  = tick at 999_000 = $40_000
-    //   close = tick at 1_200_000 = $41_000  (latest <= 1_300_000)
-    //   outcome = UP (41000 >= 40000)
-    //
-    // Market 2: start=1_400_000, end=1_700_000
-    //   open  = tick at 1_200_000 = $41_000  (latest <= 1_400_000)
-    //   close = tick at 1_500_000 = $42_000  (latest <= 1_700_000)
-    //   outcome = UP (42000 >= 41000)
-    //
-    // Market 3: start=1_800_000, end=2_100_000
-    //   open  = tick at 1_500_000 = $42_000  (latest <= 1_800_000)
-    //   close = tick at 2_050_000 = $43_000  (latest <= 2_100_000)
-    //   outcome = UP (43000 >= 42000)
-
     let ticks = vec![
         (999_000_i64, "chainlink", 40_000.0),
         (1_200_000, "chainlink", 41_000.0),
@@ -719,7 +674,6 @@ fn settlement_uses_correct_chainlink_prices() {
 
     let db = Connection::open(&output).unwrap();
 
-    // Verify each market's settlement
     let expected: &[(&str, f64, f64, &str)] = &[
         ("mkt-1", 40_000.0, 41_000.0, "UP"),
         ("mkt-2", 41_000.0, 42_000.0, "UP"),
@@ -750,12 +704,9 @@ fn settlement_uses_correct_chainlink_prices() {
     }
 }
 
+/// Verifies that settlement down with price drop.
 #[test]
 fn settlement_down_with_price_drop() {
-    // Verifies DOWN outcome when chainlink price drops significantly.
-    // 1 market: start=1_000_000, end=1_300_000
-    // Chainlink at 999_000 -> $50_000 (open), at 1_200_000 -> $48_000 (close)
-    // close < open -> DOWN
     let ticks = vec![
         (999_000_i64, "chainlink", 50_000.0),
         (1_200_000, "chainlink", 48_000.0),
@@ -794,23 +745,9 @@ fn settlement_down_with_price_drop() {
     assert_eq!(outcome, "DOWN");
 }
 
+/// Verifies that data quality gap detection.
 #[test]
 fn data_quality_gap_detection() {
-    // Source "binance", hour starting at 3_600_000 (1 hour after epoch).
-    // Ticks at: 3_600_000, 3_601_000, 3_602_000, 3_613_000 (11s gap),
-    //           3_614_000, 3_650_000 (36s gap), 3_651_000
-    //
-    // Gaps between consecutive ticks:
-    //   3_601_000 - 3_600_000 = 1_000 ms (not a gap)
-    //   3_602_000 - 3_601_000 = 1_000 ms (not a gap)
-    //   3_613_000 - 3_602_000 = 11_000 ms (>5s gap, not >30s)
-    //   3_614_000 - 3_613_000 = 1_000 ms (not a gap)
-    //   3_650_000 - 3_614_000 = 36_000 ms (>5s AND >30s gap)
-    //   3_651_000 - 3_650_000 = 1_000 ms (not a gap)
-    //
-    // Expected: tick_count=7, gap_count_5s=2, gap_count_30s=1,
-    //           max_gap_ms=36000, coverage=7/3600 ~= 0.001944
-
     let ticks = vec![
         (3_600_000_i64, "binance", 42_000.0),
         (3_601_000, "binance", 42_001.0),
@@ -848,18 +785,13 @@ fn data_quality_gap_detection() {
     );
 }
 
+/// Verifies that data quality skips empty hours.
 #[test]
 fn data_quality_skips_empty_hours() {
-    // Ticks in hour 0 (0..3_599_999) and hour 2 (7_200_000..10_799_999).
-    // No ticks in hour 1 (3_600_000..7_199_999).
-    // Verify data_quality has entries for hours 0 and 2 only.
-
     let ticks = vec![
-        // Hour 0 ticks
         (500_000_i64, "binance", 42_000.0),
         (1_500_000, "binance", 42_001.0),
         (2_500_000, "binance", 42_002.0),
-        // Hour 2 ticks (skip hour 1 entirely)
         (7_500_000_i64, "binance", 43_000.0),
         (8_500_000, "binance", 43_001.0),
     ];
@@ -869,7 +801,6 @@ fn data_quality_skips_empty_hours() {
 
     let db = Connection::open(&output).unwrap();
 
-    // Collect all hour_start values for binance
     let mut stmt = db
         .prepare("SELECT hour_start FROM data_quality WHERE source = 'binance' ORDER BY hour_start")
         .unwrap();
@@ -893,12 +824,9 @@ fn data_quality_skips_empty_hours() {
     );
 }
 
+/// Verifies that print summary does not panic.
 #[test]
 fn print_summary_does_not_panic() {
-    // Build a fixture with real data across all tables: runs, ticks, markets,
-    // and trades. This exercises the print_summary code path end-to-end,
-    // including the hours/date formatting, win_rate, data_quality stats.
-
     let ticks = vec![
         (1_000_000_i64, "chainlink", 42_000.0),
         (1_100_000, "chainlink", 42_050.0),
@@ -924,7 +852,6 @@ fn print_summary_does_not_panic() {
 
     let (_dir, runs_dir, output) = setup_fixture_runs(&[("004", &ticks, &markets, &trades)]);
 
-    // The main assertion: build_market_data (which calls print_summary) returns Ok.
     let result = build_market_data(&runs_dir, &output);
     assert!(
         result.is_ok(),
@@ -932,7 +859,6 @@ fn print_summary_does_not_panic() {
         result.err()
     );
 
-    // Verify print_summary had real data to work with.
     let db = Connection::open(&output).unwrap();
     let run_count: i64 = db
         .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
@@ -964,10 +890,9 @@ fn print_summary_does_not_panic() {
     assert!(quality_count > 0, "should have data_quality for summary");
 }
 
+/// Verifies that build data creates parent dirs.
 #[test]
 fn build_data_creates_parent_dirs() {
-    // Verify that deeply nested output paths have their parent directories
-    // created automatically.
     let dir = TempDir::new().unwrap();
     let output = dir
         .path()
@@ -988,7 +913,6 @@ fn build_data_creates_parent_dirs() {
         "parent dirs should have been created"
     );
 
-    // Verify the DB is functional
     let db = Connection::open(&output).unwrap();
     let count: i64 = db
         .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))

@@ -1,10 +1,10 @@
 use super::*;
 
+/// Verifies that default values match typescript.
 #[test]
 fn default_values_match_typescript() {
     let cfg = Config::default();
 
-    // URLs
     assert_eq!(
         cfg.binance_ws_url,
         "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
@@ -16,44 +16,36 @@ fn default_values_match_typescript() {
     assert_eq!(cfg.rtds_ws_url, "wss://ws-live-data.polymarket.com");
     assert_eq!(cfg.gamma_api_url, "https://gamma-api.polymarket.com");
 
-    // Intervals
     assert_eq!(cfg.gamma_poll_interval, 60_000);
     assert_eq!(cfg.tick_interval, 1_000);
     assert_eq!(cfg.clob_ping_interval, 10_000);
     assert_eq!(cfg.rtds_ping_interval, 5_000);
     assert_eq!(cfg.chainlink_stale_ms, 30_000);
 
-    // Reconnection
     assert_eq!(cfg.reconnect_base_delay, 1_000);
     assert_eq!(cfg.reconnect_max_delay, 30_000);
     assert_eq!(cfg.reconnect_min_stable_ms, 5_000);
     assert_eq!(cfg.reconnect_max_failures, 20);
     assert_eq!(cfg.reconnect_pause_ms, 300_000);
 
-    // Database
     assert_eq!(cfg.db_path, "./data/paint.db");
 
-    // Latency-arb strategy
     assert!((cfg.latency_arb_momentum_threshold - 0.0015).abs() < f64::EPSILON);
     assert!((cfg.latency_arb_max_ask - 0.55).abs() < f64::EPSILON);
     assert!((cfg.latency_arb_min_ask - 0.30).abs() < f64::EPSILON);
     assert_eq!(cfg.latency_arb_cooldown_ms, 60_000);
 
-    // Spread-capture strategy
     assert!((cfg.spread_capture_threshold - 0.998).abs() < f64::EPSILON);
     assert!((cfg.spread_capture_min_ask - 0.15).abs() < f64::EPSILON);
 
-    // Momentum
     assert_eq!(cfg.momentum_window_ms, 30_000);
 
-    // Bankroll
     assert!((cfg.starting_balance - 150.0).abs() < f64::EPSILON);
     assert!((cfg.max_position_fraction - 0.10).abs() < f64::EPSILON);
     assert!((cfg.min_balance_threshold - 20.0).abs() < f64::EPSILON);
     assert!((cfg.max_drawdown_pct - 0.50).abs() < f64::EPSILON);
     assert!((cfg.max_position_usd_fraction - 0.20).abs() < f64::EPSILON);
 
-    // Kelly criterion
     assert!((cfg.kelly_fraction - 0.5).abs() < f64::EPSILON);
     assert!((cfg.min_win_rate_for_kelly - 0.52).abs() < f64::EPSILON);
     assert_eq!(cfg.min_trades_for_kelly, 20);
@@ -61,38 +53,32 @@ fn default_values_match_typescript() {
     assert!((cfg.min_bet_usd - 5.0).abs() < f64::EPSILON);
     assert_eq!(cfg.kelly_rolling_window, 30);
 
-    // Position limits
     assert_eq!(cfg.max_open_positions, 5);
     assert_eq!(cfg.min_window_time_ms, 90_000);
 
-    // Circuit breaker
     assert_eq!(cfg.circuit_breaker_losses, 3);
     assert_eq!(cfg.circuit_breaker_pause_ms, 900_000);
 
-    // Peak drawdown pause
     assert!((cfg.peak_dd_pause_pct - 0.30).abs() < f64::EPSILON);
     assert_eq!(cfg.peak_dd_pause_ms, 3_600_000);
     assert!((cfg.dd_pause_recovery_pct - 0.05).abs() < f64::EPSILON);
 
-    // Trend filter
     assert!(!cfg.trend_filter_enabled);
     assert!((cfg.trend_filter_threshold - 0.30).abs() < f64::EPSILON);
     assert_eq!(cfg.trend_filter_window, 10);
 
-    // Regime detection
     assert!(!cfg.regime_detection_enabled);
 
-    // Logging
     assert_eq!(cfg.log_level, "info");
 
-    // Gamma market discovery
     assert_eq!(cfg.gamma_market_limit, 20);
+
+    assert_eq!(cfg.resolution_poll_retries, 30);
+    assert_eq!(cfg.resolution_initial_delay_ms, 30_000);
+    assert_eq!(cfg.resolution_poll_delay_ms, 10_000);
 }
 
-// We test env-override logic via the `resolve_*` helpers which accept
-// `Option<&str>` rather than reading real env vars.  This avoids calling
-// `env::set_var` (unsafe under Rust 2024 edition, forbidden in this crate).
-
+/// Verifies that resolve str override.
 #[test]
 fn resolve_str_override() {
     assert_eq!(
@@ -101,54 +87,64 @@ fn resolve_str_override() {
     );
 }
 
+/// Verifies that resolve str default.
 #[test]
 fn resolve_str_default() {
     assert_eq!(resolve_str(None, "./data/paint.db"), "./data/paint.db");
 }
 
+/// Verifies that resolve f64 override.
 #[test]
 fn resolve_f64_override() {
     let val = resolve_f64(Some("999.5"), 150.0);
     assert!((val - 999.5).abs() < f64::EPSILON);
 }
 
+/// Verifies that resolve f64 default.
 #[test]
 fn resolve_f64_default() {
     let val = resolve_f64(None, 150.0);
     assert!((val - 150.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that resolve f64 invalid returns default.
 #[test]
 fn resolve_f64_invalid_returns_default() {
     let val = resolve_f64(Some("not_a_number"), 150.0);
     assert!((val - 150.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that resolve u64 override.
 #[test]
 fn resolve_u64_override() {
     assert_eq!(resolve_u64(Some("2000"), 1_000), 2_000);
 }
 
+/// Verifies that resolve u64 default.
 #[test]
 fn resolve_u64_default() {
     assert_eq!(resolve_u64(None, 1_000), 1_000);
 }
 
+/// Verifies that resolve u64 invalid returns default.
 #[test]
 fn resolve_u64_invalid_returns_default() {
     assert_eq!(resolve_u64(Some("abc"), 1_000), 1_000);
 }
 
+/// Verifies that resolve bool true.
 #[test]
 fn resolve_bool_true() {
     assert!(resolve_bool(Some("true"), false));
 }
 
+/// Verifies that resolve bool false when missing.
 #[test]
 fn resolve_bool_false_when_missing() {
     assert!(!resolve_bool(None, false));
 }
 
+/// Verifies that resolve bool non true is false.
 #[test]
 fn resolve_bool_non_true_is_false() {
     assert!(!resolve_bool(Some("yes"), false));
@@ -156,11 +152,13 @@ fn resolve_bool_non_true_is_false() {
     assert!(!resolve_bool(Some("TRUE"), false));
 }
 
+/// Verifies that resolve bool default true preserved.
 #[test]
 fn resolve_bool_default_true_preserved() {
     assert!(resolve_bool(None, true));
 }
 
+/// Verifies that config is cloneable.
 #[test]
 fn config_is_cloneable() {
     let cfg = Config::default();
@@ -169,8 +167,7 @@ fn config_is_cloneable() {
     assert!((cfg.starting_balance - cfg2.starting_balance).abs() < f64::EPSILON);
 }
 
-// -- set_param tests ------------------------------------------------------
-
+/// Verifies that set param momentum threshold.
 #[test]
 fn set_param_momentum_threshold() {
     let mut cfg = Config::default();
@@ -178,6 +175,7 @@ fn set_param_momentum_threshold() {
     assert!((cfg.latency_arb_momentum_threshold - 0.0012).abs() < f64::EPSILON);
 }
 
+/// Verifies that set param max position fraction.
 #[test]
 fn set_param_max_position_fraction() {
     let mut cfg = Config::default();
@@ -185,6 +183,7 @@ fn set_param_max_position_fraction() {
     assert!((cfg.max_position_fraction - 0.125).abs() < f64::EPSILON);
 }
 
+/// Verifies that set param peak dd pause pct.
 #[test]
 fn set_param_peak_dd_pause_pct() {
     let mut cfg = Config::default();
@@ -192,6 +191,7 @@ fn set_param_peak_dd_pause_pct() {
     assert!((cfg.peak_dd_pause_pct - 1.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that set param dd pause recovery pct.
 #[test]
 fn set_param_dd_pause_recovery_pct() {
     let mut cfg = Config::default();
@@ -199,6 +199,7 @@ fn set_param_dd_pause_recovery_pct() {
     assert!((cfg.dd_pause_recovery_pct - 0.10).abs() < f64::EPSILON);
 }
 
+/// Verifies that set param reconnect min stable ms.
 #[test]
 fn set_param_reconnect_min_stable_ms() {
     let mut cfg = Config::default();
@@ -206,6 +207,15 @@ fn set_param_reconnect_min_stable_ms() {
     assert_eq!(cfg.reconnect_min_stable_ms, 10_000);
 }
 
+/// Verifies that set param resolution initial delay ms.
+#[test]
+fn set_param_resolution_initial_delay_ms() {
+    let mut cfg = Config::default();
+    assert!(cfg.set_param("RESOLUTION_INITIAL_DELAY_MS", 2_500.0));
+    assert_eq!(cfg.resolution_initial_delay_ms, 2_500);
+}
+
+/// Verifies that set param cooldown ms u64 cast.
 #[test]
 fn set_param_cooldown_ms_u64_cast() {
     let mut cfg = Config::default();
@@ -213,6 +223,7 @@ fn set_param_cooldown_ms_u64_cast() {
     assert_eq!(cfg.latency_arb_cooldown_ms, 30_000);
 }
 
+/// Verifies that set param starting balance.
 #[test]
 fn set_param_starting_balance() {
     let mut cfg = Config::default();
@@ -220,12 +231,14 @@ fn set_param_starting_balance() {
     assert!((cfg.starting_balance - 500.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that set param unknown returns false.
 #[test]
 fn set_param_unknown_returns_false() {
     let mut cfg = Config::default();
     assert!(!cfg.set_param("NONEXISTENT_PARAM", 42.0));
 }
 
+/// Verifies that set param returns bool.
 #[test]
 fn set_param_returns_bool() {
     let mut cfg = Config::default();
@@ -233,10 +246,11 @@ fn set_param_returns_bool() {
     assert!(result);
 }
 
+/// Verifies that set param all f64 params.
 #[test]
 fn set_param_all_f64_params() {
     let mut cfg = Config::default();
-    // Verify every f64 param branch is reachable and returns true.
+
     let f64_params = [
         "LATENCY_ARB_MOMENTUM_THRESHOLD",
         "LATENCY_ARB_MAX_ASK",
@@ -264,6 +278,7 @@ fn set_param_all_f64_params() {
     }
 }
 
+/// Verifies that set param all u64 params.
 #[test]
 fn set_param_all_u64_params() {
     let mut cfg = Config::default();
@@ -287,30 +302,22 @@ fn set_param_all_u64_params() {
             cfg.set_param(param, 100.0),
             "set_param({param}) should return true"
         );
-        // u64 params get cast: 100.0 -> 100
     }
     assert_eq!(cfg.latency_arb_cooldown_ms, 100);
     assert_eq!(cfg.peak_dd_pause_ms, 100);
     assert_eq!(cfg.circuit_breaker_losses, 100);
 }
 
-// -- from_env smoke test (covers the from_env code path) ------------------
-
+/// Verifies that from env smoke test.
 #[test]
 fn from_env_smoke_test() {
-    // Config::from_env() should not panic even without .env file.
-    // When no env vars are set, it should match Config::default() for
-    // every field that reads from env (hard-coded fields like
-    // clob_ping_interval and gamma_market_limit are identical in both).
     let cfg = Config::from_env();
     let default = Config::default();
 
-    // Intervals (env_u64 paths)
     assert_eq!(cfg.tick_interval, default.tick_interval);
     assert_eq!(cfg.gamma_poll_interval, default.gamma_poll_interval);
     assert_eq!(cfg.chainlink_stale_ms, default.chainlink_stale_ms);
 
-    // f64 paths
     assert!((cfg.starting_balance - default.starting_balance).abs() < f64::EPSILON);
     assert!(
         (cfg.latency_arb_momentum_threshold - default.latency_arb_momentum_threshold).abs()
@@ -334,7 +341,6 @@ fn from_env_smoke_test() {
     assert!((cfg.dd_pause_recovery_pct - default.dd_pause_recovery_pct).abs() < f64::EPSILON);
     assert!((cfg.trend_filter_threshold - default.trend_filter_threshold).abs() < f64::EPSILON);
 
-    // u64 paths
     assert_eq!(cfg.latency_arb_cooldown_ms, default.latency_arb_cooldown_ms);
     assert_eq!(cfg.momentum_window_ms, default.momentum_window_ms);
     assert_eq!(cfg.min_trades_for_kelly, default.min_trades_for_kelly);
@@ -349,14 +355,12 @@ fn from_env_smoke_test() {
     assert_eq!(cfg.peak_dd_pause_ms, default.peak_dd_pause_ms);
     assert_eq!(cfg.trend_filter_window, default.trend_filter_window);
 
-    // bool paths (env_bool)
     assert_eq!(cfg.trend_filter_enabled, default.trend_filter_enabled);
     assert_eq!(
         cfg.regime_detection_enabled,
         default.regime_detection_enabled
     );
 
-    // String paths (env_str)
     assert_eq!(cfg.db_path, default.db_path);
     assert_eq!(cfg.log_level, default.log_level);
     assert_eq!(cfg.binance_ws_url, default.binance_ws_url);
@@ -364,7 +368,6 @@ fn from_env_smoke_test() {
     assert_eq!(cfg.rtds_ws_url, default.rtds_ws_url);
     assert_eq!(cfg.gamma_api_url, default.gamma_api_url);
 
-    // Hard-coded fields
     assert_eq!(cfg.clob_ping_interval, default.clob_ping_interval);
     assert_eq!(cfg.rtds_ping_interval, default.rtds_ping_interval);
     assert_eq!(cfg.reconnect_base_delay, default.reconnect_base_delay);
@@ -373,41 +376,38 @@ fn from_env_smoke_test() {
     assert_eq!(cfg.gamma_market_limit, default.gamma_market_limit);
 }
 
-// -- resolve helpers: edge cases ------------------------------------------
-
+/// Verifies that resolve f64 empty string returns default.
 #[test]
 fn resolve_f64_empty_string_returns_default() {
-    // An empty string is not a valid f64 parse → should fall back.
     let val = resolve_f64(Some(""), 42.0);
     assert!((val - 42.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that resolve u64 negative returns default.
 #[test]
 fn resolve_u64_negative_returns_default() {
-    // Negative numbers can't parse to u64.
     assert_eq!(resolve_u64(Some("-1"), 999), 999);
 }
 
+/// Verifies that resolve u64 float string returns default.
 #[test]
 fn resolve_u64_float_string_returns_default() {
-    // "3.14" can't parse to u64.
     assert_eq!(resolve_u64(Some("3.14"), 1_000), 1_000);
 }
 
+/// Verifies that resolve bool false string is not true.
 #[test]
 fn resolve_bool_false_string_is_not_true() {
-    // "false" is not "true", so result should be the default (false).
     assert!(!resolve_bool(Some("false"), false));
 }
 
+/// Verifies that resolve str empty string override.
 #[test]
 fn resolve_str_empty_string_override() {
-    // An empty string is a valid override — it should NOT fall back.
     assert_eq!(resolve_str(Some(""), "default_value"), "");
 }
 
-// -- set_param verifies actual field values after mutation -----------------
-
+/// Verifies that set param verifies every u64 field value.
 #[test]
 fn set_param_verifies_every_u64_field_value() {
     let mut cfg = Config::default();
@@ -430,6 +430,7 @@ fn set_param_verifies_every_u64_field_value() {
     assert_eq!(cfg.trend_filter_window, 20);
 }
 
+/// Verifies that from env returns valid config.
 #[test]
 fn from_env_returns_valid_config() {
     let cfg = Config::from_env();
@@ -460,6 +461,7 @@ fn from_env_returns_valid_config() {
     );
 }
 
+/// Verifies that set param with infinity.
 #[test]
 fn set_param_with_infinity() {
     let mut cfg = Config::default();
@@ -467,6 +469,7 @@ fn set_param_with_infinity() {
     assert!(cfg.starting_balance.is_infinite());
 }
 
+/// Verifies that set param with nan.
 #[test]
 fn set_param_with_nan() {
     let mut cfg = Config::default();
@@ -474,6 +477,7 @@ fn set_param_with_nan() {
     assert!(cfg.starting_balance.is_nan());
 }
 
+/// Verifies that set param verifies every f64 field value.
 #[test]
 fn set_param_verifies_every_f64_field_value() {
     let mut cfg = Config::default();

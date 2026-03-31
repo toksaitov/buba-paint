@@ -23,7 +23,7 @@ const mockUseLogs = vi.mocked(useLogs);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // jsdom doesn't implement scrollIntoView
+
   Element.prototype.scrollIntoView = vi.fn();
 });
 
@@ -42,3 +42,4 @@ test("renders data when loaded", () => {
   expect(screen.getByText("Bot Log")).toBeDefined();
   expect(screen.getByText(/hello world/)).toBeDefined();
 });
+

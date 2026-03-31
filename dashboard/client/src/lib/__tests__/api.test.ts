@@ -1,6 +1,5 @@
 import { describe, expect, test, beforeEach, vi, type Mock } from "vitest";
 
-// We need to mock fetch globally.
 const mockFetch = vi.fn() as Mock;
 vi.stubGlobal("fetch", mockFetch);
 
@@ -19,25 +18,22 @@ import {
   botStop,
   botRestart,
 } from "../api";
+import { useAuthStore } from "../../stores/auth-store";
 
 function jsonResponse(data: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
+  return new Response(JSON.stringify(data), {
     status,
     statusText: status === 200 ? "OK" : "Error",
-    json: () => Promise.resolve(data),
-    headers: new Headers(),
-  } as unknown as Response;
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 function errorResponse(status: number, error: string): Response {
-  return {
-    ok: false,
+  return new Response(JSON.stringify({ error }), {
     status,
     statusText: "Error",
-    json: () => Promise.resolve({ error }),
-    headers: new Headers(),
-  } as unknown as Response;
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 beforeEach(() => {
@@ -45,7 +41,37 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-// -- Internal helpers (headers, get, post) --
+function requestFromCall(): Request {
+  return mockFetch.mock.calls[0][0] as Request;
+}
+
+function pathFromCall(): string {
+  const [input] = mockFetch.mock.calls[0] as [Request | string, RequestInit | undefined];
+  if (typeof input === "string") return input;
+  if (/^https?:/i.test(input.url)) {
+    const url = new URL(input.url);
+    return `${url.pathname}${url.search}`;
+  }
+  return input.url;
+}
+
+function headersFromCall(): Headers {
+  const [input, init] = mockFetch.mock.calls[0] as [Request | string, RequestInit | undefined];
+  if (typeof input !== "string") return input.headers;
+  return new Headers(init?.headers);
+}
+
+function methodFromCall(): string {
+  const [input, init] = mockFetch.mock.calls[0] as [Request | string, RequestInit | undefined];
+  if (typeof input !== "string") return input.method;
+  return init?.method ?? "GET";
+}
+
+async function bodyFromCall(): Promise<string> {
+  const [input, init] = mockFetch.mock.calls[0] as [Request | string, RequestInit | undefined];
+  if (typeof input !== "string") return input.clone().text();
+  return typeof init?.body === "string" ? init.body : "";
+}
 
 describe("auth headers", () => {
   test("includes Authorization when token exists", async () => {
@@ -54,8 +80,7 @@ describe("auth headers", () => {
 
     await getBots();
 
-    const [, init] = mockFetch.mock.calls[0];
-    expect(init.headers["Authorization"]).toBe("Bearer my-jwt");
+    expect(headersFromCall().get("Authorization")).toBe("Bearer my-jwt");
   });
 
   test("omits Authorization when no token", async () => {
@@ -63,8 +88,7 @@ describe("auth headers", () => {
 
     await getBots();
 
-    const [, init] = mockFetch.mock.calls[0];
-    expect(init.headers["Authorization"]).toBeUndefined();
+    expect(headersFromCall().get("Authorization")).toBeNull();
   });
 });
 
@@ -74,23 +98,29 @@ describe("get", () => {
 
     await getBots();
 
-    const [url, init] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/bots");
-    expect(init.method).toBeUndefined(); // GET is default
+    expect(pathFromCall()).toBe("/api/bots");
+    expect(methodFromCall()).toBe("GET");
   });
 
   test("clears token on 401", async () => {
     localStorage.setItem("token", "old-token");
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 401,
-      statusText: "Unauthorized",
-      json: () => Promise.resolve({}),
-      headers: new Headers(),
-    } as unknown as Response);
+    useAuthStore.getState().setAuth("old-token", {
+      id: "1",
+      username: "admin",
+      role: "admin",
+    });
+    mockFetch.mockResolvedValue(
+      new Response(JSON.stringify({}), {
+        status: 401,
+        statusText: "Unauthorized",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
 
     await expect(getBots()).rejects.toThrow("Unauthorized");
     expect(localStorage.getItem("token")).toBeNull();
+    expect(useAuthStore.getState().token).toBeNull();
+    expect(useAuthStore.getState().user).toBeNull();
   });
 
   test("throws on non-ok response", async () => {
@@ -108,23 +138,32 @@ describe("post", () => {
 
     await login("admin", "pass");
 
-    const [, init] = mockFetch.mock.calls[0];
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({ username: "admin", password: "pass" });
+    expect(methodFromCall()).toBe("POST");
+    expect(JSON.parse(await bodyFromCall())).toEqual({
+      username: "admin",
+      password: "pass",
+    });
   });
 
   test("clears token on 401", async () => {
     localStorage.setItem("token", "old");
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 401,
-      statusText: "Unauthorized",
-      json: () => Promise.resolve({}),
-      headers: new Headers(),
-    } as unknown as Response);
+    useAuthStore.getState().setAuth("old", {
+      id: "1",
+      username: "admin",
+      role: "admin",
+    });
+    mockFetch.mockResolvedValue(
+      new Response(JSON.stringify({}), {
+        status: 401,
+        statusText: "Unauthorized",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
 
     await expect(botStart("bot-1")).rejects.toThrow("Unauthorized");
     expect(localStorage.getItem("token")).toBeNull();
+    expect(useAuthStore.getState().token).toBeNull();
+    expect(useAuthStore.getState().user).toBeNull();
   });
 });
 
@@ -135,19 +174,18 @@ describe("extractError", () => {
   });
 
   test("falls back to status text when no JSON", async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
+    const response = new Response("", {
       status: 500,
       statusText: "Internal Server Error",
-      json: () => Promise.reject(new Error("no json")),
-      headers: new Headers(),
-    } as unknown as Response);
+    });
+    Object.defineProperty(response, "json", {
+      value: () => Promise.reject(new Error("no json")),
+    });
+    mockFetch.mockResolvedValue(response);
 
     await expect(getBots()).rejects.toThrow("500 Internal Server Error");
   });
 });
-
-// -- Individual API functions --
 
 describe("login", () => {
   test("posts credentials to /api/auth/login", async () => {
@@ -157,8 +195,7 @@ describe("login", () => {
 
     await login("user", "pass");
 
-    const [url] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/auth/login");
+    expect(pathFromCall()).toBe("/api/auth/login");
   });
 });
 
@@ -166,7 +203,7 @@ describe("getMe", () => {
   test("calls correct URL", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ id: "1", username: "u", role: "admin" }));
     await getMe();
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/auth/me");
+    expect(pathFromCall()).toBe("/api/auth/me");
   });
 });
 
@@ -174,7 +211,7 @@ describe("getBotStatus", () => {
   test("interpolates botId", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ balance: 200 }));
     await getBotStatus("paint");
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/paint/status");
+    expect(pathFromCall()).toBe("/api/bots/paint/status");
   });
 });
 
@@ -182,7 +219,7 @@ describe("getTrades", () => {
   test("includes page and perPage", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ trades: [], total: 0 }));
     await getTrades("bot-1", 2, 25);
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/bot-1/trades?page=2&per_page=25");
+    expect(pathFromCall()).toBe("/api/bots/bot-1/trades?page=2&per_page=25");
   });
 });
 
@@ -190,7 +227,7 @@ describe("getBalance", () => {
   test("includes since", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ entries: [] }));
     await getBalance("bot-1", 1000);
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/bot-1/balance?since=1000");
+    expect(pathFromCall()).toBe("/api/bots/bot-1/balance?since=1000");
   });
 });
 
@@ -198,7 +235,7 @@ describe("getSignals", () => {
   test("includes limit", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ signals: [] }));
     await getSignals("bot-1", 50);
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/bot-1/signals?limit=50");
+    expect(pathFromCall()).toBe("/api/bots/bot-1/signals?limit=50");
   });
 });
 
@@ -206,7 +243,7 @@ describe("getStats", () => {
   test("calls correct URL", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ strategies: [] }));
     await getStats("bot-1");
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/bot-1/stats");
+    expect(pathFromCall()).toBe("/api/bots/bot-1/stats");
   });
 });
 
@@ -214,7 +251,7 @@ describe("getLogs", () => {
   test("includes lines", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ lines: [] }));
     await getLogs("bot-1", 100);
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/bot-1/logs?lines=100");
+    expect(pathFromCall()).toBe("/api/bots/bot-1/logs?lines=100");
   });
 });
 
@@ -222,7 +259,7 @@ describe("getBotProcessStatus", () => {
   test("calls correct URL", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ active: true, pid: 42, uptime_secs: 10 }));
     await getBotProcessStatus("paint");
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/paint/process");
+    expect(pathFromCall()).toBe("/api/bots/paint/process");
   });
 });
 
@@ -230,18 +267,18 @@ describe("bot actions", () => {
   test("botStart posts to correct URL", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ active: true, pid: 1, uptime_secs: 0 }));
     await botStart("paint");
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/paint/start");
+    expect(pathFromCall()).toBe("/api/bots/paint/start");
   });
 
   test("botStop posts to correct URL", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ active: false, pid: null, uptime_secs: null }));
     await botStop("paint");
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/paint/stop");
+    expect(pathFromCall()).toBe("/api/bots/paint/stop");
   });
 
   test("botRestart posts to correct URL", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ active: true, pid: 2, uptime_secs: 0 }));
     await botRestart("paint");
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/bots/paint/restart");
+    expect(pathFromCall()).toBe("/api/bots/paint/restart");
   });
 });

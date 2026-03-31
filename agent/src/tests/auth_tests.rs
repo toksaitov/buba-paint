@@ -7,6 +7,7 @@ use tower::ServiceExt;
 
 use super::*;
 
+/// Test app.
 fn test_app(secret: &str) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -15,6 +16,7 @@ fn test_app(secret: &str) -> Router {
         .layer(Extension(SharedSecret(secret.to_string())))
 }
 
+/// Verifies that health accessible without auth.
 #[tokio::test]
 async fn health_accessible_without_auth() {
     let app = test_app("my-secret");
@@ -25,6 +27,7 @@ async fn health_accessible_without_auth() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// Verifies that protected route rejects missing auth.
 #[tokio::test]
 async fn protected_route_rejects_missing_auth() {
     let app = test_app("my-secret");
@@ -35,6 +38,7 @@ async fn protected_route_rejects_missing_auth() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies that protected route rejects wrong secret.
 #[tokio::test]
 async fn protected_route_rejects_wrong_secret() {
     let app = test_app("my-secret");
@@ -50,6 +54,7 @@ async fn protected_route_rejects_wrong_secret() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies that protected route accepts correct secret.
 #[tokio::test]
 async fn protected_route_accepts_correct_secret() {
     let app = test_app("my-secret");
@@ -65,6 +70,7 @@ async fn protected_route_accepts_correct_secret() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// Verifies that rejects bearer prefix missing.
 #[tokio::test]
 async fn rejects_bearer_prefix_missing() {
     let app = test_app("my-secret");
@@ -80,6 +86,7 @@ async fn rejects_bearer_prefix_missing() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies that empty secret still requires matching.
 #[tokio::test]
 async fn empty_secret_still_requires_matching() {
     let app = test_app("");
@@ -92,6 +99,6 @@ async fn empty_secret_still_requires_matching() {
         )
         .await
         .unwrap();
-    // Empty provided == empty expected, but we check for non-empty
+
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

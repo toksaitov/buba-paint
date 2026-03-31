@@ -53,7 +53,7 @@ pub async fn login(
         ));
     }
 
-    let token = create_jwt(&user.id, &user.role, &state.jwt_secret, 86400); // 24h
+    let token = create_jwt(&user.id, &user.role, &state.jwt_secret, 86400);
 
     Ok(Json(LoginResponse {
         token,
@@ -92,10 +92,12 @@ pub struct CreateUserRequest {
     pub role: String,
 }
 
+/// Default role.
 fn default_role() -> String {
     "observer".to_string()
 }
 
+/// Creates user.
 pub async fn create_user(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,

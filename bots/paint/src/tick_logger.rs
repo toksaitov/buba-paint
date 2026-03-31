@@ -1,5 +1,3 @@
-// Tick logger — periodically logs raw tick data to the database.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,6 +68,7 @@ pub(crate) fn build_tick_entries(state: &TickLoggerState) -> Vec<TickEntry> {
     entries
 }
 
+/// Book entry.
 fn book_entry(source: &'static str, book: &TopOfBook) -> TickEntry {
     TickEntry {
         source,
@@ -115,7 +114,6 @@ pub async fn run_tick_logger(
             .unwrap_or_default()
             .as_millis() as u64;
 
-        // Take a snapshot under the read lock.
         let snapshot = {
             let guard = state.read().await;
             TickLoggerState {

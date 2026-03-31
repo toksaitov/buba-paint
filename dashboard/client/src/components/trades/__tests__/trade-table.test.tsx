@@ -45,7 +45,7 @@ test("formats pnl with color", () => {
     <TradeTable trades={trades} page={1} total={2} perPage={50} onPageChange={vi.fn()} />,
   );
   const cells = screen.getAllByText(/\$/);
-  // PnL cells should have color classes
+
   const pnlPositive = cells.find((el) => el.textContent?.includes("+"));
   const pnlNegative = cells.find((el) => el.textContent?.includes("-"));
   expect(pnlPositive?.className).toContain("text-accent-green");
@@ -85,3 +85,4 @@ test("onPageChange called correctly", () => {
   fireEvent.click(screen.getByText("Next"));
   expect(onPageChange).toHaveBeenCalledWith(2);
 });
+

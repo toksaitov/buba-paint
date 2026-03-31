@@ -29,6 +29,7 @@ pub enum DashboardError {
 }
 
 impl IntoResponse for DashboardError {
+    /// Into response.
     fn into_response(self) -> Response {
         let (status, message) = match &self {
             Self::Database(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),

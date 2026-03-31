@@ -58,21 +58,15 @@ async function main(): Promise<void> {
   // 8. Tick logger
   const tickLogger = new TickLogger(db, binanceFeed, clobFeed, chainlinkFeed);
 
-  // 9. Circuit breaker — pauses trading after consecutive losses
   const circuitBreaker = new CircuitBreaker();
 
-  // 10. Regime detector (experimental, off by default)
   const regimeDetector = CONFIG.REGIME_DETECTION_ENABLED ? new RegimeDetector() : null;
   if (regimeDetector) log.info("Regime detection ENABLED");
 
-  // Track Chainlink price at window open for settlement
   let windowOpenPrice: number | null = null;
   let currentWindowId: string | null = null;
 
-  // Periodic spread diagnostic (every 60s, debug level)
   let lastSpreadLogTime = 0;
-
-  // === Strategy Evaluation (shared by Binance + CLOB triggers) ===
 
   let lastEvalTime = 0;
   const EVAL_INTERVAL_MS = 200;
@@ -88,8 +82,6 @@ async function main(): Promise<void> {
     const binPrice = binanceFeed.getPrice();
     if (binPrice === null) return;
 
-    // Fix startup race: if windowOpenPrice is still null and we have a
-    // current window, capture it now from the first available price.
     if (windowOpenPrice === null && currentWindowId === window.marketId) {
       windowOpenPrice = chainlinkFeed.getPrice() ?? binanceFeed.getPrice();
       if (windowOpenPrice !== null) {
@@ -105,7 +97,6 @@ async function main(): Promise<void> {
       windowTimeRemainingMs: window.endTime - now,
     };
 
-    // Periodic spread diagnostic
     if (now - lastSpreadLogTime > 60_000 && ctx.bookState.up && ctx.bookState.down) {
       const totalAsk = ctx.bookState.up.bestAsk + ctx.bookState.down.bestAsk;
       log.debug(`Spread check: UP ask=${ctx.bookState.up.bestAsk.toFixed(3)} + ` +
@@ -114,10 +105,8 @@ async function main(): Promise<void> {
       lastSpreadLogTime = now;
     }
 
-    // Circuit breaker: skip signal processing if paused
     if (!circuitBreaker.canTrade()) return;
 
-    // Feed regime detector (experimental)
     if (regimeDetector) {
       regimeDetector.addPrice(binPrice, now);
     }
@@ -126,7 +115,6 @@ async function main(): Promise<void> {
       const result = strategy.evaluate(ctx);
       if (result === null) continue;
 
-      // Regime filter: suppress latency-arb in choppy markets
       if (regimeDetector && strategy.name === "latency-arb") {
         const regime = regimeDetector.getRegime();
         if (regime === "choppy") {
@@ -143,7 +131,6 @@ async function main(): Promise<void> {
       const isBatch = Array.isArray(result) && result.length > 1;
 
       if (isBatch) {
-        // Batch signals (spread-capture): balanced sizing, skip trend filter
         for (const signal of signals) {
           log.info(`SIGNAL: ${signal.strategy} => ${signal.direction} | ` +
             `confidence=${signal.confidence.toFixed(2)} | ` +
@@ -154,7 +141,6 @@ async function main(): Promise<void> {
         positionManager.tryOpenSpread(signals, window);
       } else {
         for (const signal of signals) {
-          // Trend filter (experimental, off by default)
           if (trendTracker.shouldSuppress(signal.direction)) {
             log.info(`SIGNAL SUPPRESSED (trend): ${signal.strategy} => ${signal.direction}`);
             db.logSignal(signal);
@@ -172,9 +158,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // === Event Wiring ===
-
-  // Feed status logging
   binanceFeed.on("connected", () => log.info("Binance feed connected"));
   binanceFeed.on("disconnected", () => log.warn("Binance feed disconnected"));
   chainlinkFeed.on("connected", () => log.info("Chainlink feed connected"));
@@ -183,7 +166,6 @@ async function main(): Promise<void> {
   clobFeed.on("connected", () => log.info("CLOB feed connected"));
   clobFeed.on("disconnected", () => log.warn("CLOB feed disconnected"));
 
-  // New 5-min window discovered
   discovery.on("newWindow", (window: MarketWindow) => {
     db.upsertMarket(window);
     clobFeed.resubscribe(window.upTokenId, window.downTokenId);
@@ -201,7 +183,6 @@ async function main(): Promise<void> {
     }
   });
 
-  // Window closed — resolve positions and log balance
   discovery.on("windowClosed", (window: MarketWindow) => {
     let closePrice = chainlinkFeed.getPrice();
     if (closePrice === null) {
@@ -216,7 +197,6 @@ async function main(): Promise<void> {
       db.resolveMarket(window.marketId, "closed");
     }
 
-    // Log bankroll status after each window
     const stats = bankroll.getStats();
     log.info(
       `BANKROLL: $${stats.currentBalance.toFixed(2)} | ` +
@@ -229,13 +209,11 @@ async function main(): Promise<void> {
     currentWindowId = null;
   });
 
-  // Wire trade resolution to trend tracker + circuit breaker via a wrapper
   const origResolve = positionManager.resolveWindow.bind(positionManager);
   positionManager.resolveWindow = (window: MarketWindow, openPrice: number, closePrice: number) => {
     const outcome: SignalDirection = closePrice >= openPrice ? "UP" : "DOWN";
     const trades = db.getOpenTradesForMarket(window.marketId);
     origResolve(window, openPrice, closePrice);
-    // Record outcomes for trend tracker + circuit breaker
     for (const trade of trades) {
       const won = trade.side === outcome;
       trendTracker.recordOutcome(trade.side, won);
@@ -243,12 +221,10 @@ async function main(): Promise<void> {
     }
   };
 
-  // Strategy evaluation triggers
   binanceFeed.on("tick", runStrategies);
   clobFeed.on("book", runStrategies);
   clobFeed.on("priceChange", runStrategies);
 
-  // === Start Everything ===
   log.info("Connecting feeds...");
   binanceFeed.connect();
   chainlinkFeed.connect();
@@ -260,7 +236,6 @@ async function main(): Promise<void> {
 
   log.info("All systems running. Press Ctrl+C to stop.");
 
-  // === Graceful Shutdown ===
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return;

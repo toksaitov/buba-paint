@@ -5,6 +5,7 @@ use crate::types::{Signal, SignalDirection, StrategyContext};
 pub struct SpreadCaptureStrategy;
 
 impl SpreadCaptureStrategy {
+    /// Creates a new `SpreadCaptureStrategy`.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -12,16 +13,19 @@ impl SpreadCaptureStrategy {
 }
 
 impl Default for SpreadCaptureStrategy {
+    /// Builds the default `SpreadCaptureStrategy`.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Strategy for SpreadCaptureStrategy {
+    /// Returns the persisted name for the spread-capture strategy.
     fn name(&self) -> &'static str {
         "spread-capture"
     }
 
+    /// Evaluates the current book snapshot for a two-leg spread-capture setup.
     fn evaluate(&mut self, ctx: &StrategyContext, config: &Config, now: u64) -> StrategyResult {
         let (Some(up_book), Some(down_book)) = (&ctx.book_state.up, &ctx.book_state.down) else {
             return StrategyResult::None;
@@ -36,7 +40,6 @@ impl Strategy for SpreadCaptureStrategy {
             return StrategyResult::None;
         }
 
-        // Min ask filter: reject degenerate books.
         if up_ask < config.spread_capture_min_ask || down_ask < config.spread_capture_min_ask {
             return StrategyResult::None;
         }
@@ -89,10 +92,6 @@ impl Strategy for SpreadCaptureStrategy {
         StrategyResult::Batch(vec![up_signal, down_signal])
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/spread_capture_tests.rs"]

@@ -72,7 +72,6 @@ fn fixture_db() -> Connection {
 
 /// Insert standard fixture data into the DB.
 fn seed_fixtures(conn: &Connection) {
-    // Balance log: init + 2 trades
     conn.execute_batch(
         "INSERT INTO balance_log (timestamp, event, trade_id, amount, balance)
          VALUES (1000, 'init', NULL, 0.0, 200.0);
@@ -83,7 +82,6 @@ fn seed_fixtures(conn: &Connection) {
     )
     .unwrap();
 
-    // Markets
     conn.execute_batch(
         "INSERT INTO markets (market_id, question, condition_id, slug, up_token_id, down_token_id, start_time, end_time, status)
          VALUES ('mkt-1', 'Will BTC go up?', 'cond-1', 'btc-updown-5m-100', 'tok-up', 'tok-down', 1000, 2000, 'resolved');
@@ -92,7 +90,6 @@ fn seed_fixtures(conn: &Connection) {
     )
     .unwrap();
 
-    // Trades
     conn.execute_batch(
         "INSERT INTO simulated_trades (timestamp, market_id, strategy, side, token_id, entry_price, size, status)
          VALUES (1100, 'mkt-1', 'latency-arb', 'UP', 'tok-up', 0.45, 100.0, 'closed');
@@ -103,7 +100,6 @@ fn seed_fixtures(conn: &Connection) {
     )
     .unwrap();
 
-    // Trade results (for the 2 closed trades)
     conn.execute_batch(
         "INSERT INTO trade_results (trade_id, exit_price, settlement_price, pnl_0pct, pnl_1pct, pnl_2pct, pnl_3pct, resolved_at)
          VALUES (1, 1.0, 1.0, 55.0, 54.0, 53.0, 52.0, 1500);
@@ -112,7 +108,6 @@ fn seed_fixtures(conn: &Connection) {
     )
     .unwrap();
 
-    // Signals
     conn.execute_batch(
         "INSERT INTO signals (timestamp, strategy, direction, binance_price, chainlink_price, up_ask, down_ask, metadata)
          VALUES (1050, 'latency-arb', 'UP', 42000.0, 42001.0, 0.45, 0.55, '{\"momentum\": 0.003}');
@@ -121,7 +116,6 @@ fn seed_fixtures(conn: &Connection) {
     )
     .unwrap();
 
-    // Tick data
     conn.execute_batch(
         "INSERT INTO tick_data (timestamp, source, price) VALUES (500, 'binance', 42000.0);
          INSERT INTO tick_data (timestamp, source, price) VALUES (3500, 'binance', 42100.0);",
@@ -129,6 +123,7 @@ fn seed_fixtures(conn: &Connection) {
     .unwrap();
 }
 
+/// Verifies that get status with fixture data.
 #[tokio::test]
 async fn get_status_with_fixture_data() {
     let conn = fixture_db();
@@ -142,11 +137,12 @@ async fn get_status_with_fixture_data() {
     assert_eq!(status.wins, 1);
     assert_eq!(status.losses, 1);
     assert!((status.win_rate - 0.5).abs() < 0.001);
-    assert!((status.total_pnl - 15.0).abs() < 0.001); // 55 + (-40)
+    assert!((status.total_pnl - 15.0).abs() < 0.001);
     assert_eq!(status.high_water_mark, 250.0);
     assert_eq!(status.open_trades, 1);
 }
 
+/// Verifies that get status empty db.
 #[tokio::test]
 async fn get_status_empty_db() {
     let conn = fixture_db();
@@ -159,6 +155,7 @@ async fn get_status_empty_db() {
     assert!(status.current_window.is_none());
 }
 
+/// Verifies that get status current window.
 #[tokio::test]
 async fn get_status_current_window() {
     let conn = fixture_db();
@@ -171,6 +168,7 @@ async fn get_status_current_window() {
     assert_eq!(window.end_time, 3000);
 }
 
+/// Verifies that get status uptime hours.
 #[tokio::test]
 async fn get_status_uptime_hours() {
     let conn = fixture_db();
@@ -178,11 +176,12 @@ async fn get_status_uptime_hours() {
     let reader = DbReader::from_connection(conn);
 
     let status = reader.get_status().await.unwrap();
-    // 3500 - 500 = 3000ms = 0.000833... hours
+
     assert!(status.uptime_hours > 0.0);
     assert!(status.uptime_hours < 0.01);
 }
 
+/// Verifies that get status max drawdown.
 #[tokio::test]
 async fn get_status_max_drawdown() {
     let conn = fixture_db();
@@ -190,11 +189,12 @@ async fn get_status_max_drawdown() {
     let reader = DbReader::from_connection(conn);
 
     let status = reader.get_status().await.unwrap();
-    // HWM = 250, lowest after = 220, DD = 30/250 = 0.12
+
     assert!(status.max_drawdown_pct >= 0.11);
     assert!(status.max_drawdown_pct <= 0.13);
 }
 
+/// Verifies that get trades first page.
 #[tokio::test]
 async fn get_trades_first_page() {
     let conn = fixture_db();
@@ -205,12 +205,13 @@ async fn get_trades_first_page() {
     assert_eq!(resp.total, 3);
     assert_eq!(resp.trades.len(), 3);
     assert_eq!(resp.page, 1);
-    // Newest first
+
     assert_eq!(resp.trades[0].id, 3);
     assert_eq!(resp.trades[0].status, "open");
     assert!(resp.trades[0].pnl.is_none());
 }
 
+/// Verifies that get trades pagination.
 #[tokio::test]
 async fn get_trades_pagination() {
     let conn = fixture_db();
@@ -225,6 +226,7 @@ async fn get_trades_pagination() {
     assert_eq!(page2.trades.len(), 1);
 }
 
+/// Verifies that get trades with results.
 #[tokio::test]
 async fn get_trades_with_results() {
     let conn = fixture_db();
@@ -232,13 +234,83 @@ async fn get_trades_with_results() {
     let reader = DbReader::from_connection(conn);
 
     let resp = reader.get_trades(1, 50).await.unwrap();
-    // Trade 1 (closed, winner)
+
     let trade1 = resp.trades.iter().find(|t| t.id == 1).unwrap();
     assert_eq!(trade1.status, "closed");
     assert!((trade1.pnl.unwrap() - 55.0).abs() < 0.001);
     assert!((trade1.settlement_price.unwrap() - 1.0).abs() < 0.001);
 }
 
+/// Verifies that get status prefers pnl net when available.
+#[tokio::test]
+async fn get_status_prefers_pnl_net_when_available() {
+    let conn = fixture_db();
+    seed_fixtures(&conn);
+    conn.execute_batch(
+        "ALTER TABLE trade_results ADD COLUMN pnl_net REAL;
+         UPDATE trade_results SET pnl_net = 60.0 WHERE trade_id = 1;
+         UPDATE trade_results SET pnl_net = -10.0 WHERE trade_id = 2;",
+    )
+    .unwrap();
+    let reader = DbReader::from_connection(conn);
+
+    let status = reader.get_status().await.unwrap();
+    assert!((status.total_pnl - 50.0).abs() < 0.001);
+    assert_eq!(status.wins, 1);
+    assert_eq!(status.losses, 1);
+}
+
+/// Verifies that get trades reads optional execution columns when present.
+#[tokio::test]
+async fn get_trades_reads_optional_execution_columns_when_present() {
+    let conn = fixture_db();
+    seed_fixtures(&conn);
+    conn.execute_batch(
+        "ALTER TABLE trade_results ADD COLUMN pnl_net REAL;
+         ALTER TABLE simulated_trades ADD COLUMN fill_status TEXT;
+         ALTER TABLE simulated_trades ADD COLUMN execution_group_id TEXT;
+         ALTER TABLE simulated_trades ADD COLUMN execution_fidelity TEXT;
+         ALTER TABLE simulated_trades ADD COLUMN filled_size REAL;
+         ALTER TABLE simulated_trades ADD COLUMN avg_fill_price REAL;
+         UPDATE trade_results SET pnl_net = 54.5 WHERE trade_id = 1;
+         UPDATE simulated_trades
+            SET fill_status = 'filled',
+                execution_group_id = 'spread-1',
+                execution_fidelity = 'legacy_snapshot',
+                filled_size = 100.0,
+                avg_fill_price = 0.45
+          WHERE id = 1;",
+    )
+    .unwrap();
+    let reader = DbReader::from_connection(conn);
+
+    let resp = reader.get_trades(1, 10).await.unwrap();
+    let trade = resp.trades.iter().find(|trade| trade.id == 1).unwrap();
+    assert_eq!(trade.pnl, Some(54.5));
+    assert_eq!(trade.fill_status.as_deref(), Some("filled"));
+    assert_eq!(trade.execution_group_id.as_deref(), Some("spread-1"));
+    assert_eq!(trade.execution_fidelity.as_deref(), Some("legacy_snapshot"));
+    assert_eq!(trade.filled_size, Some(100.0));
+    assert_eq!(trade.avg_fill_price, Some(0.45));
+}
+
+/// Verifies that get trades legacy schema leaves optional execution fields empty.
+#[tokio::test]
+async fn get_trades_legacy_schema_leaves_optional_execution_fields_empty() {
+    let conn = fixture_db();
+    seed_fixtures(&conn);
+    let reader = DbReader::from_connection(conn);
+
+    let resp = reader.get_trades(1, 10).await.unwrap();
+    let trade = resp.trades.iter().find(|trade| trade.id == 1).unwrap();
+    assert!(trade.fill_status.is_none());
+    assert!(trade.execution_group_id.is_none());
+    assert!(trade.execution_fidelity.is_none());
+    assert!(trade.filled_size.is_none());
+    assert!(trade.avg_fill_price.is_none());
+}
+
+/// Verifies that get trades empty db.
 #[tokio::test]
 async fn get_trades_empty_db() {
     let conn = fixture_db();
@@ -249,6 +321,7 @@ async fn get_trades_empty_db() {
     assert!(resp.trades.is_empty());
 }
 
+/// Verifies that get balance log all.
 #[tokio::test]
 async fn get_balance_log_all() {
     let conn = fixture_db();
@@ -262,6 +335,7 @@ async fn get_balance_log_all() {
     assert_eq!(resp.entries[2].balance, 220.0);
 }
 
+/// Verifies that get balance log since filter.
 #[tokio::test]
 async fn get_balance_log_since_filter() {
     let conn = fixture_db();
@@ -273,6 +347,7 @@ async fn get_balance_log_since_filter() {
     assert_eq!(resp.entries[0].timestamp, 3000);
 }
 
+/// Verifies that get balance log empty db.
 #[tokio::test]
 async fn get_balance_log_empty_db() {
     let conn = fixture_db();
@@ -282,6 +357,7 @@ async fn get_balance_log_empty_db() {
     assert!(resp.entries.is_empty());
 }
 
+/// Verifies that get signals default limit.
 #[tokio::test]
 async fn get_signals_default_limit() {
     let conn = fixture_db();
@@ -290,10 +366,11 @@ async fn get_signals_default_limit() {
 
     let resp = reader.get_signals(100).await.unwrap();
     assert_eq!(resp.signals.len(), 2);
-    // Newest first
+
     assert_eq!(resp.signals[0].strategy, "spread-capture");
 }
 
+/// Verifies that get signals limited.
 #[tokio::test]
 async fn get_signals_limited() {
     let conn = fixture_db();
@@ -305,6 +382,7 @@ async fn get_signals_limited() {
     assert_eq!(resp.signals[0].strategy, "spread-capture");
 }
 
+/// Verifies that get signals empty db.
 #[tokio::test]
 async fn get_signals_empty_db() {
     let conn = fixture_db();
@@ -314,6 +392,7 @@ async fn get_signals_empty_db() {
     assert!(resp.signals.is_empty());
 }
 
+/// Verifies that get stats by strategy.
 #[tokio::test]
 async fn get_stats_by_strategy() {
     let conn = fixture_db();
@@ -334,6 +413,7 @@ async fn get_stats_by_strategy() {
     assert!((sc.total_pnl - (-40.0)).abs() < 0.001);
 }
 
+/// Verifies that get stats empty db.
 #[tokio::test]
 async fn get_stats_empty_db() {
     let conn = fixture_db();
@@ -343,6 +423,7 @@ async fn get_stats_empty_db() {
     assert!(resp.by_strategy.is_empty());
 }
 
+/// Verifies that get latest ids.
 #[tokio::test]
 async fn get_latest_ids() {
     let conn = fixture_db();
@@ -354,6 +435,7 @@ async fn get_latest_ids() {
     assert_eq!(reader.get_latest_signal_id().await.unwrap(), 2);
 }
 
+/// Verifies that get latest ids empty db.
 #[tokio::test]
 async fn get_latest_ids_empty_db() {
     let conn = fixture_db();
@@ -364,6 +446,7 @@ async fn get_latest_ids_empty_db() {
     assert_eq!(reader.get_latest_signal_id().await.unwrap(), 0);
 }
 
+/// Verifies that get trades since.
 #[tokio::test]
 async fn get_trades_since() {
     let conn = fixture_db();
@@ -376,6 +459,7 @@ async fn get_trades_since() {
     assert_eq!(trades[1].id, 3);
 }
 
+/// Verifies that get balance since.
 #[tokio::test]
 async fn get_balance_since() {
     let conn = fixture_db();
@@ -387,6 +471,7 @@ async fn get_balance_since() {
     assert_eq!(entries[0].id, 3);
 }
 
+/// Verifies that get signals since.
 #[tokio::test]
 async fn get_signals_since() {
     let conn = fixture_db();
@@ -398,13 +483,12 @@ async fn get_signals_since() {
     assert_eq!(signals[0].strategy, "spread-capture");
 }
 
-// -- Edge case tests ----------------------------------------------------------
-
+/// Verifies that new opens existing db file.
 #[tokio::test]
 async fn new_opens_existing_db_file() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
-    // Create a DB with the expected schema.
+
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute_batch(
         "CREATE TABLE tick_data (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, source TEXT NOT NULL, price REAL, bid REAL, ask REAL, bid_size REAL, ask_size REAL);
@@ -421,12 +505,14 @@ async fn new_opens_existing_db_file() {
     assert_eq!(status.total_trades, 0);
 }
 
+/// Verifies that new nonexistent path returns error.
 #[tokio::test]
 async fn new_nonexistent_path_returns_error() {
     let result = DbReader::new("/nonexistent/path/db.sqlite");
     assert!(result.is_err());
 }
 
+/// Verifies that max drawdown monotone up returns zero.
 #[tokio::test]
 async fn max_drawdown_monotone_up_returns_zero() {
     let conn = fixture_db();
@@ -445,6 +531,7 @@ async fn max_drawdown_monotone_up_returns_zero() {
     );
 }
 
+/// Verifies that max drawdown single dip.
 #[tokio::test]
 async fn max_drawdown_single_dip() {
     let conn = fixture_db();
@@ -456,7 +543,7 @@ async fn max_drawdown_single_dip() {
 
     let reader = DbReader::from_connection(conn);
     let status = reader.get_status().await.unwrap();
-    // DD = (300 - 150) / 300 = 0.5
+
     assert!(
         (status.max_drawdown_pct - 0.5).abs() < 0.001,
         "expected ~50% DD, got: {}",
@@ -464,10 +551,11 @@ async fn max_drawdown_single_dip() {
     );
 }
 
+/// Verifies that max drawdown empty returns zero.
 #[tokio::test]
 async fn max_drawdown_empty_returns_zero() {
     let conn = fixture_db();
-    // No balance_log entries.
+
     let reader = DbReader::from_connection(conn);
     let status = reader.get_status().await.unwrap();
     assert!(

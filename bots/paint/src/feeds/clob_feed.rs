@@ -17,9 +17,9 @@ pub struct ClobFeedHandle {
 }
 
 impl ClobFeedHandle {
-    /// Request the CLOB feed to resubscribe to new token IDs.
+    /// Request the `CLOB` feed to resubscribe to new token IDs.
     ///
-    /// The feed task will disconnect the current WebSocket, clear its internal
+    /// The feed task will disconnect the current `WebSocket`, clear its internal
     /// book state, reconnect, and subscribe to the new market.
     pub async fn resubscribe(
         &self,
@@ -35,7 +35,7 @@ impl ClobFeedHandle {
 
 use super::util::{backoff_delay, now_ms, should_reset_backoff};
 
-/// Launch the CLOB WebSocket feed as a background tokio task.
+/// Launch the `CLOB` `WebSocket` feed as a background tokio task.
 ///
 /// Returns a `ClobFeedHandle` (for triggering resubscription) and a
 /// `JoinHandle` for the spawned task.
@@ -75,7 +75,7 @@ pub async fn run_clob_feed(
     (feed_handle, handle)
 }
 
-/// Internal event loop for the CLOB feed.
+/// Internal event loop for the `CLOB` feed.
 ///
 /// Maintains the current subscription tokens and reconnects on disconnect.
 /// When a resubscription request arrives the current connection is torn down,
@@ -100,7 +100,6 @@ async fn clob_feed_loop(
     let mut rapid_disconnect_count: u32 = 0;
 
     loop {
-        // Wait for initial subscription tokens if we don't have any yet.
         if up_token.is_none() || down_token.is_none() {
             match resub_rx.recv().await {
                 Some((up, down)) => {
@@ -109,7 +108,6 @@ async fn clob_feed_loop(
                     book_state = BookState::default();
                 }
                 None => {
-                    // Channel closed — shut down.
                     return;
                 }
             }
@@ -131,7 +129,6 @@ async fn clob_feed_loop(
 
                 let (mut write, mut read) = ws_stream.split();
 
-                // Subscribe to the market.
                 let sub_msg = serde_json::json!({
                     "type": "market",
                     "assets_ids": [&up_id, &down_id],
@@ -199,7 +196,7 @@ async fn clob_feed_loop(
                             }
                         }
                         _ = ping_timer.tick() => {
-                            // Send keepalive ping.
+
                             if write.send(Message::Ping(Vec::new().into())).await.is_err() {
                                 warn!(feed = "clob", "failed to send ping");
                                 break;
@@ -212,13 +209,13 @@ async fn clob_feed_loop(
                                     up_token = Some(new_up);
                                     down_token = Some(new_down);
                                     book_state = BookState::default();
-                                    // Close current connection — outer loop will reconnect.
+
                                     let _ = write.send(Message::Close(None)).await;
                                     disconnected = true;
                                     break;
                                 }
                                 None => {
-                                    // Channel closed — shut down.
+
                                     return;
                                 }
                             }
@@ -227,7 +224,6 @@ async fn clob_feed_loop(
                 }
 
                 if disconnected {
-                    // Deliberate resubscription -- always reset.
                     attempt = 0;
                     rapid_disconnect_count = 0;
                 } else {
@@ -295,11 +291,7 @@ async fn clob_feed_loop(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pure parsing types and functions — no I/O, no channels.
-// ---------------------------------------------------------------------------
-
-/// A single price-change entry parsed from a CLOB `price_change` event.
+/// A single price-change entry parsed from a `CLOB` `price_change` event.
 #[derive(Debug, PartialEq)]
 pub(crate) struct ClobPriceChangeEntry {
     pub asset_id: String,
@@ -308,7 +300,7 @@ pub(crate) struct ClobPriceChangeEntry {
     pub size: f64,
 }
 
-/// Structured update parsed from a CLOB WebSocket message.
+/// Structured update parsed from a `CLOB` `WebSocket` message.
 #[derive(Debug, PartialEq)]
 pub(crate) enum ClobUpdate {
     /// Full order-book snapshot for a single asset.
@@ -329,10 +321,10 @@ pub(crate) enum ClobUpdate {
     Ignored,
 }
 
-/// Parse a single CLOB WebSocket JSON value into a `ClobUpdate`.
+/// Parse a single `CLOB` `WebSocket` `JSON` value into a `ClobUpdate`.
 ///
 /// Pure function -- no I/O, no channels.
-#[allow(clippy::similar_names)] // side / size are the actual field names
+#[allow(clippy::similar_names)]
 pub(crate) fn parse_clob_event(v: &serde_json::Value) -> ClobUpdate {
     let event_type = v.get("event_type").and_then(|e| e.as_str()).unwrap_or("");
 
@@ -370,7 +362,6 @@ pub(crate) fn parse_clob_event(v: &serde_json::Value) -> ClobUpdate {
             ClobUpdate::PriceChange { timestamp, changes }
         }
         _ => {
-            // Check if this is a book snapshot (has asset_id + bids/asks).
             if v.get("asset_id").is_some() && (v.get("bids").is_some() || v.get("asks").is_some()) {
                 let asset_id = v
                     .get("asset_id")
@@ -400,9 +391,9 @@ pub(crate) fn parse_clob_event(v: &serde_json::Value) -> ClobUpdate {
     }
 }
 
-/// Parse a CLOB WebSocket text frame into a list of `ClobUpdate`s.
+/// Parse a `CLOB` `WebSocket` text frame into a list of `ClobUpdate`s.
 ///
-/// If the top-level JSON is an array, each element is parsed individually.
+/// If the top-level `JSON` is an array, each element is parsed individually.
 /// Pure function -- no I/O, no channels.
 pub(crate) fn parse_clob_text(text: &str) -> Vec<ClobUpdate> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -416,10 +407,10 @@ pub(crate) fn parse_clob_text(text: &str) -> Vec<ClobUpdate> {
     }
 }
 
-/// Parse a CLOB WebSocket message and update the internal book state.
+/// Parse a `CLOB` `WebSocket` message and update the internal book state.
 ///
-/// The CLOB WS emits several message shapes:
-///   - JSON arrays: each element is processed individually.
+/// The `CLOB` WS emits several message shapes:
+///   - `JSON` arrays: each element is processed individually.
 ///   - `event_type: "price_change"`: top-of-book update from `price_changes`.
 ///   - Book snapshots (have `asset_id` + `bids`/`asks`): full level rebuild.
 ///   - `event_type: "last_trade_price"`: ignored.
@@ -477,6 +468,8 @@ async fn process_clob_message(
 
                 tx.send(FeedMessage::ClobPriceChange {
                     book_state: book_state.clone(),
+                    timestamp,
+                    payload_json: Some(text.to_string()),
                 })
                 .await
                 .map_err(|_| anyhow::anyhow!("channel closed"))?;
@@ -505,6 +498,8 @@ async fn process_clob_message(
 
                 tx.send(FeedMessage::ClobBook {
                     book_state: book_state.clone(),
+                    timestamp,
+                    payload_json: Some(text.to_string()),
                 })
                 .await
                 .map_err(|_| anyhow::anyhow!("channel closed"))?;
@@ -518,7 +513,6 @@ async fn process_clob_message(
 /// Extract the best (highest bid or lowest ask) price and size from a levels array.
 ///
 /// Returns `(price, size)`.  If the array is empty or missing, returns `(0.0, 0.0)`.
-// Sentinel comparisons (f64::MIN / f64::MAX) are exact bit patterns, not computed floats.
 #[allow(clippy::float_cmp)]
 pub(crate) fn extract_best_level(levels: Option<&serde_json::Value>, is_bid: bool) -> (f64, f64) {
     let arr = match levels.and_then(|l| l.as_array()) {
@@ -551,7 +545,7 @@ pub(crate) fn extract_best_level(levels: Option<&serde_json::Value>, is_bid: boo
     (best_price, best_size)
 }
 
-/// Parse a JSON field that may be either a number or a string-encoded number.
+/// Parse a `JSON` field that may be either a number or a string-encoded number.
 pub(crate) fn parse_f64_field(v: &serde_json::Value, field: &str) -> Option<f64> {
     v.get(field).and_then(|val| {
         val.as_f64()

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-/// Exponential backoff with jitter for WebSocket reconnection.
+/// Exponential backoff with jitter for `WebSocket` reconnection.
 ///
 /// Computes `base_ms * 2^attempt` (capped at `max_ms`), then adds 0-25% jitter
 /// derived from the current system time.

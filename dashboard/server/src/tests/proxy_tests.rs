@@ -5,6 +5,7 @@ use crate::config::AgentConfig;
 use crate::error::DashboardError;
 use crate::proxy;
 
+/// Test agent.
 fn test_agent(url: &str) -> AgentConfig {
     AgentConfig {
         id: "test".into(),
@@ -14,6 +15,7 @@ fn test_agent(url: &str) -> AgentConfig {
     }
 }
 
+/// Verifies that proxy get success.
 #[tokio::test]
 async fn proxy_get_success() {
     let server = MockServer::start().await;
@@ -30,6 +32,7 @@ async fn proxy_get_success() {
     assert_eq!(result["balance"], 100.0);
 }
 
+/// Verifies that proxy post forwards 409.
 #[tokio::test]
 async fn proxy_post_forwards_409() {
     let server = MockServer::start().await;
@@ -53,6 +56,7 @@ async fn proxy_post_forwards_409() {
     }
 }
 
+/// Verifies that proxy post forwards 500.
 #[tokio::test]
 async fn proxy_post_forwards_500() {
     let server = MockServer::start().await;
@@ -76,6 +80,7 @@ async fn proxy_post_forwards_500() {
     }
 }
 
+/// Verifies that proxy unreachable returns proxy error.
 #[tokio::test]
 async fn proxy_unreachable_returns_proxy_error() {
     let agent = test_agent("http://127.0.0.1:1");
@@ -85,6 +90,7 @@ async fn proxy_unreachable_returns_proxy_error() {
     assert!(matches!(err, DashboardError::Proxy(_)));
 }
 
+/// Verifies that proxy extracts error message from json.
 #[tokio::test]
 async fn proxy_extracts_error_message_from_json() {
     let server = MockServer::start().await;
@@ -109,6 +115,7 @@ async fn proxy_extracts_error_message_from_json() {
     }
 }
 
+/// Verifies that proxy falls back to raw body.
 #[tokio::test]
 async fn proxy_falls_back_to_raw_body() {
     let server = MockServer::start().await;

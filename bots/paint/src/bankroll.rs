@@ -1,19 +1,8 @@
-// Bankroll manager — full Kelly-criterion-based position sizing.
-//
-// Ported from the TypeScript `BankrollManager` class.  The Rust version does
-// NOT store references to `Database` or `Clock`; they are passed as method
-// parameters instead, which makes the struct trivially `Send` and avoids
-// lifetime issues in the backtest engine.
-
 use std::collections::HashMap;
 
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::db::database::Database;
-
-// ---------------------------------------------------------------------------
-// Supporting types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 struct StrategyRecord {
@@ -41,10 +30,6 @@ pub struct BankrollStats {
     pub total_pnl: f64,
     pub total_fees: f64,
 }
-
-// ---------------------------------------------------------------------------
-// BankrollManager
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct BankrollManager {
@@ -100,8 +85,6 @@ impl BankrollManager {
         }
     }
 
-    // -- Public API ----------------------------------------------------------
-
     /// Reserve capital for a single-side (latency-arb) trade.
     ///
     /// Returns the token count (an integer kept as `f64`), or `0.0` when the
@@ -140,7 +123,6 @@ impl BankrollManager {
 
         let mut token_count = (notional / entry_price).floor();
 
-        // Min-bet floor: if the cost is below the minimum, bump up.
         if token_count > 0.0 && token_count * entry_price < config.min_bet_usd {
             let min_tokens = (config.min_bet_usd / entry_price).floor();
             if min_tokens * entry_price <= available && min_tokens * entry_price <= max_position_usd
@@ -196,8 +178,6 @@ impl BankrollManager {
         let total_cost = pair_units * total_ask_per_unit;
         self.reserved_capital += total_cost;
 
-        // `confidence` is accepted for API parity with TypeScript but is not
-        // used by spread-capture sizing (intentional — matches TS behaviour).
         let _ = confidence;
 
         (pair_units, pair_units)
@@ -234,7 +214,6 @@ impl BankrollManager {
             self.total_losses += 1;
         }
 
-        // Per-strategy stats.
         let stats = self
             .strategy_stats
             .entry(strategy.to_string())
@@ -245,7 +224,6 @@ impl BankrollManager {
             stats.losses += 1;
         }
 
-        // Rolling window.
         self.recent_results.push(TradeResultRecord {
             strategy: strategy.to_string(),
             won,
@@ -254,18 +232,15 @@ impl BankrollManager {
             self.recent_results.remove(0);
         }
 
-        // High-water mark.
         if self.current_balance > self.high_water_mark {
             self.high_water_mark = self.current_balance;
         }
 
-        // Peak drawdown tracking.
         let drawdown = self.get_drawdown_pct();
         if drawdown > self.peak_drawdown_pct {
             self.peak_drawdown_pct = drawdown;
         }
 
-        // Persist balance event.
         let _ = db.log_balance_event(
             clock.now(),
             "trade_close",
@@ -274,7 +249,6 @@ impl BankrollManager {
             self.current_balance,
         );
 
-        // `config` accepted for API symmetry; not used beyond future-proofing.
         let _ = config;
     }
 
@@ -291,11 +265,8 @@ impl BankrollManager {
             return false;
         }
 
-        // Peak drawdown pause with hysteresis.
         let peak_dd = self.get_drawdown_pct();
 
-        // Recovery hysteresis: if DD drops below (trigger - recovery),
-        // re-arm the pause so it can trigger again later.
         let recovery_threshold = config.peak_dd_pause_pct - config.dd_pause_recovery_pct;
         if peak_dd < recovery_threshold {
             self.dd_pause_armed = true;
@@ -310,15 +281,10 @@ impl BankrollManager {
                 self.log_blocked("peak DD pause active", now);
                 return false;
             }
-            // Timer expired — disarm until recovery.
+
             self.peak_dd_pause_until = 0;
             self.dd_pause_armed = false;
         } else if peak_dd < config.peak_dd_pause_pct {
-            // DD dropped below the trigger threshold — reset the timer.
-            // Re-arming is handled exclusively by the recovery hysteresis
-            // check above (peak_dd < recovery_threshold).  This prevents
-            // the pause from re-triggering when recovery_pct > pause_pct
-            // makes the recovery threshold negative/unreachable.
             self.peak_dd_pause_until = 0;
         }
 
@@ -341,37 +307,31 @@ impl BankrollManager {
     ) {
         let delta = new_pnl - old_pnl;
         self.current_balance += delta;
-        self.total_fees = (self.total_fees + delta).max(0.0); // fees don't change direction
+        self.total_fees = (self.total_fees + delta).max(0.0);
 
-        // Correct win/loss counts.
         let was_win = old_pnl > 0.0;
         let is_win = new_pnl > 0.0;
         if was_win && !is_win {
-            // Was counted as win, now a loss.
             if self.total_wins > 0 {
                 self.total_wins -= 1;
             }
             self.total_losses += 1;
         } else if !was_win && is_win {
-            // Was counted as loss, now a win.
             if self.total_losses > 0 {
                 self.total_losses -= 1;
             }
             self.total_wins += 1;
         }
 
-        // Update high-water mark (can only go up, never down from a correction).
         if self.current_balance > self.high_water_mark {
             self.high_water_mark = self.current_balance;
         }
 
-        // Update peak drawdown.
         let dd = self.get_drawdown_pct();
         if dd > self.peak_drawdown_pct {
             self.peak_drawdown_pct = dd;
         }
 
-        // Log the correction.
         let _ = db.log_balance_event(
             clock.now(),
             "settlement_correction",
@@ -451,8 +411,6 @@ impl BankrollManager {
         }
     }
 
-    // -- Private helpers -----------------------------------------------------
-
     /// Rate-limited log when trading is blocked. Logs at most once per 60 seconds.
     fn log_blocked(&mut self, reason: &str, now: u64) {
         if self.last_blocked_log_ms == 0 || now.saturating_sub(self.last_blocked_log_ms) >= 60_000 {
@@ -505,10 +463,6 @@ impl BankrollManager {
         full_kelly * config.kelly_fraction
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/bankroll_tests.rs"]

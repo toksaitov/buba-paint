@@ -1,7 +1,7 @@
 use crate::config::AgentConfig;
 use crate::error::DashboardError;
 
-/// Proxy an HTTP GET request to an agent.
+/// Proxy an `HTTP` GET request to an agent.
 pub async fn proxy_get(
     agent: &AgentConfig,
     path: &str,
@@ -34,7 +34,7 @@ pub async fn proxy_get(
         .map_err(|e| DashboardError::Proxy(format!("failed to parse agent response: {e}")))
 }
 
-/// Proxy an HTTP POST request to an agent.
+/// Proxy an `HTTP` POST request to an agent.
 pub async fn proxy_post(
     agent: &AgentConfig,
     path: &str,
@@ -61,7 +61,7 @@ pub async fn proxy_post(
 }
 
 /// Extract a clean error message from an agent error response.
-/// Tries to parse `{"error": "..."}` JSON; falls back to raw body text.
+/// Tries to parse `{"error": "..."}` `JSON`; falls back to raw body text.
 pub(crate) async fn extract_agent_error(resp: reqwest::Response) -> String {
     let body = resp.text().await.unwrap_or_default();
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {

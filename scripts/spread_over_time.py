@@ -63,14 +63,11 @@ print(f"Min total ask: {min_total:.4f}")
 print(f"Samples below $1.000: {len(below_1)} ({100*len(below_1)/len(df):.1f}%)")
 print(f"Samples below $0.998: {len(below_0998)} ({100*len(below_0998)/len(df):.1f}%)")
 
-# Resample to 30s if run > 30 min
 run_minutes = (df["timestamp"].max() - df["timestamp"].min()) / 60_000
 df_plot = df.copy()
 if run_minutes > 30:
     df_plot = df_plot.set_index("time").resample("30s").last().dropna().reset_index()
 
-# --- Per-window market balance ---
-# For each window, compute the average of the cheaper side's ask
 window_stats = []
 for _, row in mf.iterrows():
     mask = (df["timestamp"] >= row["start_time"]) & (df["timestamp"] < row["end_time"])
@@ -91,11 +88,8 @@ for _, row in mf.iterrows():
 
 wdf_plot = pd.DataFrame(window_stats)
 
-# --- Plot ---
 fig, axes = plt.subplots(2, 1, figsize=(16, 11))
 
-# Panel 1: Combined ask time series
-# Alternating window shading
 for i, (_, row) in enumerate(mf.iterrows()):
     s = pd.to_datetime(row["start_time"], unit="ms")
     e = pd.to_datetime(row["end_time"], unit="ms")

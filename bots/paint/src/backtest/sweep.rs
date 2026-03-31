@@ -1,7 +1,3 @@
-// Parameter sweep — runs the backtester with many parameter combinations.
-//
-// Direct port of the TypeScript sweep.  Uses rayon for parallelism.
-
 use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,19 +9,12 @@ use crate::backtest::runner::{BacktestOptions, BacktestResult, TickSource};
 use crate::backtest::tick_replay::TickReplay;
 use crate::config::Config;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 pub struct SweepDimension {
     pub param: String,
     pub values: Vec<f64>,
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
+/// Runs sweep.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn run_sweep(
     data_path: &str,
@@ -38,7 +27,6 @@ pub fn run_sweep(
 ) -> anyhow::Result<()> {
     let t0 = Instant::now();
 
-    // Pre-load ticks once (biggest perf win).
     println!("Loading tick data into memory...");
     let conn = rusqlite::Connection::open_with_flags(
         data_path,
@@ -51,7 +39,6 @@ pub fn run_sweep(
 
     let cached_ticks = Arc::new(cached_ticks);
 
-    // Generate Cartesian product.
     let combinations = cartesian(dimensions);
     let total_runs = combinations.len();
 
@@ -60,17 +47,16 @@ pub fn run_sweep(
         .iter()
         .map(|d| format!("{}({})", d.param, d.values.len()))
         .collect();
+    let rayon_threads = rayon::current_num_threads();
     println!(
-        "Sweep: {} = {total_runs} combinations\n",
+        "Sweep: {} = {total_runs} combinations on {rayon_threads} Rayon threads\n",
         dim_desc.join(" x ")
     );
 
-    // Run in parallel.
     let results: Vec<(Vec<(&str, f64)>, BacktestResult)> = combinations
         .par_iter()
         .enumerate()
         .map(|(i, combo)| {
-            // Clone config and apply overrides.
             let mut config = Config {
                 starting_balance,
                 log_level: "error".to_string(),
@@ -88,10 +74,7 @@ pub fn run_sweep(
                 }
             }
 
-            // Use a unique temp path per run — includes process ID to avoid
-            // stale-DB contamination when multiple sweeps run in the same process.
-            let pid = std::process::id();
-            let results_db_path = format!("/tmp/buba-sweep-{pid}-{i:04}.db");
+            let results_db_path = ":memory:".to_string();
 
             let label: String = combo
                 .iter()
@@ -109,12 +92,6 @@ pub fn run_sweep(
                 quiet: true,
                 config,
             });
-
-            // Clean up temp DB after reading results.
-            for suffix in ["", "-shm", "-wal"] {
-                let f = format!("{results_db_path}{suffix}");
-                let _ = fs::remove_file(&f);
-            }
 
             match result {
                 Ok(r) => {
@@ -137,7 +114,7 @@ pub fn run_sweep(
                     eprintln!("[{}/{}] {} ... ERROR: {e}", i + 1, total_runs, label);
                     let param_refs: Vec<(&str, f64)> =
                         combo.iter().map(|(p, v)| (p.as_str(), *v)).collect();
-                    // Return a zeroed result on error.
+
                     (
                         param_refs,
                         BacktestResult {
@@ -154,10 +131,20 @@ pub fn run_sweep(
                             win_rate: 0.0,
                             final_balance: starting_balance,
                             total_pnl: 0.0,
+                            gross_pnl: 0.0,
                             max_drawdown_pct: 0.0,
                             high_water_mark: starting_balance,
                             total_fees: 0.0,
                             pnl_net: 0.0,
+                            fill_rate: 0.0,
+                            partial_fill_rate: 0.0,
+                            no_fill_count: 0,
+                            spread_legging_count: 0,
+                            residual_position_count: 0,
+                            avg_fill_latency_ms: 0.0,
+                            avg_slippage: 0.0,
+                            raw_event_batches: 0,
+                            legacy_snapshot_batches: 0,
                         },
                     )
                 }
@@ -165,7 +152,6 @@ pub fn run_sweep(
         })
         .collect();
 
-    // Write CSV.
     if let Some(parent) = std::path::Path::new(output_path).parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
@@ -181,7 +167,6 @@ pub fn run_sweep(
     println!("\nSweep complete: {total_runs} runs in {total_elapsed:.1}s");
     println!("Results: {output_path}");
 
-    // Print top 5 by PnL.
     let top = top_n_by_pnl(&results, 5);
 
     println!("\nTop 5 by PnL:");
@@ -204,22 +189,16 @@ pub fn run_sweep(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Build the CSV string from sweep results.
 ///
-/// Each row contains the parameter values followed by the standard metric
-/// columns: `pnl`, `win_rate`, `trades`, `wins`, `losses`, `max_dd`, `hwm`,
-/// `final_balance`, `signals`, `elapsed_s`.
+/// Each row contains the parameter values followed by aggregate `PnL`, fill,
+/// replay-fidelity, and timing metrics used by sweep analysis.
 pub(crate) fn build_csv(
     dim_names: &[String],
     results: &[(Vec<(&str, f64)>, BacktestResult)],
 ) -> String {
     let mut csv = String::new();
 
-    // Header.
     let mut headers: Vec<String> = dim_names.to_vec();
     headers.extend([
         "pnl".to_string(),
@@ -231,14 +210,23 @@ pub(crate) fn build_csv(
         "hwm".to_string(),
         "final_balance".to_string(),
         "signals".to_string(),
+        "fill_rate".to_string(),
+        "partial_fill_rate".to_string(),
+        "no_fill_count".to_string(),
+        "spread_legging_count".to_string(),
+        "residual_position_count".to_string(),
+        "avg_fill_latency_ms".to_string(),
+        "avg_slippage".to_string(),
+        "raw_event_batches".to_string(),
+        "legacy_snapshot_batches".to_string(),
         "total_fees".to_string(),
+        "gross_pnl".to_string(),
         "pnl_net".to_string(),
         "elapsed_s".to_string(),
     ]);
     csv.push_str(&headers.join(","));
     csv.push('\n');
 
-    // Rows.
     for (combo, r) in results {
         let mut row: Vec<String> = combo.iter().map(|(_, v)| format!("{v}")).collect();
         row.push(format!("{}", r.total_pnl));
@@ -250,7 +238,17 @@ pub(crate) fn build_csv(
         row.push(format!("{}", r.high_water_mark));
         row.push(format!("{}", r.final_balance));
         row.push(format!("{}", r.signals));
+        row.push(format!("{}", r.fill_rate));
+        row.push(format!("{}", r.partial_fill_rate));
+        row.push(format!("{}", r.no_fill_count));
+        row.push(format!("{}", r.spread_legging_count));
+        row.push(format!("{}", r.residual_position_count));
+        row.push(format!("{}", r.avg_fill_latency_ms));
+        row.push(format!("{}", r.avg_slippage));
+        row.push(format!("{}", r.raw_event_batches));
+        row.push(format!("{}", r.legacy_snapshot_batches));
         row.push(format!("{}", r.total_fees));
+        row.push(format!("{}", r.gross_pnl));
         row.push(format!("{}", r.pnl_net));
         row.push(format!("{}", r.elapsed_seconds));
         csv.push_str(&row.join(","));
@@ -334,7 +332,6 @@ pub fn parse_sweep_spec(spec: &str) -> anyhow::Result<SweepDimension> {
         let mut values = Vec::new();
         let mut v = start;
         while v <= end + step * 0.001 {
-            // Match JS toPrecision(10) — clean up float drift.
             let s = format!("{v:.10e}");
             let cleaned: f64 = s.parse().unwrap_or(v);
             values.push(cleaned);

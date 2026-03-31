@@ -1,5 +1,5 @@
 #!/usr/bin/env npx tsx
-export {};  // Module for top-level await
+export {};
 /**
  * Parameter sweep — runs the backtester with many parameter combinations.
  *
@@ -17,8 +17,6 @@ export {};  // Module for top-level await
 
 import { writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
-
-// ---- Parse args ----
 
 const args = process.argv.slice(2);
 
@@ -48,7 +46,6 @@ const endStr = getArg("end");
 const outputPath = getArg("output", "data/sweeps/001/sweep.csv");
 const startingBalance = parseFloat(getArg("balance", "200"));
 
-// Fixed parameter overrides (not swept)
 const fixedOverrides = getAllArgs("set").map((s) => {
   const eqIdx = s.indexOf("=");
   if (eqIdx === -1) { console.error(`Invalid --set: ${s}`); process.exit(1); }
@@ -64,7 +61,6 @@ if (isNaN(startTime) || isNaN(endTime)) {
   process.exit(1);
 }
 
-// Parse sweep specifications
 interface SweepDimension {
   param: string;
   values: number[];
@@ -82,7 +78,6 @@ for (const spec of sweepSpecs) {
   const param = spec.slice(0, eqIdx);
   const range = spec.slice(eqIdx + 1);
 
-  // Support explicit list (comma-separated) or range (start:end:step)
   let values: number[];
   if (range.includes(",")) {
     values = range.split(",").map(Number);
@@ -102,7 +97,6 @@ for (const spec of sweepSpecs) {
   dimensions.push({ param, values });
 }
 
-// Compute all combinations
 function* cartesian(dims: SweepDimension[]): Generator<Array<{ param: string; value: number }>> {
   if (dims.length === 0) {
     yield [];
@@ -121,14 +115,10 @@ const totalRuns = combinations.length;
 
 console.log(`\nSweep: ${dimensions.map((d) => `${d.param}(${d.values.length})`).join(" × ")} = ${totalRuns} combinations\n`);
 
-// ---- Run sweep ----
-
-// Dynamically import runner and tick cache
 const { runBacktest } = await import("./runner.js");
 const { TickReplay } = await import("./tick-replay.js");
 const BetterSqlite3 = (await import("better-sqlite3")).default;
 
-// Pre-load ticks once (biggest perf win — avoid re-reading ~6M rows per run)
 console.log("Loading tick data into memory...");
 const cacheDb = new BetterSqlite3(dataPath, { readonly: true });
 const cachedTicks = TickReplay.loadTicks(cacheDb, startTime, endTime);
@@ -145,23 +135,12 @@ const t0 = Date.now();
 for (let i = 0; i < combinations.length; i++) {
   const combo = combinations[i];
 
-  // Set env vars for this run
   for (const { param, value } of combo) {
     process.env[param] = String(value);
   }
   process.env.STARTING_BALANCE = String(startingBalance);
   process.env.LOG_LEVEL = "error";
 
-  // Invalidate cached config module to pick up new env vars
-  // Since ESM modules are cached, we need to create a fresh config
-  // For now, re-import won't work for cached modules.
-  // Workaround: The CONFIG reads env at import time, so it's fixed after first import.
-  // Instead, we'll clear the module cache by using a query param trick:
-  // Actually, better-sqlite3 and the runner itself don't need re-import.
-  // The CONFIG is already loaded. We need a different approach.
-
-  // Direct approach: modify the config object at runtime
-  // Since CONFIG is `as const`, we need to cast. This is the pragmatic choice.
   const { CONFIG } = await import("../config.js");
   for (const { param, value } of combo) {
     (CONFIG as Record<string, unknown>)[param] = value;
@@ -210,14 +189,12 @@ for (let i = 0; i < combinations.length; i++) {
   row.elapsed_s = result.elapsedSeconds;
   results.push(row);
 
-  // Clean up per-run DB to save disk space
   for (const suffix of ["", "-shm", "-wal"]) {
     const f = resultsDbPath + suffix;
     if (existsSync(f)) try { unlinkSync(f); } catch {}
   }
 }
 
-// Write CSV
 mkdirSync(dirname(outputPath), { recursive: true });
 const headers = Object.keys(results[0]);
 const csv = [

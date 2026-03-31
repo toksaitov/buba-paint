@@ -1,18 +1,7 @@
-// Build merged market-data DB from individual run databases.
-//
-// Rust port of `legacy-ts/src/data/build-market-db.ts`.
-// Merges tick_data, markets, and trade results from runs/004-007 into a
-// single `data/market-data.db`.  Source DBs are never modified (attached
-// read-only).
-
 use std::path::Path;
 
 use anyhow::Context;
 use rusqlite::{Connection, params};
-
-// ---------------------------------------------------------------------------
-// Run metadata
-// ---------------------------------------------------------------------------
 
 struct RunInfo {
     number: u32,
@@ -46,11 +35,12 @@ const RUNS: &[RunInfo] = &[
         version: "v0.6",
         subdir: "008",
     },
+    RunInfo {
+        number: 9,
+        version: "v0.8.1",
+        subdir: "009",
+    },
 ];
-
-// ---------------------------------------------------------------------------
-// Schema
-// ---------------------------------------------------------------------------
 
 const CREATE_SCHEMA: &str = "
     CREATE TABLE runs (
@@ -91,7 +81,34 @@ const CREATE_SCHEMA: &str = "
         close_price   REAL,
         outcome       TEXT,
         polymarket_outcome TEXT,
+        resolution_source TEXT,
+        fee_profile   TEXT,
+        order_min_size REAL,
+        order_price_min_tick_size REAL,
+        maker_base_fee REAL,
+        taker_base_fee REAL,
+        rewards_min_size REAL,
+        rewards_max_spread REAL,
         run_id        INTEGER NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES runs(id)
+    );
+
+    CREATE TABLE feed_events (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        received_at_ms  INTEGER NOT NULL,
+        event_at_ms     INTEGER NOT NULL,
+        source          TEXT NOT NULL,
+        event_type      TEXT NOT NULL,
+        market_id       TEXT,
+        asset_id        TEXT,
+        price           REAL,
+        best_bid        REAL,
+        best_ask        REAL,
+        bid_size        REAL,
+        ask_size        REAL,
+        payload_json    TEXT,
+        fidelity        TEXT NOT NULL,
+        run_id          INTEGER NOT NULL,
         FOREIGN KEY (run_id) REFERENCES runs(id)
     );
 
@@ -118,7 +135,12 @@ const CREATE_SCHEMA: &str = "
         size             REAL NOT NULL,
         settlement_price REAL NOT NULL,
         pnl              REAL NOT NULL,
+        pnl_net          REAL NOT NULL,
+        fee_amount       REAL NOT NULL,
         won              INTEGER NOT NULL,
+        fill_status      TEXT,
+        execution_group_id TEXT,
+        execution_fidelity TEXT,
         FOREIGN KEY (run_id) REFERENCES runs(id)
     );
 ";
@@ -131,12 +153,11 @@ const CREATE_INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS idx_markets_end ON markets(end_time);
     CREATE INDEX IF NOT EXISTS idx_markets_outcome ON markets(outcome);
     CREATE INDEX IF NOT EXISTS idx_markets_run ON markets(run_id);
+    CREATE INDEX IF NOT EXISTS idx_feed_events_ts ON feed_events(received_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_feed_events_source_ts ON feed_events(source, received_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_feed_events_market_ts ON feed_events(market_id, received_at_ms);
     CREATE INDEX IF NOT EXISTS idx_htrades_run ON historical_trades(run_id);
 ";
-
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
 
 /// Build a merged market-data database from individual run databases.
 ///
@@ -146,13 +167,11 @@ pub fn build_market_data(runs_dir: &str, output: &str) -> anyhow::Result<()> {
     log("Building merged market data DB...");
     log(&format!("Output: {output}"));
 
-    // 1. Delete output file if it exists.
     if Path::new(output).exists() {
         std::fs::remove_file(output).context("removing existing output DB")?;
         log("Removed existing output DB");
     }
 
-    // Ensure parent directory exists.
     if let Some(parent) = Path::new(output).parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
@@ -160,36 +179,28 @@ pub fn build_market_data(runs_dir: &str, output: &str) -> anyhow::Result<()> {
         }
     }
 
-    // 2. Create new SQLite DB.
     let conn = Connection::open(output).context("creating output database")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "OFF")?;
     conn.pragma_update(None, "cache_size", "-256000")?;
 
-    // 3. Create schema.
     conn.execute_batch(CREATE_SCHEMA)
         .context("creating schema")?;
 
-    // 4. Import each run.
     for run in RUNS {
         import_run(&conn, runs_dir, run)?;
     }
 
-    // 5. Create indexes (before settlement computation — needs source+timestamp index).
     log("Creating indexes...");
     conn.execute_batch(CREATE_INDEXES)
         .context("creating indexes")?;
 
-    // 6. Compute settlements.
     compute_settlements(&conn)?;
 
-    // 7. Compute data quality metrics.
     compute_data_quality(&conn)?;
 
-    // 8. Print summary.
     print_summary(&conn)?;
 
-    // 9. VACUUM.
     log("\nVACUUMing...");
     conn.execute_batch("VACUUM")?;
 
@@ -197,10 +208,7 @@ pub fn build_market_data(runs_dir: &str, output: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Import a single run
-// ---------------------------------------------------------------------------
-
+/// Import run.
 #[allow(clippy::too_many_lines)]
 fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Result<()> {
     let src_path = Path::new(runs_dir).join(run.subdir).join("buba-paint.db");
@@ -217,13 +225,11 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
 
     let run_id = run.number;
 
-    // Insert run provenance (explicit id = run number for FK consistency).
     conn.execute(
         "INSERT INTO runs (id, run_number, bot_version) VALUES (?1, ?2, ?3)",
         params![run_id, run_id, run.version],
     )?;
 
-    // ATTACH source DB as read-only.
     let src_path_str = src_path
         .to_str()
         .context("source path is not valid UTF-8")?;
@@ -231,7 +237,6 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
     conn.execute_batch(&attach_sql)
         .with_context(|| format!("attaching source DB: {src_path_str}"))?;
 
-    // Copy tick_data.
     log("  Copying tick_data...");
     conn.execute(
         &format!(
@@ -249,36 +254,110 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
     )?;
     log(&format!("  tick_data: {tick_count} rows"));
 
-    // Copy markets (INSERT OR IGNORE to handle duplicates across runs).
-    // Check if source DB has polymarket_outcome column (added by verify-settlements).
     let has_pm_outcome = conn
         .prepare("SELECT polymarket_outcome FROM src.markets LIMIT 0")
         .is_ok();
+    let has_outcome = conn
+        .prepare("SELECT outcome FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_resolution_source = conn
+        .prepare("SELECT resolution_source FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_fee_profile = conn
+        .prepare("SELECT fee_profile FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_order_min_size = conn
+        .prepare("SELECT order_min_size FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_tick_size = conn
+        .prepare("SELECT order_price_min_tick_size FROM src.markets LIMIT 0")
+        .is_ok();
+    let supports_rebate_fee = conn
+        .prepare("SELECT maker_base_fee FROM src.markets LIMIT 0")
+        .is_ok();
+    let supports_aggressor_fee = conn
+        .prepare("SELECT taker_base_fee FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_rewards_min_size = conn
+        .prepare("SELECT rewards_min_size FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_rewards_max_spread = conn
+        .prepare("SELECT rewards_max_spread FROM src.markets LIMIT 0")
+        .is_ok();
 
     log("  Copying markets...");
-    if has_pm_outcome {
-        conn.execute(
-            &format!(
-                "INSERT OR IGNORE INTO markets (market_id, question, condition_id, slug,
-                    up_token_id, down_token_id, start_time, end_time, status, polymarket_outcome, run_id)
-                 SELECT market_id, question, condition_id, slug,
-                    up_token_id, down_token_id, start_time, end_time, status, polymarket_outcome, {run_id}
-                 FROM src.markets"
-            ),
-            [],
-        )?;
-    } else {
-        conn.execute(
-            &format!(
-                "INSERT OR IGNORE INTO markets (market_id, question, condition_id, slug,
-                    up_token_id, down_token_id, start_time, end_time, status, run_id)
-                 SELECT market_id, question, condition_id, slug,
-                    up_token_id, down_token_id, start_time, end_time, status, {run_id}
-                 FROM src.markets"
-            ),
-            [],
-        )?;
-    }
+    conn.execute(
+        &format!(
+            "INSERT OR IGNORE INTO markets (
+                market_id, question, condition_id, slug, up_token_id, down_token_id,
+                start_time, end_time, status, outcome, polymarket_outcome, resolution_source,
+                fee_profile, order_min_size, order_price_min_tick_size, maker_base_fee,
+                taker_base_fee, rewards_min_size, rewards_max_spread, run_id
+             )
+             SELECT
+                market_id, question, condition_id, slug, up_token_id, down_token_id,
+                start_time, end_time, status,
+                {outcome},
+                {pm_outcome},
+                {resolution_source},
+                {fee_profile},
+                {order_min_size},
+                {tick_size},
+                {maker_base_fee},
+                {taker_base_fee},
+                {rewards_min_size},
+                {rewards_max_spread},
+                {run_id}
+             FROM src.markets",
+            outcome = if has_outcome { "outcome" } else { "NULL" },
+            pm_outcome = if has_pm_outcome {
+                "polymarket_outcome"
+            } else {
+                "NULL"
+            },
+            resolution_source = if has_resolution_source {
+                "resolution_source"
+            } else {
+                "NULL"
+            },
+            fee_profile = if has_fee_profile {
+                "fee_profile"
+            } else {
+                "NULL"
+            },
+            order_min_size = if has_order_min_size {
+                "order_min_size"
+            } else {
+                "NULL"
+            },
+            tick_size = if has_tick_size {
+                "order_price_min_tick_size"
+            } else {
+                "NULL"
+            },
+            maker_base_fee = if supports_rebate_fee {
+                "maker_base_fee"
+            } else {
+                "NULL"
+            },
+            taker_base_fee = if supports_aggressor_fee {
+                "taker_base_fee"
+            } else {
+                "NULL"
+            },
+            rewards_min_size = if has_rewards_min_size {
+                "rewards_min_size"
+            } else {
+                "NULL"
+            },
+            rewards_max_spread = if has_rewards_max_spread {
+                "rewards_max_spread"
+            } else {
+                "NULL"
+            },
+        ),
+        [],
+    )?;
 
     let market_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM markets WHERE run_id = ?1",
@@ -287,19 +366,141 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
     )?;
     log(&format!("  markets: {market_count} rows"));
 
-    // Copy historical trades (join simulated_trades + trade_results).
+    let has_feed_events = conn
+        .prepare("SELECT id FROM src.feed_events LIMIT 0")
+        .is_ok();
+
+    log("  Copying feed_events...");
+    if has_feed_events {
+        conn.execute(
+            &format!(
+                "INSERT INTO feed_events (
+                    received_at_ms, event_at_ms, source, event_type, market_id, asset_id,
+                    price, best_bid, best_ask, bid_size, ask_size, payload_json, fidelity, run_id
+                 )
+                 SELECT
+                    received_at_ms, event_at_ms, source, event_type, market_id, asset_id,
+                    price, best_bid, best_ask, bid_size, ask_size, payload_json, fidelity, {run_id}
+                 FROM src.feed_events"
+            ),
+            [],
+        )?;
+    } else {
+        conn.execute(
+            &format!(
+                "INSERT INTO feed_events (
+                    received_at_ms, event_at_ms, source, event_type, market_id, asset_id,
+                    price, best_bid, best_ask, bid_size, ask_size, payload_json, fidelity, run_id
+                 )
+                 SELECT
+                    timestamp, timestamp, source,
+                    CASE source
+                        WHEN 'binance' THEN 'binance_tick'
+                        WHEN 'chainlink' THEN 'chainlink_price'
+                        ELSE 'clob_snapshot'
+                    END,
+                    CASE
+                        WHEN source IN ('clob_up', 'clob_down') THEN (
+                            SELECT market_id
+                            FROM src.markets m
+                            WHERE m.start_time <= src.tick_data.timestamp
+                              AND m.end_time >= src.tick_data.timestamp
+                            ORDER BY m.start_time DESC
+                            LIMIT 1
+                        )
+                        ELSE NULL
+                    END,
+                    CASE
+                        WHEN source = 'clob_up' THEN (
+                            SELECT up_token_id
+                            FROM src.markets m
+                            WHERE m.start_time <= src.tick_data.timestamp
+                              AND m.end_time >= src.tick_data.timestamp
+                            ORDER BY m.start_time DESC
+                            LIMIT 1
+                        )
+                        WHEN source = 'clob_down' THEN (
+                            SELECT down_token_id
+                            FROM src.markets m
+                            WHERE m.start_time <= src.tick_data.timestamp
+                              AND m.end_time >= src.tick_data.timestamp
+                            ORDER BY m.start_time DESC
+                            LIMIT 1
+                        )
+                        ELSE NULL
+                    END,
+                    price,
+                    bid,
+                    ask,
+                    bid_size,
+                    ask_size,
+                    NULL,
+                    'legacy_snapshot',
+                    {run_id}
+                 FROM src.tick_data"
+            ),
+            [],
+        )?;
+    }
+
+    let has_trade_pnl_net = conn
+        .prepare("SELECT pnl_net FROM src.trade_results LIMIT 0")
+        .is_ok();
+    let has_trade_fee_amount = conn
+        .prepare("SELECT fee_amount FROM src.trade_results LIMIT 0")
+        .is_ok();
+    let has_trade_fill_status = conn
+        .prepare("SELECT fill_status FROM src.simulated_trades LIMIT 0")
+        .is_ok();
+    let has_trade_group_id = conn
+        .prepare("SELECT execution_group_id FROM src.simulated_trades LIMIT 0")
+        .is_ok();
+    let has_trade_fidelity = conn
+        .prepare("SELECT execution_fidelity FROM src.simulated_trades LIMIT 0")
+        .is_ok();
+
     log("  Copying historical trades...");
     conn.execute(
         &format!(
             "INSERT INTO historical_trades (run_id, bot_version, timestamp, strategy, direction,
-                entry_price, size, settlement_price, pnl, won)
+                entry_price, size, settlement_price, pnl, pnl_net, fee_amount, won,
+                fill_status, execution_group_id, execution_fidelity)
              SELECT {run_id}, '{version}', st.timestamp, st.strategy, st.side,
                 st.entry_price, st.size, tr.settlement_price, tr.pnl_0pct,
-                CASE WHEN tr.pnl_0pct > 0 THEN 1 ELSE 0 END
+                {pnl_net_expr}, {fee_amount_expr},
+                CASE WHEN {pnl_net_expr} > 0 THEN 1 ELSE 0 END,
+                {fill_status_expr},
+                {execution_group_expr},
+                {execution_fidelity_expr}
              FROM src.simulated_trades st
              JOIN src.trade_results tr ON st.id = tr.trade_id
              WHERE st.status = 'closed'",
-            version = run.version
+            version = run.version,
+            pnl_net_expr = if has_trade_pnl_net {
+                "COALESCE(tr.pnl_net, tr.pnl_0pct)"
+            } else {
+                "tr.pnl_0pct"
+            },
+            fee_amount_expr = if has_trade_fee_amount {
+                "COALESCE(tr.fee_amount, 0)"
+            } else {
+                "0"
+            },
+            fill_status_expr = if has_trade_fill_status {
+                "COALESCE(st.fill_status, 'legacy_assumed_full')"
+            } else {
+                "'legacy_assumed_full'"
+            },
+            execution_group_expr = if has_trade_group_id {
+                "st.execution_group_id"
+            } else {
+                "NULL"
+            },
+            execution_fidelity_expr = if has_trade_fidelity {
+                "COALESCE(st.execution_fidelity, 'legacy_snapshot')"
+            } else {
+                "'legacy_snapshot'"
+            },
         ),
         [],
     )?;
@@ -311,7 +512,6 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
     )?;
     log(&format!("  historical_trades: {trade_count} rows"));
 
-    // Update run time range and stats.
     let time_range: (Option<i64>, Option<i64>) = conn.query_row(
         "SELECT MIN(timestamp), MAX(timestamp) FROM tick_data WHERE run_id = ?1",
         params![run_id],
@@ -336,20 +536,15 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
         params![time_range.0, time_range.1, total_trades, win_rate, run_id],
     )?;
 
-    // Detach source DB.
     conn.execute_batch("DETACH src")?;
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Settlement computation
-// ---------------------------------------------------------------------------
-
+/// Compute settlements.
 fn compute_settlements(conn: &Connection) -> anyhow::Result<()> {
     log("Computing market settlements...");
 
-    // Open price: latest chainlink tick at or before window start.
     conn.execute_batch(
         "UPDATE markets SET open_price = (
             SELECT price FROM tick_data
@@ -358,7 +553,6 @@ fn compute_settlements(conn: &Connection) -> anyhow::Result<()> {
         )",
     )?;
 
-    // Close price: latest chainlink tick at or before window end.
     conn.execute_batch(
         "UPDATE markets SET close_price = (
             SELECT price FROM tick_data
@@ -367,13 +561,14 @@ fn compute_settlements(conn: &Connection) -> anyhow::Result<()> {
         )",
     )?;
 
-    // Outcome: UP if close >= open, DOWN otherwise.
     conn.execute_batch(
         "UPDATE markets SET outcome = CASE
             WHEN close_price >= open_price THEN 'UP'
             ELSE 'DOWN'
         END
-        WHERE open_price IS NOT NULL AND close_price IS NOT NULL",
+        WHERE outcome IS NULL
+          AND open_price IS NOT NULL
+          AND close_price IS NOT NULL",
     )?;
 
     let settled: i64 = conn.query_row(
@@ -397,16 +592,15 @@ fn compute_settlements(conn: &Connection) -> anyhow::Result<()> {
         ));
     }
 
-    // Override with authoritative Polymarket outcomes where available.
-    // These were fetched by the verify-settlements tool and stored in
-    // per-run DBs. They are the real on-chain resolution outcomes.
     let overridden: i64 = conn.query_row(
         "SELECT COUNT(*) FROM markets WHERE polymarket_outcome IS NOT NULL AND outcome != polymarket_outcome",
         [],
         |r| r.get(0),
     )?;
     conn.execute_batch(
-        "UPDATE markets SET outcome = polymarket_outcome WHERE polymarket_outcome IS NOT NULL",
+        "UPDATE markets SET outcome = polymarket_outcome
+         WHERE polymarket_outcome IS NOT NULL
+           AND outcome != polymarket_outcome",
     )?;
     if overridden > 0 {
         log(&format!(
@@ -425,14 +619,10 @@ fn compute_settlements(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Data quality computation
-// ---------------------------------------------------------------------------
-
+/// Compute data quality.
 fn compute_data_quality(conn: &Connection) -> anyhow::Result<()> {
     log("Computing data quality metrics...");
 
-    // Get time range.
     let range: (Option<i64>, Option<i64>) = conn.query_row(
         "SELECT MIN(timestamp), MAX(timestamp) FROM tick_data",
         [],
@@ -444,9 +634,8 @@ fn compute_data_quality(conn: &Connection) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    // Round to hour boundaries.
     let start_hour = (tmin / 3_600_000) * 3_600_000;
-    // Ceiling division for end hour.
+
     let end_hour = ((tmax + 3_600_000 - 1) / 3_600_000) * 3_600_000;
 
     let sources = ["binance", "chainlink", "clob_up", "clob_down"];
@@ -459,7 +648,6 @@ fn compute_data_quality(conn: &Connection) -> anyhow::Result<()> {
         let hour_end = hour + 3_600_000;
 
         for source in &sources {
-            // Fetch all tick timestamps in this hour for this source.
             let mut stmt = tx.prepare_cached(
                 "SELECT timestamp FROM tick_data
                  WHERE source = ?1 AND timestamp >= ?2 AND timestamp < ?3
@@ -471,7 +659,7 @@ fn compute_data_quality(conn: &Connection) -> anyhow::Result<()> {
                 .collect::<Result<Vec<i64>, _>>()?;
 
             if timestamps.is_empty() {
-                continue; // No data in this hour (gap between runs).
+                continue;
             }
 
             let mut gap_count_5s: i64 = 0;
@@ -524,10 +712,7 @@ fn compute_data_quality(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Summary
-// ---------------------------------------------------------------------------
-
+/// Print summary.
 fn print_summary(conn: &Connection) -> anyhow::Result<()> {
     log("\n=== SUMMARY ===");
 
@@ -581,7 +766,6 @@ fn print_summary(conn: &Connection) -> anyhow::Result<()> {
     ));
     log(&format!("  Total trades:  {trade_total}"));
 
-    // Data quality overview.
     let low_quality: i64 = conn.query_row(
         "SELECT COUNT(*) FROM data_quality WHERE coverage_pct < 0.95",
         [],
@@ -597,10 +781,7 @@ fn print_summary(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
+/// Prints one build-data progress line with the standard prefix.
 fn log(msg: &str) {
     println!("[build] {msg}");
 }
@@ -611,10 +792,6 @@ fn format_epoch_date(epoch_ms: i64) -> String {
     let dt = chrono::DateTime::from_timestamp(secs, 0);
     dt.map_or_else(|| "??".to_string(), |d| d.format("%Y-%m-%d").to_string())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/build_data_tests.rs"]

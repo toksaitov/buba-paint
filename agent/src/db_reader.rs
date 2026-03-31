@@ -11,6 +11,18 @@ use crate::types::{
     StrategyStats, TradeRow, TradesResponse, WindowInfo,
 };
 
+/// Returns whether the given table currently exposes the requested column.
+fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    let pragma = format!("PRAGMA table_info({table})");
+    let Ok(mut stmt) = conn.prepare(&pragma) else {
+        return false;
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) else {
+        return false;
+    };
+    rows.flatten().any(|name| name == column)
+}
+
 /// Read-only database reader for the bot's `SQLite` database.
 pub struct DbReader {
     conn: Arc<Mutex<Connection>>,
@@ -25,7 +37,6 @@ impl DbReader {
         )
         .map_err(|e| AgentError::Internal(format!("failed to open database: {e}")))?;
 
-        // WAL mode must already be set by the bot (writer). We only read.
         conn.execute_batch("PRAGMA query_only = ON;")
             .map_err(|e| AgentError::Internal(format!("failed to set query_only: {e}")))?;
 
@@ -45,8 +56,12 @@ impl DbReader {
     /// Get the bot's current status.
     pub async fn get_status(&self) -> Result<BotStatus, AgentError> {
         let conn = self.conn.lock().await;
+        let pnl_expr = if has_column(&conn, "trade_results", "pnl_net") {
+            "COALESCE(pnl_net, pnl_0pct)"
+        } else {
+            "pnl_0pct"
+        };
 
-        // Latest balance
         let (balance, starting_balance) = conn
             .query_row(
                 "SELECT balance, \
@@ -57,14 +72,13 @@ impl DbReader {
             )
             .unwrap_or((0.0, 0.0));
 
-        // Trade counts
         let total_trades: u64 = conn
             .query_row("SELECT COUNT(*) FROM trade_results", [], |row| row.get(0))
             .unwrap_or(0);
 
         let wins: u64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM trade_results WHERE pnl_0pct > 0",
+                &format!("SELECT COUNT(*) FROM trade_results WHERE {pnl_expr} > 0"),
                 [],
                 |row| row.get(0),
             )
@@ -80,13 +94,12 @@ impl DbReader {
 
         let total_pnl: f64 = conn
             .query_row(
-                "SELECT COALESCE(SUM(pnl_0pct), 0.0) FROM trade_results",
+                &format!("SELECT COALESCE(SUM({pnl_expr}), 0.0) FROM trade_results"),
                 [],
                 |row| row.get(0),
             )
             .unwrap_or(0.0);
 
-        // High water mark and drawdown from balance_log
         let high_water_mark: f64 = conn
             .query_row(
                 "SELECT COALESCE(MAX(balance), 0.0) FROM balance_log",
@@ -101,7 +114,6 @@ impl DbReader {
             0.0
         };
 
-        // Uptime from first to last tick
         let (first_tick, last_tick): (Option<u64>, Option<u64>) = conn
             .query_row(
                 "SELECT MIN(timestamp), MAX(timestamp) FROM tick_data",
@@ -115,7 +127,6 @@ impl DbReader {
             _ => 0.0,
         };
 
-        // Open trades
         let open_trades: u64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM simulated_trades WHERE status = 'open'",
@@ -124,7 +135,6 @@ impl DbReader {
             )
             .unwrap_or(0);
 
-        // Current window (most recent active market)
         let current_window = conn
             .query_row(
                 "SELECT market_id, question, end_time FROM markets \
@@ -140,13 +150,11 @@ impl DbReader {
             )
             .ok();
 
-        // Use current time if no tick data
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // Compute max historical drawdown (not just current)
         let max_dd = compute_max_drawdown(&conn);
 
         Ok(BotStatus {
@@ -173,6 +181,38 @@ impl DbReader {
     /// Get paginated trade history.
     pub async fn get_trades(&self, page: u64, per_page: u64) -> Result<TradesResponse, AgentError> {
         let conn = self.conn.lock().await;
+        let pnl_expr = if has_column(&conn, "trade_results", "pnl_net") {
+            "COALESCE(r.pnl_net, r.pnl_0pct)".to_string()
+        } else {
+            "r.pnl_0pct".to_string()
+        };
+        let fill_status_expr = if has_column(&conn, "simulated_trades", "fill_status") {
+            "t.fill_status".to_string()
+        } else {
+            "NULL AS fill_status".to_string()
+        };
+        let execution_group_id_expr = if has_column(&conn, "simulated_trades", "execution_group_id")
+        {
+            "t.execution_group_id".to_string()
+        } else {
+            "NULL AS execution_group_id".to_string()
+        };
+        let execution_fidelity_expr = if has_column(&conn, "simulated_trades", "execution_fidelity")
+        {
+            "t.execution_fidelity".to_string()
+        } else {
+            "NULL AS execution_fidelity".to_string()
+        };
+        let filled_size_expr = if has_column(&conn, "simulated_trades", "filled_size") {
+            "t.filled_size".to_string()
+        } else {
+            "NULL AS filled_size".to_string()
+        };
+        let avg_fill_price_expr = if has_column(&conn, "simulated_trades", "avg_fill_price") {
+            "t.avg_fill_price".to_string()
+        } else {
+            "NULL AS avg_fill_price".to_string()
+        };
 
         let total: u64 = conn.query_row("SELECT COUNT(*) FROM simulated_trades", [], |row| {
             row.get(0)
@@ -180,14 +220,17 @@ impl DbReader {
 
         let offset = (page.saturating_sub(1)) * per_page;
 
-        let mut stmt = conn.prepare_cached(
+        let sql = format!(
             "SELECT t.id, t.timestamp, t.market_id, t.strategy, t.side, t.entry_price, \
-             t.size, t.status, r.pnl_0pct, r.settlement_price, r.resolved_at \
+             t.size, t.status, {pnl_expr}, r.settlement_price, r.resolved_at, \
+             {fill_status_expr}, {execution_group_id_expr}, {execution_fidelity_expr}, \
+             {filled_size_expr}, {avg_fill_price_expr} \
              FROM simulated_trades t \
              LEFT JOIN trade_results r ON r.trade_id = t.id \
              ORDER BY t.timestamp DESC \
-             LIMIT ?1 OFFSET ?2",
-        )?;
+             LIMIT ?1 OFFSET ?2"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
 
         let trades = stmt
             .query_map(params![per_page, offset], |row| {
@@ -203,6 +246,11 @@ impl DbReader {
                     pnl: row.get(8)?,
                     settlement_price: row.get(9)?,
                     resolved_at: row.get(10)?,
+                    fill_status: row.get(11)?,
+                    execution_group_id: row.get(12)?,
+                    execution_fidelity: row.get(13)?,
+                    filled_size: row.get(14)?,
+                    avg_fill_price: row.get(15)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -243,12 +291,23 @@ impl DbReader {
     /// Get recent signals.
     pub async fn get_signals(&self, limit: u64) -> Result<SignalsResponse, AgentError> {
         let conn = self.conn.lock().await;
+        let market_id_expr = if has_column(&conn, "signals", "market_id") {
+            "market_id".to_string()
+        } else {
+            "NULL AS market_id".to_string()
+        };
+        let execution_fidelity_expr = if has_column(&conn, "signals", "execution_fidelity") {
+            "execution_fidelity".to_string()
+        } else {
+            "NULL AS execution_fidelity".to_string()
+        };
 
-        let mut stmt = conn.prepare_cached(
+        let sql = format!(
             "SELECT id, timestamp, strategy, direction, binance_price, chainlink_price, \
-             up_ask, down_ask, metadata \
-             FROM signals ORDER BY timestamp DESC LIMIT ?1",
-        )?;
+             up_ask, down_ask, metadata, {market_id_expr}, {execution_fidelity_expr} \
+             FROM signals ORDER BY timestamp DESC LIMIT ?1"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
 
         let signals = stmt
             .query_map(params![limit], |row| {
@@ -262,6 +321,8 @@ impl DbReader {
                     up_ask: row.get(6)?,
                     down_ask: row.get(7)?,
                     metadata: row.get(8)?,
+                    market_id: row.get(9)?,
+                    execution_fidelity: row.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -272,16 +333,22 @@ impl DbReader {
     /// Get aggregated stats per strategy.
     pub async fn get_stats(&self) -> Result<StatsResponse, AgentError> {
         let conn = self.conn.lock().await;
+        let pnl_expr = if has_column(&conn, "trade_results", "pnl_net") {
+            "COALESCE(r.pnl_net, r.pnl_0pct)"
+        } else {
+            "r.pnl_0pct"
+        };
 
-        let mut stmt = conn.prepare_cached(
+        let sql = format!(
             "SELECT t.strategy, COUNT(*) as trades, \
-             SUM(CASE WHEN r.pnl_0pct > 0 THEN 1 ELSE 0 END) as wins, \
-             SUM(CASE WHEN r.pnl_0pct <= 0 THEN 1 ELSE 0 END) as losses, \
-             COALESCE(SUM(r.pnl_0pct), 0.0) as total_pnl \
+             SUM(CASE WHEN {pnl_expr} > 0 THEN 1 ELSE 0 END) as wins, \
+             SUM(CASE WHEN {pnl_expr} <= 0 THEN 1 ELSE 0 END) as losses, \
+             COALESCE(SUM({pnl_expr}), 0.0) as total_pnl \
              FROM trade_results r \
              JOIN simulated_trades t ON r.trade_id = t.id \
-             GROUP BY t.strategy",
-        )?;
+             GROUP BY t.strategy"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
 
         let mut by_strategy = HashMap::new();
 
@@ -349,13 +416,48 @@ impl DbReader {
     /// Get trades newer than the given ID.
     pub async fn get_trades_since(&self, since_id: i64) -> Result<Vec<TradeRow>, AgentError> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare_cached(
+        let pnl_expr = if has_column(&conn, "trade_results", "pnl_net") {
+            "COALESCE(r.pnl_net, r.pnl_0pct)".to_string()
+        } else {
+            "r.pnl_0pct".to_string()
+        };
+        let fill_status_expr = if has_column(&conn, "simulated_trades", "fill_status") {
+            "t.fill_status".to_string()
+        } else {
+            "NULL AS fill_status".to_string()
+        };
+        let execution_group_id_expr = if has_column(&conn, "simulated_trades", "execution_group_id")
+        {
+            "t.execution_group_id".to_string()
+        } else {
+            "NULL AS execution_group_id".to_string()
+        };
+        let execution_fidelity_expr = if has_column(&conn, "simulated_trades", "execution_fidelity")
+        {
+            "t.execution_fidelity".to_string()
+        } else {
+            "NULL AS execution_fidelity".to_string()
+        };
+        let filled_size_expr = if has_column(&conn, "simulated_trades", "filled_size") {
+            "t.filled_size".to_string()
+        } else {
+            "NULL AS filled_size".to_string()
+        };
+        let avg_fill_price_expr = if has_column(&conn, "simulated_trades", "avg_fill_price") {
+            "t.avg_fill_price".to_string()
+        } else {
+            "NULL AS avg_fill_price".to_string()
+        };
+        let sql = format!(
             "SELECT t.id, t.timestamp, t.market_id, t.strategy, t.side, t.entry_price, \
-             t.size, t.status, r.pnl_0pct, r.settlement_price, r.resolved_at \
+             t.size, t.status, {pnl_expr}, r.settlement_price, r.resolved_at, \
+             {fill_status_expr}, {execution_group_id_expr}, {execution_fidelity_expr}, \
+             {filled_size_expr}, {avg_fill_price_expr} \
              FROM simulated_trades t \
              LEFT JOIN trade_results r ON r.trade_id = t.id \
-             WHERE t.id > ?1 ORDER BY t.id",
-        )?;
+             WHERE t.id > ?1 ORDER BY t.id"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
 
         let trades = stmt
             .query_map(params![since_id], |row| {
@@ -371,6 +473,11 @@ impl DbReader {
                     pnl: row.get(8)?,
                     settlement_price: row.get(9)?,
                     resolved_at: row.get(10)?,
+                    fill_status: row.get(11)?,
+                    execution_group_id: row.get(12)?,
+                    execution_fidelity: row.get(13)?,
+                    filled_size: row.get(14)?,
+                    avg_fill_price: row.get(15)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -405,11 +512,22 @@ impl DbReader {
     /// Get signals newer than the given ID.
     pub async fn get_signals_since(&self, since_id: i64) -> Result<Vec<SignalRow>, AgentError> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare_cached(
+        let market_id_expr = if has_column(&conn, "signals", "market_id") {
+            "market_id".to_string()
+        } else {
+            "NULL AS market_id".to_string()
+        };
+        let execution_fidelity_expr = if has_column(&conn, "signals", "execution_fidelity") {
+            "execution_fidelity".to_string()
+        } else {
+            "NULL AS execution_fidelity".to_string()
+        };
+        let sql = format!(
             "SELECT id, timestamp, strategy, direction, binance_price, chainlink_price, \
-             up_ask, down_ask, metadata \
-             FROM signals WHERE id > ?1 ORDER BY id",
-        )?;
+             up_ask, down_ask, metadata, {market_id_expr}, {execution_fidelity_expr} \
+             FROM signals WHERE id > ?1 ORDER BY id"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
 
         let signals = stmt
             .query_map(params![since_id], |row| {
@@ -423,6 +541,8 @@ impl DbReader {
                     up_ask: row.get(6)?,
                     down_ask: row.get(7)?,
                     metadata: row.get(8)?,
+                    market_id: row.get(9)?,
+                    execution_fidelity: row.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

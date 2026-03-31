@@ -1,8 +1,3 @@
-// Integration test for the `build-data` command.
-//
-// Creates fixture run databases in a temp directory, calls `build_market_data`,
-// and verifies the merged output is correct end-to-end.
-
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
@@ -120,6 +115,7 @@ fn create_fixture_run_db(
     }
 }
 
+/// Verifies that build data end to end.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn build_data_end_to_end() {
@@ -129,7 +125,6 @@ fn build_data_end_to_end() {
 
     let output_path = dir.path().join("data").join("market-data.db");
 
-    // -- Run 004 --
     let run_004_dir = runs_dir.join("004");
     std::fs::create_dir_all(&run_004_dir).unwrap();
     let run_004_db = run_004_dir.join("buba-paint.db");
@@ -177,12 +172,10 @@ fn build_data_end_to_end() {
         &trades_004,
     );
 
-    // -- Run 005 --
     let run_005_dir = runs_dir.join("005");
     std::fs::create_dir_all(&run_005_dir).unwrap();
     let run_005_db = run_005_dir.join("buba-paint.db");
 
-    // Share mkt-1 to test dedup, add mkt-3
     let markets_005 = vec![
         (
             "mkt-1",
@@ -229,29 +222,24 @@ fn build_data_end_to_end() {
         &trades_005,
     );
 
-    // -- Build --
     buba_paint::db::build_data::build_market_data(
         runs_dir.to_str().unwrap(),
         output_path.to_str().unwrap(),
     )
     .unwrap();
 
-    // -- Verify --
     let db = Connection::open(&output_path).unwrap();
 
-    // runs table: 2 entries (004 and 005)
     let run_count: i64 = db
         .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
         .unwrap();
     assert_eq!(run_count, 2, "should have 2 runs");
 
-    // tick_data: combined count (5 + 3 = 8)
     let tick_count: i64 = db
         .query_row("SELECT COUNT(*) FROM tick_data", [], |r| r.get(0))
         .unwrap();
     assert_eq!(tick_count, 8, "should have 8 ticks total");
 
-    // markets: 3 unique (mkt-1 deduplicated)
     let market_count: i64 = db
         .query_row("SELECT COUNT(*) FROM markets", [], |r| r.get(0))
         .unwrap();
@@ -260,13 +248,11 @@ fn build_data_end_to_end() {
         "should have 3 unique markets (dedup mkt-1)"
     );
 
-    // historical_trades: combined count (2 + 1 = 3)
     let trade_count: i64 = db
         .query_row("SELECT COUNT(*) FROM historical_trades", [], |r| r.get(0))
         .unwrap();
     assert_eq!(trade_count, 3, "should have 3 trades total");
 
-    // Indexes exist
     let expected_indexes = [
         "idx_tick_ts",
         "idx_tick_source_ts",
@@ -288,7 +274,6 @@ fn build_data_end_to_end() {
         assert_eq!(count, 1, "index {idx} should exist");
     }
 
-    // Settlements: mkt-1 should have settlement (has chainlink ticks before boundaries)
     let settled_count: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM markets WHERE outcome IS NOT NULL",
@@ -301,7 +286,6 @@ fn build_data_end_to_end() {
         "at least one market should have computed settlement"
     );
 
-    // Verify mkt-1 settlement specifically
     let (open_price, close_price, outcome): (f64, f64, String) = db
         .query_row(
             "SELECT open_price, close_price, outcome FROM markets WHERE market_id = 'mkt-1'",
@@ -309,12 +293,12 @@ fn build_data_end_to_end() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    // open_price = latest chainlink at or before 1_000_000 -> 900_000 -> 42_000.0
+
     assert!(
         (open_price - 42_000.0).abs() < f64::EPSILON,
         "open_price should be 42000, got {open_price}"
     );
-    // close_price = latest chainlink at or before 1_300_000 -> 1_250_000 -> 42_100.0
+
     assert!(
         (close_price - 42_100.0).abs() < f64::EPSILON,
         "close_price should be 42100, got {close_price}"

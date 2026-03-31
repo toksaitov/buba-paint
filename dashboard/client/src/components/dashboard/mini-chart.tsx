@@ -46,7 +46,6 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
       crosshairMarkerVisible: false,
     });
 
-    // Deduplicate by timestamp — lightweight-charts requires strictly ascending times
     const byTime = new Map<number, number>();
     for (const e of entries) {
       const t = Math.round(e.timestamp / 1000);
@@ -86,3 +85,4 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
     </div>
   );
 }
+

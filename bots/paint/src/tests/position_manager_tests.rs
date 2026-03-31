@@ -2,18 +2,19 @@ use super::*;
 use crate::clock::BacktestClock;
 use tempfile::NamedTempFile;
 
-// -- helpers --------------------------------------------------------------
-
+/// Temp db.
 fn temp_db() -> (Database, NamedTempFile) {
     let tmp = NamedTempFile::new().unwrap();
     let db = Database::new(tmp.path().to_str().unwrap()).unwrap();
     (db, tmp)
 }
 
+/// Default config.
 fn default_config() -> Config {
     Config::default()
 }
 
+/// Sample window.
 fn sample_window() -> MarketWindow {
     MarketWindow {
         market_id: "mkt-1".into(),
@@ -24,9 +25,19 @@ fn sample_window() -> MarketWindow {
         down_token_id: "tok-down".into(),
         start_time: 1_700_000_000_000,
         end_time: 1_700_000_300_000,
+        outcome: None,
+        resolution_source: Some("chainlink".into()),
+        fee_profile: Some("crypto".into()),
+        order_min_size: Some(5.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: Some(1000.0),
+        taker_base_fee: Some(1000.0),
+        rewards_min_size: Some(50.0),
+        rewards_max_spread: Some(4.5),
     }
 }
 
+/// Up signal.
 fn up_signal() -> Signal {
     Signal {
         timestamp: 1_700_000_100_000,
@@ -43,6 +54,7 @@ fn up_signal() -> Signal {
     }
 }
 
+/// Down signal.
 fn down_signal() -> Signal {
     Signal {
         timestamp: 1_700_000_100_000,
@@ -59,6 +71,7 @@ fn down_signal() -> Signal {
     }
 }
 
+/// Spread signals.
 fn spread_signals() -> Vec<Signal> {
     vec![
         Signal {
@@ -90,8 +103,7 @@ fn spread_signals() -> Vec<Signal> {
     ]
 }
 
-// -- try_open returns a trade with correct fields -------------------------
-
+/// Verifies that try open returns trade with correct fields.
 #[test]
 fn try_open_returns_trade_with_correct_fields() {
     let (db, _tmp) = temp_db();
@@ -128,8 +140,7 @@ fn try_open_returns_trade_with_correct_fields() {
     assert_eq!(pm.open_count(), 1);
 }
 
-// -- try_open blocks when max positions reached ---------------------------
-
+/// Verifies that try open blocks at max positions.
 #[test]
 fn try_open_blocks_at_max_positions() {
     let (db, _tmp) = temp_db();
@@ -141,7 +152,6 @@ fn try_open_blocks_at_max_positions() {
     let window = sample_window();
     db.upsert_market(&window).unwrap();
 
-    // Open one trade to reach the limit.
     let signal = up_signal();
     let trade = pm.try_open(
         &signal,
@@ -156,7 +166,6 @@ fn try_open_blocks_at_max_positions() {
     assert!(trade.is_some());
     assert_eq!(pm.open_count(), 1);
 
-    // Second open in a different market should be blocked.
     let window2 = MarketWindow {
         market_id: "mkt-2".into(),
         question: "Another?".into(),
@@ -166,6 +175,15 @@ fn try_open_blocks_at_max_positions() {
         down_token_id: "tok-down-2".into(),
         start_time: 1_700_000_000_000,
         end_time: 1_700_000_300_000,
+        outcome: None,
+        resolution_source: Some("chainlink".into()),
+        fee_profile: Some("crypto".into()),
+        order_min_size: Some(5.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: Some(1000.0),
+        taker_base_fee: Some(1000.0),
+        rewards_min_size: Some(50.0),
+        rewards_max_spread: Some(4.5),
     };
     db.upsert_market(&window2).unwrap();
     let trade2 = pm.try_open(
@@ -182,8 +200,7 @@ fn try_open_blocks_at_max_positions() {
     assert_eq!(pm.open_count(), 1);
 }
 
-// -- try_open blocks same strategy in same market (non-batch) -------------
-
+/// Verifies that try open blocks same strategy non batch.
 #[test]
 fn try_open_blocks_same_strategy_non_batch() {
     let (db, _tmp) = temp_db();
@@ -207,7 +224,6 @@ fn try_open_blocks_same_strategy_non_batch() {
     );
     assert!(trade.is_some());
 
-    // Same strategy, different direction, same market — should be blocked (non-batch).
     let signal2 = down_signal();
     let trade2 = pm.try_open(
         &signal2,
@@ -223,8 +239,7 @@ fn try_open_blocks_same_strategy_non_batch() {
     assert_eq!(pm.open_count(), 1);
 }
 
-// -- try_open allows same strategy different direction (batch mode) --------
-
+/// Verifies that try open allows same strategy different direction batch.
 #[test]
 fn try_open_allows_same_strategy_different_direction_batch() {
     let (db, _tmp) = temp_db();
@@ -248,7 +263,6 @@ fn try_open_allows_same_strategy_different_direction_batch() {
     );
     assert!(trade1.is_some());
 
-    // Same strategy, different direction, batch mode — should be allowed.
     let signal_down = down_signal();
     let trade2 = pm.try_open(
         &signal_down,
@@ -264,8 +278,7 @@ fn try_open_allows_same_strategy_different_direction_batch() {
     assert_eq!(pm.open_count(), 2);
 }
 
-// -- try_open_spread opens both legs --------------------------------------
-
+/// Verifies that try open spread opens both legs.
 #[test]
 fn try_open_spread_opens_both_legs() {
     let (db, _tmp) = temp_db();
@@ -282,22 +295,18 @@ fn try_open_spread_opens_both_legs() {
     assert_eq!(trades.len(), 2);
     assert_eq!(pm.open_count(), 2);
 
-    // One UP, one DOWN.
     let sides: Vec<_> = trades.iter().map(|t| t.side).collect();
     assert!(sides.contains(&SignalDirection::Up));
     assert!(sides.contains(&SignalDirection::Down));
 
-    // Both should have IDs.
     assert!(trades[0].id.is_some());
     assert!(trades[1].id.is_some());
 
-    // Strategy should be spread-capture.
     assert_eq!(trades[0].strategy, "spread-capture");
     assert_eq!(trades[1].strategy, "spread-capture");
 }
 
-// -- resolve_window correctly settles WIN (UP outcome) --------------------
-
+/// Verifies that resolve window settles win up outcome.
 #[test]
 fn resolve_window_settles_win_up_outcome() {
     let (db, _tmp) = temp_db();
@@ -308,7 +317,6 @@ fn resolve_window_settles_win_up_outcome() {
     let window = sample_window();
     db.upsert_market(&window).unwrap();
 
-    // Open an UP trade.
     let signal = up_signal();
     let trade = pm
         .try_open(
@@ -326,7 +334,6 @@ fn resolve_window_settles_win_up_outcome() {
     let size = trade.size;
     assert_eq!(pm.open_count(), 1);
 
-    // Resolve: close > open → UP wins.
     let results = pm.resolve_window(
         &window,
         42_000.0,
@@ -340,11 +347,9 @@ fn resolve_window_settles_win_up_outcome() {
     assert_eq!(results.len(), 1);
     let (settled_trade, result) = &results[0];
 
-    // Settlement price should be 1.0 (win).
     assert!((result.settlement_price - 1.0).abs() < f64::EPSILON);
     assert!((result.exit_price - 1.0).abs() < f64::EPSILON);
 
-    // PnL checks.
     let gross = (1.0 - entry_price) * size;
     let entry_cost = entry_price * size;
     assert!((result.pnl_0pct - gross).abs() < 1e-10);
@@ -355,8 +360,7 @@ fn resolve_window_settles_win_up_outcome() {
     assert_eq!(settled_trade.side, SignalDirection::Up);
 }
 
-// -- resolve_window correctly settles LOSS --------------------------------
-
+/// Verifies that resolve window settles loss.
 #[test]
 fn resolve_window_settles_loss() {
     let (db, _tmp) = temp_db();
@@ -367,7 +371,6 @@ fn resolve_window_settles_loss() {
     let window = sample_window();
     db.upsert_market(&window).unwrap();
 
-    // Open an UP trade.
     let signal = up_signal();
     let trade = pm
         .try_open(
@@ -384,7 +387,6 @@ fn resolve_window_settles_loss() {
     let entry_price = trade.entry_price;
     let size = trade.size;
 
-    // Resolve: close < open → DOWN wins, UP trade loses.
     let results = pm.resolve_window(
         &window,
         42_000.0,
@@ -398,18 +400,15 @@ fn resolve_window_settles_loss() {
     assert_eq!(results.len(), 1);
     let (_settled_trade, result) = &results[0];
 
-    // Settlement price should be 0.0 (loss).
     assert!((result.settlement_price - 0.0).abs() < f64::EPSILON);
     assert!((result.exit_price - 0.0).abs() < f64::EPSILON);
 
-    // PnL should be negative.
     let gross = (0.0 - entry_price) * size;
     assert!((result.pnl_0pct - gross).abs() < 1e-10);
     assert!(result.pnl_0pct < 0.0);
 }
 
-// -- resolve_window decrements open_count ---------------------------------
-
+/// Verifies that resolve window decrements open count.
 #[test]
 fn resolve_window_decrements_open_count() {
     let (db, _tmp) = temp_db();
@@ -420,7 +419,6 @@ fn resolve_window_decrements_open_count() {
     let window = sample_window();
     db.upsert_market(&window).unwrap();
 
-    // Open two trades (batch mode to allow same strategy different direction).
     let signal_up = up_signal();
     let signal_down = down_signal();
     pm.try_open(
@@ -447,7 +445,6 @@ fn resolve_window_decrements_open_count() {
     .unwrap();
     assert_eq!(pm.open_count(), 2);
 
-    // Resolve all.
     let results = pm.resolve_window(
         &window,
         42_000.0,
@@ -462,8 +459,7 @@ fn resolve_window_decrements_open_count() {
     assert_eq!(pm.open_count(), 0);
 }
 
-// -- resolve_window with no trades just resolves market --------------------
-
+/// Verifies that resolve window no trades resolves market.
 #[test]
 fn resolve_window_no_trades_resolves_market() {
     let (db, _tmp) = temp_db();
@@ -474,7 +470,6 @@ fn resolve_window_no_trades_resolves_market() {
     let window = sample_window();
     db.upsert_market(&window).unwrap();
 
-    // Resolve with no open trades.
     let results = pm.resolve_window(
         &window,
         42_000.0,
@@ -489,15 +484,14 @@ fn resolve_window_no_trades_resolves_market() {
     assert_eq!(pm.open_count(), 0);
 }
 
-// -- Phase D: edge-case tests for near-100% coverage ----------------------
-
+/// Verifies that try open returns none with tiny balance.
 #[test]
 fn try_open_returns_none_with_tiny_balance() {
     let (db, _tmp) = temp_db();
     let mut config = default_config();
     config.min_balance_threshold = 20.0;
     let clock = BacktestClock::new();
-    // Starting balance below min_balance_threshold → bankroll rejects.
+
     let mut bankroll = BankrollManager::new(5.0, &config, &db, &clock);
     let mut pm = PositionManager::new();
     let window = sample_window();
@@ -521,6 +515,7 @@ fn try_open_returns_none_with_tiny_balance() {
     assert_eq!(pm.open_count(), 0);
 }
 
+/// Verifies that try open spread returns empty with tiny balance.
 #[test]
 fn try_open_spread_returns_empty_with_tiny_balance() {
     let (db, _tmp) = temp_db();
@@ -541,10 +536,9 @@ fn try_open_spread_returns_empty_with_tiny_balance() {
     assert_eq!(pm.open_count(), 0);
 }
 
+/// Verifies that resolve window mixed win and loss.
 #[test]
 fn resolve_window_mixed_win_and_loss() {
-    // Open UP + DOWN trades (batch), then resolve with UP outcome.
-    // UP trade wins, DOWN trade loses.
     let (db, _tmp) = temp_db();
     let config = default_config();
     let clock = BacktestClock::new();
@@ -581,7 +575,6 @@ fn resolve_window_mixed_win_and_loss() {
         .unwrap();
     assert_eq!(pm.open_count(), 2);
 
-    // Resolve: close > open → UP wins.
     let results = pm.resolve_window(
         &window,
         42_000.0,
@@ -595,7 +588,6 @@ fn resolve_window_mixed_win_and_loss() {
     assert_eq!(results.len(), 2);
     assert_eq!(pm.open_count(), 0);
 
-    // Find the UP and DOWN results.
     let up_result = results.iter().find(|(t, _)| t.side == SignalDirection::Up);
     let down_result = results
         .iter()
@@ -606,23 +598,20 @@ fn resolve_window_mixed_win_and_loss() {
     let (_, up_tr) = up_result.unwrap();
     let (_, down_tr) = down_result.unwrap();
 
-    // UP trade wins: settlement=1.0, pnl>0
     assert!((up_tr.settlement_price - 1.0).abs() < f64::EPSILON);
     assert!(up_tr.pnl_0pct > 0.0);
 
-    // DOWN trade loses: settlement=0.0, pnl<0
     assert!((down_tr.settlement_price - 0.0).abs() < f64::EPSILON);
     assert!(down_tr.pnl_0pct < 0.0);
 
-    // Verify PnL arithmetic for the UP trade.
     let gross_up = (1.0 - trade_up.entry_price) * trade_up.size;
     assert!((up_tr.pnl_0pct - gross_up).abs() < 1e-10);
 
-    // Verify PnL arithmetic for the DOWN trade.
     let gross_down = (0.0 - trade_down.entry_price) * trade_down.size;
     assert!((down_tr.pnl_0pct - gross_down).abs() < 1e-10);
 }
 
+/// Verifies that try open down direction uses correct token and price.
 #[test]
 fn try_open_down_direction_uses_correct_token_and_price() {
     let (db, _tmp) = temp_db();
@@ -652,6 +641,7 @@ fn try_open_down_direction_uses_correct_token_and_price() {
     assert!((trade.entry_price - signal.down_ask).abs() < f64::EPSILON);
 }
 
+/// Verifies that try open spread blocks duplicate legs.
 #[test]
 fn try_open_spread_blocks_duplicate_legs() {
     let (db, _tmp) = temp_db();
@@ -662,23 +652,22 @@ fn try_open_spread_blocks_duplicate_legs() {
     let window = sample_window();
     db.upsert_market(&window).unwrap();
 
-    // Open a spread (UP + DOWN).
     let signals = spread_signals();
     let trades = pm.try_open_spread(&signals, &window, &db, &mut bankroll, &config, &clock);
     assert_eq!(trades.len(), 2);
     assert_eq!(pm.open_count(), 2);
 
-    // Try to open the same spread again — should be blocked by duplicate check.
     let trades2 = pm.try_open_spread(&signals, &window, &db, &mut bankroll, &config, &clock);
     assert!(trades2.is_empty(), "duplicate spread should be blocked");
-    assert_eq!(pm.open_count(), 2); // still 2 from the first spread
+    assert_eq!(pm.open_count(), 2);
 }
 
+/// Verifies that try open spread blocks when max positions insufficient.
 #[test]
 fn try_open_spread_blocks_when_max_positions_insufficient() {
     let (db, _tmp) = temp_db();
     let mut config = default_config();
-    config.max_open_positions = 1; // only room for 1, spread needs 2
+    config.max_open_positions = 1;
     let clock = BacktestClock::new();
     let mut bankroll = BankrollManager::new(200.0, &config, &db, &clock);
     let mut pm = PositionManager::new();
@@ -693,6 +682,7 @@ fn try_open_spread_blocks_when_max_positions_insufficient() {
     );
 }
 
+/// Verifies that try open spread missing direction returns empty.
 #[test]
 fn try_open_spread_missing_direction_returns_empty() {
     let (db, _tmp) = temp_db();
@@ -703,15 +693,14 @@ fn try_open_spread_missing_direction_returns_empty() {
     let window = sample_window();
     db.upsert_market(&window).unwrap();
 
-    // Only an UP signal, no DOWN.
     let signals = vec![spread_signals().remove(0)];
     let trades = pm.try_open_spread(&signals, &window, &db, &mut bankroll, &config, &clock);
     assert!(trades.is_empty(), "should require both UP and DOWN signals");
 }
 
+/// Verifies that resolve window down outcome.
 #[test]
 fn resolve_window_down_outcome() {
-    // Open a DOWN trade, resolve with DOWN outcome (close < open) → wins.
     let (db, _tmp) = temp_db();
     let config = default_config();
     let clock = BacktestClock::new();
@@ -734,7 +723,6 @@ fn resolve_window_down_outcome() {
         )
         .unwrap();
 
-    // Resolve: close < open → DOWN wins.
     let results = pm.resolve_window(
         &window,
         42_000.0,
@@ -754,24 +742,22 @@ fn resolve_window_down_outcome() {
     assert!(result.pnl_0pct > 0.0);
 }
 
+/// Verifies that default impl creates position manager.
 #[test]
 fn default_impl_creates_position_manager() {
     let pm = PositionManager::default();
     assert_eq!(pm.open_count(), 0);
 }
 
+/// Verifies that resolve window no matching trades returns empty.
 #[test]
 fn resolve_window_no_matching_trades_returns_empty() {
-    // Call resolve_window with a market_id that was never upserted to the DB
-    // and has no open trades.  This exercises the empty-trades early-return
-    // path where resolve_market is called on a nonexistent row (a no-op).
     let (db, _tmp) = temp_db();
     let config = default_config();
     let clock = BacktestClock::new();
     let mut bankroll = BankrollManager::new(200.0, &config, &db, &clock);
     let mut pm = PositionManager::new();
 
-    // Use a different market window that has NOT been upserted.
     let window = MarketWindow {
         market_id: "mkt-nonexistent".into(),
         question: "Does not exist".into(),
@@ -781,6 +767,15 @@ fn resolve_window_no_matching_trades_returns_empty() {
         down_token_id: "tok-down-none".into(),
         start_time: 2_000_000_000_000,
         end_time: 2_000_000_300_000,
+        outcome: None,
+        resolution_source: Some("chainlink".into()),
+        fee_profile: Some("crypto".into()),
+        order_min_size: Some(5.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: Some(1000.0),
+        taker_base_fee: Some(1000.0),
+        rewards_min_size: Some(50.0),
+        rewards_max_spread: Some(4.5),
     };
 
     let results = pm.resolve_window(

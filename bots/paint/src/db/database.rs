@@ -7,10 +7,11 @@ use rusqlite::params;
 
 use super::schema;
 use crate::types::{
-    MarketWindow, Signal, SignalDirection, SimulatedTrade, TradeResult, TradeStatus,
+    FeedEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection, SimulatedTrade, TradeResult,
+    TradeStatus,
 };
 
-/// Thin wrapper around a `SQLite` connection that mirrors the TypeScript `Database`
+/// Thin wrapper around a `SQLite` connection that mirrors the `TypeScript` `Database`
 /// class.  All prepared statements use `prepare_cached` so the cache is reused
 /// across repeated calls (matching `better-sqlite3` behaviour).
 pub struct Database {
@@ -21,7 +22,6 @@ impl Database {
     /// Open (or create) the database at `db_path`, enable WAL mode + NORMAL
     /// synchronous, and run all schema migrations.
     pub fn new(db_path: &str) -> anyhow::Result<Self> {
-        // Ensure parent directory exists.
         if let Some(parent) = Path::new(db_path).parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)
@@ -32,6 +32,7 @@ impl Database {
         let conn = rusqlite::Connection::open(db_path)
             .with_context(|| format!("opening SQLite database at {db_path}"))?;
 
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
 
@@ -40,8 +41,7 @@ impl Database {
         Ok(Self { conn })
     }
 
-    // -- tick_data ------------------------------------------------------------
-
+    /// Logs tick.
     #[allow(clippy::too_many_arguments)]
     pub fn log_tick(
         &self,
@@ -63,13 +63,43 @@ impl Database {
         Ok(())
     }
 
-    // -- markets --------------------------------------------------------------
+    /// Logs feed event.
+    pub fn log_feed_event(&self, event: &FeedEvent) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO feed_events (
+                received_at_ms, event_at_ms, source, event_type, market_id, asset_id,
+                price, best_bid, best_ask, bid_size, ask_size, payload_json, fidelity
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        )?;
+        stmt.execute(params![
+            event.received_at_ms,
+            event.event_at_ms,
+            event.source,
+            event.event_type,
+            event.market_id,
+            event.asset_id,
+            event.price,
+            event.best_bid,
+            event.best_ask,
+            event.bid_size,
+            event.ask_size,
+            event.payload_json,
+            event.fidelity.to_string(),
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
 
+    /// Upsert market.
     pub fn upsert_market(&self, window: &MarketWindow) -> anyhow::Result<()> {
         let mut stmt = self.conn.prepare_cached(
-            "INSERT INTO markets (market_id, question, condition_id, slug, up_token_id, \
-             down_token_id, start_time, end_time) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+            "INSERT INTO markets (
+                market_id, question, condition_id, slug, up_token_id, down_token_id, start_time,
+                end_time, outcome, resolution_source, fee_profile, order_min_size,
+                order_price_min_tick_size, maker_base_fee, taker_base_fee, rewards_min_size,
+                rewards_max_spread
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+             ) \
              ON CONFLICT(market_id) DO UPDATE SET \
                question      = excluded.question, \
                condition_id  = excluded.condition_id, \
@@ -77,7 +107,16 @@ impl Database {
                up_token_id   = excluded.up_token_id, \
                down_token_id = excluded.down_token_id, \
                start_time    = excluded.start_time, \
-               end_time      = excluded.end_time",
+               end_time      = excluded.end_time, \
+               outcome       = COALESCE(excluded.outcome, markets.outcome), \
+               resolution_source = COALESCE(excluded.resolution_source, markets.resolution_source), \
+               fee_profile   = COALESCE(excluded.fee_profile, markets.fee_profile), \
+               order_min_size = COALESCE(excluded.order_min_size, markets.order_min_size), \
+               order_price_min_tick_size = COALESCE(excluded.order_price_min_tick_size, markets.order_price_min_tick_size), \
+               maker_base_fee = COALESCE(excluded.maker_base_fee, markets.maker_base_fee), \
+               taker_base_fee = COALESCE(excluded.taker_base_fee, markets.taker_base_fee), \
+               rewards_min_size = COALESCE(excluded.rewards_min_size, markets.rewards_min_size), \
+               rewards_max_spread = COALESCE(excluded.rewards_max_spread, markets.rewards_max_spread)",
         )?;
         stmt.execute(params![
             window.market_id,
@@ -88,18 +127,41 @@ impl Database {
             window.down_token_id,
             window.start_time,
             window.end_time,
+            window.outcome,
+            window.resolution_source,
+            window.fee_profile,
+            window.order_min_size,
+            window.order_price_min_tick_size,
+            window.maker_base_fee,
+            window.taker_base_fee,
+            window.rewards_min_size,
+            window.rewards_max_spread,
         ])?;
         Ok(())
     }
 
-    // -- signals --------------------------------------------------------------
-
+    /// Logs signal.
     pub fn log_signal(&self, signal: &Signal) -> anyhow::Result<()> {
+        let _ = self.log_signal_with_context(signal, None, None, None, None)?;
+        Ok(())
+    }
+
+    /// Logs signal with context.
+    pub fn log_signal_with_context(
+        &self,
+        signal: &Signal,
+        market_id: Option<&str>,
+        execution_fidelity: Option<ReplayFidelity>,
+        order_submitted_at_ms: Option<u64>,
+        order_arrival_at_ms: Option<u64>,
+    ) -> anyhow::Result<i64> {
         let metadata_json = serde_json::to_string(&signal.metadata)?;
         let mut stmt = self.conn.prepare_cached(
-            "INSERT INTO signals (timestamp, strategy, direction, binance_price, chainlink_price, \
-             up_ask, down_ask, up_bid, down_bid, metadata) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO signals (
+                timestamp, strategy, direction, binance_price, chainlink_price,
+                up_ask, down_ask, up_bid, down_bid, metadata, market_id, execution_fidelity,
+                order_submitted_at_ms, order_arrival_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
         stmt.execute(params![
             signal.timestamp,
@@ -112,18 +174,28 @@ impl Database {
             signal.up_bid,
             signal.down_bid,
             metadata_json,
+            market_id,
+            execution_fidelity.map(|f| f.to_string()),
+            order_submitted_at_ms,
+            order_arrival_at_ms,
         ])?;
-        Ok(())
+        Ok(self.conn.last_insert_rowid())
     }
-
-    // -- simulated_trades -----------------------------------------------------
 
     /// Insert a new open trade and return the auto-generated row ID.
     pub fn open_trade(&self, trade: &SimulatedTrade) -> anyhow::Result<i64> {
         let mut stmt = self.conn.prepare_cached(
-            "INSERT INTO simulated_trades (timestamp, market_id, strategy, side, token_id, \
-             entry_price, size, status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO simulated_trades (
+                timestamp, market_id, strategy, side, token_id, entry_price, size, status,
+                signal_id, execution_mode, order_id, fill_price, requested_price, requested_size,
+                filled_size, avg_fill_price, fill_status, fill_reason, fill_latency_ms,
+                execution_group_id, execution_fidelity
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12, ?13, ?14,
+                ?15, ?16, ?17, ?18, ?19,
+                ?20, ?21
+             )",
         )?;
         stmt.execute(params![
             trade.timestamp,
@@ -134,6 +206,19 @@ impl Database {
             trade.entry_price,
             trade.size,
             trade.status.to_string(),
+            trade.signal_id,
+            trade.execution_mode,
+            trade.order_id,
+            trade.fill_price,
+            trade.requested_price,
+            trade.requested_size,
+            trade.filled_size,
+            trade.avg_fill_price,
+            trade.fill_status,
+            trade.fill_reason,
+            trade.fill_latency_ms,
+            trade.execution_group_id,
+            trade.execution_fidelity,
         ])?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -177,14 +262,16 @@ impl Database {
         Ok(())
     }
 
-    // -- queries --------------------------------------------------------------
-
+    /// Returns open trades for market.
     pub fn get_open_trades_for_market(
         &self,
         market_id: &str,
     ) -> anyhow::Result<Vec<SimulatedTrade>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id, timestamp, market_id, strategy, side, token_id, entry_price, size, status \
+            "SELECT id, timestamp, market_id, strategy, side, token_id, entry_price, size, status,
+                    signal_id, requested_price, requested_size, filled_size, avg_fill_price,
+                    fill_status, fill_reason, fill_latency_ms, execution_group_id,
+                    execution_fidelity, execution_mode, order_id, fill_price \
              FROM simulated_trades WHERE market_id = ?1 AND status = 'open'",
         )?;
 
@@ -213,6 +300,19 @@ impl Database {
                         Box::from(e),
                     )
                 })?,
+                signal_id: row.get(9)?,
+                requested_price: row.get(10)?,
+                requested_size: row.get(11)?,
+                filled_size: row.get(12)?,
+                avg_fill_price: row.get(13)?,
+                fill_status: row.get(14)?,
+                fill_reason: row.get(15)?,
+                fill_latency_ms: row.get(16)?,
+                execution_group_id: row.get(17)?,
+                execution_fidelity: row.get(18)?,
+                execution_mode: row.get(19)?,
+                order_id: row.get(20)?,
+                fill_price: row.get(21)?,
             })
         })?;
 
@@ -223,8 +323,16 @@ impl Database {
         Ok(trades)
     }
 
-    // -- balance_log ----------------------------------------------------------
+    /// Count open trades.
+    pub fn count_open_trades(&self) -> anyhow::Result<u64> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT COUNT(*) FROM simulated_trades WHERE status = 'open'")?;
+        let count = stmt.query_row([], |row| row.get(0))?;
+        Ok(count)
+    }
 
+    /// Logs balance event.
     pub fn log_balance_event(
         &self,
         timestamp: u64,
@@ -241,6 +349,7 @@ impl Database {
         Ok(())
     }
 
+    /// Returns latest balance.
     pub fn get_latest_balance(&self) -> anyhow::Result<Option<f64>> {
         let mut stmt = self
             .conn
@@ -249,8 +358,7 @@ impl Database {
         Ok(result)
     }
 
-    // -- market lifecycle -----------------------------------------------------
-
+    /// Resolves market.
     pub fn resolve_market(&self, market_id: &str, status: &str) -> anyhow::Result<()> {
         let mut stmt = self
             .conn
@@ -302,7 +410,10 @@ impl Database {
     /// Read a single trade by its ID (regardless of status).
     pub fn get_trade_by_id(&self, trade_id: i64) -> anyhow::Result<Option<SimulatedTrade>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id, timestamp, market_id, strategy, side, token_id, entry_price, size, status \
+            "SELECT id, timestamp, market_id, strategy, side, token_id, entry_price, size, status,
+                    signal_id, requested_price, requested_size, filled_size, avg_fill_price,
+                    fill_status, fill_reason, fill_latency_ms, execution_group_id,
+                    execution_fidelity, execution_mode, order_id, fill_price \
              FROM simulated_trades WHERE id = ?1",
         )?;
         let result = stmt
@@ -331,6 +442,19 @@ impl Database {
                             Box::from(e),
                         )
                     })?,
+                    signal_id: row.get(9)?,
+                    requested_price: row.get(10)?,
+                    requested_size: row.get(11)?,
+                    filled_size: row.get(12)?,
+                    avg_fill_price: row.get(13)?,
+                    fill_status: row.get(14)?,
+                    fill_reason: row.get(15)?,
+                    fill_latency_ms: row.get(16)?,
+                    execution_group_id: row.get(17)?,
+                    execution_fidelity: row.get(18)?,
+                    execution_mode: row.get(19)?,
+                    order_id: row.get(20)?,
+                    fill_price: row.get(21)?,
                 })
             })
             .optional()?;
@@ -394,20 +518,20 @@ impl Database {
 
     /// Consume the `Database`, closing the underlying connection.
     ///
-    /// In Rust the connection is dropped automatically, so this is mostly a
-    /// semantic mirror of the TypeScript `close()` method.
+    /// In `Rust` the connection is dropped automatically, so this is mostly a
+    /// semantic mirror of the `TypeScript` `close()` method.
     pub fn close(self) {
-        // `self.conn` is dropped here, closing the connection.
         drop(self);
+    }
+
+    /// Returns the underlying `SQLite` connection for read-only helper queries.
+    pub fn conn(&self) -> &rusqlite::Connection {
+        &self.conn
     }
 }
 
 /// Re-export for callers that need the `optional()` extension.
 use rusqlite::OptionalExtension;
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/database_tests.rs"]

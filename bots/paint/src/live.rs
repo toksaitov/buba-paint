@@ -1,6 +1,3 @@
-// Live paper trading bot — extracted from main.rs so it can be driven
-// by both the CLI and integration tests.
-
 use std::sync::Arc;
 
 use tracing::{error, info, warn};
@@ -11,6 +8,7 @@ use crate::circuit_breaker::CircuitBreaker;
 use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::db::database::Database;
+use crate::executor::ExecutionEngine;
 use crate::feeds::FeedMessage;
 use crate::market_discovery::{self, MarketDiscoveryEvent};
 use crate::position_manager::PositionManager;
@@ -19,23 +17,15 @@ use crate::strategies::spread_capture::SpreadCaptureStrategy;
 use crate::strategies::{Strategy, StrategyResult};
 use crate::tick_logger::{self, TickLoggerState};
 use crate::trend_tracker::TrendTracker;
-use crate::types::{BookState, MarketWindow, SignalDirection, StrategyContext};
-
-// ---------------------------------------------------------------------------
-// Deferred resolution message (background Gamma polling -> main loop)
-// ---------------------------------------------------------------------------
+use crate::types::{
+    BookState, FeedEvent, MarketWindow, ReplayFidelity, SignalDirection, StrategyContext,
+};
 
 struct DeferredResolution {
     market_id: String,
-    #[allow(dead_code)]
     window: MarketWindow,
     authoritative_outcome: SignalDirection,
-    provisional_trade_ids: Vec<i64>,
 }
-
-// ---------------------------------------------------------------------------
-// Live state — maintained in the main loop, updated from feed messages
-// ---------------------------------------------------------------------------
 
 struct LiveState {
     binance_price: Option<f64>,
@@ -47,10 +37,10 @@ struct LiveState {
     window_open_prices: std::collections::HashMap<String, f64>,
     /// All windows we've seen (for resolving trades when window closes).
     known_windows: std::collections::HashMap<String, MarketWindow>,
-    last_eval_time: u64,
 }
 
 impl LiveState {
+    /// Creates a new `LiveState`.
     fn new() -> Self {
         Self {
             binance_price: None,
@@ -59,14 +49,9 @@ impl LiveState {
             current_window: None,
             window_open_prices: std::collections::HashMap::new(),
             known_windows: std::collections::HashMap::new(),
-            last_eval_time: 0,
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
 
 /// Run the live paper trading bot.
 ///
@@ -88,13 +73,12 @@ pub async fn run_live(
         "starting live paper trading bot"
     );
 
-    // 1. Open database.
     let db = Database::new(db_path)?;
 
-    // 2. Create core components.
     let clock = SystemClock;
     let mut bankroll = BankrollManager::new(balance, &config, &db, &clock);
     let mut position_manager = PositionManager::new();
+    let mut execution_engine = ExecutionEngine::new();
     let mut circuit_breaker = CircuitBreaker::new(
         config.circuit_breaker_losses as u32,
         config.circuit_breaker_pause_ms,
@@ -105,7 +89,6 @@ pub async fn run_live(
         config.trend_filter_threshold,
     );
 
-    // 3. Create strategies.
     let mut strategies: Vec<Box<dyn Strategy>> = vec![
         Box::new(LatencyArbStrategy::new(
             config.latency_arb_momentum_threshold,
@@ -113,13 +96,10 @@ pub async fn run_live(
         Box::new(SpreadCaptureStrategy::new()),
     ];
 
-    // Momentum calculator (reuse from backtest module).
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
 
-    // 4. Shared feed channel.
     let (feed_tx, mut feed_rx) = tokio::sync::mpsc::channel::<FeedMessage>(512);
 
-    // 5. Spawn feed tasks.
     let binance_config = config.clone();
     let binance_tx = feed_tx.clone();
     tokio::spawn(async move {
@@ -145,10 +125,8 @@ pub async fn run_live(
     let (clob_handle, _clob_join) =
         crate::feeds::clob_feed::run_clob_feed(&clob_config, clob_tx).await;
 
-    // 6. Spawn market discovery task.
     let mut discovery = market_discovery::run_market_discovery(&config).await;
 
-    // 7. Spawn tick logger task.
     let tick_logger_state = Arc::new(tokio::sync::RwLock::new(TickLoggerState::default()));
     let tick_logger_state_clone = Arc::clone(&tick_logger_state);
     let tick_interval = config.tick_interval;
@@ -158,24 +136,19 @@ pub async fn run_live(
             .await;
     });
 
-    // 8. Live state.
     let mut state = LiveState::new();
 
-    // 9. Deferred resolution channel (background Gamma polling -> main loop).
     let (resolution_tx, mut resolution_rx) = tokio::sync::mpsc::channel::<DeferredResolution>(32);
 
-    // 10. Window activation channel (delayed activation of future windows).
     let (activate_tx, mut activate_rx) = tokio::sync::mpsc::channel::<MarketWindow>(32);
 
     info!("all tasks spawned, entering main loop");
 
-    // Pin the shutdown receiver so it can be polled repeatedly in select!.
     let mut shutdown_rx = shutdown_rx;
 
-    // === Main loop ===
     loop {
         tokio::select! {
-            // Feed messages.
+
             msg = feed_rx.recv() => {
                 let Some(msg) = msg else {
                     warn!("all feed senders dropped, shutting down");
@@ -183,21 +156,47 @@ pub async fn run_live(
                 };
 
                 match msg {
-                    FeedMessage::BinanceTick { price, timestamp } => {
+                    FeedMessage::BinanceTick { price, timestamp, payload_json } => {
+                        let received_at_ms = clock.now();
                         state.binance_price = Some(price);
                         momentum.push(price, timestamp);
+                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
 
-                        // Update tick logger state.
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.binance_price = Some(price);
                         }
 
-                        // Capture window open price from Binance if not set.
+                        let _ = db.log_feed_event(&FeedEvent {
+                            id: None,
+                            received_at_ms,
+                            event_at_ms: timestamp,
+                            source: "binance".to_string(),
+                            event_type: "binance_tick".to_string(),
+                            market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                            asset_id: None,
+                            price: Some(price),
+                            best_bid: None,
+                            best_ask: None,
+                            bid_size: None,
+                            ask_size: None,
+                            payload_json,
+                            fidelity: ReplayFidelity::RawEvent,
+                        });
+
                         if let Some(ref w) = state.current_window {
                             state.window_open_prices.entry(w.market_id.clone()).or_insert(price);
                         }
 
-                        // Run strategy evaluation (throttled).
+                        let _ = execution_engine.process_due_orders(
+                            received_at_ms,
+                            state.current_window.as_ref(),
+                            &state.book_state,
+                            &db,
+                            &mut bankroll,
+                            &config,
+                            &clock,
+                        );
+
                         evaluate_strategies(
                             &mut state,
                             &momentum,
@@ -205,31 +204,80 @@ pub async fn run_live(
                             &clock,
                             &db,
                             &mut strategies,
+                            &mut execution_engine,
                             &mut bankroll,
-                            &mut position_manager,
                             &mut circuit_breaker,
                             &mut trend_tracker,
+                            received_at_ms,
                         );
                     }
 
-                    FeedMessage::ChainlinkPrice { price, timestamp: _ } => {
+                    FeedMessage::ChainlinkPrice { price, timestamp, payload_json } => {
+                        let received_at_ms = clock.now();
                         state.chainlink_price = Some(price);
+                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
 
-                        // Update tick logger state.
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.chainlink_price = Some(price);
                         }
+
+                        let _ = db.log_feed_event(&FeedEvent {
+                            id: None,
+                            received_at_ms,
+                            event_at_ms: timestamp,
+                            source: "chainlink".to_string(),
+                            event_type: "chainlink_price".to_string(),
+                            market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                            asset_id: None,
+                            price: Some(price),
+                            best_bid: None,
+                            best_ask: None,
+                            bid_size: None,
+                            ask_size: None,
+                            payload_json,
+                            fidelity: ReplayFidelity::RawEvent,
+                        });
+
+                        let _ = execution_engine.process_due_orders(
+                            received_at_ms,
+                            state.current_window.as_ref(),
+                            &state.book_state,
+                            &db,
+                            &mut bankroll,
+                            &config,
+                            &clock,
+                        );
                     }
 
-                    FeedMessage::ClobBook { book_state } | FeedMessage::ClobPriceChange { book_state } => {
+                    FeedMessage::ClobBook { book_state, timestamp, payload_json } => {
+                        let received_at_ms = clock.now();
                         state.book_state = book_state.clone();
+                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
 
-                        // Update tick logger state.
                         if let Ok(mut tls) = tick_logger_state.try_write() {
-                            tls.book_state = book_state;
+                            tls.book_state = book_state.clone();
                         }
 
-                        // Run strategy evaluation (throttled).
+                        let _ = log_live_clob_event(
+                            &db,
+                            received_at_ms,
+                            timestamp,
+                            "clob_snapshot",
+                            &book_state,
+                            state.current_window.as_ref(),
+                            payload_json.as_deref(),
+                        );
+
+                        let _ = execution_engine.process_due_orders(
+                            received_at_ms,
+                            state.current_window.as_ref(),
+                            &state.book_state,
+                            &db,
+                            &mut bankroll,
+                            &config,
+                            &clock,
+                        );
+
                         evaluate_strategies(
                             &mut state,
                             &momentum,
@@ -237,10 +285,55 @@ pub async fn run_live(
                             &clock,
                             &db,
                             &mut strategies,
+                            &mut execution_engine,
                             &mut bankroll,
-                            &mut position_manager,
                             &mut circuit_breaker,
                             &mut trend_tracker,
+                            received_at_ms,
+                        );
+                    }
+
+                    FeedMessage::ClobPriceChange { book_state, timestamp, payload_json } => {
+                        let received_at_ms = clock.now();
+                        state.book_state = book_state.clone();
+                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
+
+                        if let Ok(mut tls) = tick_logger_state.try_write() {
+                            tls.book_state = book_state.clone();
+                        }
+
+                        let _ = log_live_clob_event(
+                            &db,
+                            received_at_ms,
+                            timestamp,
+                            "clob_price_change",
+                            &book_state,
+                            state.current_window.as_ref(),
+                            payload_json.as_deref(),
+                        );
+
+                        let _ = execution_engine.process_due_orders(
+                            received_at_ms,
+                            state.current_window.as_ref(),
+                            &state.book_state,
+                            &db,
+                            &mut bankroll,
+                            &config,
+                            &clock,
+                        );
+
+                        evaluate_strategies(
+                            &mut state,
+                            &momentum,
+                            &config,
+                            &clock,
+                            &db,
+                            &mut strategies,
+                            &mut execution_engine,
+                            &mut bankroll,
+                            &mut circuit_breaker,
+                            &mut trend_tracker,
+                            received_at_ms,
                         );
                     }
 
@@ -259,7 +352,6 @@ pub async fn run_live(
                 }
             }
 
-            // Market discovery events.
             event = discovery.window_rx.recv() => {
                 let Some(event) = event else {
                     warn!("market discovery channel closed");
@@ -274,22 +366,18 @@ pub async fn run_live(
                             "new market window discovered"
                         );
 
-                        // Upsert market in DB.
                         if let Err(e) = db.upsert_market(&window) {
                             error!("failed to upsert market: {e}");
                         }
 
-                        // Store in known_windows for settlement lookup.
                         state.known_windows.insert(window.market_id.clone(), window.clone());
 
-                        // Only activate the window if its start_time has passed.
-                        // Otherwise, schedule delayed activation at start_time.
                         let now_ms = clock.now();
                         if window.start_time <= now_ms {
-                            // Window is already active. Activate immediately.
+
                             activate_window(&mut state, &window, &clob_handle);
                         } else {
-                            // Window is in the future. Schedule activation.
+
                             let delay_ms = window.start_time.saturating_sub(now_ms);
                             let tx = activate_tx.clone();
                             let w = window.clone();
@@ -310,97 +398,41 @@ pub async fn run_live(
 
                         let closed_id = closed_window.market_id.clone();
                         if let Some(window) = state.known_windows.remove(&closed_id) {
-                            // Provisional settlement: use Binance price comparison
-                            // for an immediate (non-blocking) outcome estimate.
                             let open = state.window_open_prices.remove(&closed_id).unwrap_or_else(|| {
                                 warn!(market_id = %closed_id, "no open price captured, using current Binance price");
                                 state.binance_price.unwrap_or(0.0)
                             });
                             let close = state.binance_price.unwrap_or(open);
-
-                            // Collect trade IDs for the deferred reconciliation task.
-                            let mut provisional_trade_ids = Vec::new();
-
-                            // Only do provisional settlement if we have valid price data.
-                            if open > 0.0 {
-                                let provisional_outcome = if close >= open {
-                                    SignalDirection::Up
-                                } else {
-                                    SignalDirection::Down
-                                };
-
-                                let resolved = position_manager.resolve_window_with_outcome(
-                                    &window,
-                                    provisional_outcome,
-                                    &db,
-                                    &mut bankroll,
-                                    &config,
-                                    &clock,
-                                );
-
-                                let now = clock.now();
-                                for (trade, result) in &resolved {
-                                    let won = result.pnl_net > 0.0;
-                                    trend_tracker.record_outcome(trade.side, won, now);
-                                    circuit_breaker.record_result(won, now);
-
-                                    let tid = trade.id.unwrap_or(-1);
-                                    provisional_trade_ids.push(tid);
-
-                                    let mut prov_result = result.clone();
-                                    prov_result.settlement_status = "provisional".to_string();
-                                    prov_result.provisional_pnl = Some(result.pnl_net);
-                                    let _ = db.update_trade_settlement(tid, &prov_result, "provisional");
-
-                                    let win_loss = if won { "WIN" } else { "LOSS" };
-                                    info!(
-                                        trade_id = tid,
-                                        strategy = %trade.strategy,
-                                        side = %trade.side,
-                                        pnl_net = result.pnl_net,
-                                        fee = result.fee_amount,
-                                        outcome = win_loss,
-                                        "trade settled (provisional, Binance)"
-                                    );
-                                }
-
-                                let bankroll_stats = bankroll.get_stats();
-                                info!(
-                                    balance = bankroll_stats.current_balance,
-                                    pnl = bankroll_stats.total_pnl,
-                                    trades = bankroll_stats.total_trades,
-                                    win_rate = format!("{:.1}%", bankroll_stats.win_rate * 100.0),
-                                    max_dd = format!("{:.1}%", bankroll_stats.max_drawdown_pct * 100.0),
-                                    provisional_open = open,
-                                    provisional_close = close,
-                                    "bankroll update (provisional)"
-                                );
+                            let provisional_outcome = if close >= open {
+                                SignalDirection::Up
                             } else {
-                                warn!(market_id = %closed_id, "no price data, skipping provisional settlement (will rely on deferred resolution)");
-                                // Collect trade IDs from DB so deferred resolution can settle them.
-                                if let Ok(trades) = db.get_open_trades_for_market(&closed_id) {
-                                    for trade in &trades {
-                                        if let Some(tid) = trade.id {
-                                            provisional_trade_ids.push(tid);
-                                        }
-                                    }
-                                }
-                            }
+                                SignalDirection::Down
+                            };
+                            info!(
+                                market_id = %closed_id,
+                                provisional_outcome = %provisional_outcome,
+                                provisional_open = open,
+                                provisional_close = close,
+                                "window closed; awaiting authoritative resolution before settlement"
+                            );
 
-                            // Spawn background task to poll Gamma API for the
-                            // authoritative resolution (non-blocking).
-                            if !provisional_trade_ids.is_empty() {
+                            if db
+                                .get_open_trades_for_market(&closed_id)
+                                .is_ok_and(|trades| !trades.is_empty())
+                            {
                                 let tx = resolution_tx.clone();
                                 let gamma_url = config.gamma_api_url.clone();
                                 let slug = window.slug.clone();
                                 let mid = window.market_id.clone();
                                 let win = window.clone();
                                 let retries = config.resolution_poll_retries;
+                                let initial_delay_ms = config.resolution_initial_delay_ms;
                                 let delay_ms = config.resolution_poll_delay_ms;
                                 tokio::spawn(async move {
-                                    // Wait 30 seconds before starting to poll (resolution
-                                    // never appears before ~20s after nominal close).
-                                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        initial_delay_ms,
+                                    ))
+                                    .await;
                                     if let Some(outcome) = crate::market_discovery::poll_resolution(
                                         &gamma_url, &slug, retries, delay_ms,
                                     ).await {
@@ -408,15 +440,11 @@ pub async fn run_live(
                                             market_id: mid,
                                             window: win,
                                             authoritative_outcome: outcome,
-                                            provisional_trade_ids,
                                         }).await;
                                     }
-                                    // If poll_resolution returns None (timeout), the
-                                    // provisional settlement stands. No message sent.
                                 });
                             }
 
-                            // If this was the current window, clear it.
                             if state.current_window.as_ref().is_some_and(|w| w.market_id == closed_id) {
                                 state.current_window = None;
                                 state.book_state = BookState::default();
@@ -426,19 +454,18 @@ pub async fn run_live(
                 }
             }
 
-            // Delayed window activation (for windows discovered before their start_time).
             window = activate_rx.recv() => {
                 if let Some(window) = window {
                     activate_window(&mut state, &window, &clob_handle);
                 }
             }
 
-            // Deferred resolution from background Gamma polling task.
             resolution = resolution_rx.recv() => {
                 if let Some(res) = resolution {
                     handle_deferred_resolution(
                         &res,
                         &db,
+                        &mut position_manager,
                         &mut bankroll,
                         &mut trend_tracker,
                         &mut circuit_breaker,
@@ -448,7 +475,6 @@ pub async fn run_live(
                 }
             }
 
-            // Graceful shutdown via oneshot receiver.
             _ = &mut shutdown_rx => {
                 info!("shutdown signal received, shutting down");
                 break;
@@ -456,7 +482,6 @@ pub async fn run_live(
         }
     }
 
-    // --- Graceful shutdown ---
     let final_stats = bankroll.get_stats();
     info!(
         starting_balance = final_stats.starting_balance,
@@ -477,11 +502,7 @@ pub async fn run_live(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Window activation helper
-// ---------------------------------------------------------------------------
-
-/// Activate a market window: set it as current, resubscribe the CLOB feed to
+/// Activate a market window: set it as current, resubscribe the `CLOB` feed to
 /// the window's tokens, reset the book state, and capture the open price.
 fn activate_window(
     state: &mut LiveState,
@@ -493,7 +514,6 @@ fn activate_window(
         "window activated (now trading)"
     );
 
-    // Resubscribe CLOB to the window's tokens.
     let up_token = window.up_token_id.clone();
     let down_token = window.down_token_id.clone();
     let handle = clob_handle.clone();
@@ -503,10 +523,8 @@ fn activate_window(
         }
     });
 
-    // Reset book state (old window's tokens are stale).
     state.book_state = BookState::default();
 
-    // Capture open price from the current Binance price.
     if let Some(bp) = state.binance_price {
         state
             .window_open_prices
@@ -517,17 +535,58 @@ fn activate_window(
     state.current_window = Some(window.clone());
 }
 
-// ---------------------------------------------------------------------------
-// Deferred resolution handler
-// ---------------------------------------------------------------------------
+/// Logs live clob event.
+fn log_live_clob_event(
+    db: &Database,
+    received_at_ms: u64,
+    event_at_ms: u64,
+    event_type: &str,
+    book_state: &BookState,
+    current_window: Option<&MarketWindow>,
+    payload_json: Option<&str>,
+) -> anyhow::Result<()> {
+    for (source, asset_id, book) in [
+        (
+            "clob_up",
+            current_window.map(|window| window.up_token_id.clone()),
+            book_state.up.as_ref(),
+        ),
+        (
+            "clob_down",
+            current_window.map(|window| window.down_token_id.clone()),
+            book_state.down.as_ref(),
+        ),
+    ] {
+        if let Some(book) = book {
+            db.log_feed_event(&FeedEvent {
+                id: None,
+                received_at_ms,
+                event_at_ms,
+                source: source.to_string(),
+                event_type: event_type.to_string(),
+                market_id: current_window.map(|window| window.market_id.clone()),
+                asset_id,
+                price: None,
+                best_bid: Some(book.best_bid),
+                best_ask: Some(book.best_ask),
+                bid_size: Some(book.bid_size),
+                ask_size: Some(book.ask_size),
+                payload_json: payload_json.map(ToString::to_string),
+                fidelity: ReplayFidelity::RawEvent,
+            })?;
+        }
+    }
+
+    Ok(())
+}
 
 /// Process a deferred resolution from the background Gamma polling task.
-/// Compares the authoritative outcome to each trade's provisional settlement
-/// and applies corrections where they disagree.
+/// Applies authoritative settlement exactly once for the closed window.
 #[allow(clippy::too_many_arguments)]
 fn handle_deferred_resolution(
     res: &DeferredResolution,
     db: &Database,
+    position_manager: &mut PositionManager,
     bankroll: &mut BankrollManager,
     trend_tracker: &mut TrendTracker,
     circuit_breaker: &mut CircuitBreaker,
@@ -535,104 +594,38 @@ fn handle_deferred_resolution(
     clock: &dyn Clock,
 ) {
     let now = clock.now();
-    let auth_str = match res.authoritative_outcome {
-        SignalDirection::Up => "UP",
-        SignalDirection::Down => "DOWN",
-    };
+    let auth_str = res.authoritative_outcome.to_string();
 
-    for &trade_id in &res.provisional_trade_ids {
-        let Some(old_result) = db.get_trade_result(trade_id).ok().flatten() else {
-            warn!(
-                trade_id,
-                "deferred resolution: trade result not found in DB"
-            );
-            continue;
-        };
+    let resolved = position_manager.resolve_window_with_outcome(
+        &res.window,
+        res.authoritative_outcome,
+        db,
+        bankroll,
+        config,
+        clock,
+    );
 
-        let provisional_won = old_result.pnl_net > 0.0;
-
-        let Some(trade) = db.get_trade_by_id(trade_id).ok().flatten() else {
-            warn!(
-                trade_id,
-                "deferred resolution: could not read trade from DB"
-            );
-            continue;
-        };
-
-        // Compute the authoritative result.
-        let auth_won = trade.side == res.authoritative_outcome;
-        let auth_settlement = if auth_won { 1.0 } else { 0.0 };
-        let auth_gross = (auth_settlement - trade.entry_price) * trade.size;
-        let auth_fee = crate::fees::compute_taker_fee(
-            trade.entry_price,
-            trade.size,
-            config.taker_fee_rate,
-            config.taker_fee_exponent,
-        );
-        let auth_pnl_net = auth_gross - auth_fee;
-
-        // Log the settlement audit.
-        let prediction = match trade.side {
-            SignalDirection::Up => "UP",
-            SignalDirection::Down => "DOWN",
-        };
-        let _ = db.log_settlement_audit(trade_id, &res.market_id, prediction, auth_str, now);
-
-        if provisional_won == auth_won {
-            // Match: confirm the provisional settlement.
-            let _ = db.update_trade_settlement(trade_id, &old_result, "confirmed");
+    for (trade, result) in &resolved {
+        let won = result.pnl_net > 0.0;
+        trend_tracker.record_outcome(trade.side, won, now);
+        circuit_breaker.record_result(won, now);
+        if let Some(trade_id) = trade.id {
+            let prediction = trade.side.to_string();
+            let _ = db.log_settlement_audit(trade_id, &res.market_id, &prediction, &auth_str, now);
             info!(
                 trade_id,
-                outcome = auth_str,
-                "settlement confirmed (Polymarket agrees with provisional)"
-            );
-        } else {
-            // Mismatch: apply correction.
-            let old_pnl = old_result.pnl_net;
-            let entry_cost = trade.entry_price * trade.size;
-            let mut corrected = old_result.clone();
-            corrected.settlement_price = auth_settlement;
-            corrected.pnl_0pct = auth_gross;
-            corrected.pnl_1pct = auth_gross - entry_cost * 0.01;
-            corrected.pnl_2pct = auth_gross - entry_cost * 0.02;
-            corrected.pnl_3pct = auth_gross - entry_cost * 0.03;
-            corrected.fee_amount = auth_fee;
-            corrected.pnl_net = auth_pnl_net;
-
-            let _ = db.update_trade_settlement(trade_id, &corrected, "corrected");
-
-            bankroll.apply_settlement_correction(trade_id, old_pnl, auth_pnl_net, db, clock);
-
-            // Correct trend tracker and circuit breaker.
-            trend_tracker.record_outcome(trade.side, auth_won, now);
-            circuit_breaker.record_result(auth_won, now);
-
-            let old_outcome = if provisional_won { "WIN" } else { "LOSS" };
-            let new_outcome = if auth_won { "WIN" } else { "LOSS" };
-            let delta = auth_pnl_net - old_pnl;
-            warn!(
-                trade_id,
-                old_outcome,
-                new_outcome,
-                delta,
+                strategy = %trade.strategy,
+                side = %trade.side,
+                pnl_net = result.pnl_net,
+                fee = result.fee_amount,
                 auth_outcome = auth_str,
-                "settlement CORRECTED (Polymarket disagrees with Binance)"
-            );
-
-            let stats = bankroll.get_stats();
-            info!(
-                balance = stats.current_balance,
-                pnl = stats.total_pnl,
-                "bankroll after correction"
+                "trade settled from authoritative Polymarket resolution"
             );
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Strategy evaluation (200ms throttle)
-// ---------------------------------------------------------------------------
-
+/// Evaluate strategies.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn evaluate_strategies(
     state: &mut LiveState,
@@ -641,20 +634,12 @@ fn evaluate_strategies(
     clock: &SystemClock,
     db: &Database,
     strategies: &mut [Box<dyn Strategy>],
+    execution_engine: &mut ExecutionEngine,
     bankroll: &mut BankrollManager,
-    position_manager: &mut PositionManager,
     circuit_breaker: &mut CircuitBreaker,
     trend_tracker: &mut TrendTracker,
+    now: u64,
 ) {
-    let now = clock.now();
-
-    // 200ms throttle.
-    if now.saturating_sub(state.last_eval_time) < 200 {
-        return;
-    }
-    state.last_eval_time = now;
-
-    // Need an active window and a Binance price.
     let Some(window) = state.current_window.as_ref() else {
         return;
     };
@@ -662,13 +647,11 @@ fn evaluate_strategies(
         return;
     };
 
-    // Circuit breaker check.
     if !circuit_breaker.can_trade(now) {
         circuit_breaker.log_if_paused(now);
         return;
     }
 
-    // Build strategy context.
     let ctx = StrategyContext {
         binance_price,
         binance_momentum: momentum.get(),
@@ -683,7 +666,6 @@ fn evaluate_strategies(
         match result {
             StrategyResult::None => {}
             StrategyResult::Single(signal) => {
-                // Trend tracker suppression.
                 if trend_tracker.should_suppress(signal.direction) {
                     let _ = db.log_signal(&signal);
                     info!(
@@ -702,64 +684,34 @@ fn evaluate_strategies(
                     "signal generated"
                 );
 
-                // Get available liquidity from the order book for the signal's side.
-                let available_tokens = match signal.direction {
-                    crate::types::SignalDirection::Up => {
-                        state.book_state.up.as_ref().map_or(0.0, |b| b.ask_size)
-                    }
-                    crate::types::SignalDirection::Down => {
-                        state.book_state.down.as_ref().map_or(0.0, |b| b.ask_size)
-                    }
-                };
-
-                if let Some(trade) = position_manager.try_open(
+                if let Ok(Some(_)) = execution_engine.submit_single(
                     &signal,
                     window,
-                    false,
-                    available_tokens,
                     db,
                     bankroll,
                     config,
                     clock,
+                    ReplayFidelity::RawEvent,
                 ) {
-                    info!(
-                        trade_id = trade.id.unwrap_or(-1),
-                        strategy = %trade.strategy,
-                        side = %trade.side,
-                        entry_price = trade.entry_price,
-                        size = trade.size,
-                        "trade opened"
-                    );
-                } else {
-                    tracing::debug!(
-                        strategy = %signal.strategy,
-                        direction = %signal.direction,
-                        "signal generated but trade rejected (check debug logs for reason)"
-                    );
+                    tracing::debug!(strategy = %signal.strategy, "order queued");
                 }
             }
             StrategyResult::Batch(signals) => {
-                for signal in &signals {
-                    let _ = db.log_signal(signal);
-                }
                 info!(
                     strategy = signals.first().map_or("?", |s| &s.strategy),
                     count = signals.len(),
                     "batch signal generated"
                 );
 
-                let trades =
-                    position_manager.try_open_spread(&signals, window, db, bankroll, config, clock);
-                for trade in &trades {
-                    info!(
-                        trade_id = trade.id.unwrap_or(-1),
-                        strategy = %trade.strategy,
-                        side = %trade.side,
-                        entry_price = trade.entry_price,
-                        size = trade.size,
-                        "spread trade opened"
-                    );
-                }
+                let _ = execution_engine.submit_spread(
+                    &signals,
+                    window,
+                    db,
+                    bankroll,
+                    config,
+                    clock,
+                    ReplayFidelity::RawEvent,
+                );
             }
         }
     }

@@ -1,17 +1,18 @@
 use super::*;
 
-// -- SignalDirection Display / FromStr ----------------------------------
-
+/// Verifies that signal direction display up.
 #[test]
 fn signal_direction_display_up() {
     assert_eq!(SignalDirection::Up.to_string(), "UP");
 }
 
+/// Verifies that signal direction display down.
 #[test]
 fn signal_direction_display_down() {
     assert_eq!(SignalDirection::Down.to_string(), "DOWN");
 }
 
+/// Verifies that signal direction from str up.
 #[test]
 fn signal_direction_from_str_up() {
     assert_eq!(
@@ -20,6 +21,7 @@ fn signal_direction_from_str_up() {
     );
 }
 
+/// Verifies that signal direction from str down.
 #[test]
 fn signal_direction_from_str_down() {
     assert_eq!(
@@ -28,12 +30,14 @@ fn signal_direction_from_str_down() {
     );
 }
 
+/// Verifies that signal direction from str invalid.
 #[test]
 fn signal_direction_from_str_invalid() {
     let err = SignalDirection::from_str("up").unwrap_err();
     assert!(err.contains("invalid SignalDirection"));
 }
 
+/// Verifies that signal direction roundtrip.
 #[test]
 fn signal_direction_roundtrip() {
     for dir in [SignalDirection::Up, SignalDirection::Down] {
@@ -42,28 +46,31 @@ fn signal_direction_roundtrip() {
     }
 }
 
-// -- TradeStatus Display / FromStr -------------------------------------
-
+/// Verifies that trade status display open.
 #[test]
 fn trade_status_display_open() {
     assert_eq!(TradeStatus::Open.to_string(), "open");
 }
 
+/// Verifies that trade status display closed.
 #[test]
 fn trade_status_display_closed() {
     assert_eq!(TradeStatus::Closed.to_string(), "closed");
 }
 
+/// Verifies that trade status display expired.
 #[test]
 fn trade_status_display_expired() {
     assert_eq!(TradeStatus::Expired.to_string(), "expired");
 }
 
+/// Verifies that trade status from str open.
 #[test]
 fn trade_status_from_str_open() {
     assert_eq!(TradeStatus::from_str("open").unwrap(), TradeStatus::Open);
 }
 
+/// Verifies that trade status from str closed.
 #[test]
 fn trade_status_from_str_closed() {
     assert_eq!(
@@ -72,6 +79,7 @@ fn trade_status_from_str_closed() {
     );
 }
 
+/// Verifies that trade status from str expired.
 #[test]
 fn trade_status_from_str_expired() {
     assert_eq!(
@@ -80,12 +88,14 @@ fn trade_status_from_str_expired() {
     );
 }
 
+/// Verifies that trade status from str invalid.
 #[test]
 fn trade_status_from_str_invalid() {
     let err = TradeStatus::from_str("OPEN").unwrap_err();
     assert!(err.contains("invalid TradeStatus"));
 }
 
+/// Verifies that trade status roundtrip.
 #[test]
 fn trade_status_roundtrip() {
     for status in [TradeStatus::Open, TradeStatus::Closed, TradeStatus::Expired] {
@@ -94,8 +104,7 @@ fn trade_status_roundtrip() {
     }
 }
 
-// -- BookState default -------------------------------------------------
-
+/// Verifies that book state default is none.
 #[test]
 fn book_state_default_is_none() {
     let state = BookState::default();
@@ -103,6 +112,7 @@ fn book_state_default_is_none() {
     assert!(state.down.is_none());
 }
 
+/// Verifies that book state with one side.
 #[test]
 fn book_state_with_one_side() {
     let state = BookState {
@@ -122,8 +132,7 @@ fn book_state_with_one_side() {
     assert!((up.best_ask - 0.55).abs() < f64::EPSILON);
 }
 
-// -- Struct construction -----------------------------------------------
-
+/// Verifies that construct binance tick.
 #[test]
 fn construct_binance_tick() {
     let tick = BinanceTick {
@@ -136,6 +145,7 @@ fn construct_binance_tick() {
     assert_eq!(tick.event_time, 1_700_000_000_000);
 }
 
+/// Verifies that construct chainlink tick.
 #[test]
 fn construct_chainlink_tick() {
     let tick = ChainlinkTick {
@@ -147,6 +157,7 @@ fn construct_chainlink_tick() {
     assert!((tick.value - 42_000.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that construct order level.
 #[test]
 fn construct_order_level() {
     let level = OrderLevel {
@@ -157,6 +168,7 @@ fn construct_order_level() {
     assert!((level.size - 1000.0).abs() < f64::EPSILON);
 }
 
+/// Verifies that construct clob book snapshot.
 #[test]
 fn construct_clob_book_snapshot() {
     let snap = ClobBookSnapshot {
@@ -176,6 +188,7 @@ fn construct_clob_book_snapshot() {
     assert_eq!(snap.asks.len(), 1);
 }
 
+/// Verifies that construct clob price change.
 #[test]
 fn construct_clob_price_change() {
     let change = ClobPriceChange {
@@ -193,6 +206,7 @@ fn construct_clob_price_change() {
     assert_eq!(change.changes[0].side, "BUY");
 }
 
+/// Verifies that construct gamma market.
 #[test]
 fn construct_gamma_market() {
     let market = GammaMarket {
@@ -206,7 +220,13 @@ fn construct_gamma_market() {
         outcomes: vec!["Up".to_string(), "Down".to_string()],
         outcome_prices: vec![0.55, 0.45],
         clob_token_ids: vec!["tok-up".to_string(), "tok-down".to_string()],
-        order_price_min_tick_size: 0.01,
+        resolution_source: Some("chainlink".to_string()),
+        order_min_size: Some(5.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: Some(1000.0),
+        taker_base_fee: Some(1000.0),
+        rewards_min_size: Some(50.0),
+        rewards_max_spread: Some(4.5),
         end_date: "2024-01-01T00:05:00Z".to_string(),
         neg_risk: false,
         neg_risk_market_id: String::new(),
@@ -216,6 +236,7 @@ fn construct_gamma_market() {
     assert_eq!(market.outcomes.len(), 2);
 }
 
+/// Verifies that construct market window.
 #[test]
 fn construct_market_window() {
     let window = MarketWindow {
@@ -227,10 +248,20 @@ fn construct_market_window() {
         start_time: 1_700_000_000_000,
         end_time: 1_700_000_300_000,
         slug: "btc-up-down".to_string(),
+        outcome: None,
+        resolution_source: Some("chainlink".to_string()),
+        fee_profile: Some("crypto".to_string()),
+        order_min_size: Some(5.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: Some(1000.0),
+        taker_base_fee: Some(1000.0),
+        rewards_min_size: Some(50.0),
+        rewards_max_spread: Some(4.5),
     };
     assert_eq!(window.end_time - window.start_time, 300_000);
 }
 
+/// Verifies that construct signal.
 #[test]
 fn construct_signal() {
     let signal = Signal {
@@ -251,6 +282,7 @@ fn construct_signal() {
     assert!(signal.metadata.is_object());
 }
 
+/// Verifies that construct strategy context.
 #[test]
 fn construct_strategy_context() {
     let ctx = StrategyContext {
@@ -264,6 +296,7 @@ fn construct_strategy_context() {
     assert_eq!(ctx.window_time_remaining_ms, 120_000);
 }
 
+/// Verifies that construct strategy context no chainlink.
 #[test]
 fn construct_strategy_context_no_chainlink() {
     let ctx = StrategyContext {
@@ -276,6 +309,7 @@ fn construct_strategy_context_no_chainlink() {
     assert!(ctx.chainlink_price.is_none());
 }
 
+/// Verifies that construct simulated trade.
 #[test]
 fn construct_simulated_trade() {
     let trade = SimulatedTrade {
@@ -288,11 +322,25 @@ fn construct_simulated_trade() {
         entry_price: 0.52,
         size: 50.0,
         status: TradeStatus::Open,
+        signal_id: None,
+        requested_price: None,
+        requested_size: None,
+        filled_size: None,
+        avg_fill_price: None,
+        fill_status: None,
+        fill_reason: None,
+        fill_latency_ms: None,
+        execution_group_id: None,
+        execution_fidelity: None,
+        execution_mode: None,
+        order_id: None,
+        fill_price: None,
     };
     assert!(trade.id.is_none());
     assert_eq!(trade.status, TradeStatus::Open);
 }
 
+/// Verifies that construct simulated trade with id.
 #[test]
 fn construct_simulated_trade_with_id() {
     let trade = SimulatedTrade {
@@ -305,12 +353,26 @@ fn construct_simulated_trade_with_id() {
         entry_price: 0.48,
         size: 25.0,
         status: TradeStatus::Closed,
+        signal_id: None,
+        requested_price: None,
+        requested_size: None,
+        filled_size: None,
+        avg_fill_price: None,
+        fill_status: None,
+        fill_reason: None,
+        fill_latency_ms: None,
+        execution_group_id: None,
+        execution_fidelity: None,
+        execution_mode: None,
+        order_id: None,
+        fill_price: None,
     };
     assert_eq!(trade.id, Some(42));
     assert_eq!(trade.side, SignalDirection::Down);
     assert_eq!(trade.status, TradeStatus::Closed);
 }
 
+/// Verifies that construct trade result.
 #[test]
 fn construct_trade_result() {
     let result = TradeResult {
@@ -334,8 +396,7 @@ fn construct_trade_result() {
     assert!(result.provisional_pnl.is_none());
 }
 
-// -- FeedStatus --------------------------------------------------------
-
+/// Verifies that feed status equality.
 #[test]
 fn feed_status_equality() {
     assert_eq!(FeedStatus::Disconnected, FeedStatus::Disconnected);
@@ -344,15 +405,15 @@ fn feed_status_equality() {
     assert_ne!(FeedStatus::Disconnected, FeedStatus::Connected);
 }
 
+/// Verifies that feed status copy.
 #[test]
 fn feed_status_copy() {
     let a = FeedStatus::Connected;
-    let b = a; // Copy
+    let b = a;
     assert_eq!(a, b);
 }
 
-// -- Clone / Debug smoke tests -----------------------------------------
-
+/// Verifies that top of book clone.
 #[test]
 fn top_of_book_clone() {
     let original = TopOfBook {
@@ -367,20 +428,21 @@ fn top_of_book_clone() {
     assert_eq!(cloned.timestamp, 1_700_000_000_000);
 }
 
+/// Verifies that signal direction debug.
 #[test]
 fn signal_direction_debug() {
     let debug_str = format!("{:?}", SignalDirection::Up);
     assert_eq!(debug_str, "Up");
 }
 
+/// Verifies that trade status debug.
 #[test]
 fn trade_status_debug() {
     let debug_str = format!("{:?}", TradeStatus::Expired);
     assert_eq!(debug_str, "Expired");
 }
 
-// -- Serde deserialization ---------------------------------------------
-
+/// Verifies that deserialize binance tick.
 #[test]
 fn deserialize_binance_tick() {
     let json = r#"{
@@ -394,6 +456,7 @@ fn deserialize_binance_tick() {
     assert!((tick.price - 42_000.5).abs() < f64::EPSILON);
 }
 
+/// Verifies that deserialize chainlink tick.
 #[test]
 fn deserialize_chainlink_tick() {
     let json = r#"{
@@ -405,6 +468,7 @@ fn deserialize_chainlink_tick() {
     assert_eq!(tick.symbol, "BTC/USD");
 }
 
+/// Verifies that deserialize clob book snapshot.
 #[test]
 fn deserialize_clob_book_snapshot() {
     let json = r#"{
@@ -419,6 +483,7 @@ fn deserialize_clob_book_snapshot() {
     assert_eq!(snap.bids.len(), 1);
 }
 
+/// Verifies that deserialize price change entry.
 #[test]
 fn deserialize_price_change_entry() {
     let json = r#"{
@@ -432,6 +497,7 @@ fn deserialize_price_change_entry() {
     assert_eq!(entry.asset_id, "tok-1");
 }
 
+/// Verifies that deserialize gamma market.
 #[test]
 fn deserialize_gamma_market() {
     let json = r#"{

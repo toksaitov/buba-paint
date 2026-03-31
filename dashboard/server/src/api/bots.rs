@@ -151,6 +151,7 @@ pub async fn bot_restart(
     Ok(Json(data))
 }
 
+/// Finds agent.
 fn find_agent<'a>(
     state: &'a AppState,
     bot_id: &str,

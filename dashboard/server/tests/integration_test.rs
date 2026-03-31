@@ -10,6 +10,7 @@ use buba_dashboard::auth::{self, AuthState, hash_password};
 use buba_dashboard::config::AgentConfig;
 use buba_dashboard::db::DashboardDb;
 
+/// Test agent.
 fn test_agent(url: &str) -> AgentConfig {
     AgentConfig {
         id: "paint".into(),
@@ -19,6 +20,7 @@ fn test_agent(url: &str) -> AgentConfig {
     }
 }
 
+/// Spawns dashboard.
 async fn spawn_dashboard(agent_url: &str) -> (String, Arc<DashboardDb>) {
     let db = Arc::new(DashboardDb::new(":memory:").unwrap());
 
@@ -50,11 +52,13 @@ async fn spawn_dashboard(agent_url: &str) -> (String, Arc<DashboardDb>) {
     (format!("http://127.0.0.1:{}", addr.port()), db)
 }
 
+/// Seed user.
 async fn seed_user(db: &DashboardDb, username: &str, password: &str, role: &str) {
     let hash = hash_password(password).unwrap();
     db.create_user(username, &hash, role).await.unwrap();
 }
 
+/// Verifies that login then list and proxy bots.
 #[tokio::test]
 async fn login_then_list_and_proxy_bots() {
     let agent_server = wiremock::MockServer::start().await;
@@ -72,7 +76,6 @@ async fn login_then_list_and_proxy_bots() {
 
     let client = reqwest::Client::new();
 
-    // Login
     let resp = client
         .post(format!("{base}/api/auth/login"))
         .json(&serde_json::json!({"username": "admin", "password": "pass123"}))
@@ -83,7 +86,6 @@ async fn login_then_list_and_proxy_bots() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let token = body["token"].as_str().unwrap().to_string();
 
-    // Get me
     let resp = client
         .get(format!("{base}/api/auth/me"))
         .header("Authorization", format!("Bearer {token}"))
@@ -94,7 +96,6 @@ async fn login_then_list_and_proxy_bots() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["username"], "admin");
 
-    // List bots
     let resp = client
         .get(format!("{base}/api/bots"))
         .header("Authorization", format!("Bearer {token}"))
@@ -105,7 +106,6 @@ async fn login_then_list_and_proxy_bots() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["bots"][0]["id"], "paint");
 
-    // Proxy bot status
     let resp = client
         .get(format!("{base}/api/bots/paint/status"))
         .header("Authorization", format!("Bearer {token}"))
@@ -117,6 +117,7 @@ async fn login_then_list_and_proxy_bots() {
     assert_eq!(body["balance"], 500.0);
 }
 
+/// Verifies that observer cannot create users.
 #[tokio::test]
 async fn observer_cannot_create_users() {
     let (base, db) = spawn_dashboard("http://127.0.0.1:1").await;
@@ -124,7 +125,6 @@ async fn observer_cannot_create_users() {
 
     let client = reqwest::Client::new();
 
-    // Login as observer
     let resp = client
         .post(format!("{base}/api/auth/login"))
         .json(&serde_json::json!({"username": "observer", "password": "pass123"}))
@@ -135,7 +135,6 @@ async fn observer_cannot_create_users() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let token = body["token"].as_str().unwrap().to_string();
 
-    // Attempt to create a user — should be forbidden
     let resp = client
         .post(format!("{base}/api/users"))
         .header("Authorization", format!("Bearer {token}"))
@@ -144,4 +143,58 @@ async fn observer_cannot_create_users() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 403);
+}
+
+/// Verifies that proxy status returns bad gateway when agent is down.
+#[tokio::test]
+async fn proxy_status_returns_bad_gateway_when_agent_is_down() {
+    let (base, db) = spawn_dashboard("http://127.0.0.1:1").await;
+    seed_user(&db, "admin", "pass123", "admin").await;
+
+    let client = reqwest::Client::new();
+    let login = client
+        .post(format!("{base}/api/auth/login"))
+        .json(&serde_json::json!({"username": "admin", "password": "pass123"}))
+        .send()
+        .await
+        .unwrap();
+    let token = login.json::<serde_json::Value>().await.unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .get(format!("{base}/api/bots/paint/status"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 502);
+}
+
+#[tokio::test]
+/// Verify that unknown bot ids do not proxy and return `404`.
+async fn proxy_status_returns_not_found_for_unknown_bot() {
+    let (base, db) = spawn_dashboard("http://127.0.0.1:1").await;
+    seed_user(&db, "admin", "pass123", "admin").await;
+
+    let client = reqwest::Client::new();
+    let login = client
+        .post(format!("{base}/api/auth/login"))
+        .json(&serde_json::json!({"username": "admin", "password": "pass123"}))
+        .send()
+        .await
+        .unwrap();
+    let token = login.json::<serde_json::Value>().await.unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .get(format!("{base}/api/bots/unknown/status"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
 }

@@ -1,6 +1,6 @@
 /// Pre-loads market windows from the data DB and advances through them.
 ///
-/// Direct port of the TypeScript `WindowManager`.  Markets are loaded from the
+/// Direct port of the `TypeScript` `WindowManager`.  Markets are loaded from the
 /// `markets` table (which in the merged data DB includes `open_price`,
 /// `close_price`, and `outcome` columns) and exposed as `MarketSettlement`s.
 /// The `advance()` method is called on every tick to detect when the current
@@ -11,6 +11,32 @@ use anyhow::Context;
 use rusqlite::params;
 
 use crate::types::{MarketWindow, SignalDirection};
+
+/// Return whether the given table exposes the requested column.
+fn has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    let pragma = format!("PRAGMA table_info({table})");
+    let Ok(mut stmt) = conn.prepare(&pragma) else {
+        return false;
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) else {
+        return false;
+    };
+    rows.flatten().any(|name| name == column)
+}
+
+/// Build the `SELECT` expression for an optional market column.
+fn optional_market_column(conn: &rusqlite::Connection, column: &str) -> String {
+    if has_column(conn, "markets", column) {
+        column.to_string()
+    } else {
+        format!("NULL AS {column}")
+    }
+}
+
+/// Convert a replay timestamp into the signed `SQLite` representation.
+fn timestamp_param(timestamp: u64, label: &str) -> anyhow::Result<i64> {
+    i64::try_from(timestamp).with_context(|| format!("{label} does not fit in i64"))
+}
 
 /// A fully-settled market window with its outcome.
 #[derive(Debug, Clone)]
@@ -26,6 +52,14 @@ pub struct MarketSettlement {
     pub open_price: f64,
     pub close_price: f64,
     pub outcome: SignalDirection,
+    pub resolution_source: Option<String>,
+    pub fee_profile: Option<String>,
+    pub order_min_size: Option<f64>,
+    pub order_price_min_tick_size: Option<f64>,
+    pub maker_base_fee: Option<f64>,
+    pub taker_base_fee: Option<f64>,
+    pub rewards_min_size: Option<f64>,
+    pub rewards_max_spread: Option<f64>,
 }
 
 /// Events returned by `advance()` indicating what changed at a given
@@ -50,74 +84,7 @@ impl WindowManager {
         start_time: u64,
         end_time: u64,
     ) -> anyhow::Result<Self> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT market_id, question, up_token_id, down_token_id, \
-                        condition_id, slug, start_time, end_time, \
-                        open_price, close_price, outcome \
-                 FROM markets \
-                 WHERE end_time >= ?1 AND start_time <= ?2 \
-                   AND outcome IS NOT NULL \
-                 ORDER BY start_time",
-            )
-            .context("preparing markets query")?;
-
-        // Timestamps are always positive, safe to cast
-        #[allow(clippy::cast_possible_wrap)]
-        let rows = stmt
-            .query_map(params![start_time as i64, end_time as i64], |row| {
-                let start_i64: i64 = row.get(6)?;
-                let end_i64: i64 = row.get(7)?;
-                let outcome_str: String = row.get(10)?;
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    start_i64,
-                    end_i64,
-                    row.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
-                    row.get::<_, Option<f64>>(9)?.unwrap_or(0.0),
-                    outcome_str,
-                ))
-            })
-            .context("executing markets query")?;
-
-        let mut windows = Vec::new();
-        for row in rows {
-            let (
-                market_id,
-                question,
-                up_token_id,
-                down_token_id,
-                condition_id,
-                slug,
-                start_i64,
-                end_i64,
-                open_price,
-                close_price,
-                outcome_str,
-            ) = row.context("reading market row")?;
-
-            let outcome = SignalDirection::from_str(&outcome_str)
-                .map_err(|e| anyhow::anyhow!("bad outcome for market {market_id}: {e}"))?;
-
-            windows.push(MarketSettlement {
-                market_id,
-                question,
-                up_token_id,
-                down_token_id,
-                condition_id,
-                slug,
-                start_time: start_i64 as u64,
-                end_time: end_i64 as u64,
-                open_price,
-                close_price,
-                outcome,
-            });
-        }
+        let windows = load_settlements(conn, start_time, end_time)?;
 
         Ok(Self {
             windows,
@@ -148,7 +115,6 @@ impl WindowManager {
             closed: None,
         };
 
-        // Check if the current window has ended.
         if let Some(ref current) = self.current {
             if timestamp >= current.end_time {
                 events.closed = Some(current.clone());
@@ -156,11 +122,9 @@ impl WindowManager {
             }
         }
 
-        // Check if the next window has started (skip any already-expired).
         while self.current.is_none() && self.cursor < self.windows.len() {
             let next = &self.windows[self.cursor];
             if timestamp >= next.end_time {
-                // Window already ended -- skip it.
                 self.cursor += 1;
                 continue;
             }
@@ -187,6 +151,15 @@ impl WindowManager {
             start_time: settlement.start_time,
             end_time: settlement.end_time,
             slug: settlement.slug.clone(),
+            outcome: Some(settlement.outcome.to_string()),
+            resolution_source: settlement.resolution_source.clone(),
+            fee_profile: settlement.fee_profile.clone(),
+            order_min_size: settlement.order_min_size,
+            order_price_min_tick_size: settlement.order_price_min_tick_size,
+            maker_base_fee: settlement.maker_base_fee,
+            taker_base_fee: settlement.taker_base_fee,
+            rewards_min_size: settlement.rewards_min_size,
+            rewards_max_spread: settlement.rewards_max_spread,
         }
     }
 
@@ -197,9 +170,85 @@ impl WindowManager {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// Load settled market windows that overlap with the requested replay interval.
+fn load_settlements(
+    conn: &rusqlite::Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<Vec<MarketSettlement>> {
+    let sql = format!(
+        "SELECT market_id, question, up_token_id, down_token_id, \
+                condition_id, slug, start_time, end_time, \
+                open_price, close_price, outcome, {}, {}, {}, {}, {}, {}, {}, {} \
+         FROM markets \
+         WHERE end_time >= ?1 AND start_time <= ?2 \
+           AND outcome IS NOT NULL \
+         ORDER BY start_time",
+        optional_market_column(conn, "resolution_source"),
+        optional_market_column(conn, "fee_profile"),
+        optional_market_column(conn, "order_min_size"),
+        optional_market_column(conn, "order_price_min_tick_size"),
+        optional_market_column(conn, "maker_base_fee"),
+        optional_market_column(conn, "taker_base_fee"),
+        optional_market_column(conn, "rewards_min_size"),
+        optional_market_column(conn, "rewards_max_spread"),
+    );
+    let mut stmt = conn.prepare(&sql).context("preparing markets query")?;
+    let start_ms = timestamp_param(start_time, "start_time")?;
+    let end_ms = timestamp_param(end_time, "end_time")?;
+    let rows = stmt
+        .query_map(params![start_ms, end_ms], read_market_settlement_row)
+        .context("executing markets query")?;
+
+    let mut windows = Vec::new();
+    for row in rows {
+        windows.push(row.context("reading market row")?);
+    }
+    Ok(windows)
+}
+
+/// Convert a `SQLite` market row into a fully populated settlement.
+fn read_market_settlement_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MarketSettlement> {
+    let market_id: String = row.get(0)?;
+    let outcome_value: String = row.get(10)?;
+    let outcome = parse_market_outcome(&market_id, &outcome_value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            10,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                error.to_string(),
+            )),
+        )
+    })?;
+    Ok(MarketSettlement {
+        market_id,
+        question: row.get(1)?,
+        up_token_id: row.get(2)?,
+        down_token_id: row.get(3)?,
+        condition_id: row.get(4)?,
+        slug: row.get(5)?,
+        start_time: row.get::<_, i64>(6)? as u64,
+        end_time: row.get::<_, i64>(7)? as u64,
+        open_price: row.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
+        close_price: row.get::<_, Option<f64>>(9)?.unwrap_or(0.0),
+        outcome,
+        resolution_source: row.get(11)?,
+        fee_profile: row.get(12)?,
+        order_min_size: row.get(13)?,
+        order_price_min_tick_size: row.get(14)?,
+        maker_base_fee: row.get(15)?,
+        taker_base_fee: row.get(16)?,
+        rewards_min_size: row.get(17)?,
+        rewards_max_spread: row.get(18)?,
+    })
+}
+
+/// Parse a stored market outcome string into the internal enum.
+fn parse_market_outcome(market_id: &str, outcome: &str) -> anyhow::Result<SignalDirection> {
+    SignalDirection::from_str(outcome)
+        .map_err(|error| anyhow::anyhow!("bad outcome for market {market_id}: {error}"))
+}
 
 #[cfg(test)]
 #[path = "tests/window_manager_tests.rs"]

@@ -29,8 +29,7 @@ export function useLiveUpdates(botId: string) {
         }
       },
       () => {
-        // WS endpoint not available — disable further attempts.
-        // Data still refreshes via TanStack Query polling.
+
         disabled.current = true;
       },
     );
@@ -38,3 +37,4 @@ export function useLiveUpdates(botId: string) {
     return cleanup;
   }, [botId, qc]);
 }
+

@@ -7,33 +7,51 @@ const MOMENTUM_BUFFER_SIZE: usize = 1800;
 pub struct LatencyArbStrategy {
     last_signal_time: u64,
     momentum_buffer: Vec<f64>,
+    momentum_timestamps: Vec<u64>,
     adaptive_threshold: f64,
+    adaptive_window_ms: u64,
     last_threshold_calc: u64,
 }
 
 impl LatencyArbStrategy {
+    /// Creates a new `LatencyArbStrategy`.
     #[must_use]
     pub fn new(initial_threshold: f64) -> Self {
         Self {
             last_signal_time: 0,
             momentum_buffer: Vec::with_capacity(MOMENTUM_BUFFER_SIZE),
+            momentum_timestamps: Vec::with_capacity(MOMENTUM_BUFFER_SIZE),
             adaptive_threshold: initial_threshold,
+            adaptive_window_ms: 1_800_000,
             last_threshold_calc: 0,
         }
     }
 
+    /// Returns adaptive threshold.
     fn get_adaptive_threshold(&mut self, now: u64, base_threshold: f64) -> f64 {
         if now - self.last_threshold_calc < 10_000 {
             return self.adaptive_threshold;
         }
         self.last_threshold_calc = now;
 
-        if self.momentum_buffer.len() < 60 {
+        while self.momentum_timestamps.len() < self.momentum_buffer.len() {
+            self.momentum_timestamps.push(now);
+        }
+
+        let first_in_window = self
+            .momentum_timestamps
+            .iter()
+            .position(|ts| now.saturating_sub(*ts) <= self.adaptive_window_ms)
+            .unwrap_or(self.momentum_buffer.len());
+
+        let window = &self.momentum_buffer[first_in_window..];
+
+        if window.len() < 60 {
             self.adaptive_threshold = base_threshold;
             return self.adaptive_threshold;
         }
 
-        let mut sorted = self.momentum_buffer.clone();
+        let mut sorted = window.to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         let p85_idx = (sorted.len() as f64 * 0.85).floor() as usize;
@@ -45,28 +63,30 @@ impl LatencyArbStrategy {
 }
 
 impl Strategy for LatencyArbStrategy {
+    /// Returns the persisted name for the latency-arbitrage strategy.
     fn name(&self) -> &'static str {
         "latency-arb"
     }
 
+    /// Evaluates the current book and momentum snapshot for a latency-arb signal.
     fn evaluate(&mut self, ctx: &StrategyContext, config: &Config, now: u64) -> StrategyResult {
-        // Accumulate absolute momentum into the rolling buffer.
+        self.adaptive_window_ms = config.latency_arb_adaptive_window_ms;
+
         self.momentum_buffer.push(ctx.binance_momentum.abs());
+        self.momentum_timestamps.push(now);
         if self.momentum_buffer.len() > MOMENTUM_BUFFER_SIZE {
             self.momentum_buffer.remove(0);
+            self.momentum_timestamps.remove(0);
         }
 
-        // Window-time guard: skip if too close to expiry.
         if ctx.window_time_remaining_ms < config.min_window_time_ms {
             return StrategyResult::None;
         }
 
-        // Need both sides of the book.
         let (Some(up_book), Some(down_book)) = (&ctx.book_state.up, &ctx.book_state.down) else {
             return StrategyResult::None;
         };
 
-        // Cooldown guard.
         if now - self.last_signal_time < config.latency_arb_cooldown_ms {
             return StrategyResult::None;
         }
@@ -83,7 +103,6 @@ impl Strategy for LatencyArbStrategy {
         let effective_threshold =
             self.get_adaptive_threshold(now, config.latency_arb_momentum_threshold);
 
-        // Determine direction based on momentum vs threshold.
         let direction =
             if ctx.binance_momentum > effective_threshold && up_ask < config.latency_arb_max_ask {
                 Some(SignalDirection::Up)
@@ -104,7 +123,6 @@ impl Strategy for LatencyArbStrategy {
             SignalDirection::Down => down_ask,
         };
 
-        // Min ask filter: reject degenerate / too-cheap entries.
         if entry_ask < config.latency_arb_min_ask {
             return StrategyResult::None;
         }
@@ -136,10 +154,6 @@ impl Strategy for LatencyArbStrategy {
         StrategyResult::Single(signal)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/latency_arb_tests.rs"]

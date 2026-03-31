@@ -1,18 +1,9 @@
-// CLI parsing and command dispatch.
-//
-// All logic lives here so it can be tested via `Cli::parse_from()` and
-// `run()`.  The binary's `main()` is a thin shell: parse + run.
-
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 
 use crate::backtest::runner::{BacktestOptions, TickSource};
 use crate::backtest::sweep::{self, SweepDimension};
 use crate::config::Config;
-
-// ---------------------------------------------------------------------------
-// CLI definition
-// ---------------------------------------------------------------------------
 
 #[derive(Parser)]
 #[command(name = "buba-paint", version)]
@@ -94,11 +85,20 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         concurrency: usize,
     },
+    /// Upgrade and backfill historical run DBs in place
+    UpgradeHistory {
+        #[arg(long, default_value = "runs")]
+        runs_dir: String,
+        #[arg(long, default_value = "4")]
+        from_run: u32,
+        #[arg(long, default_value = "9")]
+        to_run: u32,
+        #[arg(long, default_value_t = false)]
+        rebuild_derived: bool,
+        #[arg(long, default_value = "data/market-data.db")]
+        output: String,
+    },
 }
-
-// ---------------------------------------------------------------------------
-// Command dispatch
-// ---------------------------------------------------------------------------
 
 /// Execute a parsed CLI command.
 #[allow(clippy::too_many_lines)]
@@ -182,7 +182,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
             let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.log_level));
-            tracing_subscriber::fmt().with_env_filter(env_filter).init();
+            tracing_subscriber::fmt()
+                .with_ansi(true)
+                .with_env_filter(env_filter)
+                .init();
 
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
@@ -202,7 +205,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let db = crate::db::database::Database::new(&db_path)?;
             let clock = crate::clock::BacktestClock::new();
             let config = Config::default();
-            // Write the init balance event so the DB is ready for the agent to read.
+
             let _ = crate::bankroll::BankrollManager::new(balance, &config, &db, &clock);
             db.close();
             println!("Database initialized at {db_path} with balance ${balance}");
@@ -214,35 +217,43 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             crate::verify::run_verify_settlements(&db, &gamma_url, concurrency).await?;
         }
+        Commands::UpgradeHistory {
+            runs_dir,
+            from_run,
+            to_run,
+            rebuild_derived,
+            output,
+        } => {
+            crate::db::upgrade_history::run_upgrade_history(
+                crate::db::upgrade_history::UpgradeHistoryOptions {
+                    runs_dir,
+                    from_run,
+                    to_run,
+                    rebuild_derived,
+                    output,
+                },
+            )
+            .await?;
+        }
     }
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Parse an ISO-ish date string to UTC milliseconds since epoch.
 pub fn parse_time(s: &str) -> anyhow::Result<u64> {
-    // Append Z if no timezone indicator is present.
-    // Check for actual timezone patterns: 'Z', '+HH:MM', or '-HH:MM' (but not
-    // bare '-' in the date portion).  The old code used `ends_with("00:00")`
-    // which falsely matched times like "T00:00:00".
-    let has_tz = s.contains('Z') || s.contains('+') || s.rfind('-').is_some_and(|i| i > 10); // '-' after the date part = tz offset
+    let has_tz = s.contains('Z') || s.contains('+') || s.rfind('-').is_some_and(|i| i > 10);
     let normalized = if has_tz {
         s.to_string()
     } else {
         format!("{s}Z")
     };
 
-    // Try RFC 3339 first (e.g., "2026-02-20T00:00:00Z").
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&normalized) {
         #[allow(clippy::cast_sign_loss)]
         return Ok(dt.timestamp_millis() as u64);
     }
 
-    // Try "YYYY-MM-DDTHH:MM" format.
     if let Ok(dt) =
         chrono::NaiveDateTime::parse_from_str(normalized.trim_end_matches('Z'), "%Y-%m-%dT%H:%M")
     {
@@ -250,7 +261,6 @@ pub fn parse_time(s: &str) -> anyhow::Result<u64> {
         return Ok(dt.and_utc().timestamp_millis() as u64);
     }
 
-    // Try "YYYY-MM-DD" format (midnight UTC).
     if let Ok(dt) = chrono::NaiveDate::parse_from_str(normalized.trim_end_matches('Z'), "%Y-%m-%d")
     {
         let naive_dt = dt
@@ -286,10 +296,6 @@ pub fn parse_key_value(s: &str) -> anyhow::Result<(String, String)> {
     Ok((s[..eq_idx].to_string(), s[eq_idx + 1..].to_string()))
 }
 
-// ---------------------------------------------------------------------------
-// Signal handling
-// ---------------------------------------------------------------------------
-
 /// Wait for SIGTERM (Unix only). On non-Unix platforms, this never resolves.
 #[cfg(unix)]
 async fn sigterm_future() {
@@ -299,14 +305,11 @@ async fn sigterm_future() {
         .await;
 }
 
+/// Sigterm future.
 #[cfg(not(unix))]
 async fn sigterm_future() {
     std::future::pending::<()>().await
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/cli_tests.rs"]

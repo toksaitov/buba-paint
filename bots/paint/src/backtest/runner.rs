@@ -1,7 +1,3 @@
-// Backtest runner — replays historical ticks through real strategy code.
-//
-// Direct port of the TypeScript `runBacktest` function.
-
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -12,6 +8,7 @@ use crate::circuit_breaker::CircuitBreaker;
 use crate::clock::BacktestClock;
 use crate::config::Config;
 use crate::db::database::Database;
+use crate::executor::ExecutionEngine;
 use crate::position_manager::PositionManager;
 use crate::strategies::latency_arb::LatencyArbStrategy;
 use crate::strategies::spread_capture::SpreadCaptureStrategy;
@@ -21,12 +18,8 @@ use crate::types::StrategyContext;
 
 use super::feed_state::FeedState;
 use super::momentum::MomentumCalculator;
-use super::tick_replay::{RawTick, TickReplay};
+use super::tick_replay::{SharedTicks, TickReplay};
 use super::window_manager::WindowManager;
-
-// ---------------------------------------------------------------------------
-// Result types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct BacktestResult {
@@ -43,10 +36,20 @@ pub struct BacktestResult {
     pub win_rate: f64,
     pub final_balance: f64,
     pub total_pnl: f64,
+    pub gross_pnl: f64,
     pub max_drawdown_pct: f64,
     pub high_water_mark: f64,
     pub total_fees: f64,
     pub pnl_net: f64,
+    pub fill_rate: f64,
+    pub partial_fill_rate: f64,
+    pub no_fill_count: u64,
+    pub spread_legging_count: u64,
+    pub residual_position_count: u64,
+    pub avg_fill_latency_ms: f64,
+    pub avg_slippage: f64,
+    pub raw_event_batches: u64,
+    pub legacy_snapshot_batches: u64,
 }
 
 /// How tick data is sourced.
@@ -54,7 +57,7 @@ pub enum TickSource {
     /// Load from a database file.
     FromDb(String),
     /// Use pre-loaded ticks (shared across parallel sweep runs).
-    Cached(Arc<Vec<RawTick>>),
+    Cached(SharedTicks),
 }
 
 pub struct BacktestOptions {
@@ -68,44 +71,36 @@ pub struct BacktestOptions {
     pub config: Config,
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
-
+/// Runs backtest.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> {
     let t0 = Instant::now();
 
-    // Load or reference ticks.
-    let ticks: Vec<RawTick> = match options.tick_source {
-        TickSource::FromDb(ref path) => {
+    let mut tick_replay = match &options.tick_source {
+        TickSource::FromDb(path) => {
             let conn = rusqlite::Connection::open_with_flags(
                 path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .with_context(|| format!("opening data DB: {path}"))?;
-            TickReplay::load_ticks(&conn, options.start_time, options.end_time)?
+            TickReplay::from_db(&conn, options.start_time, options.end_time)?
         }
-        TickSource::Cached(ref arc) => arc.as_ref().clone(),
+        TickSource::Cached(shared_ticks) => TickReplay::from_cached(Arc::clone(shared_ticks)),
     };
 
-    // Delete any stale results DB to prevent the BankrollManager from
-    // recovering a previous run's balance (which would corrupt sizing).
     for suffix in ["", "-shm", "-wal"] {
         let f = format!("{}{suffix}", options.results_db_path);
         let _ = std::fs::remove_file(&f);
     }
 
-    // Create results DB (writable).
     let results_db = Database::new(&options.results_db_path)?;
 
-    // Backtest clock.
     let clock = BacktestClock::new();
 
-    // Initialize components.
     let config = &options.config;
     let mut bankroll = BankrollManager::new(options.starting_balance, config, &results_db, &clock);
     let mut position_manager = PositionManager::new();
+    let mut execution_engine = ExecutionEngine::new();
     let mut circuit_breaker = CircuitBreaker::new(
         config.circuit_breaker_losses as u32,
         config.circuit_breaker_pause_ms,
@@ -123,12 +118,9 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
         Box::new(SpreadCaptureStrategy::new()),
     ];
 
-    // Backtesting infrastructure.
-    let mut tick_replay = TickReplay::from_cached(ticks);
     let mut feed_state = FeedState::new();
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
 
-    // Window manager loads from the data DB (read-only).
     let data_conn = rusqlite::Connection::open_with_flags(
         &options.data_db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -149,32 +141,53 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
 
     let mut signal_count: u64 = 0;
 
-    // === Main replay loop ===
     while let Some(group) = tick_replay.next_group() {
         let replay_ts = group.timestamp;
         clock.set(replay_ts);
+        execution_engine.note_replay_fidelity(group.fidelity);
 
-        // Update feed state.
         feed_state.update(&group);
 
-        // Push Binance price into momentum calculator.
+        let current_window_for_execution = window_manager
+            .current
+            .as_ref()
+            .map(WindowManager::to_market_window);
+
+        let opened_now = execution_engine.process_due_orders(
+            replay_ts,
+            current_window_for_execution.as_ref(),
+            &feed_state.book_state,
+            &results_db,
+            &mut bankroll,
+            config,
+            &clock,
+        )?;
+
+        for trade in &opened_now {
+            if let Some(id) = trade.id {
+                tracing::debug!(
+                    trade_id = id,
+                    strategy = %trade.strategy,
+                    side = %trade.side,
+                    fill_status = trade.fill_status.as_deref().unwrap_or("unknown"),
+                    "simulated order filled"
+                );
+            }
+        }
+
         if let Some(ref binance) = group.binance {
             if let Some(price) = binance.price {
                 momentum.push(price, group.timestamp);
             }
         }
 
-        // Advance market windows.
         let events = window_manager.advance(group.timestamp);
 
-        // Handle closed window.
         if let Some(ref closed) = events.closed {
             let mw = WindowManager::to_market_window(closed);
-            // Upsert market in results DB so PositionManager can find it.
+
             let _ = results_db.upsert_market(&mw);
-            // Resolve window using the authoritative outcome loaded from the DB.
-            // When polymarket_outcome is available, this uses the real on-chain
-            // resolution. Otherwise falls back to the Chainlink-derived outcome.
+
             let resolved = position_manager.resolve_window_with_outcome(
                 &mw,
                 closed.outcome,
@@ -183,7 +196,7 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
                 config,
                 &clock,
             );
-            // Feed results to trend tracker and circuit breaker.
+
             for (trade, result) in &resolved {
                 let won = result.pnl_0pct > 0.0;
                 trend_tracker.record_outcome(trade.side, won, replay_ts);
@@ -191,15 +204,13 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             }
         }
 
-        // Handle opened window.
         if let Some(ref opened) = events.opened {
             let mw = WindowManager::to_market_window(opened);
             let _ = results_db.upsert_market(&mw);
-            // Clear CLOB book state — mirrors live bot's resubscribe().
+
             feed_state.book_state = crate::types::BookState::default();
         }
 
-        // Skip evaluation if no active window or no Binance price.
         let Some(current_window) = window_manager.current.as_ref() else {
             continue;
         };
@@ -207,7 +218,6 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             continue;
         };
 
-        // Build strategy context.
         let ctx = StrategyContext {
             binance_price,
             binance_momentum: momentum.get(),
@@ -216,12 +226,10 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             window_time_remaining_ms: current_window.end_time.saturating_sub(group.timestamp),
         };
 
-        // Circuit breaker.
         if !circuit_breaker.can_trade(replay_ts) {
             continue;
         }
 
-        // Evaluate strategies.
         let current_mw = WindowManager::to_market_window(current_window);
         for strategy in &mut strategies {
             let result = strategy.evaluate(&ctx, config, replay_ts);
@@ -229,58 +237,47 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             match result {
                 StrategyResult::None => {}
                 StrategyResult::Single(signal) => {
-                    // Check trend tracker suppression.
                     if trend_tracker.should_suppress(signal.direction) {
                         let _ = results_db.log_signal(&signal);
                         signal_count += 1;
                         continue;
                     }
-                    let _ = results_db.log_signal(&signal);
                     signal_count += 1;
-                    let available_tokens = match signal.direction {
-                        crate::types::SignalDirection::Up => feed_state
-                            .book_state
-                            .up
-                            .as_ref()
-                            .map_or(0.0, |b| b.ask_size),
-                        crate::types::SignalDirection::Down => feed_state
-                            .book_state
-                            .down
-                            .as_ref()
-                            .map_or(0.0, |b| b.ask_size),
-                    };
-                    position_manager.try_open(
+                    let _ = execution_engine.submit_single(
                         &signal,
                         &current_mw,
-                        false,
-                        available_tokens,
                         &results_db,
                         &mut bankroll,
                         config,
                         &clock,
-                    );
+                        group.fidelity,
+                    )?;
                 }
                 StrategyResult::Batch(signals) => {
-                    for signal in &signals {
-                        let _ = results_db.log_signal(signal);
-                        signal_count += 1;
-                    }
-                    position_manager.try_open_spread(
+                    signal_count += signals.len() as u64;
+                    let _ = execution_engine.submit_spread(
                         &signals,
                         &current_mw,
                         &results_db,
                         &mut bankroll,
                         config,
                         &clock,
-                    );
+                        group.fidelity,
+                    )?;
                 }
             }
         }
     }
 
-    // Gather results.
     let stats = bankroll.get_stats();
+    let execution_stats = execution_engine.stats().clone();
     let elapsed = t0.elapsed().as_secs_f64();
+    let gross_pnl = stats.total_pnl + stats.total_fees;
+    let partial_fill_rate = if execution_stats.filled_orders == 0 {
+        0.0
+    } else {
+        execution_stats.partial_fills as f64 / execution_stats.filled_orders as f64
+    };
 
     let result = BacktestResult {
         start_time: options.start_time,
@@ -295,11 +292,22 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
         losses: stats.losses,
         win_rate: stats.win_rate,
         final_balance: stats.current_balance,
+
         total_pnl: stats.total_pnl,
+        gross_pnl,
         max_drawdown_pct: stats.max_drawdown_pct,
         high_water_mark: stats.high_water_mark,
         total_fees: stats.total_fees,
         pnl_net: stats.total_pnl,
+        fill_rate: execution_stats.fill_rate(),
+        partial_fill_rate,
+        no_fill_count: execution_stats.no_fills,
+        spread_legging_count: execution_stats.spread_legging_failures,
+        residual_position_count: execution_stats.residual_positions,
+        avg_fill_latency_ms: execution_stats.avg_fill_latency_ms().unwrap_or(0.0),
+        avg_slippage: execution_stats.avg_slippage().unwrap_or(0.0),
+        raw_event_batches: execution_stats.raw_event_batches,
+        legacy_snapshot_batches: execution_stats.legacy_snapshot_batches,
     };
 
     if !options.quiet {
@@ -318,7 +326,6 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
         );
     }
 
-    // Cleanup.
     results_db.close();
 
     Ok(result)

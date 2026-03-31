@@ -1,16 +1,9 @@
-// Verify settlements by fetching actual Polymarket resolution outcomes from the
-// Gamma API and comparing them against our Chainlink-derived settlements.
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use rusqlite::params;
 use tokio::sync::Semaphore;
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 /// A market row from the database that needs verification.
 #[derive(Debug, Clone)]
@@ -41,18 +34,12 @@ pub struct VerificationSummary {
     pub our_outcome_missing: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Gamma API response parsing
-// ---------------------------------------------------------------------------
-
 /// Parse the Gamma API `/events?slug=...` response to extract the outcome.
 ///
 /// Returns `Some("UP")` if outcomePrices is `[1, 0]`, `Some("DOWN")` if
 /// `[0, 1]`, or `None` if the market is not yet resolved or the response
 /// is unexpected.
 pub fn parse_gamma_outcome(body: &serde_json::Value) -> Option<String> {
-    // The response is either a JSON array (from /events?slug=...) or a single
-    // object (from /events/slug/...). Normalize to a single event object.
     let event = if let Some(arr) = body.as_array() {
         arr.first()?
     } else {
@@ -61,8 +48,6 @@ pub fn parse_gamma_outcome(body: &serde_json::Value) -> Option<String> {
     let markets = event.get("markets")?.as_array()?;
     let market = markets.first()?;
 
-    // outcomePrices can be either a JSON array or a JSON-encoded string
-    // containing an array (the Gamma API returns the latter).
     let outcome_prices_val = market.get("outcomePrices")?;
     let prices: Vec<String> = if let Some(arr) = outcome_prices_val.as_array() {
         arr.iter()
@@ -81,25 +66,17 @@ pub fn parse_gamma_outcome(body: &serde_json::Value) -> Option<String> {
     let up_price: f64 = prices[0].parse().ok()?;
     let down_price: f64 = prices[1].parse().ok()?;
 
-    // Resolved markets have prices converged to [1,0] or [0,1].
     if (up_price - 1.0).abs() < 0.01 && down_price.abs() < 0.01 {
         Some("UP".to_string())
     } else if up_price.abs() < 0.01 && (down_price - 1.0).abs() < 0.01 {
         Some("DOWN".to_string())
     } else {
-        // Not fully resolved yet (prices are still mid-range).
         None
     }
 }
 
-// ---------------------------------------------------------------------------
-// Database operations
-// ---------------------------------------------------------------------------
-
 /// Load all markets from the database that have a slug.
 pub fn load_markets(conn: &rusqlite::Connection) -> anyhow::Result<Vec<MarketRow>> {
-    // The schema differs between per-run DBs (no `outcome` column) and the
-    // merged market-data.db (has `outcome`).  Detect which schema we have.
     let has_outcome_col = conn.prepare("SELECT outcome FROM markets LIMIT 0").is_ok();
 
     let sql = if has_outcome_col {
@@ -128,7 +105,6 @@ pub fn load_markets(conn: &rusqlite::Connection) -> anyhow::Result<Vec<MarketRow
 
 /// Ensure the `polymarket_outcome` column exists on the markets table.
 pub fn ensure_polymarket_outcome_column(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    // SQLite ALTER TABLE ADD COLUMN is idempotent if we catch the "duplicate" error.
     let result = conn.execute_batch("ALTER TABLE markets ADD COLUMN polymarket_outcome TEXT");
     match result {
         Ok(()) => Ok(()),
@@ -150,10 +126,6 @@ pub fn store_polymarket_outcome(
     .context("updating polymarket_outcome")?;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Fetching
-// ---------------------------------------------------------------------------
 
 /// Fetch the resolution for a single market from the Gamma API.
 async fn fetch_one(
@@ -206,10 +178,6 @@ async fn fetch_one(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
-
 /// Run the full verification: load markets, fetch outcomes, compare, store.
 pub async fn run_verify_settlements(
     db_path: &str,
@@ -259,7 +227,6 @@ pub async fn run_verify_settlements(
         }
     }
 
-    // Store results and compute summary.
     let mut summary = VerificationSummary {
         total_markets: total,
         fetched: 0,
@@ -295,7 +262,6 @@ pub async fn run_verify_settlements(
         }
     }
 
-    // Print summary.
     println!("\n[verify] === SETTLEMENT VERIFICATION SUMMARY ===");
     println!("[verify] Total markets:      {}", summary.total_markets);
     println!("[verify] Fetched outcomes:    {}", summary.fetched);
@@ -316,10 +282,6 @@ pub async fn run_verify_settlements(
 
     Ok(summary)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/verify_tests.rs"]

@@ -96,7 +96,6 @@ export function runBacktest(options: BacktestOptions): BacktestResult {
   let signalCount = 0;
   let replayTs = 0;
 
-  // Wire trade resolution to trend tracker + circuit breaker (same as main.ts:233-244)
   const origResolve = positionManager.resolveWindow.bind(positionManager);
   positionManager.resolveWindow = (window: MarketWindow, openPrice: number, closePrice: number) => {
     const outcome: SignalDirection = closePrice >= openPrice ? "UP" : "DOWN";
@@ -109,25 +108,21 @@ export function runBacktest(options: BacktestOptions): BacktestResult {
     }
   };
 
-  // === Main replay loop ===
   let group = tickReplay.next();
   while (group !== null) {
     replayTs = group.timestamp;
     setClock(() => replayTs);
 
-    // Update feed state
     feedState.update(group);
     if (group.binance?.price != null) {
       momentum.push(group.binance.price, group.timestamp);
     }
 
-    // Advance market windows
     const events = windowManager.advance(group.timestamp);
 
     if (events.closed) {
       const closed = events.closed;
       const mw = windowManager.toMarketWindow(closed);
-      // Upsert market in results DB so PositionManager can find it
       resultsDb.upsertMarket(mw);
       positionManager.resolveWindow(mw, closed.openPrice, closed.closePrice);
       resultsDb.resolveMarket(mw.marketId, "resolved");
@@ -137,19 +132,14 @@ export function runBacktest(options: BacktestOptions): BacktestResult {
       const opened = events.opened;
       const mw = windowManager.toMarketWindow(opened);
       resultsDb.upsertMarket(mw);
-      // Clear CLOB book state — mirrors live bot's resubscribe() which
-      // disconnects/reconnects the CLOB WS, leaving bookState null until
-      // the first snapshot arrives for the new tokens.
       feedState.bookState = { up: null, down: null };
     }
 
-    // Skip evaluation if no active window or no price
     if (!windowManager.current || feedState.binancePrice === null) {
       group = tickReplay.next();
       continue;
     }
 
-    // Build strategy context (identical to main.ts:100-106)
     const ctx: StrategyContext = {
       binancePrice: feedState.binancePrice,
       binanceMomentum: momentum.get(),

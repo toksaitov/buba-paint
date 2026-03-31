@@ -3,10 +3,7 @@ use std::time::Duration;
 use super::*;
 use crate::error::AgentError;
 
-// ---------------------------------------------------------------------------
-// NoopProcessManager tests
-// ---------------------------------------------------------------------------
-
+/// Verifies that noop start returns error.
 #[tokio::test]
 async fn noop_start_returns_error() {
     let mgr = NoopProcessManager::new(None);
@@ -15,6 +12,7 @@ async fn noop_start_returns_error() {
     assert!(matches!(err, AgentError::BotControlUnavailable(_)));
 }
 
+/// Verifies that noop stop returns error.
 #[tokio::test]
 async fn noop_stop_returns_error() {
     let mgr = NoopProcessManager::new(None);
@@ -23,6 +21,7 @@ async fn noop_stop_returns_error() {
     assert!(matches!(err, AgentError::BotControlUnavailable(_)));
 }
 
+/// Verifies that noop restart returns error.
 #[tokio::test]
 async fn noop_restart_returns_error() {
     let mgr = NoopProcessManager::new(None);
@@ -31,6 +30,7 @@ async fn noop_restart_returns_error() {
     assert!(matches!(err, AgentError::BotControlUnavailable(_)));
 }
 
+/// Verifies that noop status returns inactive.
 #[tokio::test]
 async fn noop_status_returns_inactive() {
     let mgr = NoopProcessManager::new(None);
@@ -40,6 +40,7 @@ async fn noop_status_returns_inactive() {
     assert!(status.uptime_secs.is_none());
 }
 
+/// Verifies that noop logs no path.
 #[tokio::test]
 async fn noop_logs_no_path() {
     let mgr = NoopProcessManager::new(None);
@@ -48,6 +49,7 @@ async fn noop_logs_no_path() {
     assert!(lines[0].contains("monitor-only"));
 }
 
+/// Verifies that noop logs with path.
 #[tokio::test]
 async fn noop_logs_with_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -59,10 +61,7 @@ async fn noop_logs_with_path() {
     assert_eq!(lines, vec!["line2", "line3"]);
 }
 
-// ---------------------------------------------------------------------------
-// ChildProcessManager tests
-// ---------------------------------------------------------------------------
-
+/// Sleep config.
 fn sleep_config(secs: u32) -> ProcessConfig {
     ProcessConfig {
         command: vec!["sleep".to_string(), secs.to_string()],
@@ -72,6 +71,7 @@ fn sleep_config(secs: u32) -> ProcessConfig {
     }
 }
 
+/// Verifies that child start spawns process.
 #[tokio::test]
 async fn child_start_spawns_process() {
     let mgr = ChildProcessManager::new(sleep_config(60));
@@ -79,10 +79,10 @@ async fn child_start_spawns_process() {
     assert!(status.active);
     assert!(status.pid.is_some());
 
-    // Clean up.
     mgr.stop().await.unwrap();
 }
 
+/// Verifies that child stop terminates.
 #[tokio::test]
 async fn child_stop_terminates() {
     let mgr = ChildProcessManager::new(sleep_config(60));
@@ -93,6 +93,7 @@ async fn child_stop_terminates() {
     assert!(status.pid.is_none());
 }
 
+/// Verifies that child restart cycles.
 #[tokio::test]
 async fn child_restart_cycles() {
     let mgr = ChildProcessManager::new(sleep_config(60));
@@ -106,6 +107,7 @@ async fn child_restart_cycles() {
     mgr.stop().await.unwrap();
 }
 
+/// Verifies that child status tracks uptime.
 #[tokio::test]
 async fn child_status_tracks_uptime() {
     let mgr = ChildProcessManager::new(sleep_config(60));
@@ -114,12 +116,13 @@ async fn child_status_tracks_uptime() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let status = mgr.status().await.unwrap();
     assert!(status.active);
-    // uptime_secs should be 0 (sub-second) — just verify it's present.
+
     assert!(status.uptime_secs.is_some());
 
     mgr.stop().await.unwrap();
 }
 
+/// Verifies that child logs captures stdout.
 #[tokio::test]
 async fn child_logs_captures_stdout() {
     let mgr = ChildProcessManager::new(ProcessConfig {
@@ -134,7 +137,6 @@ async fn child_logs_captures_stdout() {
     });
     mgr.start().await.unwrap();
 
-    // Wait for the process to finish and output to be captured.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let lines = mgr.logs(10).await.unwrap();
@@ -142,6 +144,7 @@ async fn child_logs_captures_stdout() {
     assert!(lines.contains(&"world".to_string()));
 }
 
+/// Verifies that child log buffer truncates.
 #[tokio::test]
 async fn child_log_buffer_truncates() {
     let mgr = ChildProcessManager::new(ProcessConfig {
@@ -165,17 +168,17 @@ async fn child_log_buffer_truncates() {
     );
 }
 
+/// Verifies that child watchdog auto restarts.
 #[tokio::test]
 async fn child_watchdog_auto_restarts() {
     let mgr = ChildProcessManager::new(ProcessConfig {
-        command: vec!["true".to_string()], // exits immediately with 0
+        command: vec!["true".to_string()],
         max_restarts: 2,
         restart_delay: Duration::from_millis(50),
         log_buffer_size: 100,
     });
     mgr.start().await.unwrap();
 
-    // Wait enough time for the process to exit and restart a few times.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let st = mgr.state.read().await;
@@ -185,17 +188,17 @@ async fn child_watchdog_auto_restarts() {
     );
 }
 
+/// Verifies that child watchdog gives up.
 #[tokio::test]
 async fn child_watchdog_gives_up() {
     let mgr = ChildProcessManager::new(ProcessConfig {
-        command: vec!["false".to_string()], // exits immediately with 1
+        command: vec!["false".to_string()],
         max_restarts: 1,
         restart_delay: Duration::from_millis(50),
         log_buffer_size: 100,
     });
     mgr.start().await.unwrap();
 
-    // Wait for watchdog to exhaust restarts.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let status = mgr.status().await.unwrap();
@@ -205,6 +208,7 @@ async fn child_watchdog_gives_up() {
     );
 }
 
+/// Verifies that child stop prevents watchdog.
 #[tokio::test]
 async fn child_stop_prevents_watchdog() {
     let mgr = ChildProcessManager::new(ProcessConfig {
@@ -215,7 +219,6 @@ async fn child_stop_prevents_watchdog() {
     });
     mgr.start().await.unwrap();
 
-    // Intentional stop should disable watchdog.
     mgr.stop().await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -223,18 +226,19 @@ async fn child_stop_prevents_watchdog() {
     assert!(!status.active, "should stay stopped (no watchdog restart)");
 }
 
+/// Verifies that child double start noop.
 #[tokio::test]
 async fn child_double_start_noop() {
     let mgr = ChildProcessManager::new(sleep_config(60));
     let s1 = mgr.start().await.unwrap();
     let s2 = mgr.start().await.unwrap();
 
-    // Second start should return same pid.
     assert_eq!(s1.pid, s2.pid);
 
     mgr.stop().await.unwrap();
 }
 
+/// Verifies that shell words parsing.
 #[tokio::test]
 async fn shell_words_parsing() {
     let input = r#"cargo run --release -- live --db-path "/tmp/my db.db""#;
@@ -245,8 +249,7 @@ async fn shell_words_parsing() {
     assert_eq!(words[6], "/tmp/my db.db");
 }
 
-// -- Edge case tests ----------------------------------------------------------
-
+/// Verifies that child captures stderr.
 #[tokio::test]
 async fn child_captures_stderr() {
     let mgr = ChildProcessManager::new(ProcessConfig {
@@ -263,11 +266,12 @@ async fn child_captures_stderr() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let lines = mgr.logs(10).await.unwrap();
-    // stderr is captured via merged stdout+stderr or separate — check it shows up.
+
     let has_err = lines.iter().any(|l| l.contains("err_msg"));
     assert!(has_err, "stderr should be captured in logs: {lines:?}");
 }
 
+/// Verifies that noop logs nonexistent file returns error.
 #[tokio::test]
 async fn noop_logs_nonexistent_file_returns_error() {
     let mgr = NoopProcessManager::new(Some("/nonexistent/path/bot.log".to_string()));
@@ -275,6 +279,7 @@ async fn noop_logs_nonexistent_file_returns_error() {
     assert!(result.is_err(), "reading nonexistent log file should fail");
 }
 
+/// Verifies that noop logs empty file returns empty.
 #[tokio::test]
 async fn noop_logs_empty_file_returns_empty() {
     let dir = tempfile::tempdir().unwrap();
@@ -286,6 +291,7 @@ async fn noop_logs_empty_file_returns_empty() {
     assert!(lines.is_empty(), "empty file should return empty vec");
 }
 
+/// Verifies that noop logs fewer lines than requested.
 #[tokio::test]
 async fn noop_logs_fewer_lines_than_requested() {
     let dir = tempfile::tempdir().unwrap();
@@ -297,6 +303,7 @@ async fn noop_logs_fewer_lines_than_requested() {
     assert_eq!(lines.len(), 2);
 }
 
+/// Verifies that noop logs zero lines.
 #[tokio::test]
 async fn noop_logs_zero_lines() {
     let dir = tempfile::tempdir().unwrap();

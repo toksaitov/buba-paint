@@ -1,17 +1,6 @@
-// Data structures ported from the TypeScript bot.
-//
-// Conventions:
-//   f64  — all prices, sizes, percentages
-//   u64  — timestamps (ms since epoch)
-//   i64  — database row IDs
-//   String — free-form text fields
-
 use std::fmt;
 use std::str::FromStr;
 
-// ---------------------------------------------------------------------------
-// Binance aggregated trade tick
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BinanceTick {
@@ -21,9 +10,6 @@ pub struct BinanceTick {
     pub trade_time: u64,
 }
 
-// ---------------------------------------------------------------------------
-// CLOB order book
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct OrderLevel {
     pub price: f64,
@@ -55,12 +41,9 @@ pub struct PriceChangeEntry {
     pub asset_id: String,
     pub price: f64,
     pub size: f64,
-    pub side: String, // "BUY" | "SELL"
+    pub side: String,
 }
 
-// ---------------------------------------------------------------------------
-// Chainlink price tick
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ChainlinkTick {
     pub symbol: String,
@@ -68,9 +51,6 @@ pub struct ChainlinkTick {
     pub value: f64,
 }
 
-// ---------------------------------------------------------------------------
-// Order book top-of-book / book state
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct TopOfBook {
     pub best_bid: f64,
@@ -86,9 +66,6 @@ pub struct BookState {
     pub down: Option<TopOfBook>,
 }
 
-// ---------------------------------------------------------------------------
-// Gamma (Polymarket) market metadata
-// ---------------------------------------------------------------------------
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,16 +80,19 @@ pub struct GammaMarket {
     pub outcomes: Vec<String>,
     pub outcome_prices: Vec<f64>,
     pub clob_token_ids: Vec<String>,
-    pub order_price_min_tick_size: f64,
+    pub resolution_source: Option<String>,
+    pub order_min_size: Option<f64>,
+    pub order_price_min_tick_size: Option<f64>,
+    pub maker_base_fee: Option<f64>,
+    pub taker_base_fee: Option<f64>,
+    pub rewards_min_size: Option<f64>,
+    pub rewards_max_spread: Option<f64>,
     pub end_date: String,
     pub neg_risk: bool,
     #[serde(rename = "negRiskMarketID")]
     pub neg_risk_market_id: String,
 }
 
-// ---------------------------------------------------------------------------
-// Resolved 5-minute market window
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct MarketWindow {
     pub market_id: String,
@@ -123,11 +103,17 @@ pub struct MarketWindow {
     pub start_time: u64,
     pub end_time: u64,
     pub slug: String,
+    pub outcome: Option<String>,
+    pub resolution_source: Option<String>,
+    pub fee_profile: Option<String>,
+    pub order_min_size: Option<f64>,
+    pub order_price_min_tick_size: Option<f64>,
+    pub maker_base_fee: Option<f64>,
+    pub taker_base_fee: Option<f64>,
+    pub rewards_min_size: Option<f64>,
+    pub rewards_max_spread: Option<f64>,
 }
 
-// ---------------------------------------------------------------------------
-// Signal direction enum
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalDirection {
     Up,
@@ -135,6 +121,7 @@ pub enum SignalDirection {
 }
 
 impl fmt::Display for SignalDirection {
+    /// Formats the direction using the persisted `UP` or `DOWN` label.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Up => write!(f, "UP"),
@@ -146,6 +133,7 @@ impl fmt::Display for SignalDirection {
 impl FromStr for SignalDirection {
     type Err = String;
 
+    /// Parses a persisted signal direction label.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "UP" => Ok(Self::Up),
@@ -155,9 +143,6 @@ impl FromStr for SignalDirection {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Trading signal emitted by a strategy
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct Signal {
     pub timestamp: u64,
@@ -173,9 +158,6 @@ pub struct Signal {
     pub metadata: serde_json::Value,
 }
 
-// ---------------------------------------------------------------------------
-// Strategy evaluation context
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct StrategyContext {
     pub binance_price: f64,
@@ -185,9 +167,6 @@ pub struct StrategyContext {
     pub window_time_remaining_ms: u64,
 }
 
-// ---------------------------------------------------------------------------
-// Trade status enum
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradeStatus {
     Open,
@@ -196,6 +175,7 @@ pub enum TradeStatus {
 }
 
 impl fmt::Display for TradeStatus {
+    /// Formats the trade status using the persisted lowercase label.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Open => write!(f, "open"),
@@ -208,6 +188,7 @@ impl fmt::Display for TradeStatus {
 impl FromStr for TradeStatus {
     type Err = String;
 
+    /// Parses a persisted trade status label.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "open" => Ok(Self::Open),
@@ -218,9 +199,6 @@ impl FromStr for TradeStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Simulated (paper) trade
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct SimulatedTrade {
     pub id: Option<i64>,
@@ -232,11 +210,21 @@ pub struct SimulatedTrade {
     pub entry_price: f64,
     pub size: f64,
     pub status: TradeStatus,
+    pub signal_id: Option<i64>,
+    pub requested_price: Option<f64>,
+    pub requested_size: Option<f64>,
+    pub filled_size: Option<f64>,
+    pub avg_fill_price: Option<f64>,
+    pub fill_status: Option<String>,
+    pub fill_reason: Option<String>,
+    pub fill_latency_ms: Option<u64>,
+    pub execution_group_id: Option<String>,
+    pub execution_fidelity: Option<String>,
+    pub execution_mode: Option<String>,
+    pub order_id: Option<String>,
+    pub fill_price: Option<f64>,
 }
 
-// ---------------------------------------------------------------------------
-// Trade result after settlement
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct TradeResult {
     pub trade_id: i64,
@@ -258,19 +246,59 @@ pub struct TradeResult {
     pub provisional_pnl: Option<f64>,
 }
 
-// ---------------------------------------------------------------------------
-// WebSocket feed connection status
-// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayFidelity {
+    RawEvent,
+    LegacySnapshot,
+}
+
+impl fmt::Display for ReplayFidelity {
+    /// Formats the replay fidelity using the persisted storage label.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RawEvent => write!(f, "raw_event"),
+            Self::LegacySnapshot => write!(f, "legacy_snapshot"),
+        }
+    }
+}
+
+impl FromStr for ReplayFidelity {
+    type Err = String;
+
+    /// Parses a persisted replay-fidelity label.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "raw_event" => Ok(Self::RawEvent),
+            "legacy_snapshot" => Ok(Self::LegacySnapshot),
+            other => Err(format!("invalid ReplayFidelity: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FeedEvent {
+    pub id: Option<i64>,
+    pub received_at_ms: u64,
+    pub event_at_ms: u64,
+    pub source: String,
+    pub event_type: String,
+    pub market_id: Option<String>,
+    pub asset_id: Option<String>,
+    pub price: Option<f64>,
+    pub best_bid: Option<f64>,
+    pub best_ask: Option<f64>,
+    pub bid_size: Option<f64>,
+    pub ask_size: Option<f64>,
+    pub payload_json: Option<String>,
+    pub fidelity: ReplayFidelity,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedStatus {
     Disconnected,
     Connecting,
     Connected,
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/types_tests.rs"]

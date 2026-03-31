@@ -54,6 +54,7 @@ struct Cli {
     log_path: Option<String>,
 }
 
+/// Starts the agent `HTTP` and `WebSocket` server for one bot database.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -92,7 +93,6 @@ async fn main() -> anyhow::Result<()> {
 
     let (ws_tx, _) = broadcast::channel(256);
 
-    // Start DB poller for WebSocket push
     agent_ws::spawn_poller(Arc::clone(&db), cli.poll_interval, ws_tx.clone());
 
     let state = AppState { db, bot, ws_tx };

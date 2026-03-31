@@ -1,11 +1,11 @@
 use super::*;
 
+/// Verifies that migrations run on fresh db.
 #[test]
 fn migrations_run_on_fresh_db() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     run_migrations(&conn).unwrap();
 
-    // Verify a few tables exist by querying sqlite_master
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
@@ -17,16 +17,17 @@ fn migrations_run_on_fresh_db() {
     assert_eq!(count, 6);
 }
 
+/// Verifies that migrations are idempotent.
 #[test]
 fn migrations_are_idempotent() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     run_migrations(&conn).unwrap();
-    // Running a second time should not error (CREATE IF NOT EXISTS).
+
     run_migrations(&conn).unwrap();
 }
 
+/// Verifies that migration count.
 #[test]
 fn migration_count() {
-    // Guard against accidentally removing a migration.
     assert_eq!(MIGRATIONS.len(), 15);
 }

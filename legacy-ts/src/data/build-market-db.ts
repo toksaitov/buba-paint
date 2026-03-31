@@ -350,8 +350,6 @@ function printSummary(db: BetterSqlite3.Database): void {
   log(`  Quality: ${totalQuality.n - lowQuality.n}/${totalQuality.n} hours at >=95% coverage`);
 }
 
-// === Main ===
-
 function main(): void {
   log("Building merged market data DB...");
   log(`Output: ${OUTPUT}`);

@@ -33,27 +33,119 @@ fn test_config(binance_url: &str, clob_url: &str, chainlink_url: &str, gamma_url
         momentum_window_ms: 5_000,
         log_level: "warn".to_string(),
         resolution_poll_retries: 0,
+        resolution_initial_delay_ms: 0,
         resolution_poll_delay_ms: 0,
         ..Config::default()
     }
 }
 
+/// Gamma market response.
+fn gamma_market_response(
+    slug: String,
+    market_id: &str,
+    condition_id: &str,
+    up_token: &str,
+    down_token: &str,
+    end_date: &str,
+    outcome: Option<&str>,
+) -> serde_json::Value {
+    let mut event = serde_json::json!({
+        "slug": slug,
+        "markets": [{
+            "id": market_id,
+            "question": "Will BTC go up?",
+            "conditionId": condition_id,
+            "outcomes": ["Up", "Down"],
+            "clobTokenIds": [up_token, down_token],
+            "endDate": end_date
+        }]
+    });
+
+    let outcome_prices = match outcome {
+        Some("UP") => Some(serde_json::json!(["1", "0"])),
+        Some("DOWN") => Some(serde_json::json!(["0", "1"])),
+        _ => None,
+    };
+    if let Some(outcome_prices) = outcome_prices {
+        event["markets"][0]["outcomePrices"] = outcome_prices;
+    }
+
+    event
+}
+
+/// Mount gamma sequence.
+async fn mount_gamma_sequence(
+    gamma_mock: &MockServer,
+    path_pattern: String,
+    unresolved_body: serde_json::Value,
+    resolved_body: serde_json::Value,
+) {
+    Mock::given(method("GET"))
+        .and(path_regex(path_pattern.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unresolved_body))
+        .up_to_n_times(1)
+        .mount(gamma_mock)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(path_pattern))
+        .respond_with(ResponseTemplate::new(200).set_body_json(resolved_body))
+        .mount(gamma_mock)
+        .await;
+}
+
 /// Helper: register a Gamma API mock that returns a market ending at `end_date`
-/// with the given `current_slot` slug.
+/// with the given `current_slot` slug and then resolves to the provided outcome
+/// on later polls.
+async fn register_gamma_mock_with_resolution(
+    gamma_mock: &MockServer,
+    current_slot: u64,
+    end_date: &str,
+    outcome: &str,
+) {
+    let slug = format!("btc-updown-5m-{current_slot}");
+    let unresolved = gamma_market_response(
+        slug.clone(),
+        "mkt-sys-test",
+        "cond-sys",
+        "tok-up-sys",
+        "tok-down-sys",
+        end_date,
+        None,
+    );
+    let resolved = gamma_market_response(
+        slug,
+        "mkt-sys-test",
+        "cond-sys",
+        "tok-up-sys",
+        "tok-down-sys",
+        end_date,
+        Some(outcome),
+    );
+    mount_gamma_sequence(
+        gamma_mock,
+        r"^/events/slug/btc-updown-5m-\d+$".to_string(),
+        unresolved,
+        resolved,
+    )
+    .await;
+}
+
+/// Helper: register an unresolved Gamma discovery response.
 async fn register_gamma_mock(gamma_mock: &MockServer, current_slot: u64, end_date: &str) {
     Mock::given(method("GET"))
         .and(path_regex(r"^/events/slug/btc-updown-5m-\d+$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "slug": format!("btc-updown-5m-{current_slot}"),
-            "markets": [{
-                "id": "mkt-sys-test",
-                "question": "Will BTC go up?",
-                "conditionId": "cond-sys",
-                "outcomes": ["Up", "Down"],
-                "clobTokenIds": ["tok-up-sys", "tok-down-sys"],
-                "endDate": end_date
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(gamma_market_response(
+                format!("btc-updown-5m-{current_slot}"),
+                "mkt-sys-test",
+                "cond-sys",
+                "tok-up-sys",
+                "tok-down-sys",
+                end_date,
+                None,
+            )),
+        )
         .mount(gamma_mock)
         .await;
 }
@@ -74,26 +166,28 @@ async fn send_rising_binance_ticks(binance_mock: &MockWsServer, count: u32) {
     }
 }
 
-/// Helper: send CLOB book snapshots with a low UP ask (triggers latency-arb).
+/// Helper: send `CLOB` book snapshots with a low UP ask (triggers latency-arb).
 async fn send_clob_book(clob_mock: &MockWsServer) {
+    let timestamp = current_test_ms();
     clob_mock
-        .send(
-            r#"{"asset_id":"tok-up-sys","timestamp":1700000000000,"bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.45","size":"100"}]}"#,
-        )
+        .send(&format!(
+            r#"{{"asset_id":"tok-up-sys","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.45","size":"100"}}]}}"#
+        ))
         .await;
     clob_mock
-        .send(
-            r#"{"asset_id":"tok-down-sys","timestamp":1700000000000,"bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.50","size":"100"}]}"#,
-        )
+        .send(&format!(
+            r#"{{"asset_id":"tok-down-sys","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.50","size":"100"}}]}}"#
+        ))
         .await;
 }
 
 /// Helper: send a Chainlink reference price.
 async fn send_chainlink_price(chainlink_mock: &MockWsServer) {
     chainlink_mock
-        .send(
-            r#"{"topic":"crypto_prices_chainlink","payload":{"value":42000,"timestamp":1700000000000}}"#,
-        )
+        .send(&format!(
+            r#"{{"topic":"crypto_prices_chainlink","payload":{{"value":42000,"timestamp":{}}}}}"#,
+            current_test_ms(),
+        ))
         .await;
 }
 
@@ -111,6 +205,14 @@ fn compute_window_timing_with_offset(offset_secs: u64) -> (u64, u64, String) {
         .to_rfc3339();
     let current_slot = (now_secs / 300) * 300;
     (now_secs, current_slot, end_date)
+}
+
+/// Current test ms.
+fn current_test_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 /// Helper: run the bot, send scripted ticks, wait for window close, and shut down.
@@ -131,16 +233,13 @@ async fn run_one_window(
         buba_paint::live::run_live(config, &db_path_owned, balance, shutdown_rx).await
     });
 
-    // Wait for feeds to connect and discovery to find the market.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Send scripted messages.
     send_rising_binance_ticks(binance_mock, 25).await;
     send_chainlink_price(chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(clob_mock).await;
 
-    // Send additional ticks after book arrives to trigger strategy evaluation.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 25_u32..35 {
         let price = 42_000.0 + f64::from(i) * 5.0;
@@ -154,10 +253,8 @@ async fn run_one_window(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Wait for the window to close (endDate was `window_secs` from start, plus margin).
     tokio::time::sleep(Duration::from_secs(window_secs + 2)).await;
 
-    // Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -174,13 +271,11 @@ async fn run_one_window(
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_processes_one_market_window() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing: make the market window close ~4 seconds from now.
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -191,10 +286,8 @@ async fn live_bot_processes_one_market_window() {
         .unwrap()
         .to_rfc3339();
 
-    // Use the current 5-minute slot for the slug so discovery finds it.
     let current_slot = (now_secs / 300) * 300;
 
-    // 3. Register Gamma API mock.
     Mock::given(method("GET"))
         .and(path_regex(r"^/events/slug/btc-updown-5m-\d+$"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -211,11 +304,9 @@ async fn live_bot_processes_one_market_window() {
         .mount(&gamma_mock)
         .await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config with mock URLs and fast timers.
     let config = Config {
         binance_ws_url: binance_mock.url.clone(),
         clob_ws_url: clob_mock.url.clone(),
@@ -239,23 +330,19 @@ async fn live_bot_processes_one_market_window() {
         momentum_window_ms: 5_000,
         log_level: "warn".to_string(),
         resolution_poll_retries: 0,
+        resolution_initial_delay_ms: 0,
         resolution_poll_delay_ms: 0,
         ..Config::default()
     };
 
-    // 6. Start the live bot with shutdown channel.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // 7. Wait for feeds to connect and discovery to find the market.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // 8. Send scripted messages.
-
-    // Binance: rising prices to generate momentum.
     let base_price = 42_000.0;
     for i in 0_u32..20 {
         let price = base_price + f64::from(i) * 5.0;
@@ -269,45 +356,41 @@ async fn live_bot_processes_one_market_window() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Chainlink: send a reference price.
     chainlink_mock
-        .send(
-            r#"{"topic":"crypto_prices_chainlink","payload":{"value":42000,"timestamp":1700000000000}}"#,
-        )
+        .send(&format!(
+            r#"{{"topic":"crypto_prices_chainlink","payload":{{"value":42000,"timestamp":{}}}}}"#,
+            current_test_ms(),
+        ))
         .await;
 
-    // CLOB: wait for the resubscription to have taken effect, then send book snapshots.
     tokio::time::sleep(Duration::from_millis(500)).await;
+    let timestamp = current_test_ms();
     clob_mock
-        .send(
-            r#"{"asset_id":"tok-up-sys","timestamp":1700000000000,"bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.45","size":"100"}]}"#,
-        )
+        .send(&format!(
+            r#"{{"asset_id":"tok-up-sys","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.45","size":"100"}}]}}"#
+        ))
         .await;
     clob_mock
-        .send(
-            r#"{"asset_id":"tok-down-sys","timestamp":1700000000000,"bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.50","size":"100"}]}"#,
-        )
+        .send(&format!(
+            r#"{{"asset_id":"tok-down-sys","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.50","size":"100"}}]}}"#
+        ))
         .await;
 
-    // 9. Wait for the window to close (endDate was ~4s from start, plus margin).
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    // 10. Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
         result.is_ok(),
         "bot did not shut down within timeout after shutdown signal"
     );
-    // Unwrap the JoinHandle result and inner Result.
+
     let inner = result.unwrap();
     assert!(inner.is_ok(), "bot task panicked: {inner:?}");
     assert!(inner.unwrap().is_ok(), "run_live returned an error");
 
-    // 11. Verify database.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Market should be upserted.
     let market_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM markets", [], |r| r.get(0))
         .unwrap();
@@ -316,7 +399,6 @@ async fn live_bot_processes_one_market_window() {
         "Expected at least 1 market, got {market_count}"
     );
 
-    // Balance log should have at least an init entry.
     let balance_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM balance_log", [], |r| r.get(0))
         .unwrap();
@@ -325,8 +407,6 @@ async fn live_bot_processes_one_market_window() {
         "Expected balance_log entries, got {balance_count}"
     );
 
-    // Tick data should have been logged (tick logger runs every 200ms, we
-    // waited ~7s total, and we sent binance + chainlink + clob data).
     let tick_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM tick_data", [], |r| r.get(0))
         .unwrap();
@@ -343,25 +423,18 @@ async fn live_bot_processes_one_market_window() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_settles_trades_and_records_results() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing: use an 8s window so there is plenty of time for the
-    //    strategy to evaluate after all feeds deliver data.
     let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
 
-    // 3. Register Gamma API.
-    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+    register_gamma_mock_with_resolution(&gamma_mock, current_slot, &end_date, "UP").await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config with min_window_time_ms=0 to guarantee trade execution
-    //    regardless of when the book data arrives relative to window end.
     let mut config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -370,27 +443,21 @@ async fn live_bot_settles_trades_and_records_results() {
     );
     config.min_window_time_ms = 0;
 
-    // 6. Start the live bot.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // 7. Wait for feeds to connect and discovery to find the market.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // 8. Send scripted messages: rising Binance ticks for momentum.
     send_rising_binance_ticks(&binance_mock, 25).await;
 
-    // Chainlink reference price.
     send_chainlink_price(&chainlink_mock).await;
 
-    // Wait for CLOB resubscription, then send book snapshots.
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
 
-    // Send additional ticks to trigger re-evaluation after the book arrives.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 25_u32..35 {
         let price = 42_000.0 + f64::from(i) * 5.0;
@@ -404,10 +471,8 @@ async fn live_bot_settles_trades_and_records_results() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // 9. Wait for the window to close (endDate ~8s from start, plus margin).
     tokio::time::sleep(Duration::from_secs(8)).await;
 
-    // 10. Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -418,10 +483,8 @@ async fn live_bot_settles_trades_and_records_results() {
     assert!(inner.is_ok(), "bot task panicked: {inner:?}");
     assert!(inner.unwrap().is_ok(), "run_live returned an error");
 
-    // 11. Verify database: trades were executed and settled.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // At least one trade should have been opened and closed.
     let closed_trade_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE status = 'closed'",
@@ -434,7 +497,6 @@ async fn live_bot_settles_trades_and_records_results() {
         "Expected at least 1 closed trade, got {closed_trade_count}"
     );
 
-    // trade_results table should have matching entries.
     let result_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM trade_results", [], |r| r.get(0))
         .unwrap();
@@ -443,7 +505,6 @@ async fn live_bot_settles_trades_and_records_results() {
         "Expected at least 1 trade result, got {result_count}"
     );
 
-    // The final balance should differ from 200.0 (trade PnL applied).
     let final_balance: f64 = conn
         .query_row(
             "SELECT balance FROM balance_log ORDER BY id DESC LIMIT 1",
@@ -456,16 +517,14 @@ async fn live_bot_settles_trades_and_records_results() {
         "Expected balance to differ from 200.0 after trade settlement, got {final_balance}"
     );
 
-    // Verify that trade_results have reasonable PnL values.
     let pnl: f64 = conn
         .query_row("SELECT pnl_0pct FROM trade_results LIMIT 1", [], |r| {
             r.get(0)
         })
         .unwrap();
-    // PnL should be non-zero (either a win or a loss).
+
     assert!(pnl.abs() > f64::EPSILON, "Expected non-zero PnL, got {pnl}");
 
-    // No open trades should remain after window close.
     let open_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE status = 'open'",
@@ -486,25 +545,18 @@ async fn live_bot_settles_trades_and_records_results() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_chainlink_stale_uses_binance_fallback() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing: 8s window to give plenty of time for trade execution.
     let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
 
-    // 3. Register Gamma API.
-    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+    register_gamma_mock_with_resolution(&gamma_mock, current_slot, &end_date, "UP").await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config with a very short chainlink_stale_ms so the stale event
-    //    fires quickly after we stop sending Chainlink updates.
-    //    Also set min_window_time_ms=0 to guarantee trade execution.
     let mut config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -514,31 +566,22 @@ async fn live_bot_chainlink_stale_uses_binance_fallback() {
     config.chainlink_stale_ms = 500;
     config.min_window_time_ms = 0;
 
-    // 6. Start the live bot.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // 7. Wait for feeds to connect.
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
-    // 8. Send ONE Chainlink price, then STOP.
     send_chainlink_price(&chainlink_mock).await;
 
-    // Wait a bit, then send Binance ticks (these keep flowing the whole time).
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_rising_binance_ticks(&binance_mock, 25).await;
 
-    // By now, >500ms since last Chainlink, so ChainlinkStale should have fired.
-    // The chainlink feed will also reconnect, but that's fine.
-
-    // Wait for CLOB resubscription, then send book.
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
 
-    // More Binance ticks to trigger strategy evaluation after book arrives.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 25_u32..35 {
         let price = 42_000.0 + f64::from(i) * 5.0;
@@ -552,10 +595,8 @@ async fn live_bot_chainlink_stale_uses_binance_fallback() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // 9. Wait for window to close (8s window + margin).
     tokio::time::sleep(Duration::from_secs(8)).await;
 
-    // 10. Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -570,10 +611,8 @@ async fn live_bot_chainlink_stale_uses_binance_fallback() {
         "run_live returned an error (bot crashed): {run_result:?}"
     );
 
-    // 11. Verify database: trades were settled despite Chainlink going stale.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // At least one trade should have been settled.
     let result_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM trade_results", [], |r| r.get(0))
         .unwrap();
@@ -582,7 +621,6 @@ async fn live_bot_chainlink_stale_uses_binance_fallback() {
         "Expected at least 1 trade result even with stale Chainlink, got {result_count}"
     );
 
-    // Settlement should have used a non-zero settlement price (0 or 1).
     let settlement: f64 = conn
         .query_row(
             "SELECT settlement_price FROM trade_results LIMIT 1",
@@ -595,7 +633,6 @@ async fn live_bot_chainlink_stale_uses_binance_fallback() {
         "Expected binary settlement (0.0 or 1.0), got {settlement}"
     );
 
-    // Verify no open trades remain.
     let open_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE status = 'open'",
@@ -615,19 +652,14 @@ async fn live_bot_chainlink_stale_uses_binance_fallback() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_recovers_balance_from_db() {
-    // === FIRST RUN: trade and establish a final balance ===
-
-    // 1. Start mock servers (first run).
     let binance_mock_1 = MockWsServer::start().await;
     let clob_mock_1 = MockWsServer::start().await;
     let chainlink_mock_1 = MockWsServer::start().await;
     let gamma_mock_1 = MockServer::start().await;
 
-    // Use an 8s window for the first run to allow trades to execute.
     let (_now_secs_1, current_slot_1, end_date_1) = compute_window_timing_with_offset(8);
-    register_gamma_mock(&gamma_mock_1, current_slot_1, &end_date_1).await;
+    register_gamma_mock_with_resolution(&gamma_mock_1, current_slot_1, &end_date_1, "UP").await;
 
-    // Use a temp file that we keep alive across both runs.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
@@ -639,7 +671,6 @@ async fn live_bot_recovers_balance_from_db() {
     );
     config_1.min_window_time_ms = 0;
 
-    // Run the first bot instance (8s window + 2s margin = 10s total wait).
     let result_1 = run_one_window(
         config_1,
         &db_path,
@@ -652,7 +683,6 @@ async fn live_bot_recovers_balance_from_db() {
     .await;
     assert!(result_1.is_ok(), "first run failed: {result_1:?}");
 
-    // Read the final balance from the DB after the first run.
     let first_run_final_balance: f64 = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.query_row(
@@ -663,25 +693,19 @@ async fn live_bot_recovers_balance_from_db() {
         .unwrap()
     };
 
-    // The first run should have traded (balance differs from 200.0).
-    // However, it's possible the trade happened but PnL was applied.
-    // At minimum, the init balance log entry exists.
     let first_run_trade_count: i64 = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.query_row("SELECT COUNT(*) FROM trade_results", [], |r| r.get(0))
             .unwrap()
     };
 
-    // === SECOND RUN: use a DIFFERENT starting balance (999.0) ===
-
-    // New mock servers for the second run (fresh connections).
     let binance_mock_2 = MockWsServer::start().await;
     let clob_mock_2 = MockWsServer::start().await;
     let chainlink_mock_2 = MockWsServer::start().await;
     let gamma_mock_2 = MockServer::start().await;
 
     let (_now_secs_2, current_slot_2, end_date_2) = compute_window_timing_with_offset(6);
-    register_gamma_mock(&gamma_mock_2, current_slot_2, &end_date_2).await;
+    register_gamma_mock_with_resolution(&gamma_mock_2, current_slot_2, &end_date_2, "UP").await;
 
     let config_2 = test_config(
         &binance_mock_2.url,
@@ -690,7 +714,6 @@ async fn live_bot_recovers_balance_from_db() {
         &gamma_mock_2.uri(),
     );
 
-    // Start second bot instance with a DIFFERENT starting balance.
     #[allow(clippy::similar_names)]
     let (stop_sender, stop_receiver) = tokio::sync::oneshot::channel();
     let db_path2 = db_path.clone();
@@ -698,19 +721,15 @@ async fn live_bot_recovers_balance_from_db() {
         buba_paint::live::run_live(config_2, &db_path2, 999.0, stop_receiver).await
     });
 
-    // Let it start up and recover balance from DB.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Send enough data for the second run to proceed through its window.
     send_rising_binance_ticks(&binance_mock_2, 20).await;
     send_chainlink_price(&chainlink_mock_2).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock_2).await;
 
-    // Wait for the window to close (6s window + margin).
     tokio::time::sleep(Duration::from_secs(8)).await;
 
-    // Shutdown the second bot.
     let _ = stop_sender.send(());
     let result_2 = tokio::time::timeout(Duration::from_secs(5), bot_handle_2).await;
     assert!(
@@ -724,10 +743,8 @@ async fn live_bot_recovers_balance_from_db() {
         "second run_live returned an error"
     );
 
-    // === VERIFY: the second run recovered from the DB, NOT from 999.0 ===
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Get all balance log entries to trace the recovery.
     let mut stmt = conn
         .prepare("SELECT event, balance FROM balance_log ORDER BY id ASC")
         .unwrap();
@@ -737,23 +754,18 @@ async fn live_bot_recovers_balance_from_db() {
         .map(|r| r.unwrap())
         .collect();
 
-    // There should be at least 2 entries (first run init + first run trade PnL).
     assert!(
         entries.len() >= 2,
         "Expected at least 2 balance_log entries, got {}",
         entries.len()
     );
 
-    // The first "init" entry should be 200.0 (from the first run).
     assert!(
         (entries[0].1 - 200.0).abs() < f64::EPSILON,
         "First init balance should be 200.0, got {}",
         entries[0].1
     );
 
-    // CRITICAL: No balance_log entry should be 999.0.
-    // If the bot properly recovered from the DB, it should have used
-    // the first run's final balance, not the 999.0 we passed.
     let has_999 = entries
         .iter()
         .any(|(_, bal)| (*bal - 999.0).abs() < f64::EPSILON);
@@ -763,16 +775,8 @@ async fn live_bot_recovers_balance_from_db() {
          the bot should have recovered from DB. Entries: {entries:?}"
     );
 
-    // If the first run had trades, the recovered balance should match
-    // the first run's final balance.
     if first_run_trade_count > 0 {
-        // The second run's activity should be based on first_run_final_balance.
-        // None of the balances should be exactly 999.0.
-        let second_run_balances: Vec<f64> = entries
-            .iter()
-            .skip(1) // skip first init
-            .map(|(_, bal)| *bal)
-            .collect();
+        let second_run_balances: Vec<f64> = entries.iter().skip(1).map(|(_, bal)| *bal).collect();
         for bal in &second_run_balances {
             assert!(
                 (*bal - 999.0).abs() > 0.01,
@@ -788,13 +792,11 @@ async fn live_bot_recovers_balance_from_db() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_multiple_windows_in_sequence() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing for window 1: closes in 6s from now.
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -808,17 +810,12 @@ async fn live_bot_multiple_windows_in_sequence() {
         .unwrap()
         .to_rfc3339();
 
-    // Window 2 closes 12s from now (6s after window 1 closes).
     let end_time_2 = now_secs + 12;
     #[allow(clippy::cast_possible_wrap)]
     let end_date_2 = chrono::DateTime::from_timestamp(end_time_2 as i64, 0)
         .unwrap()
         .to_rfc3339();
 
-    // 3. Register Gamma mocks for both slots.
-    // The discovery checks both current_slot and next_slot on each poll.
-    // We register window 1 on current_slot and window 2 on next_slot
-    // with different market IDs.
     Mock::given(method("GET"))
         .and(path_regex(format!(
             "^/events/slug/btc-updown-5m-{current_slot}$"
@@ -855,11 +852,9 @@ async fn live_bot_multiple_windows_in_sequence() {
         .mount(&gamma_mock)
         .await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config.
     let mut config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -868,36 +863,28 @@ async fn live_bot_multiple_windows_in_sequence() {
     );
     config.min_window_time_ms = 0;
 
-    // 6. Start the live bot.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // 7. Wait for feeds to connect and discovery to find window 1.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // 8. Send ticks for window 1.
     send_rising_binance_ticks(&binance_mock, 20).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
 
-    // 9. Wait for window 1 to close (6s from start + margin).
     tokio::time::sleep(Duration::from_secs(6)).await;
 
-    // 10. Send ticks for window 2 (discovery should have already found it
-    //     since it polls both current_slot and next_slot).
     send_rising_binance_ticks(&binance_mock, 20).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
 
-    // 11. Wait for window 2 to close (another ~6s + margin).
     tokio::time::sleep(Duration::from_secs(8)).await;
 
-    // 12. Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -908,7 +895,6 @@ async fn live_bot_multiple_windows_in_sequence() {
     assert!(inner.is_ok(), "bot task panicked: {inner:?}");
     assert!(inner.unwrap().is_ok(), "run_live returned an error");
 
-    // 13. Verify database: at least 2 distinct market_ids in `markets` table.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
     let market_count: i64 = conn
@@ -921,7 +907,6 @@ async fn live_bot_multiple_windows_in_sequence() {
         "Expected at least 2 distinct market_ids, got {market_count}"
     );
 
-    // Verify both specific market IDs exist.
     let has_w1: bool = conn
         .query_row(
             "SELECT COUNT(*) > 0 FROM markets WHERE market_id = 'mkt-window-1'",
@@ -947,26 +932,18 @@ async fn live_bot_multiple_windows_in_sequence() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_spread_capture_executes() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing: 8s window.
     let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
 
-    // 3. Register Gamma API.
     register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config:
-    //    - spread_capture_threshold=0.90 (low enough to trigger with up_ask+down_ask < 0.90)
-    //    - latency_arb_momentum_threshold=99.0 (disable latency-arb so only spread fires)
-    //    - min_window_time_ms=0 to guarantee execution
     let mut config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -978,38 +955,31 @@ async fn live_bot_spread_capture_executes() {
     config.latency_arb_momentum_threshold = 99.0;
     config.min_window_time_ms = 0;
 
-    // 6. Start the live bot.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // 7. Wait for feeds to connect and discovery.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // 8. Send Binance ticks (needed for binance_price to be set, but
-    //    momentum is irrelevant since latency-arb threshold is 99.0).
     send_rising_binance_ticks(&binance_mock, 10).await;
 
-    // Chainlink reference price.
     send_chainlink_price(&chainlink_mock).await;
 
-    // 9. Wait for CLOB resubscription, then send a spread-friendly book:
-    //    up_ask=0.40, down_ask=0.40 -> total=0.80 < 0.90 threshold.
     tokio::time::sleep(Duration::from_millis(500)).await;
+    let timestamp = current_test_ms();
     clob_mock
-        .send(
-            r#"{"asset_id":"tok-up-sys","timestamp":1700000000000,"bids":[{"price":"0.35","size":"100"}],"asks":[{"price":"0.40","size":"100"}]}"#,
-        )
+        .send(&format!(
+            r#"{{"asset_id":"tok-up-sys","timestamp":{timestamp},"bids":[{{"price":"0.35","size":"100"}}],"asks":[{{"price":"0.40","size":"100"}}]}}"#
+        ))
         .await;
     clob_mock
-        .send(
-            r#"{"asset_id":"tok-down-sys","timestamp":1700000000000,"bids":[{"price":"0.35","size":"100"}],"asks":[{"price":"0.40","size":"100"}]}"#,
-        )
+        .send(&format!(
+            r#"{{"asset_id":"tok-down-sys","timestamp":{timestamp},"bids":[{{"price":"0.35","size":"100"}}],"asks":[{{"price":"0.40","size":"100"}}]}}"#
+        ))
         .await;
 
-    // 10. Send additional Binance ticks to trigger strategy evaluation after book.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 10_u32..20 {
         let price = 42_000.0 + f64::from(i) * 5.0;
@@ -1023,10 +993,8 @@ async fn live_bot_spread_capture_executes() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // 11. Wait for window close (8s + margin).
     tokio::time::sleep(Duration::from_secs(8)).await;
 
-    // 12. Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -1037,7 +1005,6 @@ async fn live_bot_spread_capture_executes() {
     assert!(inner.is_ok(), "bot task panicked: {inner:?}");
     assert!(inner.unwrap().is_ok(), "run_live returned an error");
 
-    // 13. Verify database: spread-capture should have opened both legs.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
     let spread_trade_count: i64 = conn
@@ -1052,7 +1019,6 @@ async fn live_bot_spread_capture_executes() {
         "Expected at least 2 spread-capture trades (both legs), got {spread_trade_count}"
     );
 
-    // Verify both directions were opened.
     let up_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE strategy = 'spread-capture' AND side = 'UP'",
@@ -1076,7 +1042,6 @@ async fn live_bot_spread_capture_executes() {
         "Expected at least 1 spread-capture DOWN trade, got {down_count}"
     );
 
-    // Verify that no latency-arb trades were opened (we disabled it).
     let latency_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE strategy = 'latency-arb'",
@@ -1097,13 +1062,11 @@ async fn live_bot_spread_capture_executes() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_circuit_breaker_blocks_trading() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing for two windows within a single bot run.
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1123,15 +1086,11 @@ async fn live_bot_circuit_breaker_blocks_trading() {
         .unwrap()
         .to_rfc3339();
 
-    // 3. Register ONLY window 1 initially (uses wildcard regex; both slots
-    //    will match but return the same market_id, which is fine).
-    register_gamma_mock(&gamma_mock, current_slot, &end_date_1).await;
+    register_gamma_mock_with_resolution(&gamma_mock, current_slot, &end_date_1, "DOWN").await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config: CB triggers after 1 loss with a 120s pause.
     let mut config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -1142,27 +1101,22 @@ async fn live_bot_circuit_breaker_blocks_trading() {
     config.circuit_breaker_pause_ms = 120_000;
     config.min_window_time_ms = 0;
 
-    // 6. Start the bot (single instance for both windows).
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // 7. Wait for feeds to connect and discovery.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // === WINDOW 1: trigger a losing UP trade ===
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
 
-    // More ticks to trigger eval after book arrives.
     tokio::time::sleep(Duration::from_millis(300)).await;
     send_rising_binance_ticks(&binance_mock, 10).await;
 
-    // Send FALLING ticks so close_price < open_price at window 1 end.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let base_low = 40_000.0;
     for i in 0_u32..15 {
@@ -1177,10 +1131,8 @@ async fn live_bot_circuit_breaker_blocks_trading() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // 8. Wait for window 1 to close. Trade loses -> CB fires.
     tokio::time::sleep(Duration::from_secs(12)).await;
 
-    // === WINDOW 2: mount a fresh Gamma mock so discovery finds a new market ===
     gamma_mock.reset().await;
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -1200,10 +1152,8 @@ async fn live_bot_circuit_breaker_blocks_trading() {
         .mount(&gamma_mock)
         .await;
 
-    // Wait for discovery to pick up window 2 + CLOB resubscription.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Send ticks that WOULD trigger trades if CB were not blocking.
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1212,10 +1162,8 @@ async fn live_bot_circuit_breaker_blocks_trading() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     send_rising_binance_ticks(&binance_mock, 15).await;
 
-    // 9. Wait for window 2 to close.
     tokio::time::sleep(Duration::from_secs(14)).await;
 
-    // 10. Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -1226,10 +1174,8 @@ async fn live_bot_circuit_breaker_blocks_trading() {
     assert!(inner.is_ok(), "bot panicked: {inner:?}");
     assert!(inner.unwrap().is_ok(), "run_live returned error");
 
-    // 11. Verify DB state.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Window 1 (mkt-sys-test) should have at least 1 trade.
     let w1_trade_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-sys-test'",
@@ -1242,7 +1188,6 @@ async fn live_bot_circuit_breaker_blocks_trading() {
         "Expected at least 1 trade in window 1, got {w1_trade_count}"
     );
 
-    // Window 2 (mkt-cb-w2) should have 0 trades (CB blocked them).
     let w2_trade_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-cb-w2'",
@@ -1267,7 +1212,7 @@ async fn live_bot_settles_up_trade_with_correct_settlement() {
     let gamma_mock = MockServer::start().await;
 
     let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
-    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+    register_gamma_mock_with_resolution(&gamma_mock, current_slot, &end_date, "UP").await;
 
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
@@ -1294,7 +1239,6 @@ async fn live_bot_settles_up_trade_with_correct_settlement() {
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Verify trade side is UP.
     let side: String = conn
         .query_row(
             "SELECT side FROM simulated_trades WHERE strategy = 'latency-arb' LIMIT 1",
@@ -1307,7 +1251,6 @@ async fn live_bot_settles_up_trade_with_correct_settlement() {
         "Expected UP trade from rising prices, got {side}"
     );
 
-    // Verify settlement_price=1.0 (UP wins when close >= open).
     let settlement: f64 = conn
         .query_row(
             "SELECT settlement_price FROM trade_results LIMIT 1",
@@ -1320,7 +1263,6 @@ async fn live_bot_settles_up_trade_with_correct_settlement() {
         "Expected settlement_price=1.0 for UP win, got {settlement}"
     );
 
-    // Verify pnl_0pct > 0.
     let pnl: f64 = conn
         .query_row("SELECT pnl_0pct FROM trade_results LIMIT 1", [], |r| {
             r.get(0)
@@ -1344,22 +1286,29 @@ async fn live_bot_settles_down_trade_with_correct_settlement() {
 
     let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
 
-    // Use unique market/token IDs for this test.
-    Mock::given(method("GET"))
-        .and(path_regex(r"^/events/slug/btc-updown-5m-\d+$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "slug": format!("btc-updown-5m-{current_slot}"),
-            "markets": [{
-                "id": "mkt-ts2-down",
-                "question": "Will BTC go up?",
-                "conditionId": "cond-ts2",
-                "outcomes": ["Up", "Down"],
-                "clobTokenIds": ["tok-up-ts2", "tok-down-ts2"],
-                "endDate": end_date
-            }]
-        })))
-        .mount(&gamma_mock)
-        .await;
+    mount_gamma_sequence(
+        &gamma_mock,
+        r"^/events/slug/btc-updown-5m-\d+$".to_string(),
+        gamma_market_response(
+            format!("btc-updown-5m-{current_slot}"),
+            "mkt-ts2-down",
+            "cond-ts2",
+            "tok-up-ts2",
+            "tok-down-ts2",
+            end_date.as_str(),
+            None,
+        ),
+        gamma_market_response(
+            format!("btc-updown-5m-{current_slot}"),
+            "mkt-ts2-down",
+            "cond-ts2",
+            "tok-up-ts2",
+            "tok-down-ts2",
+            end_date.as_str(),
+            Some("DOWN"),
+        ),
+    )
+    .await;
 
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
@@ -1371,9 +1320,9 @@ async fn live_bot_settles_down_trade_with_correct_settlement() {
         &gamma_mock.uri(),
     );
     config.min_window_time_ms = 0;
-    // Use a low momentum threshold to make it easier to trigger.
+
     config.latency_arb_momentum_threshold = 0.0005;
-    // Allow DOWN asks in the acceptable range.
+
     config.latency_arb_max_ask = 0.65;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1382,11 +1331,8 @@ async fn live_bot_settles_down_trade_with_correct_settlement() {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // Wait for feeds to connect and discovery.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Phase 1: Send high initial Binance prices. These will be captured as
-    // open_price via window_open_prices.entry().or_insert().
     for i in 0_u32..10 {
         let price = 42_000.0 + f64::from(i);
         let msg = format!(
@@ -1399,27 +1345,23 @@ async fn live_bot_settles_down_trade_with_correct_settlement() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Send Chainlink price and CLOB book.
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // CLOB book with DOWN ask in acceptable range.
+    let timestamp = current_test_ms();
     clob_mock
-        .send(
-            r#"{"asset_id":"tok-up-ts2","timestamp":1700000000000,"bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.50","size":"100"}]}"#,
-        )
+        .send(&format!(
+            r#"{{"asset_id":"tok-up-ts2","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.50","size":"100"}}]}}"#
+        ))
         .await;
     clob_mock
-        .send(
-            r#"{"asset_id":"tok-down-ts2","timestamp":1700000000000,"bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.45","size":"100"}]}"#,
-        )
+        .send(&format!(
+            r#"{{"asset_id":"tok-down-ts2","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.45","size":"100"}}]}}"#
+        ))
         .await;
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Phase 2: Send falling Binance prices to create negative momentum.
-    // These prices are well below the open_price (~42000), so at settlement
-    // close < open means DOWN wins.
     for i in 0_u32..25 {
         let price = 40_000.0 - f64::from(i) * 5.0;
         let msg = format!(
@@ -1432,7 +1374,6 @@ async fn live_bot_settles_down_trade_with_correct_settlement() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Wait for window to close.
     tokio::time::sleep(Duration::from_secs(8)).await;
 
     let _ = shutdown_tx.send(());
@@ -1456,7 +1397,6 @@ async fn live_bot_settles_down_trade_with_correct_settlement() {
         "Expected at least 1 DOWN trade, got {trade_count}"
     );
 
-    // DOWN wins when close < open, so settlement_price = 1.0.
     let settlement: f64 = conn
         .query_row(
             "SELECT tr.settlement_price FROM trade_results tr \
@@ -1494,7 +1434,7 @@ async fn live_bot_settlement_pnl_matches_expected_calculation() {
     let gamma_mock = MockServer::start().await;
 
     let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
-    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+    register_gamma_mock_with_resolution(&gamma_mock, current_slot, &end_date, "UP").await;
 
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
@@ -1521,7 +1461,6 @@ async fn live_bot_settlement_pnl_matches_expected_calculation() {
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Read entry_price and size from the trade.
     let (entry_price, size): (f64, f64) = conn
         .query_row(
             "SELECT entry_price, size FROM simulated_trades WHERE status = 'closed' LIMIT 1",
@@ -1530,7 +1469,6 @@ async fn live_bot_settlement_pnl_matches_expected_calculation() {
         )
         .unwrap();
 
-    // Read actual pnl_0pct and settlement_price from results.
     let (actual_pnl, settlement): (f64, f64) = conn
         .query_row(
             "SELECT pnl_0pct, settlement_price FROM trade_results LIMIT 1",
@@ -1547,8 +1485,8 @@ async fn live_bot_settlement_pnl_matches_expected_calculation() {
     );
 }
 
-/// SC1: Verify that book state resets between windows. Window A has CLOB data
-/// and trades; window B has NO CLOB data sent for its tokens, so the stale
+/// SC1: Verify that book state resets between windows. Window A has `CLOB` data
+/// and trades; window B has NO `CLOB` data sent for its tokens, so the stale
 /// book from A must not leak through.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -1577,24 +1515,29 @@ async fn live_bot_book_state_resets_between_windows() {
         .unwrap()
         .to_rfc3339();
 
-    // Register window A on current_slot only (not wildcard).
-    Mock::given(method("GET"))
-        .and(path_regex(format!(
-            "^/events/slug/btc-updown-5m-{current_slot}$"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "slug": format!("btc-updown-5m-{current_slot}"),
-            "markets": [{
-                "id": "mkt-sys-test",
-                "question": "Will BTC go up?",
-                "conditionId": "cond-sys",
-                "outcomes": ["Up", "Down"],
-                "clobTokenIds": ["tok-up-sys", "tok-down-sys"],
-                "endDate": end_date_a
-            }]
-        })))
-        .mount(&gamma_mock)
-        .await;
+    mount_gamma_sequence(
+        &gamma_mock,
+        format!("^/events/slug/btc-updown-5m-{current_slot}$"),
+        gamma_market_response(
+            format!("btc-updown-5m-{current_slot}"),
+            "mkt-sys-test",
+            "cond-sys",
+            "tok-up-sys",
+            "tok-down-sys",
+            end_date_a.as_str(),
+            None,
+        ),
+        gamma_market_response(
+            format!("btc-updown-5m-{current_slot}"),
+            "mkt-sys-test",
+            "cond-sys",
+            "tok-up-sys",
+            "tok-down-sys",
+            end_date_a.as_str(),
+            Some("DOWN"),
+        ),
+    )
+    .await;
 
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
@@ -1615,13 +1558,11 @@ async fn live_bot_book_state_resets_between_windows() {
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Window A: send ticks + CLOB book (uses tok-up-sys/tok-down-sys).
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
 
-    // Send additional ticks with unique timestamps to trigger strategy evaluation.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 25_u32..35 {
         let price = 42_000.0 + f64::from(i) * 5.0;
@@ -1635,10 +1576,8 @@ async fn live_bot_book_state_resets_between_windows() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Wait for window A to close.
     tokio::time::sleep(Duration::from_secs(12)).await;
 
-    // Mount window B with different token IDs.
     gamma_mock.reset().await;
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -1660,7 +1599,6 @@ async fn live_bot_book_state_resets_between_windows() {
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Send ticks for B but NO CLOB data for B's tokens.
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1677,7 +1615,6 @@ async fn live_bot_book_state_resets_between_windows() {
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Window A (mkt-sys-test) should have trades.
     let a_trade_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-sys-test'",
@@ -1690,7 +1627,6 @@ async fn live_bot_book_state_resets_between_windows() {
         "Expected trades in window A, got {a_trade_count}"
     );
 
-    // Window B (mkt-sc1-b) should have 0 trades (no CLOB data, book was reset).
     let b_trade_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-sc1-b'",
@@ -1734,15 +1670,12 @@ async fn live_bot_no_trade_when_no_binance_price() {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // Wait for feeds to connect and discovery.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Send Chainlink + CLOB but NO Binance ticks at all.
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
 
-    // Wait for the window to close.
     tokio::time::sleep(Duration::from_secs(8)).await;
 
     let _ = shutdown_tx.send(());
@@ -1796,30 +1729,37 @@ async fn live_bot_dd_pause_blocks_trading_in_live() {
         .unwrap()
         .to_rfc3339();
 
-    let end_time_b = now_secs + 22;
+    let end_time_b = now_secs + 40;
     #[allow(clippy::cast_possible_wrap)]
     let end_date_b = chrono::DateTime::from_timestamp(end_time_b as i64, 0)
         .unwrap()
         .to_rfc3339();
 
-    // Register window A on current_slot only.
-    Mock::given(method("GET"))
-        .and(path_regex(format!(
-            "^/events/slug/btc-updown-5m-{current_slot}$"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "slug": format!("btc-updown-5m-{current_slot}"),
-            "markets": [{
-                "id": "mkt-sys-test",
-                "question": "Will BTC go up?",
-                "conditionId": "cond-sys",
-                "outcomes": ["Up", "Down"],
-                "clobTokenIds": ["tok-up-sys", "tok-down-sys"],
-                "endDate": end_date_a
-            }]
-        })))
-        .mount(&gamma_mock)
-        .await;
+    let window_a_unresolved = gamma_market_response(
+        format!("btc-updown-5m-{current_slot}"),
+        "mkt-sys-test",
+        "cond-sys",
+        "tok-up-sys",
+        "tok-down-sys",
+        &end_date_a,
+        None,
+    );
+    let window_a_resolved = gamma_market_response(
+        format!("btc-updown-5m-{current_slot}"),
+        "mkt-sys-test",
+        "cond-sys",
+        "tok-up-sys",
+        "tok-down-sys",
+        &end_date_a,
+        Some("DOWN"),
+    );
+    mount_gamma_sequence(
+        &gamma_mock,
+        format!("^/events/slug/btc-updown-5m-{current_slot}$"),
+        window_a_unresolved,
+        window_a_resolved,
+    )
+    .await;
 
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
@@ -1844,7 +1784,6 @@ async fn live_bot_dd_pause_blocks_trading_in_live() {
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Window A: rising ticks to open UP trade.
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1863,7 +1802,6 @@ async fn live_bot_dd_pause_blocks_trading_in_live() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Falling ticks so close < open (UP loses).
     tokio::time::sleep(Duration::from_millis(500)).await;
     for i in 0_u32..15 {
         let price = 39_000.0 - f64::from(i) * 10.0;
@@ -1877,10 +1815,8 @@ async fn live_bot_dd_pause_blocks_trading_in_live() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Wait for window A to close.
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    // Mount window B.
     gamma_mock.reset().await;
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -1902,7 +1838,6 @@ async fn live_bot_dd_pause_blocks_trading_in_live() {
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Window B: send all data.
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1957,8 +1892,8 @@ async fn live_bot_dd_pause_blocks_trading_in_live() {
 }
 
 /// BI2: Verify that the circuit breaker recovers within the same bot run.
-/// Window A: trade loses -> CB triggers (`circuit_breaker_losses`=1, pause=6s).
-/// Window B: starts after CB pause expires -> new trade opens.
+/// Window A loses and trips the breaker, then window B remains open long enough
+/// for discovery, pause expiry, and a fresh post-recovery trade.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_circuit_breaker_recovers_within_same_run() {
@@ -1980,13 +1915,12 @@ async fn live_bot_circuit_breaker_recovers_within_same_run() {
         .unwrap()
         .to_rfc3339();
 
-    let end_time_b = now_secs + 22;
+    let end_time_b = now_secs + 36;
     #[allow(clippy::cast_possible_wrap)]
     let end_date_b = chrono::DateTime::from_timestamp(end_time_b as i64, 0)
         .unwrap()
         .to_rfc3339();
 
-    // Register window A on current_slot only.
     Mock::given(method("GET"))
         .and(path_regex(format!(
             "^/events/slug/btc-updown-5m-{current_slot}$"
@@ -2017,6 +1951,7 @@ async fn live_bot_circuit_breaker_recovers_within_same_run() {
     config.min_window_time_ms = 0;
     config.circuit_breaker_losses = 1;
     config.circuit_breaker_pause_ms = 6_000;
+    config.latency_arb_adaptive_window_ms = 5_000;
     config.peak_dd_pause_pct = 1.0;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -2027,13 +1962,11 @@ async fn live_bot_circuit_breaker_recovers_within_same_run() {
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Window A: open UP trade, then crash price.
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
 
-    // Send additional ticks with unique timestamps to trigger strategy evaluation.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 25_u32..35 {
         let price = 42_000.0 + f64::from(i) * 5.0;
@@ -2047,7 +1980,6 @@ async fn live_bot_circuit_breaker_recovers_within_same_run() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Falling ticks so close < open (UP loses).
     tokio::time::sleep(Duration::from_millis(500)).await;
     for i in 0_u32..15 {
         let price = 39_000.0 - f64::from(i) * 10.0;
@@ -2061,11 +1993,9 @@ async fn live_bot_circuit_breaker_recovers_within_same_run() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Wait for window A close + CB to expire (8s close + 8s CB expiry).
     tokio::time::sleep(Duration::from_secs(8)).await;
     tokio::time::sleep(Duration::from_secs(8)).await;
 
-    // Mount window B after CB expired.
     gamma_mock.reset().await;
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -2087,19 +2017,24 @@ async fn live_bot_circuit_breaker_recovers_within_same_run() {
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // Window B: send data after CB expired.
-    send_rising_binance_ticks(&binance_mock, 25).await;
+    let second_window_base_ts = 1_700_000_010_000_u64;
+    for i in 0_u32..25 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let ts = second_window_base_ts + u64::from(i) * 100;
+        let msg = format!(r#"{{"e":"aggTrade","E":{ts},"p":"{price}","q":"0.01","T":{ts}}}"#);
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 35_u32..50 {
         let price = 42_000.0 + f64::from(i) * 5.0;
+        let ts = second_window_base_ts + 3_000 + u64::from(i - 35) * 100;
         let msg = format!(
             r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
-            1_700_000_000_000_u64 + u64::from(i) * 100,
-            price,
-            1_700_000_000_000_u64 + u64::from(i) * 100,
+            ts, price, ts,
         );
         binance_mock.send(&msg).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2147,21 +2082,17 @@ async fn live_bot_circuit_breaker_recovers_within_same_run() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_survives_concurrent_feed_disconnections() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Register Gamma with a window far in the future so the bot stays alive.
     let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(30);
     register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
 
-    // 3. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 4. Build config with fast reconnect to speed up the test.
     let config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -2169,25 +2100,20 @@ async fn live_bot_survives_concurrent_feed_disconnections() {
         &gamma_mock.uri(),
     );
 
-    // 5. Start the live bot.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // 6. Wait for feeds to connect.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // 7. Close all 3 mock WS servers simultaneously.
     binance_mock.close().await;
     clob_mock.close().await;
     chainlink_mock.close().await;
 
-    // 8. Wait for the bot to process the disconnections and attempt reconnects.
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // 9. Verify bot is still running (hasn't panicked) by sending shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -2206,20 +2132,17 @@ async fn live_bot_survives_concurrent_feed_disconnections() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// WL: Window Lifecycle integration tests
-// ---------------------------------------------------------------------------
-
-/// Helper: send a CLOB book snapshot for custom token IDs.
+/// Helper: send a `CLOB` book snapshot for custom token IDs.
 ///
-/// Sends both UP and DOWN snapshots as a JSON array so the CLOB feed builds
-/// a full `BookState` (with both sides) in a single WebSocket frame.  This
+/// Sends both UP and DOWN snapshots as a `JSON` array so the `CLOB` feed builds
+/// a full `BookState` (with both sides) in a single `WebSocket` frame.  This
 /// avoids the 200ms eval throttle eating the first `ClobBook` event (up-only)
 /// and leaving the second (up+down) throttled.
 async fn send_clob_book_for_tokens(clob_mock: &MockWsServer, up_token: &str, down_token: &str) {
     clob_mock
         .send(&format!(
-            r#"[{{"asset_id":"{up_token}","timestamp":1700000000000,"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.45","size":"100"}}]}},{{"asset_id":"{down_token}","timestamp":1700000000000,"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.50","size":"100"}}]}}]"#,
+            r#"[{{"asset_id":"{up_token}","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.45","size":"100"}}]}},{{"asset_id":"{down_token}","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.50","size":"100"}}]}}]"#,
+            timestamp = current_test_ms(),
         ))
         .await;
 }
@@ -2234,15 +2157,11 @@ async fn send_clob_book_for_tokens(clob_mock: &MockWsServer, up_token: &str, dow
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_settles_trades_when_next_window_already_discovered() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing: window A ends T+15s, window B ends T+30s.
-    //    The B discovery is delayed 8s so there is plenty of time (~5s) for
-    //    trades to open in A before B's discovery resets book state.
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -2262,27 +2181,29 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
         .unwrap()
         .to_rfc3339();
 
-    // 3. Register Gamma mocks with path-specific matchers.
-    //    Window A (current_slot) responds immediately.
-    //    Window B (next_slot) is delayed 8 seconds — simulating the production
-    //    race where discovery finds B before A's `WindowClosed` fires.
-    Mock::given(method("GET"))
-        .and(path_regex(format!(
-            "^/events/slug/btc-updown-5m-{current_slot}$"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "slug": format!("btc-updown-5m-{current_slot}"),
-            "markets": [{
-                "id": "mkt-wl1-a",
-                "question": "Will BTC go up? (WL1 window A)",
-                "conditionId": "cond-wl1-a",
-                "outcomes": ["Up", "Down"],
-                "clobTokenIds": ["tok-up-wl1a", "tok-down-wl1a"],
-                "endDate": end_date_a
-            }]
-        })))
-        .mount(&gamma_mock)
-        .await;
+    mount_gamma_sequence(
+        &gamma_mock,
+        format!("^/events/slug/btc-updown-5m-{current_slot}$"),
+        gamma_market_response(
+            format!("btc-updown-5m-{current_slot}"),
+            "mkt-wl1-a",
+            "cond-wl1-a",
+            "tok-up-wl1a",
+            "tok-down-wl1a",
+            end_date_a.as_str(),
+            None,
+        ),
+        gamma_market_response(
+            format!("btc-updown-5m-{current_slot}"),
+            "mkt-wl1-a",
+            "cond-wl1-a",
+            "tok-up-wl1a",
+            "tok-down-wl1a",
+            end_date_a.as_str(),
+            Some("UP"),
+        ),
+    )
+    .await;
 
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -2306,11 +2227,9 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
         .mount(&gamma_mock)
         .await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config.
     let mut config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -2320,24 +2239,19 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
     config.min_window_time_ms = 0;
     config.latency_arb_momentum_threshold = 0.001;
 
-    // 6. Start the live bot.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // --- Timeline ---
-    // T=0: Bot starts, discovery finds window A immediately.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // T~2s: Send rising Binance ticks + Chainlink + CLOB book for A's tokens.
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book_for_tokens(&clob_mock, "tok-up-wl1a", "tok-down-wl1a").await;
 
-    // Send additional ticks to trigger strategy evaluation after book arrives.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 25_u32..35 {
         let price = 42_000.0 + f64::from(i) * 5.0;
@@ -2351,17 +2265,8 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // T~8.5s: Discovery finds window B (8s delay on the Gamma response).
-    //         current_window is now B, but A still has open trades.
-    //         known_windows = {A, B}.
-
-    // T=15s: WindowClosed(A) fires.  The fix uses known_windows.remove("A")
-    //        to find the window and settle trades, even though current_window=B.
-
-    // Wait for window A to close (15s from start + 2s margin).
     tokio::time::sleep(Duration::from_secs(15)).await;
 
-    // Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -2372,10 +2277,8 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
     assert!(inner.is_ok(), "bot task panicked: {inner:?}");
     assert!(inner.unwrap().is_ok(), "run_live returned an error");
 
-    // --- Verify database ---
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Window A's trades must be settled (status='closed').
     let closed_a: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl1-a' AND status = 'closed'",
@@ -2390,7 +2293,6 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
          when current_window has already advanced to the next window."
     );
 
-    // trade_results must exist for window A.
     let results_a: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM trade_results r \
@@ -2405,7 +2307,6 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
         "Expected at least 1 trade_result for window A, got {results_a}"
     );
 
-    // Balance should differ from starting 200.0 (trade PnL applied).
     let final_balance: f64 = conn
         .query_row(
             "SELECT balance FROM balance_log ORDER BY id DESC LIMIT 1",
@@ -2418,7 +2319,6 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
         "Expected balance to differ from 200.0 after settlement, got {final_balance}"
     );
 
-    // No open trades should remain for window A.
     let open_a: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl1-a' AND status = 'open'",
@@ -2439,13 +2339,11 @@ async fn live_bot_settles_trades_when_next_window_already_discovered() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_settles_both_overlapping_windows() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing: A ends T+8s, B ends T+18s.
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -2465,8 +2363,6 @@ async fn live_bot_settles_both_overlapping_windows() {
         .unwrap()
         .to_rfc3339();
 
-    // 3. Gamma mocks: both slots respond immediately.
-    //    A uses current_slot, B uses next_slot.
     Mock::given(method("GET"))
         .and(path_regex(format!(
             "^/events/slug/btc-updown-5m-{current_slot}$"
@@ -2485,29 +2381,33 @@ async fn live_bot_settles_both_overlapping_windows() {
         .mount(&gamma_mock)
         .await;
 
-    Mock::given(method("GET"))
-        .and(path_regex(format!(
-            "^/events/slug/btc-updown-5m-{next_slot}$"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "slug": format!("btc-updown-5m-{next_slot}"),
-            "markets": [{
-                "id": "mkt-wl2-b",
-                "question": "Will BTC go up? (WL2 window B)",
-                "conditionId": "cond-wl2-b",
-                "outcomes": ["Up", "Down"],
-                "clobTokenIds": ["tok-up-wl2b", "tok-down-wl2b"],
-                "endDate": end_date_b
-            }]
-        })))
-        .mount(&gamma_mock)
-        .await;
+    mount_gamma_sequence(
+        &gamma_mock,
+        format!("^/events/slug/btc-updown-5m-{next_slot}$"),
+        gamma_market_response(
+            format!("btc-updown-5m-{next_slot}"),
+            "mkt-wl2-b",
+            "cond-wl2-b",
+            "tok-up-wl2b",
+            "tok-down-wl2b",
+            end_date_b.as_str(),
+            None,
+        ),
+        gamma_market_response(
+            format!("btc-updown-5m-{next_slot}"),
+            "mkt-wl2-b",
+            "cond-wl2-b",
+            "tok-up-wl2b",
+            "tok-down-wl2b",
+            end_date_b.as_str(),
+            Some("UP"),
+        ),
+    )
+    .await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config.
     let mut config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -2517,27 +2417,19 @@ async fn live_bot_settles_both_overlapping_windows() {
     config.min_window_time_ms = 0;
     config.latency_arb_momentum_threshold = 0.001;
 
-    // 6. Start the live bot.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // --- Timeline ---
-    // T=0: Bot starts. Discovery finds both A and B immediately (no delay).
-    //      CLOB subscribes to B's tokens (B is the last discovered, becomes current).
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // T~2s: Send data for window B (the current window after both are discovered).
-    //       Discovery processes both slots: A first (NewWindow A), then B (NewWindow B).
-    //       current_window is now B. CLOB is subscribed to B's tokens.
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book_for_tokens(&clob_mock, "tok-up-wl2b", "tok-down-wl2b").await;
 
-    // Additional ticks to trigger evaluation.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 25_u32..35 {
         let price = 42_000.0 + f64::from(i) * 5.0;
@@ -2551,13 +2443,8 @@ async fn live_bot_settles_both_overlapping_windows() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // T=8s: WindowClosed(A) fires (A had no trades, just verifies graceful close).
-    // T=18s: WindowClosed(B) fires -> B settled.
-
-    // Wait for both windows to close (18s from start + 4s margin).
     tokio::time::sleep(Duration::from_secs(16)).await;
 
-    // Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -2568,10 +2455,8 @@ async fn live_bot_settles_both_overlapping_windows() {
     assert!(inner.is_ok(), "bot task panicked: {inner:?}");
     assert!(inner.unwrap().is_ok(), "run_live returned an error");
 
-    // --- Verify database ---
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Both markets should be upserted.
     let market_count: i64 = conn
         .query_row("SELECT COUNT(DISTINCT market_id) FROM markets", [], |r| {
             r.get(0)
@@ -2582,7 +2467,6 @@ async fn live_bot_settles_both_overlapping_windows() {
         "Expected at least 2 markets, got {market_count}"
     );
 
-    // Window B (the current window, where trades open): settled.
     let closed_b: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl2-b' AND status = 'closed'",
@@ -2595,7 +2479,6 @@ async fn live_bot_settles_both_overlapping_windows() {
         "Expected at least 1 closed trade for window B (mkt-wl2-b), got {closed_b}"
     );
 
-    // Window B: trade_results exist.
     let results_b: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM trade_results r \
@@ -2610,7 +2493,6 @@ async fn live_bot_settles_both_overlapping_windows() {
         "Expected at least 1 trade_result for window B, got {results_b}"
     );
 
-    // Window A: closes gracefully with 0 trades (no CLOB data for A's tokens).
     let open_a: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl2-a' AND status = 'open'",
@@ -2623,7 +2505,6 @@ async fn live_bot_settles_both_overlapping_windows() {
         "Expected 0 open trades for window A, got {open_a}"
     );
 
-    // No open trades should remain for either window.
     let open_total: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM simulated_trades WHERE status = 'open'",
@@ -2637,28 +2518,23 @@ async fn live_bot_settles_both_overlapping_windows() {
     );
 }
 
-/// WL3: A window closes with no trades (no CLOB data sent) — `resolve_window`
+/// WL3: A window closes with no trades (no `CLOB` data sent) — `resolve_window`
 /// is called with 0 trades and the bot returns Ok without errors.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_bot_handles_close_with_no_trades_gracefully() {
-    // 1. Start mock servers.
     let binance_mock = MockWsServer::start().await;
     let clob_mock = MockWsServer::start().await;
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    // 2. Compute timing: window ends T+8s.
     let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
 
-    // 3. Register Gamma API.
     register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
 
-    // 4. Create temp DB.
     let tmp_db = tempfile::NamedTempFile::new().unwrap();
     let db_path = tmp_db.path().to_str().unwrap().to_string();
 
-    // 5. Build config with min_window_time_ms=0.
     let mut config = test_config(
         &binance_mock.url,
         &clob_mock.url,
@@ -2667,28 +2543,19 @@ async fn live_bot_handles_close_with_no_trades_gracefully() {
     );
     config.min_window_time_ms = 0;
 
-    // 6. Start the live bot.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let db_path_clone = db_path.clone();
     let bot_handle = tokio::spawn(async move {
         buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
     });
 
-    // 7. Wait for feeds to connect and discovery to find the market.
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
-    // 8. Send Binance ticks and Chainlink -- but NO CLOB book.
-    //    Without book data the strategies cannot fire (no ask prices).
     send_rising_binance_ticks(&binance_mock, 25).await;
     send_chainlink_price(&chainlink_mock).await;
 
-    // DO NOT send any CLOB data. The strategy cannot produce signals
-    // without up/down ask prices.
-
-    // 9. Wait for the window to close (8s + margin).
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    // 10. Shutdown.
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
     assert!(
@@ -2703,10 +2570,8 @@ async fn live_bot_handles_close_with_no_trades_gracefully() {
         "run_live returned an error when window closed with no trades: {run_result:?}"
     );
 
-    // 11. Verify database.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
-    // Market should exist in the DB (discovery found it and upserted it).
     let market_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM markets", [], |r| r.get(0))
         .unwrap();
@@ -2715,7 +2580,6 @@ async fn live_bot_handles_close_with_no_trades_gracefully() {
         "Expected at least 1 market in DB, got {market_count}"
     );
 
-    // 0 trades should exist (no CLOB data => no signals => no trades).
     let trade_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM simulated_trades", [], |r| r.get(0))
         .unwrap();
@@ -2724,7 +2588,6 @@ async fn live_bot_handles_close_with_no_trades_gracefully() {
         "Expected 0 trades (no CLOB data sent), got {trade_count}"
     );
 
-    // 0 trade results.
     let result_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM trade_results", [], |r| r.get(0))
         .unwrap();
@@ -2733,7 +2596,6 @@ async fn live_bot_handles_close_with_no_trades_gracefully() {
         "Expected 0 trade_results, got {result_count}"
     );
 
-    // Balance should still be 200.0 (no trades = no PnL changes).
     let final_balance: f64 = conn
         .query_row(
             "SELECT balance FROM balance_log ORDER BY id DESC LIMIT 1",

@@ -11,7 +11,6 @@ pub async fn require_secret(
     request: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
-    // /health is always accessible
     if request.uri().path() == "/health" {
         return Ok(next.run(request).await);
     }

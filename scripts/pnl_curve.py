@@ -83,7 +83,6 @@ stats_text = (
 )
 
 if total_trades < 5:
-    # === FEW TRADES: per-trade grouped bar chart ===
     fig, ax = plt.subplots(figsize=(14, 8))
 
     n = total_trades
@@ -95,7 +94,6 @@ if total_trades < 5:
         bars = ax.bar(x + offset, df[col], bar_width, label=label,
                       color=color, alpha=0.85, edgecolor="black", linewidth=0.5)
 
-    # Annotate each trade
     for i, row in df.iterrows():
         won = row["pnl_0pct"] > 0
         result = "WIN" if won else "LOSS"
@@ -126,7 +124,6 @@ if total_trades < 5:
             bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow", alpha=0.9))
 
 else:
-    # === MANY TRADES: cumulative line chart ===
     fig, axes = plt.subplots(2, 1, figsize=(14, 10))
 
     for (col, label), color in zip(fee_cols, fee_colors):

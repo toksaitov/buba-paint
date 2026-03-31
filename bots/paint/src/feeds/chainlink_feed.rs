@@ -12,14 +12,14 @@ use super::util::{backoff_delay, now_ms, should_reset_backoff};
 
 /// Run the Chainlink (RTDS) price feed.
 ///
-/// Connects to the Polymarket RTDS WebSocket, subscribes to BTC/USD Chainlink
+/// Connects to the Polymarket RTDS `WebSocket`, subscribes to BTC/USD Chainlink
 /// prices, and sends `FeedMessage::ChainlinkPrice` updates through `tx`.
 ///
 /// If no price update arrives within `config.chainlink_stale_ms`, sends a
 /// `FeedMessage::ChainlinkStale` event and forces a reconnect.
 ///
 /// This function runs forever (or until the channel is closed).
-#[allow(clippy::too_many_lines)] // will be split in Phase 2
+#[allow(clippy::too_many_lines)]
 pub async fn run_chainlink_feed(
     config: &Config,
     tx: mpsc::Sender<FeedMessage>,
@@ -50,7 +50,6 @@ pub async fn run_chainlink_feed(
 
                 let (mut write, mut read) = ws_stream.split();
 
-                // Send subscription message.
                 let sub_msg = serde_json::json!({
                     "action": "subscribe",
                     "subscriptions": [{
@@ -93,13 +92,13 @@ pub async fn run_chainlink_feed(
                                 Some(Ok(Message::Text(text))) => {
                                     match process_chainlink_message(&text, &tx).await {
                                         Ok(true) => {
-                                            // Got a price update — reset staleness timer.
+
                                             stale_sleep.as_mut().reset(
                                                 tokio::time::Instant::now() + stale_duration
                                             );
                                         }
                                         Ok(false) => {
-                                            // Non-price message — no reset needed.
+
                                         }
                                         Err(e) => {
                                             warn!(feed = "chainlink", "failed to process message: {e}");
@@ -136,7 +135,7 @@ pub async fn run_chainlink_feed(
                         () = &mut stale_sleep => {
                             warn!(feed = "chainlink", "no update in {stale_ms}ms — stale");
                             let _ = tx.send(FeedMessage::ChainlinkStale).await;
-                            // Force reconnect.
+
                             break;
                         }
                     }
@@ -151,7 +150,6 @@ pub async fn run_chainlink_feed(
             }
         }
 
-        // Disconnected — notify and backoff.
         let _ = tx
             .send(FeedMessage::FeedDisconnected("chainlink".to_string()))
             .await;
@@ -179,7 +177,7 @@ pub async fn run_chainlink_feed(
     }
 }
 
-/// Parse a Chainlink/RTDS JSON message into a list of (price, timestamp) pairs.
+/// Parse a Chainlink/RTDS `JSON` message into a list of (price, timestamp) pairs.
 ///
 /// Handles two formats:
 /// - **Regular update**: `{topic: "crypto_prices_chainlink", payload: {value, timestamp}}`
@@ -189,7 +187,6 @@ pub async fn run_chainlink_feed(
 pub(crate) fn parse_chainlink_payload(msg: &serde_json::Value) -> Vec<(f64, u64)> {
     let mut results = Vec::new();
 
-    // Format 1: Regular update.
     if msg.get("topic").and_then(serde_json::Value::as_str) == Some("crypto_prices_chainlink") {
         if let Some(payload) = msg.get("payload") {
             let price = parse_f64_field(payload, "value");
@@ -205,7 +202,6 @@ pub(crate) fn parse_chainlink_payload(msg: &serde_json::Value) -> Vec<(f64, u64)
         }
     }
 
-    // Format 2: Initial data dump.
     if let Some(data) = msg
         .get("payload")
         .and_then(|p| p.get("data"))
@@ -227,10 +223,10 @@ pub(crate) fn parse_chainlink_payload(msg: &serde_json::Value) -> Vec<(f64, u64)
     results
 }
 
-/// Parse a raw WebSocket text frame into price updates.
+/// Parse a raw `WebSocket` text frame into price updates.
 ///
 /// Pure function -- no I/O, no channels.
-/// If the top-level value is a JSON array, each element is processed.
+/// If the top-level value is a `JSON` array, each element is processed.
 /// Otherwise delegates to `parse_chainlink_payload`.
 pub(crate) fn process_chainlink_text(text: &str) -> Vec<(f64, u64)> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -267,6 +263,7 @@ async fn process_chainlink_message(
         tx.send(FeedMessage::ChainlinkPrice {
             price: *price,
             timestamp: *timestamp,
+            payload_json: Some(text.to_string()),
         })
         .await
         .map_err(|_| anyhow::anyhow!("channel closed"))?;
@@ -275,7 +272,7 @@ async fn process_chainlink_message(
     Ok(true)
 }
 
-/// Parse a JSON field that may be either a number or a string-encoded number.
+/// Parse a `JSON` field that may be either a number or a string-encoded number.
 fn parse_f64_field(v: &serde_json::Value, field: &str) -> Option<f64> {
     v.get(field).and_then(|val| {
         val.as_f64()

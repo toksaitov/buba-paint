@@ -7,7 +7,6 @@ export function Logo({ size = 18 }: { size?: number }) {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      {/* Trading line going up */}
       <polyline
         points="2,18 8,14 12,16 22,4"
         stroke="#1a7f37"
@@ -16,7 +15,6 @@ export function Logo({ size = 18 }: { size?: number }) {
         strokeLinejoin="round"
         fill="none"
       />
-      {/* Arrow head */}
       <polyline
         points="16,4 22,4 22,10"
         stroke="#1a7f37"

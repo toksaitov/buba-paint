@@ -83,7 +83,7 @@ test("Stop button disabled when process is stopped", async () => {
   });
   renderHeader();
   await waitFor(() => expect(screen.getByText("Stopped")).toBeInTheDocument());
-  // Both Stop and Restart show "Bot is not running" when stopped
+
   const disabledButtons = screen.getAllByTitle("Bot is not running");
   expect(disabledButtons.length).toBe(2);
   disabledButtons.forEach((btn) => expect(btn).toBeDisabled());
@@ -137,7 +137,6 @@ test("error toast dismisses on X click", async () => {
     expect(screen.getByText("test error")).toBeInTheDocument(),
   );
 
-  // Find and click the dismiss button (sibling of the error text)
   const errorBanner = screen.getByText("test error").closest("div")!;
   const dismissBtn = errorBanner.querySelector("button")!;
   await userEvent.click(dismissBtn);
@@ -147,10 +146,11 @@ test("error toast dismisses on X click", async () => {
 test("shows uptime when process is running", async () => {
   renderHeader();
   await waitFor(() => expect(screen.getByText("Running")).toBeInTheDocument());
-  expect(screen.getByText("2m")).toBeInTheDocument(); // 120s = 2m
+  expect(screen.getByText("2m")).toBeInTheDocument();
 });
 
 test("displays bot name", () => {
   renderHeader();
   expect(screen.getByText("Test Bot")).toBeInTheDocument();
 });
+

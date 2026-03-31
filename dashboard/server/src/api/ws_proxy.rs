@@ -15,10 +15,10 @@ pub struct WsQuery {
     token: Option<String>,
 }
 
-/// `GET /ws/bots/:id` — WebSocket proxy to agent.
+/// `GET /ws/bots/:id` — `WebSocket` proxy to agent.
 ///
 /// Authenticates via `?token=<jwt>` query parameter, connects to the agent's
-/// `/ws/live` endpoint, and bridges the two WebSocket connections.
+/// `/ws/live` endpoint, and bridges the two `WebSocket` connections.
 #[allow(clippy::unused_async)]
 pub async fn ws_proxy(
     State(state): State<AppState>,
@@ -27,14 +27,12 @@ pub async fn ws_proxy(
     Extension(auth_state): Extension<AuthState>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, DashboardError> {
-    // Validate JWT from query param
     let token = query
         .token
         .ok_or_else(|| DashboardError::Unauthorized("missing token".into()))?;
     validate_jwt(&token, &auth_state.jwt_secret)
         .map_err(|e| DashboardError::Unauthorized(e.clone()))?;
 
-    // Find the agent
     let agent = state
         .agents
         .iter()
@@ -51,8 +49,8 @@ pub async fn ws_proxy(
     Ok(ws.on_upgrade(move |client_socket| proxy_websocket(client_socket, ws_url, secret)))
 }
 
+/// Proxy websocket.
 async fn proxy_websocket(client_socket: WebSocket, agent_url: String, secret: String) {
-    // Extract host from the agent URL for the required Host header
     let host = agent_url
         .parse::<axum::http::Uri>()
         .ok()
@@ -65,7 +63,6 @@ async fn proxy_websocket(client_socket: WebSocket, agent_url: String, secret: St
         })
         .unwrap_or_default();
 
-    // Connect to agent WebSocket
     let request = match axum::http::Request::builder()
         .uri(&agent_url)
         .header("Host", &host)
@@ -97,7 +94,6 @@ async fn proxy_websocket(client_socket: WebSocket, agent_url: String, secret: St
     let (mut agent_sink, mut agent_stream) = agent_ws.split();
     let (mut client_sink, mut client_stream) = client_socket.split();
 
-    // Forward agent → client
     let agent_to_client = async {
         while let Some(msg) = agent_stream.next().await {
             match msg {
@@ -119,7 +115,6 @@ async fn proxy_websocket(client_socket: WebSocket, agent_url: String, secret: St
         }
     };
 
-    // Forward client → agent (mainly close/ping/pong)
     let client_to_agent = async {
         while let Some(msg) = client_stream.next().await {
             match msg {

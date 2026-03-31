@@ -86,10 +86,8 @@ strategy_markers = {
 direction_offset = {"UP": 1, "DOWN": -1}
 
 if len(sig_df) < 50:
-    # === FEW SIGNALS: Timeline with BTC price + signal markers ===
     fig, ax = plt.subplots(figsize=(16, 8))
 
-    # Resample BTC price to 30s
     if not btc_df.empty:
         btc_df["time"] = pd.to_datetime(btc_df["timestamp"], unit="ms")
         run_minutes = (btc_df["timestamp"].max() - btc_df["timestamp"].min()) / 60_000
@@ -100,21 +98,18 @@ if len(sig_df) < 50:
         ax.plot(btc_plot["time"], btc_plot["price"], linewidth=0.8,
                 alpha=0.7, color="#2196F3", label="BTC (Binance)")
 
-    # Window shading
     for i, (_, row) in enumerate(mf.iterrows()):
         s = pd.to_datetime(row["start_time"], unit="ms")
         e = pd.to_datetime(row["end_time"], unit="ms")
         if i % 2 == 0:
             ax.axvspan(s, e, alpha=0.06, color="gray")
 
-    # Plot signals as markers on the BTC price line
     for strategy in sig_df["strategy"].unique():
         sdf = sig_df[sig_df["strategy"] == strategy]
         marker, color, size = strategy_markers.get(strategy, ("o", "gray", 40))
 
         for direction in sdf["direction"].unique():
             ddf = sdf[sdf["direction"] == direction]
-            # Find nearest BTC price for y-coordinate
             if not btc_df.empty:
                 y_vals = []
                 for _, sig_row in ddf.iterrows():
@@ -140,7 +135,6 @@ if len(sig_df) < 50:
             bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow", alpha=0.9))
 
 else:
-    # === MANY SIGNALS: hour histogram + cumulative ===
     sig_df["time_et"] = sig_df["time"].dt.tz_localize("UTC").dt.tz_convert("US/Eastern")
     sig_df["hour"] = sig_df["time_et"].dt.hour
 

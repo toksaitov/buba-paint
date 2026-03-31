@@ -1,5 +1,6 @@
 use super::*;
 use crate::db::schema::run_migrations;
+use crate::types::ReplayFidelity;
 
 /// Helper: create an in-memory DB with the full schema.
 fn setup_test_db() -> rusqlite::Connection {
@@ -33,16 +34,19 @@ fn tick(ts: u64, source: &str, price: Option<f64>) -> RawTick {
     RawTick {
         timestamp: ts,
         source: source.to_string(),
+        event_type: "legacy_snapshot".to_string(),
+        market_id: None,
+        asset_id: None,
         price,
         bid: None,
         ask: None,
         bid_size: None,
         ask_size: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     }
 }
 
-// -- from_cached / basic iteration ----------------------------------------
-
+/// Verifies that empty replay returns none.
 #[test]
 fn empty_replay_returns_none() {
     let mut replay = TickReplay::from_cached(vec![]);
@@ -50,6 +54,7 @@ fn empty_replay_returns_none() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that single tick returns one group.
 #[test]
 fn single_tick_returns_one_group() {
     let mut replay = TickReplay::from_cached(vec![tick(1000, "binance", Some(42_000.0))]);
@@ -66,6 +71,7 @@ fn single_tick_returns_one_group() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that ticks within 10ms are grouped.
 #[test]
 fn ticks_within_10ms_are_grouped() {
     let ticks = vec![
@@ -82,6 +88,7 @@ fn ticks_within_10ms_are_grouped() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that ticks beyond 10ms are separate groups.
 #[test]
 fn ticks_beyond_10ms_are_separate_groups() {
     let ticks = vec![
@@ -103,9 +110,9 @@ fn ticks_beyond_10ms_are_separate_groups() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that boundary at exactly 10ms.
 #[test]
 fn boundary_at_exactly_10ms() {
-    // Difference is exactly 10: should be grouped (10 <= 10).
     let ticks = vec![
         tick(1000, "binance", Some(42_000.0)),
         tick(1010, "chainlink", Some(41_999.0)),
@@ -117,6 +124,7 @@ fn boundary_at_exactly_10ms() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that total ticks count.
 #[test]
 fn total_ticks_count() {
     let ticks = vec![
@@ -127,6 +135,7 @@ fn total_ticks_count() {
     assert_eq!(replay.total_ticks(), 2);
 }
 
+/// Verifies that reset replays from start.
 #[test]
 fn reset_replays_from_start() {
     let mut replay = TickReplay::from_cached(vec![tick(1000, "binance", Some(42_000.0))]);
@@ -136,6 +145,7 @@ fn reset_replays_from_start() {
     assert!(replay.next_group().is_some());
 }
 
+/// Verifies that later source overwrites earlier in same group.
 #[test]
 fn later_source_overwrites_earlier_in_same_group() {
     let ticks = vec![
@@ -147,6 +157,7 @@ fn later_source_overwrites_earlier_in_same_group() {
     assert_eq!(group.binance.unwrap().price, Some(42_100.0));
 }
 
+/// Verifies that multiple groups sequential.
 #[test]
 fn multiple_groups_sequential() {
     let ticks = vec![
@@ -171,6 +182,7 @@ fn multiple_groups_sequential() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that all four sources grouped.
 #[test]
 fn all_four_sources_grouped() {
     let ticks = vec![
@@ -179,20 +191,28 @@ fn all_four_sources_grouped() {
         RawTick {
             timestamp: 1006,
             source: "clob_up".into(),
+            event_type: "legacy_snapshot".into(),
+            market_id: None,
+            asset_id: None,
             price: None,
             bid: Some(0.45),
             ask: Some(0.55),
             bid_size: Some(100.0),
             ask_size: Some(200.0),
+            fidelity: ReplayFidelity::LegacySnapshot,
         },
         RawTick {
             timestamp: 1009,
             source: "clob_down".into(),
+            event_type: "legacy_snapshot".into(),
+            market_id: None,
+            asset_id: None,
             price: None,
             bid: Some(0.40),
             ask: Some(0.50),
             bid_size: Some(50.0),
             ask_size: Some(75.0),
+            fidelity: ReplayFidelity::LegacySnapshot,
         },
     ];
     let mut replay = TickReplay::from_cached(ticks);
@@ -211,8 +231,7 @@ fn all_four_sources_grouped() {
     assert!(replay.next_group().is_none());
 }
 
-// -- from_db / load_ticks with in-memory SQLite ---------------------------
-
+/// Verifies that from db empty returns no groups.
 #[test]
 fn from_db_empty_returns_no_groups() {
     let conn = setup_test_db();
@@ -221,6 +240,7 @@ fn from_db_empty_returns_no_groups() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that from db single binance tick.
 #[test]
 fn from_db_single_binance_tick() {
     let conn = setup_test_db();
@@ -245,6 +265,7 @@ fn from_db_single_binance_tick() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that from db groups within 10ms.
 #[test]
 fn from_db_groups_within_10ms() {
     let conn = setup_test_db();
@@ -291,6 +312,7 @@ fn from_db_groups_within_10ms() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that from db splits beyond 10ms.
 #[test]
 fn from_db_splits_beyond_10ms() {
     let conn = setup_test_db();
@@ -329,6 +351,7 @@ fn from_db_splits_beyond_10ms() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that from db time range filtering.
 #[test]
 fn from_db_time_range_filtering() {
     let conn = setup_test_db();
@@ -383,6 +406,7 @@ fn from_db_time_range_filtering() {
     assert!(replay.next_group().is_none());
 }
 
+/// Verifies that load ticks static method.
 #[test]
 fn load_ticks_static_method() {
     let conn = setup_test_db();
@@ -413,9 +437,9 @@ fn load_ticks_static_method() {
     assert_eq!(ticks[1].source, "chainlink");
 }
 
+/// Verifies that unknown source silently ignored.
 #[test]
 fn unknown_source_silently_ignored() {
-    // A tick with source="unknown" should not populate any field in the group.
     let ticks = vec![tick(1000, "unknown", Some(42_000.0))];
     let mut replay = TickReplay::from_cached(ticks);
     let group = replay.next_group().unwrap();
@@ -438,6 +462,7 @@ fn unknown_source_silently_ignored() {
     );
 }
 
+/// Verifies that from db all four sources.
 #[test]
 fn from_db_all_four_sources() {
     let conn = setup_test_db();

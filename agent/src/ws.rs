@@ -21,7 +21,6 @@ pub fn spawn_poller(db: Arc<DbReader>, poll_interval_ms: u64, tx: broadcast::Sen
         loop {
             tokio::time::sleep(interval).await;
 
-            // Check for new trades
             match db.get_trades_since(last_trade_id).await {
                 Ok(trades) => {
                     for trade in trades {
@@ -32,7 +31,6 @@ pub fn spawn_poller(db: Arc<DbReader>, poll_interval_ms: u64, tx: broadcast::Sen
                 Err(e) => warn!("poll trades error: {e}"),
             }
 
-            // Check for new balance entries
             match db.get_balance_since(last_balance_id).await {
                 Ok(entries) => {
                     for entry in entries {
@@ -43,7 +41,6 @@ pub fn spawn_poller(db: Arc<DbReader>, poll_interval_ms: u64, tx: broadcast::Sen
                 Err(e) => warn!("poll balance error: {e}"),
             }
 
-            // Check for new signals
             match db.get_signals_since(last_signal_id).await {
                 Ok(signals) => {
                     for signal in signals {
@@ -57,7 +54,7 @@ pub fn spawn_poller(db: Arc<DbReader>, poll_interval_ms: u64, tx: broadcast::Sen
     });
 }
 
-/// Handle a single WebSocket connection: subscribe to broadcast and forward messages.
+/// Handle a single `WebSocket` connection: subscribe to broadcast and forward messages.
 pub async fn handle_ws(mut socket: WebSocket, mut rx: broadcast::Receiver<WsMessage>) {
     debug!("WebSocket client connected");
 
@@ -74,7 +71,7 @@ pub async fn handle_ws(mut socket: WebSocket, mut rx: broadcast::Receiver<WsMess
                             }
                         };
                         if socket.send(Message::Text(json.into())).await.is_err() {
-                            break; // client disconnected
+                            break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -89,7 +86,7 @@ pub async fn handle_ws(mut socket: WebSocket, mut rx: broadcast::Receiver<WsMess
                     Some(Ok(Message::Ping(data))) => {
                         let _ = socket.send(Message::Pong(data)).await;
                     }
-                    _ => {} // ignore text/binary from client
+                    _ => {}
                 }
             }
         }

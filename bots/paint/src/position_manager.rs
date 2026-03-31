@@ -1,9 +1,3 @@
-// Position manager — manages trade lifecycle (open / close / settle).
-//
-// Ported from the TypeScript `PositionManager` class.  Instead of extending
-// `EventEmitter`, methods return values that the caller feeds to the circuit
-// breaker and trend tracker.
-
 use crate::bankroll::BankrollManager;
 use crate::clock::Clock;
 use crate::config::Config;
@@ -22,12 +16,14 @@ pub struct PositionManager {
 }
 
 impl Default for PositionManager {
+    /// Create an empty position manager by default.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl PositionManager {
+    /// Create a new position manager with no open trades tracked in memory.
     pub fn new() -> Self {
         Self { open_count: 0 }
     }
@@ -52,62 +48,11 @@ impl PositionManager {
         config: &Config,
         clock: &dyn Clock,
     ) -> Option<SimulatedTrade> {
-        // Guard: max open positions.
-        if self.open_count >= config.max_open_positions {
-            tracing::debug!(
-                open = self.open_count,
-                max = config.max_open_positions,
-                "max open positions reached"
-            );
+        if !self.can_open_position(signal, window, is_batch, db, bankroll, config, clock)? {
             return None;
         }
 
-        // Guard: bankroll allows trading.
-        if !bankroll.can_trade(config, clock) {
-            tracing::debug!(
-                strategy = %signal.strategy,
-                "trade rejected: bankroll blocked"
-            );
-            return None;
-        }
-
-        // Guard: duplicate position in the same market.
-        let existing = db.get_open_trades_for_market(&window.market_id).ok()?;
-        if is_batch {
-            let duplicate = existing
-                .iter()
-                .any(|t| t.strategy == signal.strategy && t.side == signal.direction);
-            if duplicate {
-                tracing::debug!(
-                    strategy = %signal.strategy,
-                    market = %window.market_id,
-                    "trade rejected: duplicate batch position"
-                );
-                return None;
-            }
-        } else {
-            let same_strategy = existing.iter().any(|t| t.strategy == signal.strategy);
-            if same_strategy {
-                tracing::debug!(
-                    strategy = %signal.strategy,
-                    market = %window.market_id,
-                    "trade rejected: duplicate strategy position"
-                );
-                return None;
-            }
-        }
-
-        // Determine entry price and token ID based on direction.
-        let entry_price = match signal.direction {
-            SignalDirection::Up => signal.up_ask,
-            SignalDirection::Down => signal.down_ask,
-        };
-        let token_id = match signal.direction {
-            SignalDirection::Up => window.up_token_id.clone(),
-            SignalDirection::Down => window.down_token_id.clone(),
-        };
-
-        // Reserve capital via the bankroll manager.
+        let (entry_price, token_id) = trade_entry(signal, window);
         let mut size = bankroll.reserve_capital(
             entry_price,
             signal.confidence,
@@ -124,23 +69,10 @@ impl PositionManager {
             return None;
         }
 
-        // Clamp to available order book liquidity.
-        if available_liquidity_tokens > 0.0 && size > available_liquidity_tokens {
-            let excess_cost = (size - available_liquidity_tokens) * entry_price;
-            size = available_liquidity_tokens;
-            bankroll.release_reserved(excess_cost);
-        }
-
-        // Check if clamped size is still above minimum bet.
-        if size * entry_price < config.min_bet_usd {
-            let cost = size * entry_price;
-            tracing::debug!(
-                strategy = %signal.strategy,
-                clamped_usd = cost,
-                min_bet = config.min_bet_usd,
-                "trade rejected: below min bet after liquidity clamp"
-            );
-            bankroll.release_reserved(cost);
+        size = clamp_to_liquidity(size, available_liquidity_tokens, entry_price, bankroll);
+        if !size_meets_min_bet(size, entry_price, config.min_bet_usd) {
+            log_min_bet_rejection(signal, size, entry_price, config.min_bet_usd);
+            bankroll.release_reserved(size * entry_price);
             return None;
         }
 
@@ -154,6 +86,19 @@ impl PositionManager {
             entry_price,
             size,
             status: TradeStatus::Open,
+            signal_id: None,
+            requested_price: None,
+            requested_size: None,
+            filled_size: None,
+            avg_fill_price: None,
+            fill_status: None,
+            fill_reason: None,
+            fill_latency_ms: None,
+            execution_group_id: None,
+            execution_fidelity: None,
+            execution_mode: None,
+            order_id: None,
+            fill_price: None,
         };
 
         let id = db.open_trade(&trade).ok()?;
@@ -161,6 +106,45 @@ impl PositionManager {
         self.open_count += 1;
 
         Some(trade)
+    }
+
+    /// Return whether a new position may be opened for the provided signal.
+    #[allow(clippy::too_many_arguments)]
+    fn can_open_position(
+        &self,
+        signal: &Signal,
+        window: &MarketWindow,
+        is_batch: bool,
+        db: &Database,
+        bankroll: &mut BankrollManager,
+        config: &Config,
+        clock: &dyn Clock,
+    ) -> Option<bool> {
+        if self.open_count >= config.max_open_positions {
+            tracing::debug!(
+                open = self.open_count,
+                max = config.max_open_positions,
+                "max open positions reached"
+            );
+            return Some(false);
+        }
+        if !bankroll.can_trade(config, clock) {
+            tracing::debug!(
+                strategy = %signal.strategy,
+                "trade rejected: bankroll blocked"
+            );
+            return Some(false);
+        }
+        let existing = db.get_open_trades_for_market(&window.market_id).ok()?;
+        if has_duplicate_position(&existing, signal, is_batch) {
+            tracing::debug!(
+                strategy = %signal.strategy,
+                market = %window.market_id,
+                "trade rejected: duplicate position"
+            );
+            return Some(false);
+        }
+        Some(true)
     }
 
     /// Try to open a spread (both UP and DOWN legs) for the given signals.
@@ -177,7 +161,6 @@ impl PositionManager {
         config: &Config,
         clock: &dyn Clock,
     ) -> Vec<SimulatedTrade> {
-        // Need room for 2 more positions.
         if self.open_count + 2 > config.max_open_positions {
             return Vec::new();
         }
@@ -186,7 +169,6 @@ impl PositionManager {
             return Vec::new();
         }
 
-        // Find the UP and DOWN signals.
         let up_signal = signals.iter().find(|s| s.direction == SignalDirection::Up);
         let down_signal = signals
             .iter()
@@ -196,7 +178,6 @@ impl PositionManager {
             return Vec::new();
         };
 
-        // Check for existing duplicates.
         let Ok(existing) = db.get_open_trades_for_market(&window.market_id) else {
             return Vec::new();
         };
@@ -210,7 +191,6 @@ impl PositionManager {
             }
         }
 
-        // Reserve capital for both legs.
         let (up_tokens, down_tokens) = bankroll.reserve_spread_capital(
             up_signal.up_ask,
             down_signal.down_ask,
@@ -245,6 +225,19 @@ impl PositionManager {
                 entry_price,
                 size,
                 status: TradeStatus::Open,
+                signal_id: None,
+                requested_price: None,
+                requested_size: None,
+                filled_size: None,
+                avg_fill_price: None,
+                fill_status: None,
+                fill_reason: None,
+                fill_latency_ms: None,
+                execution_group_id: None,
+                execution_fidelity: None,
+                execution_mode: None,
+                order_id: None,
+                fill_price: None,
             };
 
             match db.open_trade(&trade) {
@@ -320,11 +313,12 @@ impl PositionManager {
             let gross = (settlement_price - trade.entry_price) * trade.size;
             let entry_cost = trade.entry_price * trade.size;
 
+            let fee_params = crate::fees::resolve_fee_params(config, Some(window), window.end_time);
             let fee_amount = crate::fees::compute_taker_fee(
                 trade.entry_price,
                 trade.size,
-                config.taker_fee_rate,
-                config.taker_fee_exponent,
+                fee_params.fee_rate,
+                fee_params.exponent,
             );
 
             let result = TradeResult {
@@ -373,9 +367,56 @@ impl PositionManager {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// Return whether the target position already exists in the open trade set.
+fn has_duplicate_position(existing: &[SimulatedTrade], signal: &Signal, is_batch: bool) -> bool {
+    if is_batch {
+        existing
+            .iter()
+            .any(|trade| trade.strategy == signal.strategy && trade.side == signal.direction)
+    } else {
+        existing
+            .iter()
+            .any(|trade| trade.strategy == signal.strategy)
+    }
+}
+
+/// Return the persisted trade entry price and token id for a signal direction.
+fn trade_entry(signal: &Signal, window: &MarketWindow) -> (f64, String) {
+    match signal.direction {
+        SignalDirection::Up => (signal.up_ask, window.up_token_id.clone()),
+        SignalDirection::Down => (signal.down_ask, window.down_token_id.clone()),
+    }
+}
+
+/// Clamp a reserved size to the available order-book liquidity.
+fn clamp_to_liquidity(
+    reserved_size: f64,
+    available_liquidity_tokens: f64,
+    entry_price: f64,
+    bankroll: &mut BankrollManager,
+) -> f64 {
+    if available_liquidity_tokens > 0.0 && reserved_size > available_liquidity_tokens {
+        bankroll.release_reserved((reserved_size - available_liquidity_tokens) * entry_price);
+        available_liquidity_tokens
+    } else {
+        reserved_size
+    }
+}
+
+/// Return whether the clamped trade still clears the configured minimum bet.
+fn size_meets_min_bet(size: f64, entry_price: f64, min_bet_usd: f64) -> bool {
+    size * entry_price >= min_bet_usd
+}
+
+/// Log the rejection details for a trade that falls below the minimum bet.
+fn log_min_bet_rejection(signal: &Signal, size: f64, entry_price: f64, min_bet_usd: f64) {
+    tracing::debug!(
+        strategy = %signal.strategy,
+        clamped_usd = size * entry_price,
+        min_bet = min_bet_usd,
+        "trade rejected: below min bet after liquidity clamp"
+    );
+}
 
 #[cfg(test)]
 #[path = "tests/position_manager_tests.rs"]

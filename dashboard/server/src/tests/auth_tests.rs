@@ -1,5 +1,6 @@
 use super::*;
 
+/// Verifies that hash and verify password.
 #[test]
 fn hash_and_verify_password() {
     let hash = hash_password("my-secret-pass").unwrap();
@@ -7,22 +8,25 @@ fn hash_and_verify_password() {
     assert!(!verify_password("wrong-pass", &hash));
 }
 
+/// Verifies that hash produces different salts.
 #[test]
 fn hash_produces_different_salts() {
     let h1 = hash_password("same-pass").unwrap();
     let h2 = hash_password("same-pass").unwrap();
-    // Different salts → different hashes
+
     assert_ne!(h1, h2);
-    // Both verify
+
     assert!(verify_password("same-pass", &h1));
     assert!(verify_password("same-pass", &h2));
 }
 
+/// Verifies that verify invalid hash format.
 #[test]
 fn verify_invalid_hash_format() {
     assert!(!verify_password("pass", "not-a-valid-hash"));
 }
 
+/// Verifies that create and validate jwt.
 #[test]
 fn create_and_validate_jwt() {
     let token = create_jwt("user-123", "admin", "jwt-secret", 3600);
@@ -34,6 +38,7 @@ fn create_and_validate_jwt() {
     assert!(claims.exp > claims.iat);
 }
 
+/// Verifies that validate jwt wrong secret.
 #[test]
 fn validate_jwt_wrong_secret() {
     let token = create_jwt("user-1", "admin", "correct-secret", 3600);
@@ -41,9 +46,9 @@ fn validate_jwt_wrong_secret() {
     assert!(result.is_err());
 }
 
+/// Verifies that validate jwt expired.
 #[test]
 fn validate_jwt_expired() {
-    // Create a token that expired 10 seconds ago
     let now = jsonwebtoken::get_current_timestamp();
     let claims = Claims {
         sub: "user-1".to_string(),
@@ -62,12 +67,14 @@ fn validate_jwt_expired() {
     assert!(result.is_err());
 }
 
+/// Verifies that validate jwt garbage token.
 #[test]
 fn validate_jwt_garbage_token() {
     let result = validate_jwt("not.a.jwt", "secret");
     assert!(result.is_err());
 }
 
+/// Verifies that jwt duration is respected.
 #[test]
 fn jwt_duration_is_respected() {
     let token = create_jwt("u1", "observer", "sec", 7200);
@@ -76,6 +83,7 @@ fn jwt_duration_is_respected() {
     assert_eq!(diff, 7200);
 }
 
+/// Verifies that auth middleware allows login without token.
 #[tokio::test]
 async fn auth_middleware_allows_login_without_token() {
     use axum::Router;
@@ -97,7 +105,6 @@ async fn auth_middleware_allows_login_without_token() {
             db: std::sync::Arc::new(db),
         }));
 
-    // Login endpoint accessible without auth
     let resp = app
         .clone()
         .oneshot(
@@ -109,7 +116,6 @@ async fn auth_middleware_allows_login_without_token() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Protected endpoint rejects without auth
     let resp = app
         .oneshot(Request::post("/api/protected").body(Body::empty()).unwrap())
         .await
@@ -117,6 +123,7 @@ async fn auth_middleware_allows_login_without_token() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies that auth middleware accepts valid token.
 #[tokio::test]
 async fn auth_middleware_accepts_valid_token() {
     use axum::Router;

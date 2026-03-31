@@ -1,5 +1,3 @@
-// === Feed Events ===
-
 export interface BinanceTick {
   eventTime: number;
   price: number;
@@ -40,8 +38,6 @@ export interface ChainlinkTick {
   value: number;
 }
 
-// === Top-of-Book State ===
-
 export interface TopOfBook {
   bestBid: number;
   bestAsk: number;
@@ -54,8 +50,6 @@ export interface BookState {
   up: TopOfBook | null;
   down: TopOfBook | null;
 }
-
-// === Market Discovery ===
 
 export interface GammaMarket {
   id: string;
@@ -84,8 +78,6 @@ export interface MarketWindow {
   endTime: number;
   slug: string;
 }
-
-// === Strategies ===
 
 export type SignalDirection = "UP" | "DOWN";
 
@@ -116,8 +108,6 @@ export interface Strategy {
   evaluate(ctx: StrategyContext): Signal | Signal[] | null;
 }
 
-// === Position Manager ===
-
 export type TradeStatus = "open" | "closed" | "expired";
 
 export interface SimulatedTrade {
@@ -141,7 +131,5 @@ export interface TradeResult {
   pnl2pct: number;
   pnl3pct: number;
 }
-
-// === Feed Base ===
 
 export type FeedStatus = "disconnected" | "connecting" | "connected";

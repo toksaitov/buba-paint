@@ -1,5 +1,3 @@
-// Market discovery — polls Gamma API for 5-minute BTC Up/Down markets.
-
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -65,9 +63,7 @@ async fn discovery_loop(
             .unwrap_or_default()
             .as_secs();
 
-        // Current window: floor(now / 300) * 300.
         let current_slot = (epoch_secs / 300) * 300;
-        // Next window: current + 300.
         let next_slot = current_slot + 300;
 
         for slot in [current_slot, next_slot] {
@@ -90,7 +86,6 @@ async fn discovery_loop(
                     );
                     seen_slugs.insert(slug);
 
-                    // Schedule a WindowClosed event at end_time.
                     let close_window = window.clone();
                     let close_tx = tx.clone();
                     let epoch_ms = epoch_secs * 1000;
@@ -110,13 +105,10 @@ async fn discovery_loop(
                         .await
                         .is_err()
                     {
-                        // Receiver dropped — shut down.
                         return;
                     }
                 }
-                Ok(None) => {
-                    // Market not found yet — will retry next poll.
-                }
+                Ok(None) => {}
                 Err(e) => {
                     warn!(discovery = "gamma", "fetch failed for {slug}: {e}");
                 }
@@ -131,7 +123,6 @@ async fn fetch_market(client: &reqwest::Client, url: &str) -> anyhow::Result<Opt
     let resp = client.get(url).send().await?;
 
     if !resp.status().is_success() {
-        // 404 is expected when a window hasn't been created yet.
         if resp.status().as_u16() == 404 {
             return Ok(None);
         }
@@ -144,133 +135,163 @@ async fn fetch_market(client: &reqwest::Client, url: &str) -> anyhow::Result<Opt
 
 /// Parse a Gamma API event response into a `MarketWindow`.
 ///
-/// Pure function -- takes already-parsed JSON, no HTTP.
+/// Pure function -- takes already-parsed `JSON`, no `HTTP`.
 /// Returns `None` when the response is missing required fields or when all
 /// candidate markets fail validation (missing outcomes, token IDs, etc.).
 pub(crate) fn parse_gamma_event_response(body: &serde_json::Value) -> Option<MarketWindow> {
-    // The response may be the event object directly or wrapped in a field.
-    // We need either a "markets" array or an "id" field to proceed.
     if body.get("markets").is_none() && body.get("id").is_none() {
         return None;
     }
-    let event = body;
+    gamma_market_candidates(body)
+        .into_iter()
+        .find_map(|market| parse_gamma_market_candidate(body, market))
+}
 
-    // Find the first market inside the event that has outcomes we can parse.
-    let markets = event
+/// Parse a flexible numeric Gamma field into `f64`.
+fn parse_f64_value(val: Option<&serde_json::Value>) -> Option<f64> {
+    val.and_then(|v| {
+        v.as_f64()
+            .or_else(|| v.as_i64().map(|n| n as f64))
+            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+    })
+}
+
+/// Return the market candidates embedded in a Gamma event payload.
+fn gamma_market_candidates(body: &serde_json::Value) -> Vec<&serde_json::Value> {
+    let markets = body
         .get("markets")
-        .and_then(|m| m.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    // If no "markets" array, treat the event itself as the market.
-    let candidates: Vec<&serde_json::Value> = if markets.is_empty() {
-        vec![event]
+        .and_then(|value| value.as_array())
+        .map_or_else(Vec::new, |markets| markets.iter().collect());
+    if markets.is_empty() {
+        vec![body]
     } else {
-        markets.iter().collect()
-    };
+        markets
+    }
+}
 
-    for market in candidates {
-        let market_id = market
-            .get("id")
-            .or_else(|| market.get("conditionId"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        if market_id.is_empty() {
-            continue;
-        }
-
-        let question = market
-            .get("question")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let condition_id = market
-            .get("conditionId")
-            .or_else(|| market.get("condition_id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let slug = event
-            .get("slug")
-            .and_then(|v| v.as_str())
-            .or_else(|| market.get("slug").and_then(|v| v.as_str()))
-            .unwrap_or("")
-            .to_string();
-
-        // Parse outcomes — may be a JSON array of strings or a single string.
-        let outcomes = parse_string_or_array(market.get("outcomes"));
-        // Parse clobTokenIds — same flexible format.
-        let clob_token_ids = parse_string_or_array(market.get("clobTokenIds"));
-
-        if outcomes.len() < 2 || clob_token_ids.len() < 2 {
-            continue;
-        }
-
-        // Find UP and DOWN indices.
-        let up_idx = outcomes.iter().position(|o| {
-            let lower = o.to_lowercase();
-            lower == "up" || lower == "yes"
-        });
-        let down_idx = outcomes.iter().position(|o| {
-            let lower = o.to_lowercase();
-            lower == "down" || lower == "no"
-        });
-
-        let (up_idx, down_idx) = match (up_idx, down_idx) {
-            (Some(u), Some(d)) => (u, d),
-            _ => {
-                // Fall back to positional: first = UP, second = DOWN.
-                (0, 1)
-            }
-        };
-
-        if up_idx >= clob_token_ids.len() || down_idx >= clob_token_ids.len() {
-            continue;
-        }
-
-        let up_token_id = clob_token_ids[up_idx].clone();
-        let down_token_id = clob_token_ids[down_idx].clone();
-
-        // Parse end_date to get end_time.
-        let end_date_str = market
+/// Parse one candidate market entry from a Gamma event payload.
+fn parse_gamma_market_candidate(
+    event: &serde_json::Value,
+    market: &serde_json::Value,
+) -> Option<MarketWindow> {
+    let market_id = market_id(market)?;
+    let condition_id = market
+        .get("conditionId")
+        .or_else(|| market.get("condition_id"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let slug = event
+        .get("slug")
+        .and_then(|value| value.as_str())
+        .or_else(|| market.get("slug").and_then(|value| value.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let (up_token_id, down_token_id) = gamma_token_pair(market)?;
+    let end_time = parse_end_date(
+        market
             .get("endDate")
             .or_else(|| market.get("end_date"))
             .or_else(|| event.get("endDate"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+    )
+    .unwrap_or(0);
 
-        let end_time = parse_end_date(end_date_str).unwrap_or(0);
-
-        // Start time is end_time - 300_000 (5 minutes).
-        let start_time = end_time.saturating_sub(300_000);
-
-        return Some(MarketWindow {
-            market_id,
-            question,
-            up_token_id,
-            down_token_id,
-            condition_id,
-            start_time,
-            end_time,
-            slug,
-        });
-    }
-
-    None
+    Some(MarketWindow {
+        market_id,
+        question: market
+            .get("question")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string(),
+        up_token_id,
+        down_token_id,
+        condition_id,
+        start_time: end_time.saturating_sub(300_000),
+        end_time,
+        slug,
+        outcome: None,
+        resolution_source: string_field(market, event, "resolutionSource"),
+        fee_profile: Some("crypto".to_string()),
+        order_min_size: number_field(market, event, "orderMinSize"),
+        order_price_min_tick_size: number_field(market, event, "orderPriceMinTickSize"),
+        maker_base_fee: number_field(market, event, "makerBaseFee"),
+        taker_base_fee: number_field(market, event, "takerBaseFee"),
+        rewards_min_size: number_field(market, event, "rewardsMinSize"),
+        rewards_max_spread: number_field(market, event, "rewardsMaxSpread"),
+    })
 }
 
-/// Parse a JSON value that may be a string (JSON-encoded array) or an actual
-/// JSON array of strings.
+/// Extract the canonical market identifier from a Gamma market entry.
+fn market_id(market: &serde_json::Value) -> Option<String> {
+    let market_id = market
+        .get("id")
+        .or_else(|| market.get("conditionId"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    (!market_id.is_empty()).then_some(market_id)
+}
+
+/// Extract the up/down token ids from a Gamma market entry.
+fn gamma_token_pair(market: &serde_json::Value) -> Option<(String, String)> {
+    let outcomes = parse_string_or_array(market.get("outcomes"));
+    let clob_token_ids = parse_string_or_array(market.get("clobTokenIds"));
+    if outcomes.len() < 2 || clob_token_ids.len() < 2 {
+        return None;
+    }
+    let (up_idx, down_idx) = gamma_outcome_indices(&outcomes);
+    if up_idx >= clob_token_ids.len() || down_idx >= clob_token_ids.len() {
+        return None;
+    }
+    Some((
+        clob_token_ids[up_idx].clone(),
+        clob_token_ids[down_idx].clone(),
+    ))
+}
+
+/// Resolve the outcome indices for the up/down tokens.
+fn gamma_outcome_indices(outcomes: &[String]) -> (usize, usize) {
+    let up_idx = outcomes.iter().position(|outcome| {
+        let lower = outcome.to_lowercase();
+        lower == "up" || lower == "yes"
+    });
+    let down_idx = outcomes.iter().position(|outcome| {
+        let lower = outcome.to_lowercase();
+        lower == "down" || lower == "no"
+    });
+    match (up_idx, down_idx) {
+        (Some(up_idx), Some(down_idx)) => (up_idx, down_idx),
+        _ => (0, 1),
+    }
+}
+
+/// Read a string field from the market entry with event-level fallback.
+fn string_field(
+    market: &serde_json::Value,
+    event: &serde_json::Value,
+    key: &str,
+) -> Option<String> {
+    market
+        .get(key)
+        .or_else(|| event.get(key))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+/// Read a numeric field from the market entry with event-level fallback.
+fn number_field(market: &serde_json::Value, event: &serde_json::Value, key: &str) -> Option<f64> {
+    parse_f64_value(market.get(key).or_else(|| event.get(key)))
+}
+
+/// Parse a `JSON` value that may be a string (`JSON`-encoded array) or an actual
+/// `JSON` array of strings.
 pub(crate) fn parse_string_or_array(val: Option<&serde_json::Value>) -> Vec<String> {
     let Some(val) = val else {
         return Vec::new();
     };
 
-    // If it's already an array, extract string elements.
     if let Some(arr) = val.as_array() {
         return arr
             .iter()
@@ -278,12 +299,10 @@ pub(crate) fn parse_string_or_array(val: Option<&serde_json::Value>) -> Vec<Stri
             .collect();
     }
 
-    // If it's a string, try to parse it as JSON.
     if let Some(s) = val.as_str() {
         if let Ok(parsed) = serde_json::from_str::<Vec<String>>(s) {
             return parsed;
         }
-        // Could be a single value (not an array).
         if !s.is_empty() {
             return vec![s.to_string()];
         }
@@ -298,12 +317,10 @@ pub(crate) fn parse_end_date(s: &str) -> Option<u64> {
         return None;
     }
 
-    // Try RFC 3339 first.
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return Some(dt.timestamp_millis() as u64);
     }
 
-    // Try without timezone (assume UTC).
     let s_utc = if s.contains('Z') || s.contains('+') {
         s.to_string()
     } else {
@@ -315,10 +332,6 @@ pub(crate) fn parse_end_date(s: &str) -> Option<u64> {
 
     None
 }
-
-// ---------------------------------------------------------------------------
-// Resolution polling
-// ---------------------------------------------------------------------------
 
 /// Poll the Gamma API for a market's resolved outcome.
 ///
@@ -379,7 +392,6 @@ pub async fn poll_resolution(
             return Some(direction);
         }
 
-        // Not resolved yet, will retry.
         if attempt < max_retries {
             tracing::debug!(slug, attempt, "market not yet resolved, retrying...");
         }

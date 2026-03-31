@@ -1,6 +1,5 @@
 import { describe, expect, test, beforeEach, vi, afterEach } from "vitest";
 
-// Minimal WebSocket mock.
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
   url: string;
@@ -20,24 +19,20 @@ class MockWebSocket {
     this.closeCalled = true;
   }
 
-  /** Simulate the server opening the connection. */
   simulateOpen() {
     this.readyState = 1;
     this.onopen?.();
   }
 
-  /** Simulate the server sending a message. */
   simulateMessage(data: string) {
     this.onmessage?.({ data });
   }
 
-  /** Simulate the connection closing. */
   simulateClose() {
     this.readyState = 3;
     this.onclose?.();
   }
 
-  /** Simulate an error. */
   simulateError() {
     this.onerror?.();
   }
@@ -114,7 +109,6 @@ describe("connectWs", () => {
     ws1.simulateOpen();
     ws1.simulateClose();
 
-    // First retry delay: 3000 * 1 = 3000ms
     expect(MockWebSocket.instances).toHaveLength(1);
     vi.advanceTimersByTime(3000);
     expect(MockWebSocket.instances).toHaveLength(2);
@@ -124,11 +118,10 @@ describe("connectWs", () => {
     const onGiveUp = vi.fn();
     connectWs("bot-1", vi.fn(), onGiveUp);
 
-    // Fail 4 times (MAX_RETRIES = 3, so > 3 failures triggers give-up).
     for (let i = 0; i < 4; i++) {
       const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1];
       ws.simulateClose();
-      // Advance past the reconnect delay.
+
       vi.advanceTimersByTime(15000);
     }
 
@@ -139,7 +132,6 @@ describe("connectWs", () => {
     const onGiveUp = vi.fn();
     connectWs("bot-1", vi.fn(), onGiveUp);
 
-    // Fail twice.
     const ws1 = MockWebSocket.instances[0];
     ws1.simulateClose();
     vi.advanceTimersByTime(3000);
@@ -148,11 +140,9 @@ describe("connectWs", () => {
     ws2.simulateClose();
     vi.advanceTimersByTime(6000);
 
-    // Now succeed, which resets failures to 0.
     const ws3 = MockWebSocket.instances[2];
     ws3.simulateOpen();
 
-    // Fail 3 more times — should NOT give up because counter was reset.
     ws3.simulateClose();
     vi.advanceTimersByTime(3000);
 
@@ -164,8 +154,8 @@ describe("connectWs", () => {
     ws5.simulateClose();
     vi.advanceTimersByTime(9000);
 
-    // 3 failures after reset — still within MAX_RETRIES, should reconnect.
     expect(MockWebSocket.instances).toHaveLength(6);
     expect(onGiveUp).not.toHaveBeenCalled();
   });
 });
+

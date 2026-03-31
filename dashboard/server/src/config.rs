@@ -15,6 +15,7 @@ pub struct ServerConfig {
     pub jwt_secret: String,
 }
 
+/// Default port.
 fn default_port() -> u16 {
     3001
 }

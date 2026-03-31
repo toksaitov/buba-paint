@@ -1,9 +1,11 @@
 use std::env;
 
+/// Env str.
 fn env_str(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Env f64.
 fn env_f64(key: &str, default: f64) -> f64 {
     env::var(key)
         .ok()
@@ -11,6 +13,7 @@ fn env_f64(key: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+/// Env u64.
 fn env_u64(key: &str, default: u64) -> u64 {
     env::var(key)
         .ok()
@@ -18,31 +21,30 @@ fn env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Env bool.
 fn env_bool(key: &str, default: bool) -> bool {
     env::var(key).ok().map_or(default, |v| v == "true")
 }
 
-// Testable parsing helpers that accept an `Option<&str>` instead of reading
-// the environment directly.  The public `env_*` functions above delegate to
-// `env::var`, but these let us exercise the same parsing logic in tests
-// without mutating process-global state (which requires `unsafe` under
-// Rust 2024 edition, and this crate forbids `unsafe_code`).
-
+/// Resolves str.
 #[cfg(test)]
 fn resolve_str(raw: Option<&str>, default: &str) -> String {
     raw.map_or_else(|| default.to_string(), ToString::to_string)
 }
 
+/// Resolves f64.
 #[cfg(test)]
 fn resolve_f64(raw: Option<&str>, default: f64) -> f64 {
     raw.and_then(|v| v.parse::<f64>().ok()).unwrap_or(default)
 }
 
+/// Resolves u64.
 #[cfg(test)]
 fn resolve_u64(raw: Option<&str>, default: u64) -> u64 {
     raw.and_then(|v| v.parse::<u64>().ok()).unwrap_or(default)
 }
 
+/// Resolves bool.
 #[cfg(test)]
 fn resolve_bool(raw: Option<&str>, default: bool) -> bool {
     raw.map_or(default, |v| v == "true")
@@ -50,50 +52,42 @@ fn resolve_bool(raw: Option<&str>, default: bool) -> bool {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    // WebSocket / API URLs
     pub binance_ws_url: String,
     pub clob_ws_url: String,
     pub rtds_ws_url: String,
     pub gamma_api_url: String,
 
-    // Polling & tick intervals
     pub gamma_poll_interval: u64,
     pub tick_interval: u64,
     pub clob_ping_interval: u64,
     pub rtds_ping_interval: u64,
     pub chainlink_stale_ms: u64,
 
-    // Reconnection
     pub reconnect_base_delay: u64,
     pub reconnect_max_delay: u64,
     pub reconnect_min_stable_ms: u64,
     pub reconnect_max_failures: u32,
     pub reconnect_pause_ms: u64,
 
-    // Database
     pub db_path: String,
 
-    // Latency-arb strategy
     pub latency_arb_momentum_threshold: f64,
     pub latency_arb_max_ask: f64,
     pub latency_arb_min_ask: f64,
     pub latency_arb_cooldown_ms: u64,
+    pub latency_arb_adaptive_window_ms: u64,
 
-    // Spread-capture strategy
     pub spread_capture_threshold: f64,
     pub spread_capture_min_ask: f64,
 
-    // Momentum
     pub momentum_window_ms: u64,
 
-    // Bankroll
     pub starting_balance: f64,
     pub max_position_fraction: f64,
     pub min_balance_threshold: f64,
     pub max_drawdown_pct: f64,
     pub max_position_usd_fraction: f64,
 
-    // Kelly criterion
     pub kelly_fraction: f64,
     pub min_win_rate_for_kelly: f64,
     pub min_trades_for_kelly: u64,
@@ -101,45 +95,38 @@ pub struct Config {
     pub min_bet_usd: f64,
     pub kelly_rolling_window: u64,
 
-    // Position limits
     pub max_open_positions: u64,
     pub min_window_time_ms: u64,
 
-    // Circuit breaker
     pub circuit_breaker_losses: u64,
     pub circuit_breaker_pause_ms: u64,
 
-    // Peak drawdown pause
     pub peak_dd_pause_pct: f64,
     pub peak_dd_pause_ms: u64,
     pub dd_pause_recovery_pct: f64,
 
-    // Trend filter
     pub trend_filter_enabled: bool,
     pub trend_filter_threshold: f64,
     pub trend_filter_window: u64,
 
-    // Regime detection
     pub regime_detection_enabled: bool,
 
-    // Logging
     pub log_level: String,
 
-    // Gamma market discovery
     pub gamma_market_limit: u64,
 
-    // Hard position size cap (USD)
     pub max_position_usd: f64,
 
-    // Taker fee model (Polymarket dynamic fees)
     pub taker_fee_rate: f64,
     pub taker_fee_exponent: u32,
+    pub taker_fee_override_explicit: bool,
 
-    // Execution mode: "paper" (default) or "live" (future)
     pub execution_mode: String,
+    pub sim_order_latency_ms: u64,
+    pub max_book_staleness_ms: u64,
 
-    // Resolution polling (Gamma API after window close)
     pub resolution_poll_retries: u32,
+    pub resolution_initial_delay_ms: u64,
     pub resolution_poll_delay_ms: u64,
 }
 
@@ -154,6 +141,7 @@ impl Config {
             "LATENCY_ARB_MAX_ASK" => self.latency_arb_max_ask = value,
             "LATENCY_ARB_MIN_ASK" => self.latency_arb_min_ask = value,
             "LATENCY_ARB_COOLDOWN_MS" => self.latency_arb_cooldown_ms = value as u64,
+            "LATENCY_ARB_ADAPTIVE_WINDOW_MS" => self.latency_arb_adaptive_window_ms = value as u64,
             "MAX_POSITION_FRACTION" => self.max_position_fraction = value,
             "MAX_POSITION_USD" => self.max_position_usd = value,
             "SPREAD_CAPTURE_THRESHOLD" => self.spread_capture_threshold = value,
@@ -182,7 +170,18 @@ impl Config {
             "TREND_FILTER_THRESHOLD" => self.trend_filter_threshold = value,
             "TREND_FILTER_WINDOW" => self.trend_filter_window = value as u64,
             "RESOLUTION_POLL_RETRIES" => self.resolution_poll_retries = value as u32,
+            "RESOLUTION_INITIAL_DELAY_MS" => self.resolution_initial_delay_ms = value as u64,
             "RESOLUTION_POLL_DELAY_MS" => self.resolution_poll_delay_ms = value as u64,
+            "TAKER_FEE_RATE" => {
+                self.taker_fee_rate = value;
+                self.taker_fee_override_explicit = true;
+            }
+            "TAKER_FEE_EXPONENT" => {
+                self.taker_fee_exponent = value as u32;
+                self.taker_fee_override_explicit = true;
+            }
+            "SIM_ORDER_LATENCY_MS" => self.sim_order_latency_ms = value as u64,
+            "MAX_BOOK_STALENESS_MS" => self.max_book_staleness_ms = value as u64,
             _ => {
                 eprintln!("Unknown sweep param: {name}");
                 return false;
@@ -194,6 +193,10 @@ impl Config {
     /// Build config by reading environment variables (with `.env` file support).
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
+        let taker_fee_rate_override = env::var("TAKER_FEE_RATE").ok();
+        let taker_fee_exponent_override = env::var("TAKER_FEE_EXPONENT").ok();
+        let taker_fee_override_explicit =
+            taker_fee_rate_override.is_some() || taker_fee_exponent_override.is_some();
 
         Self {
             binance_ws_url: env_str(
@@ -225,6 +228,7 @@ impl Config {
             latency_arb_max_ask: env_f64("LATENCY_ARB_MAX_ASK", 0.55),
             latency_arb_min_ask: env_f64("LATENCY_ARB_MIN_ASK", 0.30),
             latency_arb_cooldown_ms: env_u64("LATENCY_ARB_COOLDOWN_MS", 60_000),
+            latency_arb_adaptive_window_ms: env_u64("LATENCY_ARB_ADAPTIVE_WINDOW_MS", 1_800_000),
 
             spread_capture_threshold: env_f64("SPREAD_CAPTURE_THRESHOLD", 0.998),
             spread_capture_min_ask: env_f64("SPREAD_CAPTURE_MIN_ASK", 0.15),
@@ -266,12 +270,22 @@ impl Config {
 
             max_position_usd: env_f64("MAX_POSITION_USD", 500.0),
 
-            taker_fee_rate: env_f64("TAKER_FEE_RATE", 0.25),
-            taker_fee_exponent: env_f64("TAKER_FEE_EXPONENT", 2.0) as u32,
+            taker_fee_rate: taker_fee_rate_override
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.072),
+            taker_fee_exponent: taker_fee_exponent_override
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                .map_or(1, |v| v as u32),
+            taker_fee_override_explicit,
 
             execution_mode: env_str("EXECUTION_MODE", "paper"),
+            sim_order_latency_ms: env_u64("SIM_ORDER_LATENCY_MS", 250),
+            max_book_staleness_ms: env_u64("MAX_BOOK_STALENESS_MS", 1_000),
 
             resolution_poll_retries: 30,
+            resolution_initial_delay_ms: env_u64("RESOLUTION_INITIAL_DELAY_MS", 30_000),
             resolution_poll_delay_ms: 10_000,
         }
     }
@@ -304,6 +318,7 @@ impl Default for Config {
             latency_arb_max_ask: 0.55,
             latency_arb_min_ask: 0.30,
             latency_arb_cooldown_ms: 60_000,
+            latency_arb_adaptive_window_ms: 1_800_000,
 
             spread_capture_threshold: 0.998,
             spread_capture_min_ask: 0.15,
@@ -345,12 +360,16 @@ impl Default for Config {
 
             max_position_usd: 500.0,
 
-            taker_fee_rate: 0.25,
-            taker_fee_exponent: 2,
+            taker_fee_rate: 0.072,
+            taker_fee_exponent: 1,
+            taker_fee_override_explicit: false,
 
             execution_mode: "paper".to_string(),
+            sim_order_latency_ms: 250,
+            max_book_staleness_ms: 1_000,
 
             resolution_poll_retries: 30,
+            resolution_initial_delay_ms: 30_000,
             resolution_poll_delay_ms: 10_000,
         }
     }

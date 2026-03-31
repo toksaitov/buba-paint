@@ -40,6 +40,7 @@ fn fixture_db() -> Connection {
     conn
 }
 
+/// Authed post.
 fn authed_post(path: &str) -> Request<Body> {
     Request::post(path)
         .header("authorization", "Bearer test-secret")
@@ -47,10 +48,12 @@ fn authed_post(path: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// Test app.
 fn test_app(conn: Connection) -> Router {
     test_app_with_bot(conn, None)
 }
 
+/// Test app with bot.
 fn test_app_with_bot(conn: Connection, log_path: Option<&str>) -> Router {
     let db = Arc::new(DbReader::from_connection(conn));
     let bot: Arc<dyn crate::process_manager::ProcessManager> =
@@ -75,6 +78,7 @@ fn test_app_with_bot(conn: Connection, log_path: Option<&str>) -> Router {
         .with_state(state)
 }
 
+/// Authed get.
 fn authed_get(path: &str) -> Request<Body> {
     Request::get(path)
         .header("authorization", "Bearer test-secret")
@@ -82,6 +86,7 @@ fn authed_get(path: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// Verifies that health returns ok.
 #[tokio::test]
 async fn health_returns_ok() {
     let app = test_app(fixture_db());
@@ -96,6 +101,7 @@ async fn health_returns_ok() {
     assert_eq!(json["ok"], true);
 }
 
+/// Verifies that status returns balance.
 #[tokio::test]
 async fn status_returns_balance() {
     let app = test_app(fixture_db());
@@ -110,6 +116,7 @@ async fn status_returns_balance() {
     assert_eq!(json["wins"], 1);
 }
 
+/// Verifies that status requires auth.
 #[tokio::test]
 async fn status_requires_auth() {
     let app = test_app(fixture_db());
@@ -120,6 +127,7 @@ async fn status_requires_auth() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies that trades returns list.
 #[tokio::test]
 async fn trades_returns_list() {
     let app = test_app(fixture_db());
@@ -132,6 +140,7 @@ async fn trades_returns_list() {
     assert_eq!(json["trades"][0]["strategy"], "latency-arb");
 }
 
+/// Verifies that trades pagination.
 #[tokio::test]
 async fn trades_pagination() {
     let app = test_app(fixture_db());
@@ -147,6 +156,7 @@ async fn trades_pagination() {
     assert_eq!(json["trades"].as_array().unwrap().len(), 1);
 }
 
+/// Verifies that balance returns entries.
 #[tokio::test]
 async fn balance_returns_entries() {
     let app = test_app(fixture_db());
@@ -158,6 +168,7 @@ async fn balance_returns_entries() {
     assert_eq!(json["entries"].as_array().unwrap().len(), 2);
 }
 
+/// Verifies that balance since filter.
 #[tokio::test]
 async fn balance_since_filter() {
     let app = test_app(fixture_db());
@@ -172,6 +183,7 @@ async fn balance_since_filter() {
     assert_eq!(json["entries"].as_array().unwrap().len(), 1);
 }
 
+/// Verifies that signals returns list.
 #[tokio::test]
 async fn signals_returns_list() {
     let app = test_app(fixture_db());
@@ -183,6 +195,7 @@ async fn signals_returns_list() {
     assert_eq!(json["signals"].as_array().unwrap().len(), 1);
 }
 
+/// Verifies that signals limit.
 #[tokio::test]
 async fn signals_limit() {
     let app = test_app(fixture_db());
@@ -197,6 +210,7 @@ async fn signals_limit() {
     assert!(json["signals"].as_array().unwrap().is_empty());
 }
 
+/// Verifies that stats returns by strategy.
 #[tokio::test]
 async fn stats_returns_by_strategy() {
     let app = test_app(fixture_db());
@@ -210,6 +224,7 @@ async fn stats_returns_by_strategy() {
     assert_eq!(la["wins"], 1);
 }
 
+/// Verifies that empty db returns defaults.
 #[tokio::test]
 async fn empty_db_returns_defaults() {
     let conn = Connection::open_in_memory().unwrap();
@@ -232,6 +247,7 @@ async fn empty_db_returns_defaults() {
     assert_eq!(json["total_trades"], 0);
 }
 
+/// Verifies that bot start noop returns 409.
 #[tokio::test]
 async fn bot_start_noop_returns_409() {
     let app = test_app(fixture_db());
@@ -243,6 +259,7 @@ async fn bot_start_noop_returns_409() {
     assert!(json["error"].as_str().unwrap().contains("monitor-only"));
 }
 
+/// Verifies that bot stop noop returns 409.
 #[tokio::test]
 async fn bot_stop_noop_returns_409() {
     let app = test_app(fixture_db());
@@ -254,6 +271,7 @@ async fn bot_stop_noop_returns_409() {
     assert!(json["error"].as_str().unwrap().contains("monitor-only"));
 }
 
+/// Verifies that bot restart noop returns 409.
 #[tokio::test]
 async fn bot_restart_noop_returns_409() {
     let app = test_app(fixture_db());
@@ -265,6 +283,7 @@ async fn bot_restart_noop_returns_409() {
     assert!(json["error"].as_str().unwrap().contains("monitor-only"));
 }
 
+/// Verifies that bot status noop returns inactive.
 #[tokio::test]
 async fn bot_status_noop_returns_inactive() {
     let app = test_app(fixture_db());
@@ -277,11 +296,9 @@ async fn bot_status_noop_returns_inactive() {
     assert!(json["pid"].is_null());
 }
 
-// -- get_logs -----------------------------------------------------------------
-
+/// Verifies that get logs returns lines from log file.
 #[tokio::test]
 async fn get_logs_returns_lines_from_log_file() {
-    // Create a temp log file.
     let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("bot.log");
     std::fs::write(&log_path, "line1\nline2\nline3\n").unwrap();
@@ -300,9 +317,9 @@ async fn get_logs_returns_lines_from_log_file() {
     assert_eq!(lines[0], "line1");
 }
 
+/// Verifies that get logs without log path.
 #[tokio::test]
 async fn get_logs_without_log_path() {
-    // NoopProcessManager without log_path returns "not available" message.
     let app = test_app(fixture_db());
     let resp = app.oneshot(authed_get("/api/bot/logs")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -310,6 +327,6 @@ async fn get_logs_without_log_path() {
     let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let lines = json["lines"].as_array().unwrap();
-    // NoopProcessManager without log_path returns a single info line.
+
     assert!(!lines.is_empty());
 }

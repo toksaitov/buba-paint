@@ -1,20 +1,7 @@
-// Integration tests for `buba_paint::backtest::sweep::run_sweep()`.
-//
-// Uses a temporary SQLite database pre-populated with fixture data (the
-// merged-data schema) and verifies CSV output correctness and determinism.
-//
-// NOTE: Both tests are combined into a single function because the sweep
-// engine uses shared temp paths (`/tmp/buba-sweep-NNNN.db`) that cannot
-// be safely accessed from parallel test threads.
-
 use rusqlite::{Connection, params};
 use tempfile::NamedTempFile;
 
 use buba_paint::backtest::sweep::{SweepDimension, run_sweep};
-
-// ---------------------------------------------------------------------------
-// Fixture helpers
-// ---------------------------------------------------------------------------
 
 /// Create a fixture data DB with the merged-data schema and a single 5-minute
 /// market window where BTC goes **UP** (close > open).  Ticks simulate strong
@@ -77,7 +64,6 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
 
     let base_price = 42_000.0;
 
-    // 30 seconds of warmup ticks before the window.
     for i in 0..30 {
         let ts = 970_000_i64 + i64::from(i) * 1000;
         insert_tick(
@@ -122,7 +108,6 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
         );
     }
 
-    // During the window: rising prices + flat CLOB asks.
     for i in 0..330 {
         let ts = 1_000_000_i64 + i64::from(i) * 1000;
         let price = if i < 300 {
@@ -158,6 +143,7 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
     (tmp, path)
 }
 
+/// Insert tick.
 #[allow(clippy::too_many_arguments)]
 fn insert_tick(
     conn: &Connection,
@@ -177,6 +163,7 @@ fn insert_tick(
     .unwrap();
 }
 
+/// Fixed overrides.
 fn fixed_overrides() -> Vec<(String, String)> {
     vec![
         ("SPREAD_CAPTURE_THRESHOLD".to_string(), "0.50".to_string()),
@@ -184,6 +171,7 @@ fn fixed_overrides() -> Vec<(String, String)> {
     ]
 }
 
+/// Two by two dimensions.
 fn two_by_two_dimensions() -> Vec<SweepDimension> {
     vec![
         SweepDimension {
@@ -206,10 +194,6 @@ fn cleanup_sweep_temp_dbs() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 /// Verifies sweep CSV output (correct structure, parseable values) and
 /// determinism (two identical sweeps produce the same results).
 #[test]
@@ -217,8 +201,6 @@ fn cleanup_sweep_temp_dbs() {
 fn sweep_produces_correct_csv_and_is_deterministic() {
     cleanup_sweep_temp_dbs();
     let (_data_tmp, data_path) = create_fixture_data_db();
-
-    // --- Part 1: CSV correctness ---
 
     let csv_tmp = NamedTempFile::new().unwrap();
     let csv_path = csv_tmp.path().to_str().unwrap().to_string();
@@ -237,7 +219,6 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
     let csv_content = std::fs::read_to_string(&csv_path).unwrap();
     let lines: Vec<&str> = csv_content.lines().collect();
 
-    // 1 header + 4 data rows (2x2 grid).
     assert_eq!(lines.len(), 5, "expected 5 lines, got {}", lines.len());
 
     let header = lines[0];
@@ -253,6 +234,18 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
         "hwm",
         "final_balance",
         "signals",
+        "fill_rate",
+        "partial_fill_rate",
+        "no_fill_count",
+        "spread_legging_count",
+        "residual_position_count",
+        "avg_fill_latency_ms",
+        "avg_slippage",
+        "raw_event_batches",
+        "legacy_snapshot_batches",
+        "total_fees",
+        "gross_pnl",
+        "pnl_net",
         "elapsed_s",
     ] {
         assert!(header.contains(col), "header missing column '{col}'");
@@ -261,15 +254,14 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
     let header_cols: Vec<&str> = header.split(',').collect();
     assert_eq!(
         header_cols.len(),
-        14,
-        "expected 14 columns, got {}",
+        24,
+        "expected 24 columns, got {}",
         header_cols.len()
     );
 
-    // All data values must be parseable as f64.
     for (row_idx, line) in lines.iter().skip(1).enumerate() {
         let cols: Vec<&str> = line.split(',').collect();
-        assert_eq!(cols.len(), 14);
+        assert_eq!(cols.len(), 24);
         for (col_idx, col) in cols.iter().enumerate() {
             col.parse::<f64>().unwrap_or_else(|e| {
                 panic!(
@@ -279,8 +271,6 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
             });
         }
     }
-
-    // --- Part 2: Determinism ---
 
     cleanup_sweep_temp_dbs();
 
@@ -304,7 +294,6 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
     assert_eq!(lines.len(), lines2.len());
     assert_eq!(lines[0], lines2[0], "headers differ");
 
-    // Sort rows (rayon ordering may differ) and compare excluding elapsed_s.
     let mut data1: Vec<&str> = lines[1..].to_vec();
     let mut data2: Vec<&str> = lines2[1..].to_vec();
     data1.sort_unstable();

@@ -1,9 +1,3 @@
-// Trend tracker — monitors directional win rates and optionally suppresses
-// signals that go against the prevailing trend.
-//
-// Ported from the TypeScript `TrendTracker` class.  Timestamps are passed
-// explicitly via a `now: u64` parameter instead of reading a global clock.
-
 use crate::types::SignalDirection;
 
 /// A single recorded trade outcome.
@@ -121,10 +115,6 @@ impl TrendTracker {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/trend_tracker_tests.rs"]

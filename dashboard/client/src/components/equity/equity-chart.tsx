@@ -44,7 +44,6 @@ export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
       bottomColor: "rgba(31, 35, 40, 0.02)",
     });
 
-    // Deduplicate by timestamp — lightweight-charts requires strictly ascending times
     const byTime = new Map<number, number>();
     for (const e of entries) {
       const t = Math.round(e.timestamp / 1000);
@@ -77,3 +76,4 @@ export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
 
   return <div ref={containerRef} className="w-full" />;
 }
+

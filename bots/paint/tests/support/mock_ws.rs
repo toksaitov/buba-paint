@@ -18,6 +18,7 @@ enum WsCommand {
 }
 
 impl MockWsServer {
+    /// Start.
     pub async fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -27,7 +28,6 @@ impl MockWsServer {
         let (received_tx, received_rx) = mpsc::channel::<String>(64);
 
         tokio::spawn(async move {
-            // Accept connections in a loop (handles reconnects).
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     break;
@@ -37,7 +37,6 @@ impl MockWsServer {
                 };
                 let (mut write, mut read) = ws.split();
 
-                // Process commands and incoming messages until disconnect.
                 loop {
                     tokio::select! {
                         cmd = cmd_rx.recv() => {
@@ -52,7 +51,7 @@ impl MockWsServer {
                                     let _ = write.send(Message::Close(None)).await;
                                     break;
                                 }
-                                None => return, // channel closed
+                                None => return,
                             }
                         }
                         msg = read.next() => {
@@ -76,6 +75,7 @@ impl MockWsServer {
         }
     }
 
+    /// Send.
     pub async fn send(&self, text: &str) {
         self.cmd_tx
             .send(WsCommand::SendText(text.to_string()))
@@ -83,11 +83,13 @@ impl MockWsServer {
             .unwrap();
     }
 
+    /// Sends ping.
     #[allow(dead_code)]
     pub async fn send_ping(&self) {
         self.cmd_tx.send(WsCommand::SendPing(vec![])).await.unwrap();
     }
 
+    /// Close.
     #[allow(dead_code)]
     pub async fn close(&self) {
         self.cmd_tx.send(WsCommand::Close).await.unwrap();

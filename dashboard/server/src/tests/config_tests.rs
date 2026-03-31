@@ -1,5 +1,6 @@
 use super::*;
 
+/// Verifies that parse toml config.
 #[test]
 fn parse_toml_config() {
     let toml = r#"
@@ -22,6 +23,7 @@ secret = "agent-secret"
     assert_eq!(config.agents[0].secret, "agent-secret");
 }
 
+/// Verifies that parse config default port.
 #[test]
 fn parse_config_default_port() {
     let toml = r#"
@@ -33,6 +35,7 @@ jwt_secret = "secret"
     assert_eq!(config.server.port, 3001);
 }
 
+/// Verifies that parse config no agents.
 #[test]
 fn parse_config_no_agents() {
     let toml = r#"
@@ -44,6 +47,7 @@ jwt_secret = "secret"
     assert!(config.agents.is_empty());
 }
 
+/// Verifies that parse config multiple agents.
 #[test]
 fn parse_config_multiple_agents() {
     let toml = r#"
@@ -68,8 +72,7 @@ secret = "s2"
     assert_eq!(config.agents[1].id, "bot-2");
 }
 
-// -- from_file --
-
+/// Verifies that from file reads toml from disk.
 #[test]
 fn from_file_reads_toml_from_disk() {
     let dir = tempfile::tempdir().unwrap();
@@ -89,12 +92,14 @@ jwt_secret = "disk-secret"
     assert_eq!(config.server.jwt_secret, "disk-secret");
 }
 
+/// Verifies that from file missing file returns error.
 #[test]
 fn from_file_missing_file_returns_error() {
     let result = DashboardConfig::from_file("/nonexistent/path/config.toml");
     assert!(result.is_err());
 }
 
+/// Verifies that from file invalid toml returns error.
 #[test]
 fn from_file_invalid_toml_returns_error() {
     let dir = tempfile::tempdir().unwrap();

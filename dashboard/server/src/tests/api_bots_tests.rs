@@ -17,6 +17,7 @@ use crate::auth::{self, AuthState, hash_password};
 use crate::config::AgentConfig;
 use crate::db::DashboardDb;
 
+/// Test agent.
 fn test_agent(url: &str) -> AgentConfig {
     AgentConfig {
         id: "paint".into(),
@@ -89,6 +90,7 @@ fn test_app_no_agents() -> (Router, Arc<DashboardDb>) {
     (app, db)
 }
 
+/// Admin token.
 async fn admin_token(db: &DashboardDb) -> String {
     let hash = hash_password("pass").unwrap();
     db.create_user("admin", &hash, "admin").await.unwrap();
@@ -96,6 +98,7 @@ async fn admin_token(db: &DashboardDb) -> String {
     auth::create_jwt(&user.id, "admin", "test-jwt-secret", 3600)
 }
 
+/// Auth get.
 fn auth_get(path: &str, token: &str) -> Request<Body> {
     Request::get(path)
         .header("authorization", format!("Bearer {token}"))
@@ -103,6 +106,7 @@ fn auth_get(path: &str, token: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// Auth post.
 fn auth_post(path: &str, token: &str) -> Request<Body> {
     Request::post(path)
         .header("authorization", format!("Bearer {token}"))
@@ -110,13 +114,13 @@ fn auth_post(path: &str, token: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// Json body.
 async fn json_body(resp: axum::response::Response) -> serde_json::Value {
     let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     serde_json::from_slice(&body).unwrap()
 }
 
-// -- list_bots --
-
+/// Verifies that list bots returns configured agents.
 #[tokio::test]
 async fn list_bots_returns_configured_agents() {
     let server = MockServer::start().await;
@@ -133,6 +137,7 @@ async fn list_bots_returns_configured_agents() {
     assert_eq!(bots[0]["name"], "Paint");
 }
 
+/// Verifies that list bots empty when no agents.
 #[tokio::test]
 async fn list_bots_empty_when_no_agents() {
     let (app, db) = test_app_no_agents();
@@ -145,8 +150,7 @@ async fn list_bots_empty_when_no_agents() {
     assert_eq!(body["bots"].as_array().unwrap().len(), 0);
 }
 
-// -- bot_status --
-
+/// Verifies that bot status proxies to agent.
 #[tokio::test]
 async fn bot_status_proxies_to_agent() {
     let server = MockServer::start().await;
@@ -173,6 +177,7 @@ async fn bot_status_proxies_to_agent() {
     assert_eq!(body["open_trades"], 2);
 }
 
+/// Verifies that bot status unknown id returns 404.
 #[tokio::test]
 async fn bot_status_unknown_id_returns_404() {
     let server = MockServer::start().await;
@@ -186,8 +191,7 @@ async fn bot_status_unknown_id_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-// -- bot_trades with query params --
-
+/// Verifies that bot trades forwards query params.
 #[tokio::test]
 async fn bot_trades_forwards_query_params() {
     let server = MockServer::start().await;
@@ -214,8 +218,7 @@ async fn bot_trades_forwards_query_params() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// -- bot_balance with since --
-
+/// Verifies that bot balance forwards since param.
 #[tokio::test]
 async fn bot_balance_forwards_since_param() {
     let server = MockServer::start().await;
@@ -236,8 +239,7 @@ async fn bot_balance_forwards_since_param() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// -- bot_signals with limit --
-
+/// Verifies that bot signals forwards limit param.
 #[tokio::test]
 async fn bot_signals_forwards_limit_param() {
     let server = MockServer::start().await;
@@ -258,8 +260,7 @@ async fn bot_signals_forwards_limit_param() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// -- bot_stats --
-
+/// Verifies that bot stats proxies to agent.
 #[tokio::test]
 async fn bot_stats_proxies_to_agent() {
     let server = MockServer::start().await;
@@ -281,8 +282,7 @@ async fn bot_stats_proxies_to_agent() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// -- bot_logs --
-
+/// Verifies that bot logs forwards lines param.
 #[tokio::test]
 async fn bot_logs_forwards_lines_param() {
     let server = MockServer::start().await;
@@ -303,8 +303,7 @@ async fn bot_logs_forwards_lines_param() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// -- bot_process_status --
-
+/// Verifies that bot process status proxies to agent.
 #[tokio::test]
 async fn bot_process_status_proxies_to_agent() {
     let server = MockServer::start().await;
@@ -332,8 +331,7 @@ async fn bot_process_status_proxies_to_agent() {
     assert_eq!(body["pid"], 1234);
 }
 
-// -- bot_start / bot_stop / bot_restart --
-
+/// Verifies that bot start posts to agent.
 #[tokio::test]
 async fn bot_start_posts_to_agent() {
     let server = MockServer::start().await;
@@ -355,6 +353,7 @@ async fn bot_start_posts_to_agent() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// Verifies that bot stop posts to agent.
 #[tokio::test]
 async fn bot_stop_posts_to_agent() {
     let server = MockServer::start().await;
@@ -376,6 +375,7 @@ async fn bot_stop_posts_to_agent() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// Verifies that bot restart posts to agent.
 #[tokio::test]
 async fn bot_restart_posts_to_agent() {
     let server = MockServer::start().await;
@@ -397,8 +397,7 @@ async fn bot_restart_posts_to_agent() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// -- error propagation --
-
+/// Verifies that bot handler propagates agent 409.
 #[tokio::test]
 async fn bot_handler_propagates_agent_409() {
     let server = MockServer::start().await;
@@ -420,6 +419,7 @@ async fn bot_handler_propagates_agent_409() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 }
 
+/// Verifies that bot handler propagates agent 500.
 #[tokio::test]
 async fn bot_handler_propagates_agent_500() {
     let server = MockServer::start().await;
@@ -441,8 +441,7 @@ async fn bot_handler_propagates_agent_500() {
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-// -- auth required --
-
+/// Verifies that bot handler requires auth.
 #[tokio::test]
 async fn bot_handler_requires_auth() {
     let server = MockServer::start().await;
@@ -459,14 +458,14 @@ async fn bot_handler_requires_auth() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// -- build_query --
-
+/// Verifies that build query empty params.
 #[test]
 fn build_query_empty_params() {
     let params = HashMap::new();
     assert!(super::build_query(&params).is_none());
 }
 
+/// Verifies that build query single param.
 #[test]
 fn build_query_single_param() {
     let mut params = HashMap::new();
@@ -475,13 +474,14 @@ fn build_query_single_param() {
     assert_eq!(qs, "page=1");
 }
 
+/// Verifies that build query multiple params.
 #[test]
 fn build_query_multiple_params() {
     let mut params = HashMap::new();
     params.insert("page".to_string(), "2".to_string());
     params.insert("per_page".to_string(), "50".to_string());
     let qs = super::build_query(&params).unwrap();
-    // HashMap ordering is not guaranteed, so check both parts exist.
+
     assert!(qs.contains("page=2"));
     assert!(qs.contains("per_page=50"));
     assert!(qs.contains('&'));

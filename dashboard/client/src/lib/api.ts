@@ -9,8 +9,14 @@ import type {
   TradesResponse,
   User,
 } from "./types";
+import { useAuthStore } from "../stores/auth-store";
 
 const BASE = "";
+
+function handleUnauthorized() {
+  useAuthStore.getState().logout();
+  window.location.href = "/login";
+}
 
 function headers(): HeadersInit {
   const h: HeadersInit = { "Content-Type": "application/json" };
@@ -23,17 +29,14 @@ async function extractError(res: Response): Promise<string> {
   try {
     const json = await res.json();
     if (json && typeof json.error === "string") return json.error;
-  } catch {
-    /* no json body */
-  }
+  } catch {}
   return `${res.status} ${res.statusText}`;
 }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { headers: headers() });
   if (res.status === 401) {
-    localStorage.removeItem("token");
-    window.location.href = "/login";
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
   if (!res.ok) throw new Error(await extractError(res));
@@ -47,8 +50,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401) {
-    localStorage.removeItem("token");
-    window.location.href = "/login";
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
   if (!res.ok) throw new Error(await extractError(res));

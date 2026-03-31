@@ -11,6 +11,7 @@ use crate::auth::{self, AuthState, hash_password};
 use crate::config::AgentConfig;
 use crate::db::DashboardDb;
 
+/// Test agent.
 fn test_agent(url: &str) -> AgentConfig {
     AgentConfig {
         id: "paint".into(),
@@ -20,6 +21,7 @@ fn test_agent(url: &str) -> AgentConfig {
     }
 }
 
+/// Spawns dashboard.
 async fn spawn_dashboard(agent_url: &str) -> (String, Arc<DashboardDb>) {
     let db = Arc::new(DashboardDb::from_connection(
         Connection::open_in_memory().unwrap(),
@@ -48,6 +50,7 @@ async fn spawn_dashboard(agent_url: &str) -> (String, Arc<DashboardDb>) {
     (format!("127.0.0.1:{}", addr.port()), db)
 }
 
+/// Spawns dashboard no agents.
 async fn spawn_dashboard_no_agents() -> (String, Arc<DashboardDb>) {
     let db = Arc::new(DashboardDb::from_connection(
         Connection::open_in_memory().unwrap(),
@@ -76,6 +79,7 @@ async fn spawn_dashboard_no_agents() -> (String, Arc<DashboardDb>) {
     (format!("127.0.0.1:{}", addr.port()), db)
 }
 
+/// Admin token.
 async fn admin_token(db: &DashboardDb) -> String {
     let hash = hash_password("pass").unwrap();
     db.create_user("admin", &hash, "admin").await.unwrap();
@@ -83,8 +87,7 @@ async fn admin_token(db: &DashboardDb) -> String {
     auth::create_jwt(&user.id, "admin", "test-jwt-secret", 3600)
 }
 
-// -- Auth/validation tests --
-
+/// Verifies that ws proxy rejects missing token.
 #[tokio::test]
 async fn ws_proxy_rejects_missing_token() {
     let (addr, _db) = spawn_dashboard("http://127.0.0.1:1").await;
@@ -93,6 +96,7 @@ async fn ws_proxy_rejects_missing_token() {
     assert!(result.is_err(), "should reject missing token");
 }
 
+/// Verifies that ws proxy rejects invalid jwt.
 #[tokio::test]
 async fn ws_proxy_rejects_invalid_jwt() {
     let (addr, _db) = spawn_dashboard("http://127.0.0.1:1").await;
@@ -102,6 +106,7 @@ async fn ws_proxy_rejects_invalid_jwt() {
     assert!(result.is_err(), "should reject invalid JWT");
 }
 
+/// Verifies that ws proxy rejects unknown bot id.
 #[tokio::test]
 async fn ws_proxy_rejects_unknown_bot_id() {
     let (addr, db) = spawn_dashboard_no_agents().await;
@@ -113,13 +118,12 @@ async fn ws_proxy_rejects_unknown_bot_id() {
     assert!(result.is_err(), "should reject unknown bot ID");
 }
 
-// -- Connection acceptance test --
-
 /// Spawn a mock agent WS endpoint using axum (same framework as the proxy uses to connect).
 async fn spawn_mock_agent_axum() -> String {
     use axum::extract::ws::WebSocketUpgrade;
     use axum::response::Response;
 
+    /// Ws handler.
     async fn ws_handler(ws: WebSocketUpgrade) -> Response {
         ws.on_upgrade(|mut socket| async move {
             use axum::extract::ws::Message;
@@ -128,7 +132,7 @@ async fn spawn_mock_agent_axum() -> String {
                     r#"{"type":"balance","data":{"balance":200}}"#.into(),
                 ))
                 .await;
-            // Keep reading to prevent reset
+
             while let Some(Ok(msg)) = futures_util::StreamExt::next(&mut socket).await {
                 if matches!(msg, Message::Close(_)) {
                     break;
@@ -146,6 +150,7 @@ async fn spawn_mock_agent_axum() -> String {
     format!("http://127.0.0.1:{}", addr.port())
 }
 
+/// Verifies that ws proxy accepts valid connection.
 #[tokio::test]
 async fn ws_proxy_accepts_valid_connection() {
     let agent_url = spawn_mock_agent_axum().await;
@@ -165,6 +170,7 @@ async fn ws_proxy_accepts_valid_connection() {
     );
 }
 
+/// Verifies that ws proxy forwards agent messages.
 #[tokio::test]
 async fn ws_proxy_forwards_agent_messages() {
     let agent_url = spawn_mock_agent_axum().await;
@@ -200,7 +206,6 @@ async fn proxy_connect_async_works_with_mock_agent() {
     let agent_url = spawn_mock_agent_axum().await;
     let ws_url = agent_url.replace("http://", "ws://") + "/ws/live";
 
-    // Extract host from the URL for the Host header
     let uri: axum::http::Uri = ws_url.parse().unwrap();
     let host = format!("{}:{}", uri.host().unwrap(), uri.port_u16().unwrap());
 

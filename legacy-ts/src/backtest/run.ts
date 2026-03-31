@@ -1,5 +1,5 @@
 #!/usr/bin/env npx tsx
-export {};  // Make this a module (enables top-level await)
+export {};
 /**
  * Backtester CLI entry point.
  *
@@ -13,8 +13,6 @@ export {};  // Make this a module (enables top-level await)
  * Config overrides are set as env vars BEFORE importing CONFIG,
  * so the same config.ts code picks them up naturally.
  */
-
-// ---- Step 1: Parse args and set env vars BEFORE any other imports ----
 
 const args = process.argv.slice(2);
 
@@ -44,7 +42,6 @@ const startStr = getArg("start");
 const endStr = getArg("end");
 const startingBalance = parseFloat(getArg("balance", "200"));
 
-// Apply config overrides as environment variables
 const overrides = getAllArgs("set");
 for (const override of overrides) {
   const eqIdx = override.indexOf("=");
@@ -57,19 +54,11 @@ for (const override of overrides) {
   process.env[key] = value;
 }
 
-// Set starting balance via env
 process.env.STARTING_BALANCE = String(startingBalance);
 
-// Suppress verbose logging during backtest
 process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? "warn";
 
-// ---- Step 2: Dynamic imports (CONFIG reads env vars at import time) ----
-
 const { runBacktest } = await import("./runner.js");
-
-// ---- Step 3: Parse time range and run ----
-
-// Ensure UTC interpretation: append Z if no timezone specified
 const toUtc = (s: string) => /[Z+-]/.test(s.slice(-6)) ? s : s + "Z";
 const startTime = new Date(toUtc(startStr)).getTime();
 const endTime = new Date(toUtc(endStr)).getTime();

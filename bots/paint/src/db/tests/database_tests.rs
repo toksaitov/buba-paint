@@ -11,6 +11,7 @@ fn temp_db() -> (Database, NamedTempFile) {
     (db, tmp)
 }
 
+/// Sample market window.
 fn sample_market_window() -> MarketWindow {
     MarketWindow {
         market_id: "mkt-1".into(),
@@ -21,9 +22,19 @@ fn sample_market_window() -> MarketWindow {
         down_token_id: "tok-down".into(),
         start_time: 1_700_000_000_000,
         end_time: 1_700_000_300_000,
+        outcome: None,
+        resolution_source: Some("chainlink".into()),
+        fee_profile: Some("crypto".into()),
+        order_min_size: Some(5.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: Some(1000.0),
+        taker_base_fee: Some(1000.0),
+        rewards_min_size: Some(50.0),
+        rewards_max_spread: Some(4.5),
     }
 }
 
+/// Sample trade.
 fn sample_trade() -> SimulatedTrade {
     SimulatedTrade {
         id: None,
@@ -35,9 +46,23 @@ fn sample_trade() -> SimulatedTrade {
         entry_price: 0.52,
         size: 50.0,
         status: TradeStatus::Open,
+        signal_id: None,
+        requested_price: None,
+        requested_size: None,
+        filled_size: None,
+        avg_fill_price: None,
+        fill_status: None,
+        fill_reason: None,
+        fill_latency_ms: None,
+        execution_group_id: None,
+        execution_fidelity: None,
+        execution_mode: None,
+        order_id: None,
+        fill_price: None,
     }
 }
 
+/// Sample signal.
 fn sample_signal() -> Signal {
     Signal {
         timestamp: 1_700_000_000_000,
@@ -54,8 +79,7 @@ fn sample_signal() -> Signal {
     }
 }
 
-// -- tick_data ------------------------------------------------------------
-
+/// Verifies that insert tick and verify count.
 #[test]
 fn insert_tick_and_verify_count() {
     let (db, _tmp) = temp_db();
@@ -87,6 +111,7 @@ fn insert_tick_and_verify_count() {
     assert_eq!(count, 2);
 }
 
+/// Verifies that tick source check constraint.
 #[test]
 fn tick_source_check_constraint() {
     let (db, _tmp) = temp_db();
@@ -94,8 +119,7 @@ fn tick_source_check_constraint() {
     assert!(result.is_err());
 }
 
-// -- markets --------------------------------------------------------------
-
+/// Verifies that upsert market insert and update.
 #[test]
 fn upsert_market_insert_and_update() {
     let (db, _tmp) = temp_db();
@@ -103,7 +127,6 @@ fn upsert_market_insert_and_update() {
 
     db.upsert_market(&window).unwrap();
 
-    // Verify it exists.
     let q: String = db
         .conn
         .query_row(
@@ -114,7 +137,6 @@ fn upsert_market_insert_and_update() {
         .unwrap();
     assert_eq!(q, "Will BTC go up?");
 
-    // Upsert with changed question.
     let mut updated = window.clone();
     updated.question = "Updated question".into();
     db.upsert_market(&updated).unwrap();
@@ -129,7 +151,6 @@ fn upsert_market_insert_and_update() {
         .unwrap();
     assert_eq!(q2, "Updated question");
 
-    // Still only one row.
     let count: i64 = db
         .conn
         .query_row("SELECT COUNT(*) FROM markets", [], |r| r.get(0))
@@ -137,8 +158,7 @@ fn upsert_market_insert_and_update() {
     assert_eq!(count, 1);
 }
 
-// -- signals --------------------------------------------------------------
-
+/// Verifies that log signal stores metadata as json.
 #[test]
 fn log_signal_stores_metadata_as_json() {
     let (db, _tmp) = temp_db();
@@ -153,6 +173,7 @@ fn log_signal_stores_metadata_as_json() {
     assert!((parsed["momentum"].as_f64().unwrap() - 0.0015).abs() < f64::EPSILON);
 }
 
+/// Verifies that log signal direction stored as text.
 #[test]
 fn log_signal_direction_stored_as_text() {
     let (db, _tmp) = temp_db();
@@ -165,8 +186,7 @@ fn log_signal_direction_stored_as_text() {
     assert_eq!(dir, "UP");
 }
 
-// -- simulated_trades -----------------------------------------------------
-
+/// Verifies that open trade returns id.
 #[test]
 fn open_trade_returns_id() {
     let (db, _tmp) = temp_db();
@@ -177,6 +197,7 @@ fn open_trade_returns_id() {
     assert!(id > 0);
 }
 
+/// Verifies that open trade sequential ids.
 #[test]
 fn open_trade_sequential_ids() {
     let (db, _tmp) = temp_db();
@@ -187,8 +208,7 @@ fn open_trade_sequential_ids() {
     assert_eq!(id2, id1 + 1);
 }
 
-// -- close_trade ----------------------------------------------------------
-
+/// Verifies that close trade updates status and inserts result.
 #[test]
 fn close_trade_updates_status_and_inserts_result() {
     let (db, _tmp) = temp_db();
@@ -211,7 +231,6 @@ fn close_trade_updates_status_and_inserts_result() {
     };
     db.close_trade(trade_id, &result).unwrap();
 
-    // Status should be "closed".
     let status: String = db
         .conn
         .query_row(
@@ -222,7 +241,6 @@ fn close_trade_updates_status_and_inserts_result() {
         .unwrap();
     assert_eq!(status, "closed");
 
-    // trade_results row should exist.
     let pnl: f64 = db
         .conn
         .query_row(
@@ -233,7 +251,6 @@ fn close_trade_updates_status_and_inserts_result() {
         .unwrap();
     assert!((pnl - 9.23).abs() < f64::EPSILON);
 
-    // resolved_at should be a recent wall-clock timestamp (within last 5 s).
     let resolved_at: u64 = db
         .conn
         .query_row(
@@ -249,18 +266,15 @@ fn close_trade_updates_status_and_inserts_result() {
     assert!(now - resolved_at < 5_000);
 }
 
-// -- get_open_trades_for_market -------------------------------------------
-
+/// Verifies that get open trades for market filters correctly.
 #[test]
 fn get_open_trades_for_market_filters_correctly() {
     let (db, _tmp) = temp_db();
     db.upsert_market(&sample_market_window()).unwrap();
 
-    // Insert two open trades and one closed trade.
     let id1 = db.open_trade(&sample_trade()).unwrap();
     let _id2 = db.open_trade(&sample_trade()).unwrap();
 
-    // Close the first one.
     let result = TradeResult {
         trade_id: id1,
         exit_price: 0.60,
@@ -282,6 +296,7 @@ fn get_open_trades_for_market_filters_correctly() {
     assert!(open_trades[0].id.is_some());
 }
 
+/// Verifies that get open trades for unknown market returns empty.
 #[test]
 fn get_open_trades_for_unknown_market_returns_empty() {
     let (db, _tmp) = temp_db();
@@ -289,8 +304,7 @@ fn get_open_trades_for_unknown_market_returns_empty() {
     assert!(trades.is_empty());
 }
 
-// -- balance_log ----------------------------------------------------------
-
+/// Verifies that log balance event and get latest.
 #[test]
 fn log_balance_event_and_get_latest() {
     let (db, _tmp) = temp_db();
@@ -306,6 +320,7 @@ fn log_balance_event_and_get_latest() {
     assert_eq!(latest, Some(250.0));
 }
 
+/// Verifies that get latest balance empty db.
 #[test]
 fn get_latest_balance_empty_db() {
     let (db, _tmp) = temp_db();
@@ -313,8 +328,7 @@ fn get_latest_balance_empty_db() {
     assert_eq!(latest, None);
 }
 
-// -- resolve_market -------------------------------------------------------
-
+/// Verifies that resolve market changes status.
 #[test]
 fn resolve_market_changes_status() {
     let (db, _tmp) = temp_db();
@@ -333,6 +347,7 @@ fn resolve_market_changes_status() {
     assert_eq!(status, "resolved");
 }
 
+/// Verifies that resolve market to closed.
 #[test]
 fn resolve_market_to_closed() {
     let (db, _tmp) = temp_db();
@@ -351,16 +366,14 @@ fn resolve_market_to_closed() {
     assert_eq!(status, "closed");
 }
 
-// -- close ----------------------------------------------------------------
-
+/// Verifies that close is callable.
 #[test]
 fn close_is_callable() {
     let (db, _tmp) = temp_db();
-    db.close(); // should not panic
+    db.close();
 }
 
-// -- constructor ----------------------------------------------------------
-
+/// Verifies that new creates parent dirs.
 #[test]
 fn new_creates_parent_dirs() {
     let dir = tempfile::tempdir().unwrap();
@@ -370,6 +383,7 @@ fn new_creates_parent_dirs() {
     assert!(nested.exists());
 }
 
+/// Verifies that wal mode enabled.
 #[test]
 fn wal_mode_enabled() {
     let (db, _tmp) = temp_db();
@@ -380,6 +394,7 @@ fn wal_mode_enabled() {
     assert_eq!(mode, "wal");
 }
 
+/// Verifies that synchronous is normal.
 #[test]
 fn synchronous_is_normal() {
     let (db, _tmp) = temp_db();
@@ -387,12 +402,11 @@ fn synchronous_is_normal() {
         .conn
         .pragma_query_value(None, "synchronous", |r| r.get(0))
         .unwrap();
-    // NORMAL = 1
+
     assert_eq!(sync, 1);
 }
 
-// -- Phase D: additional edge-case tests ----------------------------------
-
+/// Verifies that log tick all valid sources.
 #[test]
 fn log_tick_all_valid_sources() {
     let (db, _tmp) = temp_db();
@@ -416,10 +430,11 @@ fn log_tick_all_valid_sources() {
     assert_eq!(count, 4);
 }
 
+/// Verifies that log tick multiple per source and count.
 #[test]
 fn log_tick_multiple_per_source_and_count() {
     let (db, _tmp) = temp_db();
-    // 3 binance, 2 clob_up, 1 clob_down, 0 chainlink
+
     for i in 0..3 {
         db.log_tick(1_000 + i, "binance", Some(42_000.0), None, None, None, None)
             .unwrap();
@@ -488,12 +503,12 @@ fn log_tick_multiple_per_source_and_count() {
     assert_eq!(count_chainlink, 0);
 }
 
+/// Verifies that upsert market idempotent same data.
 #[test]
 fn upsert_market_idempotent_same_data() {
     let (db, _tmp) = temp_db();
     let window = sample_market_window();
 
-    // Insert the same market three times with identical data.
     db.upsert_market(&window).unwrap();
     db.upsert_market(&window).unwrap();
     db.upsert_market(&window).unwrap();
@@ -505,14 +520,14 @@ fn upsert_market_idempotent_same_data() {
     assert_eq!(count, 1, "idempotent upsert should keep exactly 1 row");
 }
 
+/// Verifies that log tick with all null optional fields.
 #[test]
 fn log_tick_with_all_null_optional_fields() {
     let (db, _tmp) = temp_db();
-    // Binance tick: only price set, everything else None.
+
     db.log_tick(1_000, "binance", Some(42_000.0), None, None, None, None)
         .unwrap();
 
-    // Read back and verify NULLs.
     let (bid, ask): (Option<f64>, Option<f64>) = db
         .conn
         .query_row(
@@ -525,6 +540,7 @@ fn log_tick_with_all_null_optional_fields() {
     assert!(ask.is_none());
 }
 
+/// Verifies that log signal down direction.
 #[test]
 fn log_signal_down_direction() {
     let (db, _tmp) = temp_db();
@@ -539,6 +555,7 @@ fn log_signal_down_direction() {
     assert_eq!(dir, "DOWN");
 }
 
+/// Verifies that log balance event without trade id.
 #[test]
 fn log_balance_event_without_trade_id() {
     let (db, _tmp) = temp_db();
@@ -552,6 +569,7 @@ fn log_balance_event_without_trade_id() {
     assert!(trade_id.is_none());
 }
 
+/// Verifies that open trade down side.
 #[test]
 fn open_trade_down_side() {
     let (db, _tmp) = temp_db();
@@ -574,13 +592,15 @@ fn open_trade_down_side() {
     assert_eq!(side, "DOWN");
 }
 
+/// Verifies that resolve market nonexistent is noop.
 #[test]
 fn resolve_market_nonexistent_is_noop() {
     let (db, _tmp) = temp_db();
-    // Resolving a market that doesn't exist shouldn't error.
+
     db.resolve_market("nonexistent-mkt", "resolved").unwrap();
 }
 
+/// Verifies that get open trades returns correct fields.
 #[test]
 fn get_open_trades_returns_correct_fields() {
     let (db, _tmp) = temp_db();

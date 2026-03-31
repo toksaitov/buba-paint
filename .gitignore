@@ -14,3 +14,10 @@ dist/
 
 # Added by cargo
 /target
+**/target/
+/coverage
+/playwright-report
+/test-results
+dashboard/client/coverage/
+dashboard/client/playwright-report/
+dashboard/client/test-results/

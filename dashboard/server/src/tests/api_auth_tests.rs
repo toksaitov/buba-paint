@@ -12,6 +12,7 @@ use crate::api::auth_routes::{self, AppState};
 use crate::auth::{self, AuthState, hash_password};
 use crate::db::DashboardDb;
 
+/// Test app.
 fn test_app() -> (Router, Arc<DashboardDb>) {
     let db = Arc::new(DashboardDb::from_connection(
         Connection::open_in_memory().unwrap(),
@@ -40,11 +41,13 @@ fn test_app() -> (Router, Arc<DashboardDb>) {
     (app, db)
 }
 
+/// Seed user.
 async fn seed_user(db: &DashboardDb, username: &str, password: &str, role: &str) {
     let hash = hash_password(password).unwrap();
     db.create_user(username, &hash, role).await.unwrap();
 }
 
+/// Login body.
 fn login_body(username: &str, password: &str) -> Body {
     Body::from(
         serde_json::to_string(&serde_json::json!({
@@ -55,6 +58,7 @@ fn login_body(username: &str, password: &str) -> Body {
     )
 }
 
+/// Verifies that login success.
 #[tokio::test]
 async fn login_success() {
     let (app, db) = test_app();
@@ -78,6 +82,7 @@ async fn login_success() {
     assert_eq!(json["user"]["role"], "admin");
 }
 
+/// Verifies that login wrong password.
 #[tokio::test]
 async fn login_wrong_password() {
     let (app, db) = test_app();
@@ -96,6 +101,7 @@ async fn login_wrong_password() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies that login nonexistent user.
 #[tokio::test]
 async fn login_nonexistent_user() {
     let (app, _db) = test_app();
@@ -113,6 +119,7 @@ async fn login_nonexistent_user() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies that me with valid token.
 #[tokio::test]
 async fn me_with_valid_token() {
     let (app, db) = test_app();
@@ -137,6 +144,7 @@ async fn me_with_valid_token() {
     assert_eq!(json["username"], "alice");
 }
 
+/// Verifies that me without token.
 #[tokio::test]
 async fn me_without_token() {
     let (app, _db) = test_app();
@@ -149,6 +157,7 @@ async fn me_without_token() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies that create user as admin.
 #[tokio::test]
 async fn create_user_as_admin() {
     let (app, db) = test_app();
@@ -182,6 +191,7 @@ async fn create_user_as_admin() {
     assert_eq!(json["role"], "observer");
 }
 
+/// Verifies that create user as observer forbidden.
 #[tokio::test]
 async fn create_user_as_observer_forbidden() {
     let (app, db) = test_app();
@@ -210,6 +220,7 @@ async fn create_user_as_observer_forbidden() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
+/// Verifies that list users as admin.
 #[tokio::test]
 async fn list_users_as_admin() {
     let (app, db) = test_app();
@@ -235,6 +246,7 @@ async fn list_users_as_admin() {
     assert_eq!(json.as_array().unwrap().len(), 2);
 }
 
+/// Verifies that list users as observer forbidden.
 #[tokio::test]
 async fn list_users_as_observer_forbidden() {
     let (app, db) = test_app();

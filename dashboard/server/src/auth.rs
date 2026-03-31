@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::DashboardDb;
 
-/// JWT claims.
+/// `JWT` claims.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String, // user ID
+    pub sub: String,
     pub role: String,
     pub exp: u64,
     pub iat: u64,
@@ -41,7 +41,7 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .is_ok()
 }
 
-/// Create a JWT token.
+/// Create a `JWT` token.
 pub fn create_jwt(user_id: &str, role: &str, secret: &str, duration_secs: u64) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = Claims {
@@ -58,7 +58,7 @@ pub fn create_jwt(user_id: &str, role: &str, secret: &str, duration_secs: u64) -
     .expect("JWT encoding should not fail")
 }
 
-/// Validate a JWT token and return claims.
+/// Validate a `JWT` token and return claims.
 pub fn validate_jwt(token: &str, secret: &str) -> Result<Claims, String> {
     let mut validation = Validation::default();
     validation.leeway = 0;
@@ -78,10 +78,9 @@ pub struct AuthState {
     pub db: Arc<DashboardDb>,
 }
 
-/// JWT auth middleware — extracts and validates the Bearer token.
+/// `JWT` auth middleware — extracts and validates the Bearer token.
 /// Stores `Claims` in request extensions on success.
 pub async fn require_auth(mut request: Request, next: Next) -> Result<Response, StatusCode> {
-    // Skip auth for login endpoint, health check, and WebSocket (WS handles its own auth)
     let path = request.uri().path();
     if path == "/api/auth/login" || path == "/health" || path.starts_with("/ws/") {
         return Ok(next.run(request).await);
@@ -106,7 +105,6 @@ pub async fn require_auth(mut request: Request, next: Next) -> Result<Response, 
     let claims =
         validate_jwt(token, &auth_state.jwt_secret).map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    // Check token not expired (jsonwebtoken does this, but double-check)
     let now = jsonwebtoken::get_current_timestamp();
     if claims.exp < now {
         return Err(StatusCode::UNAUTHORIZED);

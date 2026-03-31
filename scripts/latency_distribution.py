@@ -91,10 +91,8 @@ stats_text = (
     f"P99: {p99:.0f} ms"
 )
 
-# --- Plot ---
 fig, axes = plt.subplots(3, 1, figsize=(16, 14))
 
-# Panel 1: Histogram
 axes[0].hist(df["delay_ms"], bins=50, edgecolor="black", alpha=0.7, color="#2196F3")
 axes[0].axvline(median_delay, color="red", linestyle="--",
                 label=f"Median: {median_delay:.0f} ms")

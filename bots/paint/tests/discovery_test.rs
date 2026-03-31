@@ -10,7 +10,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn discovery_config(mock_url: &str) -> Config {
     Config {
         gamma_api_url: mock_url.to_string(),
-        gamma_poll_interval: 200, // poll every 200ms for fast tests
+        gamma_poll_interval: 200,
         ..Config::default()
     }
 }
@@ -33,17 +33,15 @@ fn gamma_response(end_date: &str) -> serde_json::Value {
     })
 }
 
+/// Verifies that discovery finds active market.
 #[tokio::test]
 async fn discovery_finds_active_market() {
     let mock_server = MockServer::start().await;
 
-    // endDate well in the future.
     let future_end = chrono::Utc::now() + chrono::Duration::minutes(5);
     let end_date_str = future_end.to_rfc3339();
     let body = gamma_response(&end_date_str);
 
-    // The discovery task requests /events/slug/btc-updown-5m-{slot}.
-    // Match any slug path so we don't have to predict the exact timestamp.
     Mock::given(method("GET"))
         .and(path_regex(r"^/events/slug/btc-updown-5m-\d+$"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
@@ -70,11 +68,11 @@ async fn discovery_finds_active_market() {
     }
 }
 
+/// Verifies that discovery handles 404.
 #[tokio::test]
 async fn discovery_handles_404() {
     let mock_server = MockServer::start().await;
 
-    // Return 404 for all slug requests.
     Mock::given(method("GET"))
         .and(path_regex(r"^/events/slug/btc-updown-5m-\d+$"))
         .respond_with(ResponseTemplate::new(404))
@@ -84,7 +82,6 @@ async fn discovery_handles_404() {
     let cfg = discovery_config(&mock_server.uri());
     let mut handle = buba_paint::market_discovery::run_market_discovery(&cfg).await;
 
-    // No event should arrive within a reasonable timeout.
     let result = timeout(Duration::from_secs(2), handle.window_rx.recv()).await;
     assert!(
         result.is_err(),
@@ -92,11 +89,11 @@ async fn discovery_handles_404() {
     );
 }
 
+/// Verifies that discovery emits window closed.
 #[tokio::test]
 async fn discovery_emits_window_closed() {
     let mock_server = MockServer::start().await;
 
-    // endDate 2 seconds from now — the window should close quickly.
     let close_at = chrono::Utc::now() + chrono::Duration::seconds(2);
     let end_date_str = close_at.to_rfc3339();
     let body = gamma_response(&end_date_str);
@@ -110,7 +107,6 @@ async fn discovery_emits_window_closed() {
     let cfg = discovery_config(&mock_server.uri());
     let mut handle = buba_paint::market_discovery::run_market_discovery(&cfg).await;
 
-    // First: NewWindow.
     let event1 = timeout(Duration::from_secs(10), handle.window_rx.recv())
         .await
         .expect("timed out waiting for NewWindow")
@@ -120,7 +116,6 @@ async fn discovery_emits_window_closed() {
         "expected NewWindow, got {event1:?}"
     );
 
-    // Then: WindowClosed (should arrive ~2s after the NewWindow).
     let closed_found = timeout(Duration::from_secs(10), async {
         loop {
             match handle.window_rx.recv().await {
@@ -136,16 +131,15 @@ async fn discovery_emits_window_closed() {
     assert_eq!(closed_found.market_id, "mkt-test-1");
 }
 
+/// Verifies that discovery recovers from 404 to 200.
 #[tokio::test]
 async fn discovery_recovers_from_404_to_200() {
     let mock_server = MockServer::start().await;
 
-    // endDate well in the future.
     let future_end = chrono::Utc::now() + chrono::Duration::minutes(5);
     let end_date_str = future_end.to_rfc3339();
     let body = gamma_response(&end_date_str);
 
-    // First 3 requests return 404 (mock is exhausted after 3 responses).
     Mock::given(method("GET"))
         .and(path_regex(r"^/events/slug/btc-updown-5m-\d+$"))
         .respond_with(ResponseTemplate::new(404))
@@ -153,7 +147,6 @@ async fn discovery_recovers_from_404_to_200() {
         .mount(&mock_server)
         .await;
 
-    // After the first mock is exhausted, this one takes over and returns 200.
     Mock::given(method("GET"))
         .and(path_regex(r"^/events/slug/btc-updown-5m-\d+$"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
@@ -163,7 +156,6 @@ async fn discovery_recovers_from_404_to_200() {
     let cfg = discovery_config(&mock_server.uri());
     let mut handle = buba_paint::market_discovery::run_market_discovery(&cfg).await;
 
-    // Should eventually receive a NewWindow after the 404s are exhausted.
     let event = timeout(Duration::from_secs(15), handle.window_rx.recv())
         .await
         .expect("timed out waiting for NewWindow after 404 recovery")

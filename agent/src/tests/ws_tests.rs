@@ -2,6 +2,7 @@ use tokio::sync::broadcast;
 
 use crate::types::{BalanceEntry, SignalRow, TradeRow, WsMessage};
 
+/// Verifies that ws message serializes trade.
 #[tokio::test]
 async fn ws_message_serializes_trade() {
     let trade = TradeRow {
@@ -16,6 +17,11 @@ async fn ws_message_serializes_trade() {
         pnl: Some(55.0),
         settlement_price: Some(1.0),
         resolved_at: Some(1500),
+        fill_status: None,
+        execution_group_id: None,
+        execution_fidelity: None,
+        filled_size: None,
+        avg_fill_price: None,
     };
     let msg = WsMessage::Trade(trade);
     let json = serde_json::to_string(&msg).unwrap();
@@ -25,6 +31,7 @@ async fn ws_message_serializes_trade() {
     assert_eq!(parsed["data"]["pnl"], 55.0);
 }
 
+/// Verifies that ws message serializes balance.
 #[tokio::test]
 async fn ws_message_serializes_balance() {
     let entry = BalanceEntry {
@@ -43,6 +50,7 @@ async fn ws_message_serializes_balance() {
     assert!(parsed["data"]["trade_id"].is_null());
 }
 
+/// Verifies that ws message serializes signal.
 #[tokio::test]
 async fn ws_message_serializes_signal() {
     let signal = SignalRow {
@@ -55,6 +63,8 @@ async fn ws_message_serializes_signal() {
         up_ask: Some(0.48),
         down_ask: Some(0.50),
         metadata: Some("{}".to_string()),
+        market_id: Some("mkt-1".to_string()),
+        execution_fidelity: Some("legacy_snapshot".to_string()),
     };
     let msg = WsMessage::Signal(signal);
     let json = serde_json::to_string(&msg).unwrap();
@@ -63,6 +73,7 @@ async fn ws_message_serializes_signal() {
     assert_eq!(parsed["data"]["direction"], "DOWN");
 }
 
+/// Verifies that broadcast channel delivers messages.
 #[tokio::test]
 async fn broadcast_channel_delivers_messages() {
     let (tx, mut rx1) = broadcast::channel::<WsMessage>(16);
@@ -80,11 +91,15 @@ async fn broadcast_channel_delivers_messages() {
         pnl: None,
         settlement_price: None,
         resolved_at: None,
+        fill_status: None,
+        execution_group_id: None,
+        execution_fidelity: None,
+        filled_size: None,
+        avg_fill_price: None,
     };
 
     tx.send(WsMessage::Trade(trade)).unwrap();
 
-    // Both receivers get the message
     let msg1 = rx1.recv().await.unwrap();
     let msg2 = rx2.recv().await.unwrap();
 
@@ -94,12 +109,12 @@ async fn broadcast_channel_delivers_messages() {
     assert!(json1.contains("latency-arb"));
 }
 
+/// Verifies that broadcast channel handles lagged receiver.
 #[tokio::test]
 async fn broadcast_channel_handles_lagged_receiver() {
     let (tx, _rx_unused) = broadcast::channel::<WsMessage>(2);
     let mut rx = tx.subscribe();
 
-    // Send 3 messages but buffer is 2, so rx will lag
     for i in 0..3 {
         let entry = BalanceEntry {
             id: i,
@@ -112,14 +127,11 @@ async fn broadcast_channel_handles_lagged_receiver() {
         let _ = tx.send(WsMessage::Balance(entry));
     }
 
-    // First recv should report lagged
     match rx.recv().await {
-        Err(broadcast::error::RecvError::Lagged(_)) | Ok(_) => {} // lagged expected, ok also acceptable
+        Err(broadcast::error::RecvError::Lagged(_)) | Ok(_) => {}
         Err(e) => panic!("unexpected error: {e}"),
     }
 }
-
-// -- spawn_poller tests -------------------------------------------------------
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -128,6 +140,7 @@ use rusqlite::Connection;
 
 use crate::db_reader::DbReader;
 
+/// Poller fixture db.
 fn poller_fixture_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
@@ -142,7 +155,7 @@ fn poller_fixture_db() -> Connection {
 }
 
 /// Create a shared-memory DB so both the test code and the `DbReader` see the same rows.
-/// SQLite in-memory DBs with `file::memory:?cache=shared` require a unique name per test.
+/// `SQLite` in-memory DBs with `file::memory:?cache=shared` require a unique name per test.
 fn shared_poller_db(name: &str) -> (Connection, Arc<DbReader>) {
     let uri = format!("file:{name}?mode=memory&cache=shared");
     let writer = Connection::open(&uri).unwrap();
@@ -162,6 +175,7 @@ fn shared_poller_db(name: &str) -> (Connection, Arc<DbReader>) {
     (writer, db)
 }
 
+/// Verifies that spawn poller detects new trade.
 #[tokio::test]
 async fn spawn_poller_detects_new_trade() {
     let (writer, db) = shared_poller_db("poller_trade");
@@ -169,7 +183,6 @@ async fn spawn_poller_detects_new_trade() {
 
     super::spawn_poller(Arc::clone(&db), 50, tx);
 
-    // Insert a trade after the poller starts.
     tokio::time::sleep(Duration::from_millis(30)).await;
     writer
         .execute(
@@ -185,6 +198,7 @@ async fn spawn_poller_detects_new_trade() {
     assert!(matches!(msg, WsMessage::Trade(_)));
 }
 
+/// Verifies that spawn poller detects new balance.
 #[tokio::test]
 async fn spawn_poller_detects_new_balance() {
     let (writer, db) = shared_poller_db("poller_balance");
@@ -207,6 +221,7 @@ async fn spawn_poller_detects_new_balance() {
     assert!(matches!(msg, WsMessage::Balance(_)));
 }
 
+/// Verifies that spawn poller detects new signal.
 #[tokio::test]
 async fn spawn_poller_detects_new_signal() {
     let (writer, db) = shared_poller_db("poller_signal");
@@ -229,6 +244,7 @@ async fn spawn_poller_detects_new_signal() {
     assert!(matches!(msg, WsMessage::Signal(_)));
 }
 
+/// Verifies that spawn poller handles empty db.
 #[tokio::test]
 async fn spawn_poller_handles_empty_db() {
     let conn = poller_fixture_db();
@@ -237,15 +253,12 @@ async fn spawn_poller_handles_empty_db() {
 
     super::spawn_poller(db, 50, tx);
 
-    // Wait two poll cycles — should not crash, and nothing should be received.
     let result = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
     assert!(
         result.is_err(),
         "expected timeout (no messages from empty DB)"
     );
 }
-
-// -- handle_ws tests (via real server + tokio-tungstenite client) -------------
 
 use axum::Router;
 use axum::extract::WebSocketUpgrade;
@@ -271,13 +284,13 @@ async fn spawn_ws_server() -> (String, broadcast::Sender<WsMessage>) {
     (format!("ws://127.0.0.1:{}/ws", addr.port()), tx)
 }
 
+/// Verifies that handle ws forwards broadcast to client.
 #[tokio::test]
 async fn handle_ws_forwards_broadcast_to_client() {
     let (url, tx) = spawn_ws_server().await;
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Send a message via broadcast.
     let entry = BalanceEntry {
         id: 1,
         timestamp: 1000,
@@ -288,7 +301,6 @@ async fn handle_ws_forwards_broadcast_to_client() {
     };
     tx.send(WsMessage::Balance(entry)).unwrap();
 
-    // Client should receive it.
     use futures_util::StreamExt;
     let msg = tokio::time::timeout(Duration::from_millis(1000), ws.next())
         .await
@@ -305,15 +317,12 @@ async fn handle_ws_forwards_broadcast_to_client() {
     }
 }
 
+/// Verifies that handle ws exits on client close.
 #[tokio::test]
 async fn handle_ws_exits_on_client_close() {
     let (url, _tx) = spawn_ws_server().await;
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Client sends a close frame.
     ws.close(None).await.unwrap();
-
-    // Server's handle_ws should exit cleanly. If it doesn't, this test just
-    // verifies no panic occurred. The WS is already closed from our side.
 }

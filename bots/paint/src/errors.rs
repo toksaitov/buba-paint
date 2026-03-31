@@ -14,7 +14,7 @@ pub enum BubaError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// JSON serialization / deserialization failure.
+    /// `JSON` serialization / deserialization failure.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
@@ -22,7 +22,7 @@ pub enum BubaError {
     #[error("config error: {0}")]
     Config(String),
 
-    /// WebSocket / market-data feed error.
+    /// `WebSocket` / market-data feed error.
     #[error("feed error: {0}")]
     Feed(String),
 

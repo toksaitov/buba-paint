@@ -7,7 +7,7 @@ function parseMomentum(metadata: string | null): number | null {
     const parsed = JSON.parse(metadata) as Record<string, unknown>;
     if (typeof parsed.momentum === "number") return parsed.momentum;
   } catch {
-    /* ignore */
+
   }
   return null;
 }
@@ -75,3 +75,4 @@ export function SignalTable({ signals }: { signals: SignalRow[] }) {
     </div>
   );
 }
+

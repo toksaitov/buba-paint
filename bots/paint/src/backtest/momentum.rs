@@ -2,7 +2,7 @@
 ///
 /// Tracks `(price, timestamp)` pairs within a configurable time window and
 /// reports the relative price change from the oldest to the newest observation.
-/// Direct port of the TypeScript `MomentumCalculator` class.
+/// Direct port of the `TypeScript` `MomentumCalculator` class.
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone)]
@@ -18,6 +18,7 @@ pub struct MomentumCalculator {
 }
 
 impl MomentumCalculator {
+    /// Creates a new `MomentumCalculator`.
     pub fn new(window_ms: u64) -> Self {
         Self {
             window: VecDeque::new(),
@@ -59,10 +60,6 @@ impl MomentumCalculator {
         self.window.clear();
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/momentum_tests.rs"]

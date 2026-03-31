@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Outlet } from "react-router-dom";
+import { Link, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Nav } from "./nav";
 import { Header } from "./header";
@@ -20,7 +20,6 @@ export function AppShell() {
 
   const bots = data?.bots ?? [];
 
-  // Auto-select first bot if none selected or selected bot no longer exists
   useEffect(() => {
     if (bots.length > 0) {
       if (!selectedBotId || !bots.find((b) => b.id === selectedBotId)) {
@@ -46,12 +45,18 @@ export function AppShell() {
         <div
           className={`flex items-center h-12 border-b border-border ${collapsed ? "justify-center" : "px-3"}`}
         >
-          <Logo size={collapsed ? 20 : 18} />
-          {!collapsed && (
-            <span className="text-[11px] font-bold uppercase tracking-widest text-muted ml-2">
-              buba
-            </span>
-          )}
+          <Link
+            to="/"
+            aria-label="Go to main page"
+            className={`flex items-center ${collapsed ? "justify-center" : ""} hover:opacity-80 transition-opacity`}
+          >
+            <Logo size={collapsed ? 20 : 18} />
+            {!collapsed && (
+              <span className="text-[11px] font-bold uppercase tracking-widest text-muted ml-2">
+                buba
+              </span>
+            )}
+          </Link>
         </div>
         <Nav
           collapsed={collapsed}

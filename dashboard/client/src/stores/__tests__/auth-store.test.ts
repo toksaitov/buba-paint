@@ -3,7 +3,7 @@ import { useAuthStore } from "../auth-store";
 
 beforeEach(() => {
   localStorage.clear();
-  // Reset the store state between tests.
+
   useAuthStore.setState({ token: null, user: null });
 });
 
@@ -15,10 +15,9 @@ describe("useAuthStore", () => {
 
   test("initial state reads token from localStorage", () => {
     localStorage.setItem("token", "saved-token");
-    // Re-create by calling the store initializer directly isn't possible,
-    // but we can test that setAuth persists to localStorage.
+
     const state = useAuthStore.getState();
-    // After beforeEach reset, token is null. Verify the reset works.
+
     expect(state.token).toBeNull();
   });
 
@@ -49,3 +48,4 @@ describe("useAuthStore", () => {
     expect(state.user).toBeNull();
   });
 });
+

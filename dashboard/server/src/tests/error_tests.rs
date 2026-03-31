@@ -3,7 +3,7 @@ use axum::response::IntoResponse;
 
 use crate::error::DashboardError;
 
-/// Helper: extract status code and body JSON from a DashboardError response.
+/// Helper: extract status code and body `JSON` from a DashboardError response.
 async fn error_parts(err: DashboardError) -> (StatusCode, serde_json::Value) {
     let response = err.into_response();
     let status = response.status();
@@ -14,6 +14,7 @@ async fn error_parts(err: DashboardError) -> (StatusCode, serde_json::Value) {
     (status, json)
 }
 
+/// Verifies that database error returns 500.
 #[tokio::test]
 async fn database_error_returns_500() {
     let err = DashboardError::Database(rusqlite::Error::QueryReturnedNoRows);
@@ -21,6 +22,7 @@ async fn database_error_returns_500() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
+/// Verifies that unauthorized returns 401.
 #[tokio::test]
 async fn unauthorized_returns_401() {
     let err = DashboardError::Unauthorized("bad token".into());
@@ -29,6 +31,7 @@ async fn unauthorized_returns_401() {
     assert_eq!(body["error"], "bad token");
 }
 
+/// Verifies that forbidden returns 403.
 #[tokio::test]
 async fn forbidden_returns_403() {
     let err = DashboardError::Forbidden("no access".into());
@@ -37,6 +40,7 @@ async fn forbidden_returns_403() {
     assert_eq!(body["error"], "no access");
 }
 
+/// Verifies that not found returns 404.
 #[tokio::test]
 async fn not_found_returns_404() {
     let err = DashboardError::NotFound("missing".into());
@@ -45,6 +49,7 @@ async fn not_found_returns_404() {
     assert_eq!(body["error"], "missing");
 }
 
+/// Verifies that bad request returns 400.
 #[tokio::test]
 async fn bad_request_returns_400() {
     let err = DashboardError::BadRequest("invalid".into());
@@ -53,6 +58,7 @@ async fn bad_request_returns_400() {
     assert_eq!(body["error"], "invalid");
 }
 
+/// Verifies that agent error preserves status code.
 #[tokio::test]
 async fn agent_error_preserves_status_code() {
     let err = DashboardError::AgentError(409, "conflict".into());
@@ -61,15 +67,16 @@ async fn agent_error_preserves_status_code() {
     assert_eq!(body["error"], "conflict");
 }
 
+/// Verifies that agent error invalid code falls back to 500.
 #[tokio::test]
 async fn agent_error_invalid_code_falls_back_to_500() {
-    // StatusCode::from_u16 accepts 100-999; values outside that range trigger the fallback.
     let err = DashboardError::AgentError(0, "weird".into());
     let (status, body) = error_parts(err).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["error"], "weird");
 }
 
+/// Verifies that proxy error returns 502.
 #[tokio::test]
 async fn proxy_error_returns_502() {
     let err = DashboardError::Proxy("connection refused".into());
@@ -78,6 +85,7 @@ async fn proxy_error_returns_502() {
     assert_eq!(body["error"], "connection refused");
 }
 
+/// Verifies that internal returns 500.
 #[tokio::test]
 async fn internal_returns_500() {
     let err = DashboardError::Internal("something broke".into());
@@ -86,9 +94,9 @@ async fn internal_returns_500() {
     assert_eq!(body["error"], "something broke");
 }
 
+/// Verifies that error body is json with error field.
 #[tokio::test]
 async fn error_body_is_json_with_error_field() {
-    // Every variant should produce a JSON body with an "error" key.
     let variants: Vec<DashboardError> = vec![
         DashboardError::Unauthorized("u".into()),
         DashboardError::Forbidden("f".into()),

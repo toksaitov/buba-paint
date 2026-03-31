@@ -1,9 +1,3 @@
-// Integration test for `buba_paint::backtest::runner::run_backtest()`.
-//
-// Uses a temporary SQLite database pre-populated with fixture data (the
-// merged-data schema that includes `open_price`, `close_price`, `outcome`
-// columns on the `markets` table).
-
 use rusqlite::{Connection, params};
 use tempfile::NamedTempFile;
 
@@ -12,10 +6,6 @@ use std::sync::Arc;
 use buba_paint::backtest::runner::{BacktestOptions, TickSource, run_backtest};
 use buba_paint::backtest::tick_replay::{RawTick, TickReplay};
 use buba_paint::config::Config;
-
-// ---------------------------------------------------------------------------
-// Fixture helpers
-// ---------------------------------------------------------------------------
 
 /// Create a fixture data DB with the merged-data schema and a single 5-minute
 /// market window where BTC goes **UP** (close > open).  Ticks simulate strong
@@ -26,7 +16,6 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
     let path = tmp.path().to_str().unwrap().to_string();
     let conn = Connection::open(&path).unwrap();
 
-    // Create the merged-data schema (different from per-run schema!).
     conn.execute_batch(
         "CREATE TABLE tick_data (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +45,6 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
     )
     .unwrap();
 
-    // Insert a market window: 5 minutes, BTC goes UP (close > open).
     conn.execute(
         "INSERT INTO markets (market_id, question, condition_id, slug,
             up_token_id, down_token_id, start_time, end_time,
@@ -70,7 +58,7 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
             "tok-up",
             "tok-down",
             1_000_000_i64,
-            1_300_000_i64, // 5 minutes
+            1_300_000_i64,
             42_000.0,
             42_100.0,
             "UP"
@@ -80,8 +68,6 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
 
     let base_price = 42_000.0;
 
-    // 30 seconds of ticks BEFORE the window opens (warmup for momentum).
-    // Price is flat so momentum starts at zero; CLOB book has cheap UP ask.
     for i in 0..30 {
         let ts = 970_000_i64 + i64::from(i) * 1000;
         insert_tick(
@@ -126,13 +112,9 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
         );
     }
 
-    // During the window: price rises sharply (triggers momentum signal).
-    // +$5 per second = $150 over 30s at $42k base = 0.36% → exceeds 0.0015 threshold.
-    // We generate ticks through the entire 300s window AND past the end so
-    // the window closes and trades are resolved.
     for i in 0..330 {
         let ts = 1_000_000_i64 + i64::from(i) * 1000;
-        // Price keeps rising during the window, then flattens.
+
         let price = if i < 300 {
             base_price + f64::from(i) * 5.0
         } else {
@@ -223,7 +205,7 @@ fn create_flat_fixture_data_db() -> (NamedTempFile, String) {
     .unwrap();
 
     let flat_price = 42_000.0;
-    // Warmup + during window: all prices are constant.
+
     for i in 0..150 {
         let ts = 970_000_i64 + i64::from(i) * 1000;
         insert_tick(
@@ -272,6 +254,7 @@ fn create_flat_fixture_data_db() -> (NamedTempFile, String) {
     (tmp, path)
 }
 
+/// Insert tick.
 #[allow(clippy::too_many_arguments)]
 fn insert_tick(
     conn: &Connection,
@@ -296,8 +279,8 @@ fn insert_tick(
 /// high spread-capture threshold to avoid overcounting.
 fn test_config() -> Config {
     Config {
-        peak_dd_pause_pct: 1.0,         // disable peak DD pause
-        spread_capture_threshold: 0.50, // disable spread-capture overcounting
+        peak_dd_pause_pct: 1.0,
+        spread_capture_threshold: 0.50,
         log_level: "error".to_string(),
         ..Config::default()
     }
@@ -305,7 +288,7 @@ fn test_config() -> Config {
 
 /// Create a fixture data DB suitable for spread-capture testing.
 ///
-/// Has a single market window and CLOB book data where both asks are cheap
+/// Has a single market window and `CLOB` book data where both asks are cheap
 /// (`up_ask`=0.40, `down_ask`=0.40, total=0.80) so spread-capture triggers
 /// when `spread_capture_threshold > 0.80`.
 #[allow(clippy::too_many_lines)]
@@ -366,8 +349,6 @@ fn create_spread_capture_fixture_db() -> (NamedTempFile, String) {
 
     let base_price = 42_000.0;
 
-    // Warmup ticks (30s before window opens).
-    // Flat prices so latency-arb does NOT trigger, only spread-capture should.
     for i in 0..30 {
         let ts = 970_000_i64 + i64::from(i) * 1000;
         insert_tick(
@@ -390,7 +371,7 @@ fn create_spread_capture_fixture_db() -> (NamedTempFile, String) {
             None,
             None,
         );
-        // Both UP and DOWN asks at 0.40 → total = 0.80 (below threshold 0.90).
+
         insert_tick(
             &conn,
             ts,
@@ -413,7 +394,6 @@ fn create_spread_capture_fixture_db() -> (NamedTempFile, String) {
         );
     }
 
-    // During the window: flat prices but cheap book on both sides.
     for i in 0..330 {
         let ts = 1_000_000_i64 + i64::from(i) * 1000;
         insert_tick(
@@ -486,7 +466,7 @@ struct WindowDef {
 /// * `windows` — list of `WindowDef` structs.
 /// * Between windows, ticks with the given `base_price` are generated.
 /// * During each window, price rises or falls according to `momentum_up`.
-/// * CLOB book: `up_ask`=0.45, `down_ask`=0.50 (latency-arb friendly).
+/// * `CLOB` book: `up_ask`=0.45, `down_ask`=0.50 (latency-arb friendly).
 #[allow(clippy::too_many_lines)]
 fn create_multi_window_fixture_db(
     windows: &[WindowDef],
@@ -549,7 +529,6 @@ fn create_multi_window_fixture_db(
         .unwrap();
     }
 
-    // Determine overall time range: 30s warmup before first window, 30s after last window.
     let first_start = windows.iter().map(|w| w.start_time).min().unwrap();
     let last_end = windows.iter().map(|w| w.end_time).max().unwrap();
     let tick_start = first_start - 30_000;
@@ -557,7 +536,6 @@ fn create_multi_window_fixture_db(
 
     let mut ts = tick_start;
     while ts <= tick_end {
-        // Determine if we're inside a window and what the price movement should be.
         let mut price = base_price;
         let mut in_window = false;
 
@@ -566,12 +544,6 @@ fn create_multi_window_fixture_db(
                 in_window = true;
                 let fraction = (ts - w.start_time) as f64 / (w.end_time - w.start_time) as f64;
 
-                // The momentum amplifier controls the direction of tick prices,
-                // independently of the settlement outcome.  The value must be
-                // large enough so that a 30-second slice (momentum_window_ms)
-                // produces momentum > latency_arb_momentum_threshold (0.0015).
-                // With base=42k, 30s/300s=0.1 fraction-slice → need amp*0.1/42k
-                // ≥ 0.0015  →  amp ≥ 630.  Use 1500 for comfortable margin.
                 let momentum_amplifier = if w.momentum_up { 1500.0 } else { -1500.0 };
                 price = base_price + momentum_amplifier * fraction;
                 break;
@@ -579,7 +551,6 @@ fn create_multi_window_fixture_db(
         }
 
         if !in_window {
-            // Between windows: flat at base price.
             price = base_price;
         }
 
@@ -613,10 +584,7 @@ fn create_multi_window_fixture_db(
     (tmp, path)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
+/// Verifies that backtest runs without error.
 #[test]
 fn backtest_runs_without_error() {
     let (_data_tmp, data_path) = create_fixture_data_db();
@@ -641,6 +609,7 @@ fn backtest_runs_without_error() {
     assert!(result.elapsed_seconds > 0.0);
 }
 
+/// Verifies that backtest with strong momentum produces trades.
 #[test]
 fn backtest_with_strong_momentum_produces_trades() {
     let (_data_tmp, data_path) = create_fixture_data_db();
@@ -673,7 +642,7 @@ fn backtest_with_strong_momentum_produces_trades() {
         result.final_balance,
         result.total_ticks,
     );
-    // Since the outcome is UP and we bought UP tokens, PnL should be positive.
+
     assert!(
         result.total_pnl > 0.0,
         "PnL should be positive when outcome matches direction; got {}",
@@ -681,6 +650,7 @@ fn backtest_with_strong_momentum_produces_trades() {
     );
 }
 
+/// Verifies that backtest with flat prices produces no latency arb trades.
 #[test]
 fn backtest_with_flat_prices_produces_no_latency_arb_trades() {
     let (_data_tmp, data_path) = create_flat_fixture_data_db();
@@ -699,8 +669,6 @@ fn backtest_with_flat_prices_produces_no_latency_arb_trades() {
     })
     .unwrap();
 
-    // Flat prices = zero momentum = no latency-arb signals.
-    // Spread-capture is disabled via the threshold.
     assert_eq!(
         result.trades, 0,
         "flat prices should produce zero trades; got {}",
@@ -708,13 +676,13 @@ fn backtest_with_flat_prices_produces_no_latency_arb_trades() {
     );
 }
 
+/// Verifies that backtest cleans up stale output db.
 #[test]
 fn backtest_cleans_up_stale_output_db() {
     let (_data_tmp, data_path) = create_fixture_data_db();
     let results_tmp = NamedTempFile::new().unwrap();
     let results_path = results_tmp.path().to_str().unwrap().to_string();
 
-    // Pre-create a stale results DB with a balance_log entry at $999.
     {
         let stale_conn = Connection::open(&results_path).unwrap();
         buba_paint::db::schema::run_migrations(&stale_conn).unwrap();
@@ -739,8 +707,6 @@ fn backtest_cleans_up_stale_output_db() {
     })
     .unwrap();
 
-    // The stale $999 balance should have been cleaned up.
-    // Final balance should be based on the $200 starting balance, not $999.
     assert!(
         result.final_balance < 999.0,
         "stale output DB was not cleaned up; final_balance={} (expected < 999)",
@@ -748,6 +714,7 @@ fn backtest_cleans_up_stale_output_db() {
     );
 }
 
+/// Verifies that backtest respects starting balance.
 #[test]
 fn backtest_respects_starting_balance() {
     let (_data_tmp, data_path) = create_flat_fixture_data_db();
@@ -767,7 +734,6 @@ fn backtest_respects_starting_balance() {
     })
     .unwrap();
 
-    // With flat prices and no trades, the final balance should equal the start.
     assert!(
         (result.final_balance - starting).abs() < f64::EPSILON,
         "expected final_balance={starting}, got {}",
@@ -775,6 +741,7 @@ fn backtest_respects_starting_balance() {
     );
 }
 
+/// Verifies that backtest result fields are consistent.
 #[test]
 fn backtest_result_fields_are_consistent() {
     let (_data_tmp, data_path) = create_fixture_data_db();
@@ -793,7 +760,6 @@ fn backtest_result_fields_are_consistent() {
     })
     .unwrap();
 
-    // Wins + losses should equal total trades.
     assert_eq!(
         result.wins + result.losses,
         result.trades,
@@ -803,7 +769,6 @@ fn backtest_result_fields_are_consistent() {
         result.trades
     );
 
-    // Win rate should be consistent.
     if result.trades > 0 {
         let expected_wr = result.wins as f64 / result.trades as f64;
         assert!(
@@ -814,7 +779,6 @@ fn backtest_result_fields_are_consistent() {
         );
     }
 
-    // Total PnL should equal final_balance - starting_balance.
     let expected_pnl = result.final_balance - 200.0;
     assert!(
         (result.total_pnl - expected_pnl).abs() < 0.01,
@@ -823,7 +787,6 @@ fn backtest_result_fields_are_consistent() {
         result.final_balance
     );
 
-    // High water mark should be >= final_balance.
     assert!(
         result.high_water_mark >= result.final_balance - 0.01,
         "hwm({}) should be >= final_balance({})",
@@ -832,15 +795,11 @@ fn backtest_result_fields_are_consistent() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// B1: TickSource::Cached produces identical results to TickSource::FromDb
-// ---------------------------------------------------------------------------
-
+/// Verifies that backtest with cached tick source.
 #[test]
 fn backtest_with_cached_tick_source() {
     let (_data_tmp, data_path) = create_fixture_data_db();
 
-    // Run 1: FromDb
     let results_tmp_1 = NamedTempFile::new().unwrap();
     let results_path_1 = results_tmp_1.path().to_str().unwrap().to_string();
 
@@ -856,7 +815,6 @@ fn backtest_with_cached_tick_source() {
     })
     .unwrap();
 
-    // Load ticks manually for the Cached path.
     let conn = rusqlite::Connection::open_with_flags(
         &data_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -866,7 +824,6 @@ fn backtest_with_cached_tick_source() {
     drop(conn);
     let cached_ticks = Arc::new(ticks);
 
-    // Run 2: Cached
     let results_tmp_2 = NamedTempFile::new().unwrap();
     let results_path_2 = results_tmp_2.path().to_str().unwrap().to_string();
 
@@ -882,7 +839,6 @@ fn backtest_with_cached_tick_source() {
     })
     .unwrap();
 
-    // Compare all key fields — must be identical.
     assert_eq!(
         result_from_db.total_ticks, result_cached.total_ticks,
         "total_ticks mismatch: FromDb={}, Cached={}",
@@ -927,10 +883,7 @@ fn backtest_with_cached_tick_source() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// B2: Spread-capture strategy produces batch trades
-// ---------------------------------------------------------------------------
-
+/// Verifies that backtest spread capture fires.
 #[test]
 fn backtest_spread_capture_fires() {
     let (_data_tmp, data_path) = create_spread_capture_fixture_db();
@@ -938,10 +891,10 @@ fn backtest_spread_capture_fires() {
     let results_path = results_tmp.path().to_str().unwrap().to_string();
 
     let config = Config {
-        peak_dd_pause_pct: 1.0,               // disable peak DD pause
-        spread_capture_threshold: 0.90,       // total_ask=0.80 < 0.90 triggers
-        spread_capture_min_ask: 0.15,         // both asks 0.40 pass this
-        latency_arb_momentum_threshold: 99.0, // disable latency-arb
+        peak_dd_pause_pct: 1.0,
+        spread_capture_threshold: 0.90,
+        spread_capture_min_ask: 0.15,
+        latency_arb_momentum_threshold: 99.0,
         log_level: "error".to_string(),
         ..Config::default()
     };
@@ -958,13 +911,12 @@ fn backtest_spread_capture_fires() {
     })
     .unwrap();
 
-    // Spread-capture should fire at least one batch (2 legs: UP + DOWN).
     assert!(
         result.trades >= 2,
         "spread-capture should produce at least 2 trades (both legs); got {}",
         result.trades
     );
-    // Signals should also be at least 2 (one UP and one DOWN per batch).
+
     assert!(
         result.signals >= 2,
         "spread-capture should produce at least 2 signals; got {}",
@@ -972,14 +924,9 @@ fn backtest_spread_capture_fires() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// B3: Circuit breaker pauses then resumes trading
-// ---------------------------------------------------------------------------
-
+/// Verifies that backtest circuit breaker pauses then resumes.
 #[test]
 fn backtest_circuit_breaker_pauses_then_resumes() {
-    // Three market windows. All resolve DOWN (close < open), but tick prices
-    // rise (momentum_up=true) so the bot generates UP signals that LOSE.
     let windows = vec![
         WindowDef {
             market_id: "mkt-cb-1",
@@ -1012,16 +959,15 @@ fn backtest_circuit_breaker_pauses_then_resumes() {
 
     let (_data_tmp, data_path) = create_multi_window_fixture_db(&windows, 42_000.0, 1000);
 
-    // Run WITHOUT circuit breaker (effectively disabled: losses=999).
     let results_tmp_no_cb = NamedTempFile::new().unwrap();
     let results_path_no_cb = results_tmp_no_cb.path().to_str().unwrap().to_string();
 
     let config_no_cb = Config {
         peak_dd_pause_pct: 1.0,
-        spread_capture_threshold: 0.50, // disable spread-capture
-        circuit_breaker_losses: 999,    // effectively disabled
+        spread_capture_threshold: 0.50,
+        circuit_breaker_losses: 999,
         circuit_breaker_pause_ms: 900_000,
-        latency_arb_cooldown_ms: 1_000, // short cooldown to allow multiple signals
+        latency_arb_cooldown_ms: 1_000,
         log_level: "error".to_string(),
         ..Config::default()
     };
@@ -1038,15 +984,14 @@ fn backtest_circuit_breaker_pauses_then_resumes() {
     })
     .unwrap();
 
-    // Run WITH circuit breaker: pause after just 1 consecutive loss.
     let results_tmp_cb = NamedTempFile::new().unwrap();
     let results_path_cb = results_tmp_cb.path().to_str().unwrap().to_string();
 
     let config_cb = Config {
         peak_dd_pause_pct: 1.0,
         spread_capture_threshold: 0.50,
-        circuit_breaker_losses: 1,           // trigger after 1 loss
-        circuit_breaker_pause_ms: 1_000_000, // long pause (covers remaining windows)
+        circuit_breaker_losses: 1,
+        circuit_breaker_pause_ms: 1_000_000,
         latency_arb_cooldown_ms: 1_000,
         log_level: "error".to_string(),
         ..Config::default()
@@ -1064,14 +1009,12 @@ fn backtest_circuit_breaker_pauses_then_resumes() {
     })
     .unwrap();
 
-    // Without CB, the bot should trade in multiple windows.
     assert!(
         result_no_cb.trades > 0,
         "without CB, should have trades; got 0 (signals={})",
         result_no_cb.signals
     );
 
-    // With CB, the bot should trade in fewer windows because it pauses after the first loss.
     assert!(
         result_cb.trades < result_no_cb.trades,
         "with CB (losses=1, pause=1000s), should have fewer trades ({}) than without CB ({})",
@@ -1080,19 +1023,10 @@ fn backtest_circuit_breaker_pauses_then_resumes() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// B4: Trend filter suppresses signals against the dominant trend
-// ---------------------------------------------------------------------------
-
+/// Verifies that backtest trend filter suppresses signal.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn backtest_trend_filter_suppresses_signal() {
-    // Create 6 market windows: first 4 resolve UP with positive momentum (UP wins),
-    // last 2 resolve DOWN but still have positive momentum (so the bot wants to go
-    // UP, which LOSES against the DOWN outcome).
-    // After 4 consecutive UP wins, the trend tracker's bias becomes positive.
-    // When the bot then generates a DOWN signal (windows 5-6 have negative momentum),
-    // the trend filter suppresses it because bias > threshold.
     let windows = vec![
         WindowDef {
             market_id: "mkt-tf-1",
@@ -1130,8 +1064,6 @@ fn backtest_trend_filter_suppresses_signal() {
             outcome: "UP",
             momentum_up: true,
         },
-        // Windows 5-6: negative momentum → DOWN signals, outcome is DOWN.
-        // With trend filter, DOWN signals should be suppressed after UP-dominant bias.
         WindowDef {
             market_id: "mkt-tf-5",
             start_time: 2_600_000,
@@ -1154,7 +1086,6 @@ fn backtest_trend_filter_suppresses_signal() {
 
     let (_data_tmp, data_path) = create_multi_window_fixture_db(&windows, 42_000.0, 1000);
 
-    // Run WITHOUT trend filter.
     let results_tmp_no_tf = NamedTempFile::new().unwrap();
     let results_path_no_tf = results_tmp_no_tf.path().to_str().unwrap().to_string();
 
@@ -1180,7 +1111,6 @@ fn backtest_trend_filter_suppresses_signal() {
     })
     .unwrap();
 
-    // Run WITH trend filter.
     let results_tmp_tf = NamedTempFile::new().unwrap();
     let results_path_tf = results_tmp_tf.path().to_str().unwrap().to_string();
 
@@ -1208,7 +1138,6 @@ fn backtest_trend_filter_suppresses_signal() {
     })
     .unwrap();
 
-    // Both runs should have signals.
     assert!(
         result_no_tf.signals > 0,
         "without trend filter, should have signals; got 0"
@@ -1218,11 +1147,6 @@ fn backtest_trend_filter_suppresses_signal() {
         "with trend filter, should still have signals; got 0"
     );
 
-    // With trend filter enabled, some signals that would have become trades
-    // should be suppressed (the signal is still counted but the trade is
-    // blocked). So we expect fewer trades when the filter is active.
-    // The trend filter suppresses counter-trend signals: after several UP
-    // wins, DOWN signals are suppressed.
     assert!(
         result_tf.trades <= result_no_tf.trades,
         "with trend filter, should have no more trades ({}) than without ({})",
@@ -1231,10 +1155,7 @@ fn backtest_trend_filter_suppresses_signal() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// B5: Backtest with quiet=false exercises println branches
-// ---------------------------------------------------------------------------
-
+/// Verifies that backtest quiet false runs successfully.
 #[test]
 fn backtest_quiet_false_runs_successfully() {
     let (_data_tmp, data_path) = create_fixture_data_db();

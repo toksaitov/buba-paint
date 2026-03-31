@@ -42,6 +42,11 @@ export interface TradeRow {
   pnl: number | null;
   settlement_price: number | null;
   resolved_at: number | null;
+  fill_status?: string | null;
+  execution_group_id?: string | null;
+  execution_fidelity?: string | null;
+  filled_size?: number | null;
+  avg_fill_price?: number | null;
 }
 
 export interface TradesResponse {
@@ -72,6 +77,8 @@ export interface SignalRow {
   up_ask: number | null;
   down_ask: number | null;
   metadata: string | null;
+  market_id?: string | null;
+  execution_fidelity?: string | null;
 }
 
 export interface SignalsResponse {

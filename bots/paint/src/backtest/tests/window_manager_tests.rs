@@ -4,9 +4,9 @@ use super::*;
 /// backtest-specific columns (`open_price`, `close_price`, `outcome`).
 fn setup_test_db() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    // Use the base schema.
+
     crate::db::schema::run_migrations(&conn).unwrap();
-    // Add backtest-specific columns.
+
     let _ = conn.execute_batch(
         "ALTER TABLE markets ADD COLUMN open_price REAL;
          ALTER TABLE markets ADD COLUMN close_price REAL;
@@ -61,11 +61,18 @@ fn settlement(id: &str, start: u64, end: u64, outcome: SignalDirection) -> Marke
         open_price: 42_000.0,
         close_price: 42_100.0,
         outcome,
+        resolution_source: Some("chainlink".to_string()),
+        fee_profile: Some("crypto".to_string()),
+        order_min_size: Some(5.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: Some(1000.0),
+        taker_base_fee: Some(1000.0),
+        rewards_min_size: Some(50.0),
+        rewards_max_spread: Some(4.5),
     }
 }
 
-// -- from_settlements / advance (unit tests, no DB) -----------------------
-
+/// Verifies that empty returns no events.
 #[test]
 fn empty_returns_no_events() {
     let mut wm = WindowManager::from_settlements(vec![]);
@@ -76,17 +83,16 @@ fn empty_returns_no_events() {
     assert!(wm.current.is_none());
 }
 
+/// Verifies that opens at start time.
 #[test]
 fn opens_at_start_time() {
     let mut wm =
         WindowManager::from_settlements(vec![settlement("m1", 1000, 2000, SignalDirection::Up)]);
 
-    // Before start.
     let ev = wm.advance(999);
     assert!(ev.opened.is_none());
     assert!(wm.current.is_none());
 
-    // At start.
     let ev = wm.advance(1000);
     assert!(ev.opened.is_some());
     assert!(ev.closed.is_none());
@@ -94,32 +100,32 @@ fn opens_at_start_time() {
     assert_eq!(ev.opened.unwrap().market_id, "m1");
 }
 
+/// Verifies that closes at end time.
 #[test]
 fn closes_at_end_time() {
     let mut wm =
         WindowManager::from_settlements(vec![settlement("m1", 1000, 2000, SignalDirection::Up)]);
-    wm.advance(1000); // open
+    wm.advance(1000);
 
-    // Before end: still current.
     let ev = wm.advance(1999);
     assert!(ev.opened.is_none());
     assert!(ev.closed.is_none());
     assert!(wm.current.is_some());
 
-    // At end: closes.
     let ev = wm.advance(2000);
     assert!(ev.closed.is_some());
     assert_eq!(ev.closed.unwrap().market_id, "m1");
     assert!(wm.current.is_none());
 }
 
+/// Verifies that consecutive windows close and open.
 #[test]
 fn consecutive_windows_close_and_open() {
     let mut wm = WindowManager::from_settlements(vec![
         settlement("m1", 1000, 2000, SignalDirection::Up),
         settlement("m2", 2000, 3000, SignalDirection::Down),
     ]);
-    wm.advance(1000); // open m1
+    wm.advance(1000);
 
     let ev = wm.advance(2000);
     assert!(ev.closed.is_some());
@@ -129,6 +135,7 @@ fn consecutive_windows_close_and_open() {
     assert_eq!(wm.current.as_ref().unwrap().market_id, "m2");
 }
 
+/// Verifies that walk through three windows.
 #[test]
 fn walk_through_three_windows() {
     let mut wm = WindowManager::from_settlements(vec![
@@ -159,25 +166,24 @@ fn walk_through_three_windows() {
     assert!(wm.current.is_none());
 }
 
+/// Verifies that skip expired windows.
 #[test]
 fn skip_expired_windows() {
     let mut wm = WindowManager::from_settlements(vec![
         settlement("m1", 1000, 2000, SignalDirection::Up),
         settlement("m2", 3000, 4000, SignalDirection::Down),
     ]);
-    // Jump past m1 entirely.
+
     let ev = wm.advance(2500);
     assert!(ev.opened.is_none());
     assert!(ev.closed.is_none());
 
-    // m2 should still open.
     let ev = wm.advance(3000);
     assert!(ev.opened.is_some());
     assert_eq!(ev.opened.unwrap().market_id, "m2");
 }
 
-// -- to_market_window (static method) -------------------------------------
-
+/// Verifies that to market window converts.
 #[test]
 fn to_market_window_converts() {
     let s = settlement("m1", 1000, 2000, SignalDirection::Up);
@@ -192,8 +198,7 @@ fn to_market_window_converts() {
     assert_eq!(mw.end_time, 2000);
 }
 
-// -- reset ----------------------------------------------------------------
-
+/// Verifies that reset allows replay.
 #[test]
 fn reset_allows_replay() {
     let mut wm =
@@ -211,8 +216,7 @@ fn reset_allows_replay() {
     assert_eq!(ev.opened.unwrap().market_id, "m1");
 }
 
-// -- from DB (in-memory SQLite) -------------------------------------------
-
+/// Verifies that db empty returns zero windows.
 #[test]
 fn db_empty_returns_zero_windows() {
     let conn = setup_test_db();
@@ -221,6 +225,7 @@ fn db_empty_returns_zero_windows() {
     assert!(wm.current.is_none());
 }
 
+/// Verifies that db loads windows in range.
 #[test]
 fn db_loads_windows_in_range() {
     let conn = setup_test_db();
@@ -228,11 +233,11 @@ fn db_loads_windows_in_range() {
     insert_market(&conn, "m2", 3000, 4000, 42_100.0, 42_050.0, "DOWN");
     insert_market(&conn, "m3", 5000, 6000, 42_050.0, 42_200.0, "UP");
 
-    // Only m1 and m2 overlap [0, 4000].
     let wm = WindowManager::new(&conn, 0, 4000).unwrap();
     assert_eq!(wm.total_windows(), 2);
 }
 
+/// Verifies that db skips null outcome.
 #[test]
 fn db_skips_null_outcome() {
     let conn = setup_test_db();
@@ -250,6 +255,7 @@ fn db_skips_null_outcome() {
     assert_eq!(wm.total_windows(), 1);
 }
 
+/// Verifies that db opens and closes.
 #[test]
 fn db_opens_and_closes() {
     let conn = setup_test_db();
@@ -270,6 +276,7 @@ fn db_opens_and_closes() {
     assert!(wm.current.is_none());
 }
 
+/// Verifies that db down outcome parsed.
 #[test]
 fn db_down_outcome_parsed() {
     let conn = setup_test_db();

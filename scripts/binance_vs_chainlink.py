@@ -33,7 +33,6 @@ if bf.empty or cf.empty:
     print("Insufficient data. Need both Binance and Chainlink ticks.")
     sys.exit(0)
 
-# --- Merge on 1-second buckets, then resample to 30s for readability ---
 bf["second"] = (bf["timestamp"] // 1000) * 1000
 cf["second"] = (cf["timestamp"] // 1000) * 1000
 
@@ -45,12 +44,10 @@ merged["time"] = pd.to_datetime(merged["second"], unit="ms")
 merged["delta"] = merged["binance_price"] - merged["chainlink_price"]
 merged["delta_pct"] = (merged["delta"] / merged["chainlink_price"]) * 100
 
-# Resample to 30-second buckets if run is longer than 30 minutes
 run_minutes = (merged["second"].max() - merged["second"].min()) / 60_000
 if run_minutes > 30:
     merged = merged.set_index("time").resample("30s").last().dropna().reset_index()
 
-# Stats
 mean_d = merged["delta"].mean()
 std_d = merged["delta"].std()
 max_d = merged["delta"].max()
@@ -63,10 +60,8 @@ print(f"Std delta: ${std_d:.2f}")
 print(f"Max delta: ${max_d:.2f}")
 print(f"Min delta: ${min_d:.2f}")
 
-# --- Plot ---
 fig, axes = plt.subplots(3, 1, figsize=(16, 14))
 
-# Helper: add alternating 5-minute window shading
 def shade_windows(ax, markets_df):
     for i, (_, row) in enumerate(markets_df.iterrows()):
         s = pd.to_datetime(row["start_time"], unit="ms")

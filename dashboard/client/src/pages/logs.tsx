@@ -4,8 +4,6 @@ import AnsiModule from "ansi-to-react";
 import { useLogs } from "../hooks/use-logs";
 import { Loading } from "../components/common/loading";
 
-// ansi-to-react ships CJS — Vite may double-wrap the default export
-// Unwrap until we find the actual React component function
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ansi: any = AnsiModule;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -69,3 +67,4 @@ export function LogsPage() {
     </div>
   );
 }
+

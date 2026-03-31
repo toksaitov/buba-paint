@@ -16,16 +16,13 @@ fn test_config() -> Config {
         reconnect_base_delay: 100,
         reconnect_max_delay: 500,
         chainlink_stale_ms: 1_000,
-        clob_ping_interval: 60_000, // large so pings don't interfere
+        clob_ping_interval: 60_000,
         rtds_ping_interval: 60_000,
         ..Config::default()
     }
 }
 
-// =========================================================================
-// Binance feed tests
-// =========================================================================
-
+/// Verifies that binance feed emits connected on start.
 #[tokio::test]
 async fn binance_feed_emits_connected_on_start() {
     let server = MockWsServer::start().await;
@@ -48,6 +45,7 @@ async fn binance_feed_emits_connected_on_start() {
     }
 }
 
+/// Verifies that binance feed receives agg trade.
 #[tokio::test]
 async fn binance_feed_receives_agg_trade() {
     let server = MockWsServer::start().await;
@@ -59,10 +57,8 @@ async fn binance_feed_receives_agg_trade() {
         let _ = buba_paint::feeds::binance_feed::run_binance_feed(&cfg, tx).await;
     });
 
-    // Wait for the FeedConnected message first.
     let _ = timeout(Duration::from_secs(5), rx.recv()).await;
 
-    // Send a valid aggTrade.
     server
         .send(r#"{"e":"aggTrade","p":"42000.50","T":1700000000001}"#)
         .await;
@@ -73,7 +69,9 @@ async fn binance_feed_receives_agg_trade() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::BinanceTick { price, timestamp } => {
+        FeedMessage::BinanceTick {
+            price, timestamp, ..
+        } => {
             assert!((price - 42_000.50).abs() < f64::EPSILON);
             assert_eq!(timestamp, 1_700_000_000_001);
         }
@@ -81,6 +79,7 @@ async fn binance_feed_receives_agg_trade() {
     }
 }
 
+/// Verifies that binance feed ignores non agg trade.
 #[tokio::test]
 async fn binance_feed_ignores_non_agg_trade() {
     let server = MockWsServer::start().await;
@@ -92,15 +91,12 @@ async fn binance_feed_ignores_non_agg_trade() {
         let _ = buba_paint::feeds::binance_feed::run_binance_feed(&cfg, tx).await;
     });
 
-    // Wait for the FeedConnected.
     let _ = timeout(Duration::from_secs(5), rx.recv()).await;
 
-    // Send a non-aggTrade event.
     server
         .send(r#"{"e":"trade","p":"42000.50","T":1700000000001}"#)
         .await;
 
-    // No BinanceTick should arrive; only a short timeout proves absence.
     let result = timeout(Duration::from_millis(500), rx.recv()).await;
     assert!(
         result.is_err(),
@@ -108,6 +104,7 @@ async fn binance_feed_ignores_non_agg_trade() {
     );
 }
 
+/// Verifies that binance feed reconnects after disconnect.
 #[tokio::test]
 async fn binance_feed_reconnects_after_disconnect() {
     let server = MockWsServer::start().await;
@@ -119,18 +116,14 @@ async fn binance_feed_reconnects_after_disconnect() {
         let _ = buba_paint::feeds::binance_feed::run_binance_feed(&cfg, tx).await;
     });
 
-    // Wait for the initial FeedConnected.
     let msg = timeout(Duration::from_secs(5), rx.recv())
         .await
         .expect("timed out")
         .expect("channel closed");
     assert!(matches!(msg, FeedMessage::FeedConnected(_)));
 
-    // Close the connection from the server side.
     server.close().await;
 
-    // Drain FeedDisconnected.
-    // Then wait for a second FeedConnected (reconnection).
     let reconnected = timeout(Duration::from_secs(5), async {
         loop {
             match rx.recv().await {
@@ -146,10 +139,7 @@ async fn binance_feed_reconnects_after_disconnect() {
     assert!(reconnected, "feed did not reconnect after disconnect");
 }
 
-// =========================================================================
-// CLOB feed tests
-// =========================================================================
-
+/// Verifies that clob feed sends subscription after resubscribe.
 #[tokio::test]
 async fn clob_feed_sends_subscription_after_resubscribe() {
     let mut server = MockWsServer::start().await;
@@ -159,13 +149,11 @@ async fn clob_feed_sends_subscription_after_resubscribe() {
     let (tx, mut _rx) = mpsc::channel::<FeedMessage>(64);
     let (clob_handle, _join) = buba_paint::feeds::clob_feed::run_clob_feed(&cfg, tx).await;
 
-    // Trigger resubscription — this causes the feed to connect and subscribe.
     clob_handle
         .resubscribe("tok-up".to_string(), "tok-down".to_string())
         .await
         .unwrap();
 
-    // Capture the subscription message sent by the client.
     let sub_msg = timeout(Duration::from_secs(5), server.recv())
         .await
         .expect("timed out waiting for subscription message")
@@ -180,6 +168,7 @@ async fn clob_feed_sends_subscription_after_resubscribe() {
     assert_eq!(assets[1], "tok-down");
 }
 
+/// Verifies that clob feed receives book snapshot.
 #[tokio::test]
 async fn clob_feed_receives_book_snapshot() {
     let mut server = MockWsServer::start().await;
@@ -194,13 +183,10 @@ async fn clob_feed_receives_book_snapshot() {
         .await
         .unwrap();
 
-    // Wait for subscription message to arrive at server.
     let _ = timeout(Duration::from_secs(5), server.recv()).await;
 
-    // Drain FeedConnected from the rx channel.
     let _ = timeout(Duration::from_secs(2), rx.recv()).await;
 
-    // Send a book snapshot for the UP token.
     server
         .send(
             &serde_json::json!({
@@ -219,7 +205,7 @@ async fn clob_feed_receives_book_snapshot() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::ClobBook { book_state } => {
+        FeedMessage::ClobBook { book_state, .. } => {
             let up = book_state.up.expect("up should be Some");
             assert!((up.best_bid - 0.45).abs() < f64::EPSILON);
             assert!((up.best_ask - 0.55).abs() < f64::EPSILON);
@@ -228,6 +214,7 @@ async fn clob_feed_receives_book_snapshot() {
     }
 }
 
+/// Verifies that clob feed receives price change.
 #[tokio::test]
 async fn clob_feed_receives_price_change() {
     let mut server = MockWsServer::start().await;
@@ -242,13 +229,10 @@ async fn clob_feed_receives_price_change() {
         .await
         .unwrap();
 
-    // Wait for subscription to reach server.
     let _ = timeout(Duration::from_secs(5), server.recv()).await;
 
-    // Drain FeedConnected.
     let _ = timeout(Duration::from_secs(2), rx.recv()).await;
 
-    // Send a price_change event.
     server
         .send(
             &serde_json::json!({
@@ -269,7 +253,7 @@ async fn clob_feed_receives_price_change() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::ClobPriceChange { book_state } => {
+        FeedMessage::ClobPriceChange { book_state, .. } => {
             let up = book_state.up.expect("up should be Some");
             assert!((up.best_bid - 0.46).abs() < f64::EPSILON);
 
@@ -280,6 +264,7 @@ async fn clob_feed_receives_price_change() {
     }
 }
 
+/// Verifies that clob feed resubscribes on new tokens.
 #[tokio::test]
 async fn clob_feed_resubscribes_on_new_tokens() {
     let mut server = MockWsServer::start().await;
@@ -289,13 +274,11 @@ async fn clob_feed_resubscribes_on_new_tokens() {
     let (tx, mut _rx) = mpsc::channel::<FeedMessage>(64);
     let (clob_handle, _join) = buba_paint::feeds::clob_feed::run_clob_feed(&cfg, tx).await;
 
-    // First subscription.
     clob_handle
         .resubscribe("tok-up-1".to_string(), "tok-down-1".to_string())
         .await
         .unwrap();
 
-    // Wait for first subscription message.
     let sub1 = timeout(Duration::from_secs(5), server.recv())
         .await
         .expect("timed out")
@@ -303,13 +286,11 @@ async fn clob_feed_resubscribes_on_new_tokens() {
     let parsed1: serde_json::Value = serde_json::from_str(&sub1).unwrap();
     assert_eq!(parsed1["assets_ids"][0], "tok-up-1");
 
-    // Trigger second subscription with new tokens.
     clob_handle
         .resubscribe("tok-up-2".to_string(), "tok-down-2".to_string())
         .await
         .unwrap();
 
-    // Wait for the new subscription message (after reconnect).
     let sub2 = timeout(Duration::from_secs(5), server.recv())
         .await
         .expect("timed out waiting for second subscription")
@@ -319,10 +300,7 @@ async fn clob_feed_resubscribes_on_new_tokens() {
     assert_eq!(parsed2["assets_ids"][1], "tok-down-2");
 }
 
-// =========================================================================
-// Binance feed — invalid text handling
-// =========================================================================
-
+/// Verifies that binance feed handles invalid text gracefully.
 #[tokio::test]
 async fn binance_feed_handles_invalid_text_gracefully() {
     let server = MockWsServer::start().await;
@@ -334,20 +312,16 @@ async fn binance_feed_handles_invalid_text_gracefully() {
         let _ = buba_paint::feeds::binance_feed::run_binance_feed(&cfg, tx).await;
     });
 
-    // Wait for FeedConnected.
     let msg = timeout(Duration::from_secs(5), rx.recv())
         .await
         .expect("timed out waiting for FeedConnected")
         .expect("channel closed");
     assert!(matches!(msg, FeedMessage::FeedConnected(_)));
 
-    // Send invalid text — the feed should warn but not crash.
     server.send("not valid json at all {{{{").await;
 
-    // Small delay to let the feed process the invalid message.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Now send a valid aggTrade — the feed should still be alive.
     server
         .send(r#"{"e":"aggTrade","p":"42000.50","T":1700000000001}"#)
         .await;
@@ -358,7 +332,9 @@ async fn binance_feed_handles_invalid_text_gracefully() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::BinanceTick { price, timestamp } => {
+        FeedMessage::BinanceTick {
+            price, timestamp, ..
+        } => {
             assert!((price - 42_000.50).abs() < f64::EPSILON);
             assert_eq!(timestamp, 1_700_000_000_001);
         }
@@ -366,10 +342,7 @@ async fn binance_feed_handles_invalid_text_gracefully() {
     }
 }
 
-// =========================================================================
-// Chainlink feed tests
-// =========================================================================
-
+/// Verifies that chainlink feed sends subscription on connect.
 #[tokio::test]
 async fn chainlink_feed_sends_subscription_on_connect() {
     let mut server = MockWsServer::start().await;
@@ -394,6 +367,7 @@ async fn chainlink_feed_sends_subscription_on_connect() {
     assert_eq!(subs[0]["topic"], "crypto_prices_chainlink");
 }
 
+/// Verifies that chainlink feed receives price update.
 #[tokio::test]
 async fn chainlink_feed_receives_price_update() {
     let mut server = MockWsServer::start().await;
@@ -405,13 +379,10 @@ async fn chainlink_feed_receives_price_update() {
         let _ = buba_paint::feeds::chainlink_feed::run_chainlink_feed(&cfg, tx).await;
     });
 
-    // Wait for subscription to arrive at server.
     let _ = timeout(Duration::from_secs(5), server.recv()).await;
 
-    // Drain FeedConnected.
     let _ = timeout(Duration::from_secs(2), rx.recv()).await;
 
-    // Send a Chainlink price update.
     server
         .send(
             &serde_json::json!({
@@ -431,7 +402,9 @@ async fn chainlink_feed_receives_price_update() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::ChainlinkPrice { price, timestamp } => {
+        FeedMessage::ChainlinkPrice {
+            price, timestamp, ..
+        } => {
             assert!((price - 42_000.0).abs() < f64::EPSILON);
             assert_eq!(timestamp, 1_700_000_000_000);
         }
@@ -439,12 +412,13 @@ async fn chainlink_feed_receives_price_update() {
     }
 }
 
+/// Verifies that chainlink feed detects staleness.
 #[tokio::test]
 async fn chainlink_feed_detects_staleness() {
     let mut server = MockWsServer::start().await;
     let mut cfg = test_config();
     cfg.rtds_ws_url = server.url.clone();
-    // Use a very short stale timeout for the test.
+
     cfg.chainlink_stale_ms = 500;
 
     let (tx, mut rx) = mpsc::channel::<FeedMessage>(64);
@@ -452,13 +426,10 @@ async fn chainlink_feed_detects_staleness() {
         let _ = buba_paint::feeds::chainlink_feed::run_chainlink_feed(&cfg, tx).await;
     });
 
-    // Wait for subscription.
     let _ = timeout(Duration::from_secs(5), server.recv()).await;
 
-    // Drain FeedConnected.
     let _ = timeout(Duration::from_secs(2), rx.recv()).await;
 
-    // Send one price so the feed is "alive", then go silent.
     server
         .send(
             &serde_json::json!({
@@ -469,10 +440,8 @@ async fn chainlink_feed_detects_staleness() {
         )
         .await;
 
-    // Drain the ChainlinkPrice message.
     let _ = timeout(Duration::from_secs(2), rx.recv()).await;
 
-    // Now wait for the stale event (should arrive after ~500ms).
     let stale_found = timeout(Duration::from_secs(5), async {
         loop {
             match rx.recv().await {
@@ -488,6 +457,7 @@ async fn chainlink_feed_detects_staleness() {
     assert!(stale_found, "expected ChainlinkStale event");
 }
 
+/// Verifies that chainlink feed reconnects after stale.
 #[tokio::test]
 async fn chainlink_feed_reconnects_after_stale() {
     let mut server = MockWsServer::start().await;
@@ -500,14 +470,10 @@ async fn chainlink_feed_reconnects_after_stale() {
         let _ = buba_paint::feeds::chainlink_feed::run_chainlink_feed(&cfg, tx).await;
     });
 
-    // Wait for first subscription.
     let _ = timeout(Duration::from_secs(5), server.recv()).await;
 
-    // Drain FeedConnected.
     let _ = timeout(Duration::from_secs(2), rx.recv()).await;
 
-    // Let the feed go stale (no messages sent).
-    // Wait for ChainlinkStale, FeedDisconnected, then a new FeedConnected.
     let reconnected = timeout(Duration::from_secs(10), async {
         let mut saw_stale = false;
         loop {
@@ -529,6 +495,7 @@ async fn chainlink_feed_reconnects_after_stale() {
     assert!(reconnected, "feed did not reconnect after staleness");
 }
 
+/// Verifies that chainlink feed handles invalid text gracefully.
 #[tokio::test]
 async fn chainlink_feed_handles_invalid_text_gracefully() {
     let mut server = MockWsServer::start().await;
@@ -540,23 +507,18 @@ async fn chainlink_feed_handles_invalid_text_gracefully() {
         let _ = buba_paint::feeds::chainlink_feed::run_chainlink_feed(&cfg, tx).await;
     });
 
-    // Wait for subscription message to arrive at server.
     let _ = timeout(Duration::from_secs(5), server.recv()).await;
 
-    // Drain FeedConnected.
     let msg = timeout(Duration::from_secs(5), rx.recv())
         .await
         .expect("timed out waiting for FeedConnected")
         .expect("channel closed");
     assert!(matches!(msg, FeedMessage::FeedConnected(_)));
 
-    // Send invalid text — the feed should warn but not crash.
     server.send("not valid json at all {{{{").await;
 
-    // Small delay to let the feed process the invalid message.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Now send a valid Chainlink price update — the feed should still be alive.
     server
         .send(
             &serde_json::json!({
@@ -576,7 +538,9 @@ async fn chainlink_feed_handles_invalid_text_gracefully() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::ChainlinkPrice { price, timestamp } => {
+        FeedMessage::ChainlinkPrice {
+            price, timestamp, ..
+        } => {
             assert!((price - 43_000.0).abs() < f64::EPSILON);
             assert_eq!(timestamp, 1_700_000_000_100);
         }
@@ -584,6 +548,7 @@ async fn chainlink_feed_handles_invalid_text_gracefully() {
     }
 }
 
+/// Verifies that clob feed handles invalid text gracefully.
 #[tokio::test]
 async fn clob_feed_handles_invalid_text_gracefully() {
     let mut server = MockWsServer::start().await;
@@ -593,25 +558,19 @@ async fn clob_feed_handles_invalid_text_gracefully() {
     let (tx, mut rx) = mpsc::channel::<FeedMessage>(64);
     let (clob_handle, _join) = buba_paint::feeds::clob_feed::run_clob_feed(&cfg, tx).await;
 
-    // Trigger resubscription so the feed connects and subscribes.
     clob_handle
         .resubscribe("tok-up".to_string(), "tok-down".to_string())
         .await
         .unwrap();
 
-    // Wait for subscription message to arrive at server.
     let _ = timeout(Duration::from_secs(5), server.recv()).await;
 
-    // Drain FeedConnected.
     let _ = timeout(Duration::from_secs(2), rx.recv()).await;
 
-    // Send invalid text — the feed should warn but not crash.
     server.send("not valid json at all {{{{").await;
 
-    // Small delay to let the feed process the invalid message.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Now send a valid book snapshot — the feed should still be alive.
     server
         .send(
             &serde_json::json!({
@@ -630,7 +589,7 @@ async fn clob_feed_handles_invalid_text_gracefully() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::ClobBook { book_state } => {
+        FeedMessage::ClobBook { book_state, .. } => {
             let up = book_state.up.expect("up should be Some");
             assert!((up.best_bid - 0.45).abs() < f64::EPSILON);
             assert!((up.best_ask - 0.55).abs() < f64::EPSILON);

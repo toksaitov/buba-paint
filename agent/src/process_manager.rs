@@ -12,40 +12,37 @@ use tokio::time::Instant;
 use crate::error::AgentError;
 use crate::types::BotProcessStatus;
 
-// ---------------------------------------------------------------------------
-// Trait
-// ---------------------------------------------------------------------------
-
 /// Trait for managing the bot process lifecycle.
 ///
 /// Uses `Pin<Box<dyn Future>>` return types for object safety so the trait
 /// can be used behind `Arc<dyn ProcessManager>`.
 pub trait ProcessManager: Send + Sync {
+    /// Starts the managed bot process and returns the resulting status.
     fn start(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>>;
 
+    /// Stops the managed bot process and returns the resulting status.
     fn stop(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>>;
 
+    /// Restarts the managed bot process and returns the resulting status.
     fn restart(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>>;
 
+    /// Returns the current process status without mutating the process.
     fn status(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>>;
 
+    /// Returns the newest captured process log lines.
     fn logs(
         &self,
         lines: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, AgentError>> + Send + '_>>;
 }
-
-// ---------------------------------------------------------------------------
-// ChildProcessManager
-// ---------------------------------------------------------------------------
 
 /// Configuration for spawning the bot process.
 pub struct ProcessConfig {
@@ -83,6 +80,7 @@ pub struct ChildProcessManager {
 }
 
 impl ChildProcessManager {
+    /// Creates a new `ChildProcessManager`.
     pub fn new(config: ProcessConfig) -> Self {
         Self {
             state: Arc::new(RwLock::new(ProcessState {
@@ -115,7 +113,6 @@ impl ChildProcessManager {
 
         let pid = child.id();
 
-        // Update state.
         {
             let mut st = self.state.write().await;
             st.pid = pid;
@@ -124,7 +121,6 @@ impl ChildProcessManager {
         self.alive.store(true, Ordering::SeqCst);
         self.watchdog_enabled.store(true, Ordering::SeqCst);
 
-        // Capture stdout.
         if let Some(stdout) = child.stdout.take() {
             let buf = Arc::clone(&self.log_buffer);
             let cap = self.config.log_buffer_size;
@@ -133,7 +129,6 @@ impl ChildProcessManager {
             });
         }
 
-        // Capture stderr.
         if let Some(stderr) = child.stderr.take() {
             let buf = Arc::clone(&self.log_buffer);
             let cap = self.config.log_buffer_size;
@@ -142,7 +137,6 @@ impl ChildProcessManager {
             });
         }
 
-        // Watchdog: waits for child exit and optionally restarts.
         let state = Arc::clone(&self.state);
         let log_buffer = Arc::clone(&self.log_buffer);
         let watchdog_enabled = Arc::clone(&self.watchdog_enabled);
@@ -172,16 +166,15 @@ impl ChildProcessManager {
 }
 
 impl ProcessManager for ChildProcessManager {
+    /// Starts the managed process if it is not already running.
     fn start(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>> {
         Box::pin(async move {
             if self.alive.load(Ordering::SeqCst) {
-                // Already running — return current status.
                 return self.status().await;
             }
 
-            // Reset restart counter on manual start.
             {
                 let mut st = self.state.write().await;
                 st.restart_count = 0;
@@ -189,18 +182,17 @@ impl ProcessManager for ChildProcessManager {
 
             self.spawn().await?;
 
-            // Small delay so the process has time to either start or fail.
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             self.status().await
         })
     }
 
+    /// Stops the managed process and waits briefly for it to exit.
     fn stop(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>> {
         Box::pin(async move {
-            // Disable watchdog so it doesn't auto-restart.
             self.watchdog_enabled.store(false, Ordering::SeqCst);
 
             let pid = {
@@ -210,16 +202,13 @@ impl ProcessManager for ChildProcessManager {
 
             if let Some(pid) = pid {
                 if self.alive.load(Ordering::SeqCst) {
-                    // Send graceful termination signal.
                     send_terminate(pid);
 
-                    // Wait up to 5 s for exit.
                     let deadline = Instant::now() + Duration::from_secs(5);
                     while Instant::now() < deadline && self.alive.load(Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
 
-                    // Force kill if still alive.
                     if self.alive.load(Ordering::SeqCst) {
                         send_kill(pid);
                         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -231,17 +220,19 @@ impl ProcessManager for ChildProcessManager {
         })
     }
 
+    /// Stops the managed process and starts it again.
     fn restart(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>> {
         Box::pin(async move {
             self.stop().await?;
-            // Small gap to ensure cleanup.
+
             tokio::time::sleep(Duration::from_millis(100)).await;
             self.start().await
         })
     }
 
+    /// Returns the current child-process status snapshot.
     fn status(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>> {
@@ -261,6 +252,7 @@ impl ProcessManager for ChildProcessManager {
         })
     }
 
+    /// Returns the newest captured log lines from the child process.
     fn logs(
         &self,
         lines: u64,
@@ -277,10 +269,7 @@ impl ProcessManager for ChildProcessManager {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Watchdog
-// ---------------------------------------------------------------------------
-
+/// Watchdog loop.
 #[allow(clippy::too_many_arguments)]
 async fn watchdog_loop(
     mut child: tokio::process::Child,
@@ -294,12 +283,10 @@ async fn watchdog_loop(
     log_buffer_size: usize,
 ) {
     loop {
-        // Wait for the child to exit.
         let _ = child.wait().await;
         alive.store(false, Ordering::SeqCst);
 
         if !watchdog_enabled.load(Ordering::SeqCst) {
-            // Intentional stop — do not restart.
             return;
         }
 
@@ -338,7 +325,6 @@ async fn watchdog_loop(
             return;
         }
 
-        // Respawn.
         let program = &command[0];
         let args = &command[1..];
         match tokio::process::Command::new(program)
@@ -384,10 +370,7 @@ async fn watchdog_loop(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Log capture helpers
-// ---------------------------------------------------------------------------
-
+/// Captures lines.
 async fn capture_lines<R: tokio::io::AsyncRead + Unpin>(
     reader: BufReader<R>,
     buffer: Arc<Mutex<VecDeque<String>>>,
@@ -399,6 +382,7 @@ async fn capture_lines<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
+/// Push log.
 fn push_log(buffer: &Mutex<VecDeque<String>>, cap: usize, line: String) {
     let mut buf = buffer
         .lock()
@@ -409,27 +393,22 @@ fn push_log(buffer: &Mutex<VecDeque<String>>, cap: usize, line: String) {
     buf.push_back(line);
 }
 
-// ---------------------------------------------------------------------------
-// Platform-specific process signals
-// ---------------------------------------------------------------------------
-
+/// Sends terminate.
 #[cfg(unix)]
 fn send_terminate(pid: u32) {
-    // SAFETY: pid is a valid u32 from `Child::id()`. `libc::kill` sends a
-    // signal to the process — no memory unsafety.
     #[allow(unsafe_code)]
     unsafe {
         libc::kill(i32::try_from(pid).expect("pid fits in i32"), libc::SIGTERM);
     }
 }
 
+/// Sends terminate.
 #[cfg(not(unix))]
 fn send_terminate(_pid: u32) {
-    // On Windows we cannot send SIGTERM. The watchdog's `child.kill()` path
-    // handles forced termination. We log a note here.
     tracing::debug!("SIGTERM not available on this platform — relying on kill()");
 }
 
+/// Sends kill.
 #[cfg(unix)]
 fn send_kill(pid: u32) {
     #[allow(unsafe_code)]
@@ -438,15 +417,11 @@ fn send_kill(pid: u32) {
     }
 }
 
+/// Sends kill.
 #[cfg(not(unix))]
 fn send_kill(_pid: u32) {
-    // On non-Unix platforms the process should already be dead after `kill()`.
     tracing::debug!("SIGKILL not available on this platform");
 }
-
-// ---------------------------------------------------------------------------
-// NoopProcessManager
-// ---------------------------------------------------------------------------
 
 /// Monitoring-only process manager. Does not control the bot process.
 ///
@@ -458,12 +433,14 @@ pub struct NoopProcessManager {
 }
 
 impl NoopProcessManager {
+    /// Creates a new `NoopProcessManager`.
     pub fn new(log_path: Option<String>) -> Self {
         Self { log_path }
     }
 }
 
 impl ProcessManager for NoopProcessManager {
+    /// Reports that bot control is unavailable in monitoring-only mode.
     fn start(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>> {
@@ -474,6 +451,7 @@ impl ProcessManager for NoopProcessManager {
         })
     }
 
+    /// Reports that bot control is unavailable in monitoring-only mode.
     fn stop(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>> {
@@ -484,6 +462,7 @@ impl ProcessManager for NoopProcessManager {
         })
     }
 
+    /// Reports that bot control is unavailable in monitoring-only mode.
     fn restart(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>> {
@@ -494,6 +473,7 @@ impl ProcessManager for NoopProcessManager {
         })
     }
 
+    /// Returns the static monitoring-only process status.
     fn status(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<BotProcessStatus, AgentError>> + Send + '_>> {
@@ -506,6 +486,7 @@ impl ProcessManager for NoopProcessManager {
         })
     }
 
+    /// Returns an empty log list in monitoring-only mode.
     fn logs(
         &self,
         lines: u64,
@@ -535,10 +516,6 @@ async fn read_tail(path: &str, n: u64) -> Result<Vec<String>, AgentError> {
         .map(|s| (*s).to_string())
         .collect())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/process_manager_tests.rs"]

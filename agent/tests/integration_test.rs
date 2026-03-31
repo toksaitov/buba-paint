@@ -40,6 +40,7 @@ fn fixture_db_file() -> (String, tempfile::TempDir) {
     (path, dir)
 }
 
+/// Spawns agent.
 async fn spawn_agent(db_path: &str) -> String {
     let db = Arc::new(DbReader::new(db_path).unwrap());
     let bot: Arc<dyn buba_agent::process_manager::ProcessManager> =
@@ -81,36 +82,36 @@ async fn spawn_agent(db_path: &str) -> String {
     format!("http://127.0.0.1:{}", addr.port())
 }
 
+/// Authed get.
 fn authed_get(base: &str, path: &str) -> reqwest::RequestBuilder {
     reqwest::Client::new()
         .get(format!("{base}{path}"))
         .header("Authorization", "Bearer test-secret")
 }
 
+/// Authed post.
 fn authed_post(base: &str, path: &str) -> reqwest::RequestBuilder {
     reqwest::Client::new()
         .post(format!("{base}{path}"))
         .header("Authorization", "Bearer test-secret")
 }
 
+/// Verifies that full api roundtrip.
 #[tokio::test]
 async fn full_api_roundtrip() {
     let (db_path, _dir) = fixture_db_file();
     let base = spawn_agent(&db_path).await;
 
-    // Health
     let resp = authed_get(&base, "/health").send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["ok"], true);
 
-    // Status
     let resp = authed_get(&base, "/api/status").send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body.get("balance").is_some());
 
-    // Trades
     let resp = authed_get(&base, "/api/trades?page=1&per_page=10")
         .send()
         .await
@@ -120,7 +121,6 @@ async fn full_api_roundtrip() {
     assert!(body["trades"].is_array());
     assert!(body["total"].as_u64().unwrap() >= 1);
 
-    // Balance
     let resp = authed_get(&base, "/api/balance?since=0")
         .send()
         .await
@@ -129,7 +129,6 @@ async fn full_api_roundtrip() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body["entries"].as_array().unwrap().len() >= 2);
 
-    // Signals
     let resp = authed_get(&base, "/api/signals?limit=50")
         .send()
         .await
@@ -138,32 +137,28 @@ async fn full_api_roundtrip() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body["signals"].as_array().unwrap().len() >= 1);
 
-    // Stats
     let resp = authed_get(&base, "/api/stats").send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body.get("by_strategy").is_some());
 
-    // Bot status (NoopProcessManager)
     let resp = authed_get(&base, "/api/bot/status").send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Bot start (NoopProcessManager returns 409 — monitor-only mode)
     let resp = authed_post(&base, "/api/bot/start").send().await.unwrap();
     assert_eq!(resp.status(), 409);
 
-    // Unauthorized
     let resp = reqwest::get(format!("{base}/api/status")).await.unwrap();
     assert_eq!(resp.status(), 401);
 }
 
+/// Verifies that ws endpoint accepts connection with auth.
 #[tokio::test]
 async fn ws_endpoint_accepts_connection_with_auth() {
     let (db_path, _dir) = fixture_db_file();
     let base = spawn_agent(&db_path).await;
     let ws_url = base.replace("http://", "ws://") + "/ws/live";
 
-    // Build request with auth header
     let request = axum::http::Request::builder()
         .uri(&ws_url)
         .header(
@@ -194,6 +189,7 @@ async fn ws_endpoint_accepts_connection_with_auth() {
     );
 }
 
+/// Verifies that ws endpoint rejects without auth.
 #[tokio::test]
 async fn ws_endpoint_rejects_without_auth() {
     let (db_path, _dir) = fixture_db_file();

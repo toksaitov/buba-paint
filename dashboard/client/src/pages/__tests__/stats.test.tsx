@@ -60,7 +60,7 @@ test("renders data when loaded", async () => {
 
   render(<StatsPage />, { wrapper: createWrapper() });
 
-  // Wait for stats to load
   const heading = await screen.findByText("Bot Status");
   expect(heading).toBeDefined();
 });
+

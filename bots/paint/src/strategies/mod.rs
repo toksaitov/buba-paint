@@ -10,7 +10,10 @@ pub enum StrategyResult {
 }
 
 pub trait Strategy: Send {
+    /// Returns the stable strategy name used in logs and persisted records.
     fn name(&self) -> &'static str;
+
+    /// Evaluates the current market context and returns any generated signals.
     fn evaluate(
         &mut self,
         ctx: &crate::types::StrategyContext,

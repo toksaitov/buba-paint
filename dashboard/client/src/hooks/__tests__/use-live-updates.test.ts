@@ -103,14 +103,11 @@ test("disables reconnect after give up", () => {
     wrapper: createWrapper(),
   });
 
-  // Simulate give-up callback.
   capturedOnGiveUp!();
 
-  // Clear and rerender — should NOT reconnect because disabled.current = true.
   mockConnectWs.mockClear();
   rerender();
-  // connectWs should not be called again since disabled ref was set.
-  // Note: The effect deps [botId, qc] haven't changed, so React won't re-run
-  // the effect anyway. The disabled ref is a safeguard for future re-runs.
+
   expect(mockConnectWs).not.toHaveBeenCalled();
 });
+

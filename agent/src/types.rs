@@ -40,6 +40,11 @@ pub struct TradeRow {
     pub pnl: Option<f64>,
     pub settlement_price: Option<f64>,
     pub resolved_at: Option<u64>,
+    pub fill_status: Option<String>,
+    pub execution_group_id: Option<String>,
+    pub execution_fidelity: Option<String>,
+    pub filled_size: Option<f64>,
+    pub avg_fill_price: Option<f64>,
 }
 
 /// Paginated trade response.
@@ -80,6 +85,8 @@ pub struct SignalRow {
     pub up_ask: Option<f64>,
     pub down_ask: Option<f64>,
     pub metadata: Option<String>,
+    pub market_id: Option<String>,
+    pub execution_fidelity: Option<String>,
 }
 
 /// Signals response.
@@ -118,7 +125,7 @@ pub struct LogsResponse {
     pub lines: Vec<String>,
 }
 
-/// WebSocket push message.
+/// `WebSocket` push message.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum WsMessage {

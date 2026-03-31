@@ -1,6 +1,8 @@
 use super::*;
 use crate::backtest::tick_replay::TickSample;
+use crate::types::ReplayFidelity;
 
+/// Verifies that default state is none.
 #[test]
 fn default_state_is_none() {
     let state = FeedState::new();
@@ -10,6 +12,7 @@ fn default_state_is_none() {
     assert!(state.book_state.down.is_none());
 }
 
+/// Verifies that update binance price.
 #[test]
 fn update_binance_price() {
     let mut state = FeedState::new();
@@ -25,12 +28,14 @@ fn update_binance_price() {
         chainlink: None,
         clob_up: None,
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
     assert_eq!(state.binance_price, Some(42_000.0));
     assert!(state.chainlink_price.is_none());
 }
 
+/// Verifies that update chainlink price.
 #[test]
 fn update_chainlink_price() {
     let mut state = FeedState::new();
@@ -46,12 +51,14 @@ fn update_chainlink_price() {
         }),
         clob_up: None,
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
     assert!(state.binance_price.is_none());
     assert_eq!(state.chainlink_price, Some(41_999.0));
 }
 
+/// Verifies that update clob up with bid and ask.
 #[test]
 fn update_clob_up_with_bid_and_ask() {
     let mut state = FeedState::new();
@@ -67,6 +74,7 @@ fn update_clob_up_with_bid_and_ask() {
             ask_size: Some(200.0),
         }),
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
     let up = state.book_state.up.as_ref().unwrap();
@@ -77,6 +85,7 @@ fn update_clob_up_with_bid_and_ask() {
     assert_eq!(up.timestamp, 3_000);
 }
 
+/// Verifies that clob up ignored when bid missing.
 #[test]
 fn clob_up_ignored_when_bid_missing() {
     let mut state = FeedState::new();
@@ -92,11 +101,13 @@ fn clob_up_ignored_when_bid_missing() {
             ask_size: Some(200.0),
         }),
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
     assert!(state.book_state.up.is_none());
 }
 
+/// Verifies that clob up ignored when ask missing.
 #[test]
 fn clob_up_ignored_when_ask_missing() {
     let mut state = FeedState::new();
@@ -112,11 +123,13 @@ fn clob_up_ignored_when_ask_missing() {
             ask_size: None,
         }),
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
     assert!(state.book_state.up.is_none());
 }
 
+/// Verifies that update clob down.
 #[test]
 fn update_clob_down() {
     let mut state = FeedState::new();
@@ -132,6 +145,7 @@ fn update_clob_down() {
             bid_size: Some(50.0),
             ask_size: Some(75.0),
         }),
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
     let down = state.book_state.down.as_ref().unwrap();
@@ -139,6 +153,7 @@ fn update_clob_down() {
     assert!((down.best_ask - 0.50).abs() < f64::EPSILON);
 }
 
+/// Verifies that update all fields at once.
 #[test]
 fn update_all_fields_at_once() {
     let mut state = FeedState::new();
@@ -172,6 +187,7 @@ fn update_all_fields_at_once() {
             bid_size: Some(50.0),
             ask_size: Some(75.0),
         }),
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
     assert_eq!(state.binance_price, Some(42_000.0));
@@ -180,6 +196,7 @@ fn update_all_fields_at_once() {
     assert!(state.book_state.down.is_some());
 }
 
+/// Verifies that subsequent updates overwrite.
 #[test]
 fn subsequent_updates_overwrite() {
     let mut state = FeedState::new();
@@ -195,6 +212,7 @@ fn subsequent_updates_overwrite() {
         chainlink: None,
         clob_up: None,
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group1);
     assert_eq!(state.binance_price, Some(42_000.0));
@@ -211,11 +229,13 @@ fn subsequent_updates_overwrite() {
         chainlink: None,
         clob_up: None,
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group2);
     assert_eq!(state.binance_price, Some(42_100.0));
 }
 
+/// Verifies that update without price does not clear.
 #[test]
 fn update_without_price_does_not_clear() {
     let mut state = FeedState::new();
@@ -232,12 +252,14 @@ fn update_without_price_does_not_clear() {
         chainlink: None,
         clob_up: None,
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
-    // Price should be preserved since sample had None.
+
     assert_eq!(state.binance_price, Some(42_000.0));
 }
 
+/// Verifies that reset clears everything.
 #[test]
 fn reset_clears_everything() {
     let mut state = FeedState::new();
@@ -258,6 +280,7 @@ fn reset_clears_everything() {
     assert!(state.book_state.down.is_none());
 }
 
+/// Verifies that missing bid ask size defaults to zero.
 #[test]
 fn missing_bid_ask_size_defaults_to_zero() {
     let mut state = FeedState::new();
@@ -273,6 +296,7 @@ fn missing_bid_ask_size_defaults_to_zero() {
             ask_size: None,
         }),
         clob_down: None,
+        fidelity: ReplayFidelity::LegacySnapshot,
     };
     state.update(&group);
     let up = state.book_state.up.as_ref().unwrap();

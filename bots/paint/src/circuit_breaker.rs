@@ -1,9 +1,3 @@
-// Circuit breaker — pauses trading after consecutive losses.
-//
-// Ported from the TypeScript `CircuitBreaker` class.  Instead of reading
-// a global clock, every method that needs the current time accepts a
-// `now: u64` parameter (milliseconds since epoch).
-
 /// Pauses trading for a configurable duration after a streak of consecutive
 /// losses.  Once the pause expires the breaker resets and trading resumes.
 #[derive(Debug, Clone)]
@@ -36,7 +30,7 @@ impl CircuitBreaker {
     /// A win resets the consecutive-loss counter.  A loss increments it, and if
     /// the counter reaches `max_losses` the breaker triggers: `pause_until` is
     /// set to `now + pause_ms` and the counter resets to 0 (matching the
-    /// TypeScript behavior).
+    /// `TypeScript` behavior).
     pub fn record_result(&mut self, won: bool, now: u64) {
         if won {
             self.consecutive_losses = 0;
@@ -80,10 +74,6 @@ impl CircuitBreaker {
         self.consecutive_losses
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/circuit_breaker_tests.rs"]

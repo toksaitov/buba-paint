@@ -1,8 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { cn, formatUsd, formatPct, formatTime, formatDateTime, pnlColor } from "../utils";
 
-// -- cn --
-
 describe("cn", () => {
   test("joins truthy classes", () => {
     expect(cn("a", "b")).toBe("a b");
@@ -16,8 +14,6 @@ describe("cn", () => {
     expect(cn(false, null, undefined)).toBe("");
   });
 });
-
-// -- formatUsd --
 
 describe("formatUsd", () => {
   test("formats positive values", () => {
@@ -40,8 +36,6 @@ describe("formatUsd", () => {
   });
 });
 
-// -- formatPct --
-
 describe("formatPct", () => {
   test("positive shows plus sign", () => {
     expect(formatPct(12.34)).toBe("+12.3%");
@@ -56,29 +50,23 @@ describe("formatPct", () => {
   });
 });
 
-// -- formatTime --
-
 describe("formatTime", () => {
   test("renders HH:MM:SS pattern", () => {
-    // 2026-01-01T12:30:45Z = 1767267045000
+
     const result = formatTime(1767267045000);
-    // Must contain "30" and "45" for minutes and seconds.
+
     expect(result).toMatch(/\d{2}:\d{2}:\d{2}/);
   });
 });
-
-// -- formatDateTime --
 
 describe("formatDateTime", () => {
   test("renders abbreviated date and time", () => {
     const result = formatDateTime(1767267045000);
-    // Should contain a month abbreviation and time.
+
     expect(result).toMatch(/\w{3}/);
     expect(result).toMatch(/\d{2}:\d{2}:\d{2}/);
   });
 });
-
-// -- pnlColor --
 
 describe("pnlColor", () => {
   test("positive returns green", () => {
@@ -93,3 +81,4 @@ describe("pnlColor", () => {
     expect(pnlColor(0)).toBe("text-muted");
   });
 });
+

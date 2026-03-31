@@ -8,14 +8,11 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> u64;
 }
 
-// ---------------------------------------------------------------------------
-// SystemClock — real wall-clock time
-// ---------------------------------------------------------------------------
-
 /// Returns real wall-clock time via `SystemTime::now()`.
 pub struct SystemClock;
 
 impl Clock for SystemClock {
+    /// Returns the current system timestamp in milliseconds since the Unix epoch.
     fn now(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -23,10 +20,6 @@ impl Clock for SystemClock {
             .as_millis() as u64
     }
 }
-
-// ---------------------------------------------------------------------------
-// BacktestClock — deterministic, lock-free synthetic clock
-// ---------------------------------------------------------------------------
 
 /// A synthetic clock backed by an `AtomicU64`.
 ///
@@ -51,20 +44,18 @@ impl BacktestClock {
 }
 
 impl Default for BacktestClock {
+    /// Builds the default `BacktestClock`.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Clock for BacktestClock {
+    /// Returns the synthetic timestamp currently stored in the test clock.
     fn now(&self) -> u64 {
         self.current.load(Relaxed)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "tests/clock_tests.rs"]
