@@ -1,4 +1,5 @@
 use super::*;
+use crate::signal_features::SignalFeatureSnapshot;
 
 /// Verifies that signal direction display up.
 #[test]
@@ -267,6 +268,8 @@ fn construct_signal() {
     let signal = Signal {
         timestamp: 1_700_000_000_000,
         strategy: "latency-arb".to_string(),
+        strategy_version: "v2".to_string(),
+        feature_mode: "legacy_core".to_string(),
         direction: SignalDirection::Up,
         confidence: 0.72,
         binance_price: 42_000.0,
@@ -275,7 +278,9 @@ fn construct_signal() {
         down_ask: 0.50,
         up_bid: 0.48,
         down_bid: 0.46,
+        expected_edge: None,
         metadata: serde_json::json!({"momentum": 0.0015}),
+        telemetry: None,
     };
     assert_eq!(signal.direction, SignalDirection::Up);
     assert!((signal.confidence - 0.72).abs() < f64::EPSILON);
@@ -290,7 +295,10 @@ fn construct_strategy_context() {
         binance_momentum: 0.001_5,
         chainlink_price: Some(41_999.0),
         book_state: BookState::default(),
+        window_open_price: Some(41_500.0),
         window_time_remaining_ms: 120_000,
+        now_us: Some(1_700_000_000_000_000),
+        features: SignalFeatureSnapshot::default(),
     };
     assert!(ctx.chainlink_price.is_some());
     assert_eq!(ctx.window_time_remaining_ms, 120_000);
@@ -304,7 +312,10 @@ fn construct_strategy_context_no_chainlink() {
         binance_momentum: 0.001_5,
         chainlink_price: None,
         book_state: BookState::default(),
+        window_open_price: None,
         window_time_remaining_ms: 60_000,
+        now_us: None,
+        features: SignalFeatureSnapshot::default(),
     };
     assert!(ctx.chainlink_price.is_none());
 }

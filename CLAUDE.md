@@ -4,14 +4,14 @@ AI development guidelines for the buba workspace.
 
 ## Project
 
-buba is a paper-trading platform for Polymarket prediction markets. The workspace has four components. paint (`bots/paint`) is the first bot: 5-minute BTC Up/Down, three WebSocket feeds, two strategies, SQLite persistence, a shared live-like execution engine for live paper trading and backtests, raw `feed_events` capture for new runs, legacy-snapshot replay for old runs, order-book liquidity checks, and dynamic fee modeling. The agent (`agent/`) monitors any bot's database and exposes REST + WebSocket APIs. The dashboard has a Rust backend (`dashboard/server/`) that proxies to agents with JWT auth, and a React frontend (`dashboard/client/`) for the UI. Rust, Cargo workspace, TDD throughout. 930 tests total: 784 Rust, 144 frontend Vitest tests, and 2 Playwright browser E2E tests.
+buba is a paper-trading platform for Polymarket prediction markets. The workspace has four components. paint (`bots/paint`) is the first bot: 5-minute BTC Up/Down, three WebSocket feeds, two strategies, SQLite persistence, a shared live-like execution engine for live paper trading and backtests, compact raw `feed_events` capture for new runs, additive compatibility for legacy-snapshot runs, a shared signal-feature engine, order-book liquidity checks, and dynamic fee modeling. The agent (`agent/`) monitors any bot's database and exposes REST + WebSocket APIs. The dashboard has a Rust backend (`dashboard/server/`) that proxies to agents with JWT auth, and a React frontend (`dashboard/client/`) for the UI. Rust, Cargo workspace, TDD throughout.
 
 ## Build & Test
 
 ```bash
 cargo build                 # debug build
 cargo build --release       # release build (use for live/backtest)
-cargo test                  # run all 784 Rust tests
+cargo test                  # run the Rust test suites
 cargo clippy -- -D warnings # lint (must pass with zero warnings)
 cargo fmt --all --check     # format check (must pass)
 cargo llvm-cov --all-targets --summary-only # line coverage report
@@ -38,6 +38,8 @@ cargo run -p buba-paint --release -- sweep --data data/market-data.db --start 20
 cargo run -p buba-paint --release -- live --db-path runs/009/buba-paint.db --balance 200
 cargo run -p buba-paint --release -- init-db --db-path runs/009/buba-paint.db --balance 200
 cargo run -p buba-paint --release -- verify-settlements --db data/market-data.db
+cargo run -p buba-paint --release -- latency-probe --timeout-ms 3000
+cargo run -p buba-paint --release -- db-footprint --db-path /tmp/paint.db
 ```
 
 ## Architecture Rules
@@ -75,11 +77,11 @@ When writing or editing `.md` files, code comments, or any prose in this project
 
 ### paint bot (`bots/paint/src/`)
 
-Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`, `init-db`, `upgrade-history`), `live.rs` (live trading loop: feeds + discovery + delayed window activation + event-driven strategy evaluation + authoritative settlement via channel), `config.rs` (all env-configurable settings, `set_param` for sweeps).
+Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`, `init-db`, `upgrade-history`, `latency-probe`), `live.rs` (live trading loop: feeds + discovery + delayed window activation + event-driven strategy evaluation + authoritative settlement via channel), `config.rs` (all env-configurable settings, `set_param` for sweeps), `latency_probe.rs` (operator-facing Gamma/Binance/RTDS/CLOB probe).
 
-Strategies: `strategies/latency_arb.rs` (momentum vs stale odds, adaptive threshold, cooldown), `strategies/spread_capture.rs` (UP ask + DOWN ask < threshold, buys both sides).
+Strategies: `strategies/latency_arb.rs` (feature-scored stale odds, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `signal_features.rs` (shared feature engine used by live paper and backtests).
 
-Feeds: `feeds/binance_feed.rs` (Binance aggTrade WebSocket stream), `feeds/clob_feed.rs` (Polymarket CLOB order book, best-bid-ask handling, dynamic resubscription), `feeds/chainlink_feed.rs` (Polymarket RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
+Feeds: `feeds/binance_feed.rs` (combined Binance `aggTrade`, `bookTicker`, and `depth@100ms` stream), `feeds/clob_feed.rs` (Polymarket CLOB order book, best-bid-ask handling, dynamic resubscription), `feeds/chainlink_feed.rs` (Polymarket RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
 
 Data: `bankroll.rs` (per-strategy half-Kelly sizing, caps, confidence curve, DD pause), `position_manager.rs` (trade lifecycle: open with debug logging on every rejection path, guard duplicates, authoritative resolve), `circuit_breaker.rs` (pause trading after N consecutive losses), `tick_logger.rs` (1s telemetry sampling to SQLite), `trend_tracker.rs` (experimental directional trend filter, off by default), `market_discovery.rs` (Gamma API polling, slug-based window discovery, resolution polling for deferred settlement).
 
@@ -91,9 +93,9 @@ SDK integration: `polymarket.rs` (read-only wrapper around the official `polymar
 
 Backtesting: `backtest/runner.rs` (core replay loop: replay -> strategies -> execution -> settle), `backtest/sweep.rs` (parallel parameter sweep via rayon, PID-based temp DBs), `backtest/tick_replay.rs` (loads `feed_events` when present and falls back to `tick_data`), `backtest/window_manager.rs` (replays market windows from DB), `backtest/feed_state.rs` (simulated feed state for backtest strategies), `backtest/momentum.rs` (rolling window momentum calculator).
 
-Database: `db/database.rs` (rusqlite wrapper, prepared statements, WAL mode), `db/schema.rs` (additive column and table migrations via `add_column_if_missing`), `db/build_data.rs` (merges enriched run DBs into `market-data.db`, `build-data` CLI), `db/upgrade_history.rs` (in-place historical upgrade and metadata backfill for runs `004` through `009`).
+Database: `db/database.rs` (rusqlite wrapper, prepared statements, bounded WAL mode, grouped footprint reporting), `db/schema.rs` (additive column and table migrations via `add_column_if_missing`), `db/build_data.rs` (merges enriched run DBs into `market-data.db`, including optional signal and telemetry tables when present), `db/upgrade_history.rs` (in-place historical upgrade and metadata backfill for runs `004` through `009`).
 
-Shared: `types.rs` (Signal, BookState, MarketWindow, TradeResult, replay fidelity, feed-event structs), `clock.rs` (Clock trait + SystemClock + BacktestClock), `errors.rs` (thiserror error types).
+Shared: `types.rs` (Signal, BookState, MarketWindow, TradeResult, replay fidelity, feed-event structs, signal telemetry), `clock.rs` (Clock trait + SystemClock + BacktestClock), `errors.rs` (thiserror error types).
 
 ### agent (`agent/src/`)
 
@@ -127,13 +129,13 @@ Do not edit files in `runs/` manually. The only supported in-place mutation is t
 
 ## Testing Practices
 
-930 tests total: 784 Rust + 144 frontend Vitest + 2 Playwright browser E2E.
+Test inventory changes frequently. Use `cargo test`, `make test-all`, and the frontend test commands as the current source of truth instead of relying on hard-coded counts.
 
-- paint bot: 604 Rust tests. Unit tests live under `src/*/tests/` via `#[path]` and retain access to private internals with `use super::*`. Coverage emphasis is on replay, execution, fees, accounting, migrations, feeds, and strategy logic. Integration tests in `tests/` use mock WebSocket servers and wiremock. The slow live-system suite now runs 18 green scenarios in automation, including circuit-breaker recovery within the same bot run.
+- paint bot: Rust unit tests live under `src/*/tests/` via `#[path]` and retain access to private internals with `use super::*`. Coverage emphasis is on replay, execution, fees, accounting, migrations, feeds, and strategy logic. Integration tests in `tests/` use mock WebSocket servers and wiremock. The slow live-system suite includes circuit-breaker recovery within the same bot run.
 - Coverage gates now measure Rust library and integration-test coverage while explicitly excluding thin `main.rs` bootstrapping entrypoints. Floors are currently `80%` for `buba-paint`, `90%` for `buba-agent`, `90%` for `buba-dashboard`, and `80%` for the frontend.
-- agent: 95 Rust tests. Covers REST endpoints, WebSocket polling/broadcast, DB reader compatibility for legacy/new schemas, process manager, auth middleware, and integration round-trips.
-- dashboard server: 83 Rust tests. Covers auth/JWT, bot proxy handlers, WebSocket proxy, config parsing, user management, error mapping, and degraded proxy behavior through integration tests.
-- dashboard client: 133 Vitest tests. Uses vitest + @testing-library/react + jsdom. Current network boundary supports both focused `vi.mock(...)` unit tests and MSW-backed fetch tests. Setup stays in `src/test/setup.ts`; shared MSW server lives in `src/test/msw-server.ts`.
+- agent: Rust tests cover REST endpoints, WebSocket polling/broadcast, DB reader compatibility for legacy/new schemas, process manager, auth middleware, and integration round-trips.
+- dashboard server: Rust tests cover auth/JWT, bot proxy handlers, WebSocket proxy, config parsing, user management, error mapping, and degraded proxy behavior through integration tests.
+- dashboard client: Vitest uses @testing-library/react + jsdom. Current network boundary supports both focused `vi.mock(...)` unit tests and MSW-backed fetch tests. Setup stays in `src/test/setup.ts`; shared MSW server lives in `src/test/msw-server.ts`.
 - Browser E2E: Playwright lives in `dashboard/client/e2e/` with a mocked API/WebSocket harness. Current smoke flows cover login/navigation/session persistence and 401 redirect handling.
 - Comment policy: `tools/rust-comment-policy/` parses Rust syntax, requires rustdoc on every Rust function, and rejects non-doc Rust comments. `scripts/ts_comment_audit.mjs` rejects non-directive comments in the dashboard TypeScript code.
 - Sweep parity from the old snapshot simulator is no longer the goal. After the live-like simulator rewrite, validate schema compatibility, execution metrics, and whether legacy-snapshot replay remains deterministic across repeated runs.
@@ -164,7 +166,7 @@ Do not edit files in `runs/` manually. The only supported in-place mutation is t
 
 ## Key Behavioral Constraints
 
-- Tick grouping: raw `feed_events` replay at exact timestamps. Legacy `tick_data` fallback groups within a 10ms tolerance window.
+- Tick grouping: raw `feed_events` replay at exact timestamps. When microsecond fields exist, replay orders by `received_at_us`; otherwise it falls back to millisecond ordering. Legacy `tick_data` fallback groups within a 10ms tolerance window.
 - Kelly criterion: half-Kelly, per-strategy, rolling 30-trade window
 - Confidence curve: `max(0.0, (confidence - 0.5) * 2.5)`
 - Settlement: binary (1.0 or 0.0), close_price >= open_price means UP wins
@@ -182,6 +184,8 @@ Do not edit files in `runs/` manually. The only supported in-place mutation is t
 - Market discovery slug: `btc-updown-5m-{floor(unix_seconds/300)*300}`. The generic `/markets` endpoint does NOT return these 5-minute markets. Discovery fetches both current_slot and next_slot, but only current_slot is activated immediately.
 - CLOB initial book: array of `{asset_id, bids, asks}` (no `event_type`). Subsequent updates: `{event_type: "price_change", price_changes: [...]}`.
 - Chainlink RTDS: initial dump `{payload:{data:[...]}}` (no `topic`), then live `{topic:"crypto_prices_chainlink", payload:{...}}`.
+- Binance live capture: the default market-data URL now combines `aggTrade`, `bookTicker`, and `depth@100ms`, and requests microsecond timestamps when Binance exposes them.
+- Live storage profile: `FEED_EVENT_STORAGE_PROFILE=compact` is the production default. It keeps typed replay fields, suppresses `bookTicker` persistence, buckets Binance depth to 250ms summaries, coalesces `CLOB` top-of-book writes, and drops bulky hot-path payload blobs. `full_debug` is only for short local diagnostics.
 - Staleness: if no Chainlink data for `CHAINLINK_STALE_MS`, force-reconnect. During staleness, settlement falls back to Binance price.
 - Momentum: `(latest - oldest) / oldest` over rolling window. Guarded against division by zero (oldest price <= 0 returns 0).
 - Opposing position guard: single signals block same-strategy same-window. Batch signals (spread-capture) only block exact duplicates. All rejections are logged at debug level with the reason.

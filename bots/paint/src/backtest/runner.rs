@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::db::database::Database;
 use crate::executor::ExecutionEngine;
 use crate::position_manager::PositionManager;
+use crate::signal_features::SignalFeatureEngine;
 use crate::strategies::latency_arb::LatencyArbStrategy;
 use crate::strategies::spread_capture::SpreadCaptureStrategy;
 use crate::strategies::{Strategy, StrategyResult};
@@ -156,7 +157,7 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
         let opened_now = execution_engine.process_due_orders(
             replay_ts,
             current_window_for_execution.as_ref(),
-            &feed_state.book_state,
+            &feed_state.signal_state.book_state,
             &results_db,
             &mut bankroll,
             config,
@@ -208,29 +209,41 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             let mw = WindowManager::to_market_window(opened);
             let _ = results_db.upsert_market(&mw);
 
-            feed_state.book_state = crate::types::BookState::default();
+            feed_state.signal_state.book_state = crate::types::BookState::default();
         }
 
         let Some(current_window) = window_manager.current.as_ref() else {
             continue;
         };
-        let Some(binance_price) = feed_state.binance_price else {
+        let Some(binance_price) = feed_state.signal_state.binance_price else {
             continue;
         };
+        let current_mw = WindowManager::to_market_window(current_window);
+        let features = SignalFeatureEngine::compute(
+            &mut feed_state.signal_state,
+            Some(&current_mw),
+            Some(current_window.open_price),
+            momentum.get(),
+            group.timestamp,
+            group.timestamp_us,
+            config,
+        );
 
         let ctx = StrategyContext {
             binance_price,
             binance_momentum: momentum.get(),
-            chainlink_price: feed_state.chainlink_price,
-            book_state: feed_state.book_state.clone(),
+            chainlink_price: feed_state.signal_state.chainlink_price,
+            book_state: feed_state.signal_state.book_state.clone(),
+            window_open_price: Some(current_window.open_price),
             window_time_remaining_ms: current_window.end_time.saturating_sub(group.timestamp),
+            now_us: group.timestamp_us,
+            features,
         };
 
         if !circuit_breaker.can_trade(replay_ts) {
             continue;
         }
 
-        let current_mw = WindowManager::to_market_window(current_window);
         for strategy in &mut strategies {
             let result = strategy.evaluate(&ctx, config, replay_ts);
 
@@ -238,7 +251,24 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
                 StrategyResult::None => {}
                 StrategyResult::Single(signal) => {
                     if trend_tracker.should_suppress(signal.direction) {
-                        let _ = results_db.log_signal(&signal);
+                        if let Ok(signal_id) = results_db.log_signal_with_context(
+                            &signal,
+                            Some(&current_mw.market_id),
+                            Some(group.fidelity),
+                            None,
+                            None,
+                        ) {
+                            if let Some(telemetry) = signal.telemetry.as_ref() {
+                                let _ = results_db.upsert_signal_telemetry(
+                                    signal_id,
+                                    telemetry,
+                                    None,
+                                    None,
+                                    Some("suppressed"),
+                                    Some("trend_filter"),
+                                );
+                            }
+                        }
                         signal_count += 1;
                         continue;
                     }

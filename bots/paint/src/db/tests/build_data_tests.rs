@@ -158,6 +158,10 @@ fn creates_schema_with_all_tables() {
         "runs",
         "tick_data",
         "markets",
+        "signals",
+        "feed_events",
+        "signal_metrics",
+        "feed_health_events",
         "data_quality",
         "historical_trades",
     ] {

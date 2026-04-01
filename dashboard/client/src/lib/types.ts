@@ -105,4 +105,5 @@ export interface BotProcessStatus {
   active: boolean;
   pid: number | null;
   uptime_secs: number | null;
+  control_available?: boolean;
 }

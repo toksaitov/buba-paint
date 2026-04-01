@@ -1,6 +1,6 @@
 use super::*;
 use crate::backtest::tick_replay::TickSample;
-use crate::types::ReplayFidelity;
+use crate::types::{ReplayFidelity, TopOfBook};
 
 /// Verifies that default state is none.
 #[test]
@@ -18,6 +18,7 @@ fn update_binance_price() {
     let mut state = FeedState::new();
     let group = TickGroup {
         timestamp: 1_000,
+        timestamp_us: None,
         binance: Some(TickSample {
             price: Some(42_000.0),
             bid: None,
@@ -41,6 +42,7 @@ fn update_chainlink_price() {
     let mut state = FeedState::new();
     let group = TickGroup {
         timestamp: 2_000,
+        timestamp_us: None,
         binance: None,
         chainlink: Some(TickSample {
             price: Some(41_999.0),
@@ -64,6 +66,7 @@ fn update_clob_up_with_bid_and_ask() {
     let mut state = FeedState::new();
     let group = TickGroup {
         timestamp: 3_000,
+        timestamp_us: None,
         binance: None,
         chainlink: None,
         clob_up: Some(TickSample {
@@ -91,6 +94,7 @@ fn clob_up_ignored_when_bid_missing() {
     let mut state = FeedState::new();
     let group = TickGroup {
         timestamp: 3_000,
+        timestamp_us: None,
         binance: None,
         chainlink: None,
         clob_up: Some(TickSample {
@@ -113,6 +117,7 @@ fn clob_up_ignored_when_ask_missing() {
     let mut state = FeedState::new();
     let group = TickGroup {
         timestamp: 3_000,
+        timestamp_us: None,
         binance: None,
         chainlink: None,
         clob_up: Some(TickSample {
@@ -135,6 +140,7 @@ fn update_clob_down() {
     let mut state = FeedState::new();
     let group = TickGroup {
         timestamp: 4_000,
+        timestamp_us: None,
         binance: None,
         chainlink: None,
         clob_up: None,
@@ -159,6 +165,7 @@ fn update_all_fields_at_once() {
     let mut state = FeedState::new();
     let group = TickGroup {
         timestamp: 5_000,
+        timestamp_us: None,
         binance: Some(TickSample {
             price: Some(42_000.0),
             bid: None,
@@ -202,6 +209,7 @@ fn subsequent_updates_overwrite() {
     let mut state = FeedState::new();
     let group1 = TickGroup {
         timestamp: 1_000,
+        timestamp_us: None,
         binance: Some(TickSample {
             price: Some(42_000.0),
             bid: None,
@@ -219,6 +227,7 @@ fn subsequent_updates_overwrite() {
 
     let group2 = TickGroup {
         timestamp: 2_000,
+        timestamp_us: None,
         binance: Some(TickSample {
             price: Some(42_100.0),
             bid: None,
@@ -242,6 +251,7 @@ fn update_without_price_does_not_clear() {
     state.binance_price = Some(42_000.0);
     let group = TickGroup {
         timestamp: 2_000,
+        timestamp_us: None,
         binance: Some(TickSample {
             price: None,
             bid: None,
@@ -286,6 +296,7 @@ fn missing_bid_ask_size_defaults_to_zero() {
     let mut state = FeedState::new();
     let group = TickGroup {
         timestamp: 1_000,
+        timestamp_us: None,
         binance: None,
         chainlink: None,
         clob_up: Some(TickSample {

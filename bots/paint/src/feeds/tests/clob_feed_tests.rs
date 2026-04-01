@@ -117,7 +117,9 @@ fn parse_clob_event_price_change() {
     });
     let update = parse_clob_event(&v);
     match update {
-        ClobUpdate::PriceChange { timestamp, changes } => {
+        ClobUpdate::PriceChange {
+            timestamp, changes, ..
+        } => {
             assert_eq!(timestamp, 1_700_000_000_000);
             assert_eq!(changes.len(), 2);
             assert_eq!(changes[0].asset_id, "tok-up");
@@ -166,14 +168,19 @@ fn parse_clob_event_book_snapshot() {
     }
 }
 
-/// Verifies that parse clob event last trade price ignored.
+/// Verifies that parse clob event last trade price becomes a meta event.
 #[test]
-fn parse_clob_event_last_trade_price_ignored() {
+fn parse_clob_event_last_trade_price_meta_event() {
     let v = serde_json::json!({
         "event_type": "last_trade_price",
         "price": "0.50"
     });
-    assert_eq!(parse_clob_event(&v), ClobUpdate::Ignored);
+    match parse_clob_event(&v) {
+        ClobUpdate::MetaEvent { event_type, .. } => {
+            assert_eq!(event_type, "last_trade_price");
+        }
+        other => panic!("expected MetaEvent, got {other:?}"),
+    }
 }
 
 /// Verifies that parse clob event unknown event ignored.
@@ -209,7 +216,12 @@ fn parse_clob_text_json_array_multiple_events() {
 
     let updates = parse_clob_text(&text);
     assert_eq!(updates.len(), 2);
-    assert_eq!(updates[0], ClobUpdate::Ignored);
+    match &updates[0] {
+        ClobUpdate::MetaEvent { event_type, .. } => {
+            assert_eq!(event_type, "last_trade_price");
+        }
+        other => panic!("expected MetaEvent, got {other:?}"),
+    }
     match &updates[1] {
         ClobUpdate::BookSnapshot { asset_id, .. } => {
             assert_eq!(asset_id, "tok-down");
@@ -238,7 +250,12 @@ fn parse_clob_text_single_object() {
     let text = r#"{"event_type": "last_trade_price", "price": "0.50"}"#;
     let updates = parse_clob_text(text);
     assert_eq!(updates.len(), 1);
-    assert_eq!(updates[0], ClobUpdate::Ignored);
+    match &updates[0] {
+        ClobUpdate::MetaEvent { event_type, .. } => {
+            assert_eq!(event_type, "last_trade_price");
+        }
+        other => panic!("expected MetaEvent, got {other:?}"),
+    }
 }
 
 /// Verifies that parse clob event price change empty changes.
@@ -251,7 +268,9 @@ fn parse_clob_event_price_change_empty_changes() {
     });
     let update = parse_clob_event(&v);
     match update {
-        ClobUpdate::PriceChange { timestamp, changes } => {
+        ClobUpdate::PriceChange {
+            timestamp, changes, ..
+        } => {
             assert_eq!(timestamp, 100);
             assert!(changes.is_empty());
         }
@@ -268,7 +287,9 @@ fn parse_clob_event_price_change_no_price_changes_field() {
     });
     let update = parse_clob_event(&v);
     match update {
-        ClobUpdate::PriceChange { timestamp, changes } => {
+        ClobUpdate::PriceChange {
+            timestamp, changes, ..
+        } => {
             assert_eq!(timestamp, 100);
             assert!(changes.is_empty());
         }
@@ -320,8 +341,16 @@ fn parse_clob_event_book_snapshot_only_asks() {
 async fn process_clob_message_invalid_json_returns_err() {
     let (tx, _rx) = mpsc::channel::<FeedMessage>(16);
     let mut book_state = BookState::default();
-    let result =
-        process_clob_message("not valid json", "tok-up", "tok-down", &mut book_state, &tx).await;
+    let result = process_clob_message(
+        "not valid json",
+        "tok-up",
+        "tok-down",
+        &mut book_state,
+        &tx,
+        "clob-test",
+        true,
+    )
+    .await;
     assert!(result.is_err(), "invalid JSON should return Err");
 }
 
@@ -332,7 +361,16 @@ async fn process_clob_message_ignored_event_returns_ok() {
     let mut book_state = BookState::default();
 
     let text = r#"{"event_type": "last_trade_price", "price": "0.50"}"#;
-    let result = process_clob_message(text, "tok-up", "tok-down", &mut book_state, &tx).await;
+    let result = process_clob_message(
+        text,
+        "tok-up",
+        "tok-down",
+        &mut book_state,
+        &tx,
+        "clob-test",
+        true,
+    )
+    .await;
     assert!(result.is_ok(), "ignored event should return Ok");
 }
 
@@ -350,7 +388,16 @@ async fn process_clob_message_price_change_updates_book_state() {
         ]
     })
     .to_string();
-    let result = process_clob_message(&text, "tok-up", "tok-down", &mut book_state, &tx).await;
+    let result = process_clob_message(
+        &text,
+        "tok-up",
+        "tok-down",
+        &mut book_state,
+        &tx,
+        "clob-test",
+        true,
+    )
+    .await;
     assert!(result.is_ok());
 
     let up = book_state.up.as_ref().expect("up book should be set");
@@ -374,7 +421,16 @@ async fn process_clob_message_book_snapshot_updates_book_state() {
         "asks": [{"price": "0.56", "size": "200"}]
     })
     .to_string();
-    let result = process_clob_message(&text, "tok-up", "tok-down", &mut book_state, &tx).await;
+    let result = process_clob_message(
+        &text,
+        "tok-up",
+        "tok-down",
+        &mut book_state,
+        &tx,
+        "clob-test",
+        true,
+    )
+    .await;
     assert!(result.is_ok());
 
     let up = book_state.up.as_ref().expect("up book should be set");
@@ -441,7 +497,16 @@ async fn process_clob_message_only_ignored_events() {
         {"event_type": "last_trade_price", "price": "0.51"}
     ])
     .to_string();
-    let result = process_clob_message(&text, "tok-up", "tok-down", &mut book_state, &tx).await;
+    let result = process_clob_message(
+        &text,
+        "tok-up",
+        "tok-down",
+        &mut book_state,
+        &tx,
+        "clob-test",
+        true,
+    )
+    .await;
     assert!(
         result.is_ok(),
         "array of only ignored events should return Ok, got {result:?}"
@@ -461,7 +526,16 @@ async fn process_clob_message_unrelated_asset_id_not_stored() {
         ]
     })
     .to_string();
-    let result = process_clob_message(&text, "tok-up", "tok-down", &mut book_state, &tx).await;
+    let result = process_clob_message(
+        &text,
+        "tok-up",
+        "tok-down",
+        &mut book_state,
+        &tx,
+        "clob-test",
+        true,
+    )
+    .await;
     assert!(result.is_ok());
 
     assert!(book_state.up.is_none());

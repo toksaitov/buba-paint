@@ -41,6 +41,14 @@ pub(crate) fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Get current time in microseconds since epoch.
+pub(crate) fn now_us() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+
 #[cfg(test)]
 #[path = "tests/util_tests.rs"]
 mod tests;

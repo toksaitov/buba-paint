@@ -1,6 +1,11 @@
 use super::*;
 
-/// Verifies that parse valid agg trade.
+/// Parse one agg-trade payload and return the resulting feed message.
+fn parse_trade_message(payload: serde_json::Value) -> FeedMessage {
+    parse_trade(&payload, None, "binance-test", &payload.to_string(), true).unwrap()
+}
+
+/// Verify that a valid agg-trade payload becomes a Binance trade message.
 #[test]
 fn parse_valid_agg_trade() {
     let json = serde_json::json!({
@@ -16,161 +21,201 @@ fn parse_valid_agg_trade() {
         "m": false,
         "M": true
     });
-    let result = parse_agg_trade(&json);
-    assert!(result.is_some());
-    let (price, timestamp) = result.unwrap();
-    assert!((price - 42_000.50).abs() < f64::EPSILON);
-    assert_eq!(timestamp, 1_700_000_000_001);
+    match parse_trade_message(json) {
+        FeedMessage::BinanceTrade {
+            price,
+            quantity,
+            signed_quantity,
+            timestamp_ms,
+            source_symbol,
+            ..
+        } => {
+            assert!((price - 42_000.50).abs() < f64::EPSILON);
+            assert!((quantity - 0.001).abs() < f64::EPSILON);
+            assert_eq!(signed_quantity, Some(0.001));
+            assert_eq!(timestamp_ms, 1_700_000_000_001);
+            assert_eq!(source_symbol.as_deref(), Some("BTCUSDT"));
+        }
+        other => panic!("expected BinanceTrade, got {other:?}"),
+    }
 }
 
-/// Verifies that parse agg trade uses event time as fallback.
+/// Verify that agg-trade parsing falls back to event time when trade time is absent.
 #[test]
 fn parse_agg_trade_uses_event_time_as_fallback() {
     let json = serde_json::json!({
         "e": "aggTrade",
         "E": 1_700_000_000_000_u64,
         "p": "42000.50",
+        "q": "0.001"
     });
-    let result = parse_agg_trade(&json);
-    assert!(result.is_some());
-    let (_, timestamp) = result.unwrap();
-    assert_eq!(timestamp, 1_700_000_000_000);
+    match parse_trade_message(json) {
+        FeedMessage::BinanceTrade { timestamp_ms, .. } => {
+            assert_eq!(timestamp_ms, 1_700_000_000_000);
+        }
+        other => panic!("expected BinanceTrade, got {other:?}"),
+    }
 }
 
-/// Verifies that parse agg trade zero timestamp when both missing.
+/// Verify that agg-trade parsing uses zero when both timestamps are absent.
 #[test]
 fn parse_agg_trade_zero_timestamp_when_both_missing() {
     let json = serde_json::json!({
         "e": "aggTrade",
         "p": "42000.50",
+        "q": "0.001"
     });
-    let result = parse_agg_trade(&json);
-    assert!(result.is_some());
-    let (_, timestamp) = result.unwrap();
-    assert_eq!(timestamp, 0);
+    match parse_trade_message(json) {
+        FeedMessage::BinanceTrade { timestamp_ms, .. } => {
+            assert_eq!(timestamp_ms, 0);
+        }
+        other => panic!("expected BinanceTrade, got {other:?}"),
+    }
 }
 
-/// Verifies that parse non agg trade event returns none.
+/// Verify that non-agg-trade payloads are ignored by the trade parser.
 #[test]
 fn parse_non_agg_trade_event_returns_none() {
     let json = serde_json::json!({
         "e": "trade",
         "p": "42000.50",
+        "q": "0.001",
         "T": 1_700_000_000_000_u64,
     });
-    assert!(parse_agg_trade(&json).is_none());
+    assert!(parse_trade(&json, None, "binance-test", &json.to_string(), true).is_none());
 }
 
-/// Verifies that parse missing event type returns none.
+/// Verify that missing event types are ignored by the trade parser.
 #[test]
 fn parse_missing_event_type_returns_none() {
     let json = serde_json::json!({
         "p": "42000.50",
+        "q": "0.001",
         "T": 1_700_000_000_000_u64,
     });
-    assert!(parse_agg_trade(&json).is_none());
+    assert!(parse_trade(&json, None, "binance-test", &json.to_string(), true).is_none());
 }
 
-/// Verifies that parse missing price returns none.
+/// Verify that missing prices are rejected.
 #[test]
 fn parse_missing_price_returns_none() {
     let json = serde_json::json!({
         "e": "aggTrade",
+        "q": "0.001",
         "T": 1_700_000_000_000_u64,
     });
-    assert!(parse_agg_trade(&json).is_none());
+    assert!(parse_trade(&json, None, "binance-test", &json.to_string(), true).is_none());
 }
 
-/// Verifies that parse invalid price returns none.
+/// Verify that invalid prices are rejected.
 #[test]
 fn parse_invalid_price_returns_none() {
     let json = serde_json::json!({
         "e": "aggTrade",
         "p": "not_a_number",
+        "q": "0.001",
         "T": 1_700_000_000_000_u64,
     });
-    assert!(parse_agg_trade(&json).is_none());
+    assert!(parse_trade(&json, None, "binance-test", &json.to_string(), true).is_none());
 }
 
-/// Verifies that parse numeric price returns none.
+/// Verify that numeric price payloads are accepted by the generic float parser.
 #[test]
-fn parse_numeric_price_returns_none() {
+fn parse_numeric_price_returns_trade() {
     let json = serde_json::json!({
         "e": "aggTrade",
         "p": 42000.50,
+        "q": "0.001",
         "T": 1_700_000_000_000_u64,
     });
-    assert!(parse_agg_trade(&json).is_none());
+    assert!(parse_trade(&json, None, "binance-test", &json.to_string(), true).is_some());
 }
 
-/// Verifies that process binance text valid agg trade.
+/// Verify that raw text parsing produces a Binance trade message.
 #[test]
 fn process_binance_text_valid_agg_trade() {
     let text = r#"{"e":"aggTrade","E":1700000000000,"s":"BTCUSDT","a":123456,"p":"42000.50","q":"0.001","f":100,"l":101,"T":1700000000001,"m":false,"M":true}"#;
-    let msg = process_binance_text(text);
-    assert!(msg.is_some());
-    match msg.unwrap() {
-        FeedMessage::BinanceTick {
-            price, timestamp, ..
+    match process_binance_text(text, "binance-test", true).unwrap() {
+        FeedMessage::BinanceTrade {
+            price,
+            timestamp_ms,
+            ..
         } => {
             assert!((price - 42_000.50).abs() < f64::EPSILON);
-            assert_eq!(timestamp, 1_700_000_000_001);
+            assert_eq!(timestamp_ms, 1_700_000_000_001);
         }
-        other => panic!("expected BinanceTick, got {other:?}"),
+        other => panic!("expected BinanceTrade, got {other:?}"),
     }
 }
 
-/// Verifies that process binance text invalid json returns none.
+/// Verify that malformed raw text is rejected.
 #[test]
 fn process_binance_text_invalid_json_returns_none() {
-    assert!(process_binance_text("not json at all").is_none());
+    assert!(process_binance_text("not json at all", "binance-test", true).is_none());
 }
 
-/// Verifies that process binance text empty string returns none.
+/// Verify that empty raw text is rejected.
 #[test]
 fn process_binance_text_empty_string_returns_none() {
-    assert!(process_binance_text("").is_none());
+    assert!(process_binance_text("", "binance-test", true).is_none());
 }
 
-/// Verifies that process binance text non agg trade returns none.
+/// Verify that non-supported event types are ignored by the frame parser.
 #[test]
 fn process_binance_text_non_agg_trade_returns_none() {
     let text = r#"{"e":"trade","p":"42000.50","T":1700000000000}"#;
-    assert!(process_binance_text(text).is_none());
+    assert!(process_binance_text(text, "binance-test", true).is_none());
 }
 
-/// Verifies that parse agg trade empty price string.
+/// Verify that empty price strings are rejected.
 #[test]
 fn parse_agg_trade_empty_price_string() {
     let json = serde_json::json!({
         "e": "aggTrade",
         "p": "",
+        "q": "0.001",
         "T": 1_700_000_000_000_u64,
     });
-    assert!(
-        parse_agg_trade(&json).is_none(),
-        "empty price string should return None"
-    );
+    assert!(parse_trade(&json, None, "binance-test", &json.to_string(), true).is_none());
 }
 
-/// Verifies that parse agg trade infinity price.
+/// Verify that infinite prices still parse as floating-point infinity.
 #[test]
 fn parse_agg_trade_infinity_price() {
     let json = serde_json::json!({
         "e": "aggTrade",
         "p": "inf",
+        "q": "0.001",
         "T": 1_700_000_000_000_u64,
     });
-    let result = parse_agg_trade(&json);
-
-    assert!(result.is_some(), "\"inf\" parses as f64::INFINITY");
-    let (price, _) = result.unwrap();
-    assert!(price.is_infinite(), "price should be infinity, got {price}");
+    match parse_trade_message(json) {
+        FeedMessage::BinanceTrade { price, .. } => {
+            assert!(price.is_infinite());
+        }
+        other => panic!("expected BinanceTrade, got {other:?}"),
+    }
 }
 
-/// Verifies that process binance text numeric price returns none.
+/// Verify that numeric-price frames are accepted by the top-level parser too.
 #[test]
-fn process_binance_text_numeric_price_returns_none() {
-    let text = r#"{"e":"aggTrade","p":42000.50,"T":1700000000000}"#;
-    assert!(process_binance_text(text).is_none());
+fn process_binance_text_numeric_price_returns_trade() {
+    let text = r#"{"e":"aggTrade","p":42000.50,"q":"0.001","T":1700000000000}"#;
+    assert!(process_binance_text(text, "binance-test", true).is_some());
+}
+
+/// Verify that compact parsing avoids cloning raw payloads.
+#[test]
+fn process_binance_text_compact_mode_omits_payloads() {
+    let text = r#"{"e":"aggTrade","E":1700000000000,"s":"BTCUSDT","a":123456,"p":"42000.50","q":"0.001","T":1700000000001,"m":false}"#;
+    match process_binance_text(text, "binance-test", false).unwrap() {
+        FeedMessage::BinanceTrade {
+            payload_json,
+            details_json,
+            ..
+        } => {
+            assert!(payload_json.is_none());
+            assert!(details_json.is_none());
+        }
+        other => panic!("expected BinanceTrade, got {other:?}"),
+    }
 }

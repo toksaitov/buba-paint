@@ -98,6 +98,18 @@ pub enum Commands {
         #[arg(long, default_value = "data/market-data.db")]
         output: String,
     },
+    /// Probe current endpoint and feed latency from this host
+    LatencyProbe {
+        #[arg(long, default_value = "5000")]
+        timeout_ms: u64,
+        #[arg(long = "set")]
+        sets: Vec<String>,
+    },
+    /// Print grouped database footprint and feed-event volume statistics
+    DbFootprint {
+        #[arg(long)]
+        db_path: String,
+    },
 }
 
 /// Execute a parsed CLI command.
@@ -234,6 +246,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 },
             )
             .await?;
+        }
+        Commands::LatencyProbe { timeout_ms, sets } => {
+            let mut config = Config::from_env();
+            for set_str in &sets {
+                apply_set_override(&mut config, set_str)?;
+            }
+            crate::latency_probe::run_latency_probe(&config, timeout_ms).await?;
+        }
+        Commands::DbFootprint { db_path } => {
+            crate::db::database::print_db_footprint(&db_path)?;
         }
     }
 

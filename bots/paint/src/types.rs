@@ -1,6 +1,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::signal_features::SignalFeatureSnapshot;
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BinanceTick {
@@ -49,6 +51,24 @@ pub struct ChainlinkTick {
     pub symbol: String,
     pub timestamp: u64,
     pub value: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceBookTicker {
+    pub best_bid: f64,
+    pub best_ask: f64,
+    pub bid_size: f64,
+    pub ask_size: f64,
+    pub timestamp: u64,
+    pub sequence_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceDepthSnapshot {
+    pub bid_levels: Vec<OrderLevel>,
+    pub ask_levels: Vec<OrderLevel>,
+    pub timestamp: u64,
+    pub sequence_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +167,8 @@ impl FromStr for SignalDirection {
 pub struct Signal {
     pub timestamp: u64,
     pub strategy: String,
+    pub strategy_version: String,
+    pub feature_mode: String,
     pub direction: SignalDirection,
     pub confidence: f64,
     pub binance_price: f64,
@@ -155,7 +177,9 @@ pub struct Signal {
     pub down_ask: f64,
     pub up_bid: f64,
     pub down_bid: f64,
+    pub expected_edge: Option<f64>,
     pub metadata: serde_json::Value,
+    pub telemetry: Option<SignalTelemetry>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,7 +188,10 @@ pub struct StrategyContext {
     pub binance_momentum: f64,
     pub chainlink_price: Option<f64>,
     pub book_state: BookState,
+    pub window_open_price: Option<f64>,
     pub window_time_remaining_ms: u64,
+    pub now_us: Option<u64>,
+    pub features: SignalFeatureSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,17 +307,87 @@ pub struct FeedEvent {
     pub id: Option<i64>,
     pub received_at_ms: u64,
     pub event_at_ms: u64,
+    pub received_at_us: Option<u64>,
+    pub event_at_us: Option<u64>,
     pub source: String,
     pub event_type: String,
+    pub source_topic: Option<String>,
+    pub source_symbol: Option<String>,
+    pub connection_id: Option<String>,
+    pub sequence_key: Option<String>,
     pub market_id: Option<String>,
     pub asset_id: Option<String>,
     pub price: Option<f64>,
+    pub trade_size: Option<f64>,
+    pub signed_quantity: Option<f64>,
     pub best_bid: Option<f64>,
     pub best_ask: Option<f64>,
     pub bid_size: Option<f64>,
     pub ask_size: Option<f64>,
+    pub depth_bid_notional: Option<f64>,
+    pub depth_ask_notional: Option<f64>,
+    pub depth_imbalance: Option<f64>,
+    pub microprice: Option<f64>,
     pub payload_json: Option<String>,
+    pub details_json: Option<String>,
     pub fidelity: ReplayFidelity,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignalTelemetry {
+    pub generated_at_ms: u64,
+    pub generated_at_us: Option<u64>,
+    pub order_submitted_at_ms: Option<u64>,
+    pub order_submitted_at_us: Option<u64>,
+    pub expected_arrival_at_ms: Option<u64>,
+    pub expected_arrival_at_us: Option<u64>,
+    pub binance_age_ms: Option<u64>,
+    pub chainlink_age_ms: Option<u64>,
+    pub clob_age_ms: Option<u64>,
+    pub quote_age_ms: Option<u64>,
+    pub book_staleness_ms: Option<u64>,
+    pub expected_fee: Option<f64>,
+    pub expected_slippage: Option<f64>,
+    pub expected_edge: Option<f64>,
+    pub available_feature_count: u32,
+    pub decision_status: String,
+    pub rejection_reason: Option<String>,
+    pub features_json: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignalMetricRecord {
+    pub signal_id: i64,
+    pub generated_at_ms: u64,
+    pub generated_at_us: Option<u64>,
+    pub order_submitted_at_ms: Option<u64>,
+    pub order_submitted_at_us: Option<u64>,
+    pub expected_arrival_at_ms: Option<u64>,
+    pub expected_arrival_at_us: Option<u64>,
+    pub binance_age_ms: Option<u64>,
+    pub chainlink_age_ms: Option<u64>,
+    pub clob_age_ms: Option<u64>,
+    pub quote_age_ms: Option<u64>,
+    pub book_staleness_ms: Option<u64>,
+    pub expected_fee: Option<f64>,
+    pub expected_slippage: Option<f64>,
+    pub expected_edge: Option<f64>,
+    pub available_feature_count: u32,
+    pub decision_status: String,
+    pub rejection_reason: Option<String>,
+    pub features_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct FeedHealthEvent {
+    pub id: Option<i64>,
+    pub timestamp_ms: u64,
+    pub timestamp_us: Option<u64>,
+    pub source: String,
+    pub event_type: String,
+    pub connection_id: Option<String>,
+    pub market_id: Option<String>,
+    pub details_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

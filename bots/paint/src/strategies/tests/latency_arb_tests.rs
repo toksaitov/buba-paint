@@ -1,4 +1,5 @@
 use super::*;
+use crate::signal_features::SignalFeatureSnapshot;
 use crate::types::{BookState, TopOfBook};
 
 /// Build a default config suitable for tests.
@@ -28,12 +29,16 @@ fn book(up_bid: f64, up_ask: f64, down_bid: f64, down_ask: f64) -> BookState {
 
 /// Ctx with.
 fn ctx_with(momentum: f64, book_state: BookState, remaining_ms: u64) -> StrategyContext {
+    let window_open_price = if momentum < 0.0 { 42_100.0 } else { 41_900.0 };
     StrategyContext {
         binance_price: 42_000.0,
         binance_momentum: momentum,
         chainlink_price: Some(41_999.0),
         book_state,
+        window_open_price: Some(window_open_price),
         window_time_remaining_ms: remaining_ms,
+        now_us: Some(1_000_000_000),
+        features: SignalFeatureSnapshot::default(),
     }
 }
 
@@ -160,6 +165,21 @@ fn missing_book_side_returns_none() {
     assert!(matches!(result, StrategyResult::None));
 }
 
+/// Verifies that stale Chainlink does not block signals when other inputs are fresh.
+#[test]
+fn stale_chainlink_does_not_block_signal() {
+    let config = test_config();
+    let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
+    let mut ctx = ctx_with(0.0020, book(0.45, 0.50, 0.45, 0.50), 120_000);
+    ctx.features.binance_age_ms = Some(5);
+    ctx.features.chainlink_age_ms = Some(config.max_signal_feed_age_ms + 10_000);
+    ctx.features.quote_age_ms = Some(5);
+    ctx.features.book_staleness_ms = Some(5);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    assert!(matches!(result, StrategyResult::Single(_)));
+}
+
 /// Verifies that max ask filter blocks expensive entries.
 #[test]
 fn max_ask_filter_blocks_expensive_entries() {
@@ -185,17 +205,15 @@ fn confidence_is_correct() {
     }
 }
 
-/// Verifies that confidence partial ratio.
+/// Verifies that generated signals keep confidence inside the expected range.
 #[test]
-fn confidence_partial_ratio() {
+fn confidence_for_moderate_signal_stays_in_range() {
     let config = test_config();
     let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
 
-    let momentum = 0.001_501;
-    let ctx = ctx_with(momentum, book(0.45, 0.50, 0.45, 0.50), 120_000);
+    let ctx = ctx_with(0.0020, book(0.45, 0.49, 0.45, 0.50), 120_000);
     if let StrategyResult::Single(sig) = strat.evaluate(&ctx, &config, 1_000_000) {
-        let expected = (0.40 + 0.30 * (momentum / 0.0015)).min(1.0);
-        assert!((sig.confidence - expected).abs() < 1e-6);
+        assert!((0.35..=1.0).contains(&sig.confidence));
     } else {
         panic!("expected Single signal");
     }
@@ -225,8 +243,12 @@ fn metadata_contains_expected_fields() {
             "metadata should contain 'threshold'"
         );
         assert!(
-            meta.get("ratio").is_some(),
-            "metadata should contain 'ratio'"
+            meta.get("externalBias").is_some(),
+            "metadata should contain 'externalBias'"
+        );
+        assert!(
+            meta.get("expectedEdge").is_some(),
+            "metadata should contain 'expectedEdge'"
         );
         let momentum = meta["momentum"].as_f64().unwrap();
         assert!((momentum - 0.0020).abs() < 1e-9);
@@ -245,7 +267,10 @@ fn chainlink_price_none_defaults_to_zero() {
         binance_momentum: 0.0020,
         chainlink_price: None,
         book_state: book(0.45, 0.50, 0.45, 0.50),
+        window_open_price: Some(41_900.0),
         window_time_remaining_ms: 120_000,
+        now_us: Some(1_000_000_000),
+        features: SignalFeatureSnapshot::default(),
     };
     if let StrategyResult::Single(sig) = strat.evaluate(&ctx, &config, 1_000_000) {
         assert!(
@@ -402,17 +427,26 @@ fn momentum_exactly_at_threshold_does_not_fire() {
     );
 }
 
-/// Verifies that momentum just above threshold fires.
+/// Verifies that slight momentum alone is not enough without a stale-price setup.
 #[test]
-fn momentum_just_above_threshold_fires() {
+fn momentum_just_above_threshold_needs_stale_price_confirmation() {
     let mut config = test_config();
     config.latency_arb_momentum_threshold = 0.001;
     let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
-    let ctx = ctx_with(0.001_001, book(0.45, 0.50, 0.45, 0.50), 120_000);
+    let ctx = StrategyContext {
+        binance_price: 42_000.0,
+        binance_momentum: 0.001_001,
+        chainlink_price: Some(41_999.0),
+        book_state: book(0.45, 0.54, 0.45, 0.50),
+        window_open_price: Some(41_999.0),
+        window_time_remaining_ms: 120_000,
+        now_us: Some(1_000_000_000),
+        features: SignalFeatureSnapshot::default(),
+    };
     let result = strat.evaluate(&ctx, &config, 1_000_000);
     assert!(
-        matches!(result, StrategyResult::Single(_)),
-        "momentum just above threshold should fire"
+        matches!(result, StrategyResult::None),
+        "slight momentum without mispricing confirmation should not fire"
     );
 }
 

@@ -248,6 +248,7 @@ impl ProcessManager for ChildProcessManager {
                 active,
                 pid: if active { st.pid } else { None },
                 uptime_secs,
+                control_available: true,
             })
         })
     }
@@ -482,6 +483,7 @@ impl ProcessManager for NoopProcessManager {
                 active: false,
                 pid: None,
                 uptime_secs: None,
+                control_available: false,
             })
         })
     }

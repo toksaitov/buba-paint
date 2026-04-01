@@ -85,12 +85,25 @@ pub const MIGRATIONS: &[&str] = &[
 
 /// Apply all migrations inside a single transaction.
 pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    run_base_migrations(conn)?;
+    ensure_legacy_columns(conn);
+    ensure_additive_tables(conn);
+    ensure_feed_event_columns(conn);
+
+    Ok(())
+}
+
+/// Apply the static SQL migration list inside one transaction.
+fn run_base_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     for sql in MIGRATIONS {
         tx.execute_batch(sql)?;
     }
-    tx.commit()?;
+    tx.commit()
+}
 
+/// Add all legacy compatibility columns required by the modern runtime.
+fn ensure_legacy_columns(conn: &rusqlite::Connection) {
     add_column_if_missing(conn, "markets", "outcome", "TEXT");
     add_column_if_missing(conn, "markets", "polymarket_outcome", "TEXT");
     add_column_if_missing(conn, "markets", "resolution_source", "TEXT");
@@ -103,6 +116,13 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     add_column_if_missing(conn, "markets", "rewards_max_spread", "REAL");
     add_column_if_missing(conn, "signals", "market_id", "TEXT");
     add_column_if_missing(conn, "signals", "execution_fidelity", "TEXT");
+    add_column_if_missing(conn, "signals", "strategy_version", "TEXT DEFAULT 'v1'");
+    add_column_if_missing(
+        conn,
+        "signals",
+        "feature_mode",
+        "TEXT DEFAULT 'legacy_core'",
+    );
     add_column_if_missing(conn, "signals", "order_submitted_at_ms", "INTEGER");
     add_column_if_missing(conn, "signals", "order_arrival_at_ms", "INTEGER");
     add_column_if_missing(conn, "trade_results", "fee_amount", "REAL DEFAULT 0");
@@ -133,7 +153,10 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     add_column_if_missing(conn, "simulated_trades", "fill_latency_ms", "INTEGER");
     add_column_if_missing(conn, "simulated_trades", "execution_group_id", "TEXT");
     add_column_if_missing(conn, "simulated_trades", "execution_fidelity", "TEXT");
+}
 
+/// Create additive runtime tables required by upgraded historical runs.
+fn ensure_additive_tables(conn: &rusqlite::Connection) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS settlement_audit (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,32 +175,94 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             received_at_ms  INTEGER NOT NULL,
             event_at_ms     INTEGER NOT NULL,
+            received_at_us  INTEGER,
+            event_at_us     INTEGER,
             source          TEXT NOT NULL,
             event_type      TEXT NOT NULL,
+            source_topic    TEXT,
+            source_symbol   TEXT,
+            connection_id   TEXT,
+            sequence_key    TEXT,
             market_id       TEXT,
             asset_id        TEXT,
             price           REAL,
+            trade_size      REAL,
+            signed_quantity REAL,
             best_bid        REAL,
             best_ask        REAL,
             bid_size        REAL,
             ask_size        REAL,
+            depth_bid_notional REAL,
+            depth_ask_notional REAL,
+            depth_imbalance REAL,
+            microprice      REAL,
             payload_json    TEXT,
+            details_json    TEXT,
             fidelity        TEXT NOT NULL DEFAULT 'raw_event'
                 CHECK(fidelity IN ('raw_event','legacy_snapshot'))
         );
         CREATE INDEX IF NOT EXISTS idx_feed_events_received ON feed_events(received_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_feed_events_received_us ON feed_events(received_at_us);
         CREATE INDEX IF NOT EXISTS idx_feed_events_source_ts ON feed_events(source, received_at_ms);
         CREATE INDEX IF NOT EXISTS idx_feed_events_market_ts ON feed_events(market_id, received_at_ms);
         CREATE INDEX IF NOT EXISTS idx_signals_market_ts ON signals(market_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_trades_signal ON simulated_trades(signal_id);
         CREATE INDEX IF NOT EXISTS idx_trades_group ON simulated_trades(execution_group_id);
+        CREATE TABLE IF NOT EXISTS signal_metrics (
+            signal_id INTEGER PRIMARY KEY,
+            generated_at_ms INTEGER NOT NULL,
+            generated_at_us INTEGER,
+            order_submitted_at_ms INTEGER,
+            order_submitted_at_us INTEGER,
+            expected_arrival_at_ms INTEGER,
+            expected_arrival_at_us INTEGER,
+            binance_age_ms INTEGER,
+            chainlink_age_ms INTEGER,
+            clob_age_ms INTEGER,
+            quote_age_ms INTEGER,
+            book_staleness_ms INTEGER,
+            expected_fee REAL,
+            expected_slippage REAL,
+            expected_edge REAL,
+            available_feature_count INTEGER NOT NULL DEFAULT 0,
+            decision_status TEXT NOT NULL DEFAULT 'generated',
+            rejection_reason TEXT,
+            features_json TEXT NOT NULL,
+            FOREIGN KEY (signal_id) REFERENCES signals(id)
+        );
+        CREATE TABLE IF NOT EXISTS feed_health_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_ms INTEGER NOT NULL,
+            timestamp_us INTEGER,
+            source TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            connection_id TEXT,
+            market_id TEXT,
+            details_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_feed_health_source_ts ON feed_health_events(source, timestamp_ms);
         CREATE TABLE IF NOT EXISTS history_upgrades (
             key TEXT PRIMARY KEY,
             completed_at_ms INTEGER NOT NULL
         );",
     );
+}
 
-    Ok(())
+/// Add any post-creation `feed_events` columns required by newer runs.
+fn ensure_feed_event_columns(conn: &rusqlite::Connection) {
+    add_column_if_missing(conn, "feed_events", "received_at_us", "INTEGER");
+    add_column_if_missing(conn, "feed_events", "event_at_us", "INTEGER");
+    add_column_if_missing(conn, "feed_events", "source_topic", "TEXT");
+    add_column_if_missing(conn, "feed_events", "source_symbol", "TEXT");
+    add_column_if_missing(conn, "feed_events", "connection_id", "TEXT");
+    add_column_if_missing(conn, "feed_events", "sequence_key", "TEXT");
+    add_column_if_missing(conn, "feed_events", "details_json", "TEXT");
+    add_column_if_missing(conn, "feed_events", "trade_size", "REAL");
+    add_column_if_missing(conn, "feed_events", "signed_quantity", "REAL");
+    add_column_if_missing(conn, "feed_events", "depth_bid_notional", "REAL");
+    add_column_if_missing(conn, "feed_events", "depth_ask_notional", "REAL");
+    add_column_if_missing(conn, "feed_events", "depth_imbalance", "REAL");
+    add_column_if_missing(conn, "feed_events", "microprice", "REAL");
 }
 
 /// Add a column to a table if it does not already exist.

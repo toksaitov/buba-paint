@@ -205,6 +205,18 @@ fn cli_live_command_parses() {
     }
 }
 
+/// Verifies that cli db footprint command parses.
+#[test]
+fn cli_db_footprint_command_parses() {
+    let cli = Cli::parse_from(["buba-paint", "db-footprint", "--db-path", "/tmp/test.db"]);
+    match cli.command {
+        Commands::DbFootprint { db_path } => {
+            assert_eq!(db_path, "/tmp/test.db");
+        }
+        _ => panic!("expected DbFootprint command"),
+    }
+}
+
 /// Verifies that parse time negative utc offset.
 #[test]
 fn parse_time_negative_utc_offset() {
@@ -276,5 +288,25 @@ fn cli_live_default_values() {
             assert!((balance - 150.0).abs() < f64::EPSILON);
         }
         _ => panic!("expected Live command"),
+    }
+}
+
+/// Verifies that cli latency probe parses timeout and overrides.
+#[test]
+fn cli_latency_probe_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "latency-probe",
+        "--timeout-ms",
+        "7500",
+        "--set",
+        "MAX_QUOTE_AGE_MS=350",
+    ]);
+    match cli.command {
+        Commands::LatencyProbe { timeout_ms, sets } => {
+            assert_eq!(timeout_ms, 7500);
+            assert_eq!(sets, vec!["MAX_QUOTE_AGE_MS=350"]);
+        }
+        _ => panic!("expected LatencyProbe command"),
     }
 }

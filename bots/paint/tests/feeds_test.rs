@@ -40,7 +40,7 @@ async fn binance_feed_emits_connected_on_start() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::FeedConnected(name) => assert_eq!(name, "binance"),
+        FeedMessage::FeedConnected { name, .. } => assert_eq!(name, "binance"),
         other => panic!("expected FeedConnected(\"binance\"), got {other:?}"),
     }
 }
@@ -60,7 +60,7 @@ async fn binance_feed_receives_agg_trade() {
     let _ = timeout(Duration::from_secs(5), rx.recv()).await;
 
     server
-        .send(r#"{"e":"aggTrade","p":"42000.50","T":1700000000001}"#)
+        .send(r#"{"e":"aggTrade","p":"42000.50","q":"0.15","T":1700000000001}"#)
         .await;
 
     let msg = timeout(Duration::from_secs(5), rx.recv())
@@ -69,13 +69,15 @@ async fn binance_feed_receives_agg_trade() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::BinanceTick {
-            price, timestamp, ..
+        FeedMessage::BinanceTrade {
+            price,
+            timestamp_ms,
+            ..
         } => {
             assert!((price - 42_000.50).abs() < f64::EPSILON);
-            assert_eq!(timestamp, 1_700_000_000_001);
+            assert_eq!(timestamp_ms, 1_700_000_000_001);
         }
-        other => panic!("expected BinanceTick, got {other:?}"),
+        other => panic!("expected BinanceTrade, got {other:?}"),
     }
 }
 
@@ -120,14 +122,16 @@ async fn binance_feed_reconnects_after_disconnect() {
         .await
         .expect("timed out")
         .expect("channel closed");
-    assert!(matches!(msg, FeedMessage::FeedConnected(_)));
+    assert!(matches!(msg, FeedMessage::FeedConnected { .. }));
 
     server.close().await;
 
     let reconnected = timeout(Duration::from_secs(5), async {
         loop {
             match rx.recv().await {
-                Some(FeedMessage::FeedConnected(name)) if name == "binance" => return true,
+                Some(FeedMessage::FeedConnected { name, .. }) if name == "binance" => {
+                    return true;
+                }
                 Some(_) => {}
                 None => return false,
             }
@@ -316,14 +320,14 @@ async fn binance_feed_handles_invalid_text_gracefully() {
         .await
         .expect("timed out waiting for FeedConnected")
         .expect("channel closed");
-    assert!(matches!(msg, FeedMessage::FeedConnected(_)));
+    assert!(matches!(msg, FeedMessage::FeedConnected { .. }));
 
     server.send("not valid json at all {{{{").await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     server
-        .send(r#"{"e":"aggTrade","p":"42000.50","T":1700000000001}"#)
+        .send(r#"{"e":"aggTrade","p":"42000.50","q":"0.15","T":1700000000001}"#)
         .await;
 
     let msg = timeout(Duration::from_secs(5), rx.recv())
@@ -332,13 +336,15 @@ async fn binance_feed_handles_invalid_text_gracefully() {
         .expect("channel closed");
 
     match msg {
-        FeedMessage::BinanceTick {
-            price, timestamp, ..
+        FeedMessage::BinanceTrade {
+            price,
+            timestamp_ms,
+            ..
         } => {
             assert!((price - 42_000.50).abs() < f64::EPSILON);
-            assert_eq!(timestamp, 1_700_000_000_001);
+            assert_eq!(timestamp_ms, 1_700_000_000_001);
         }
-        other => panic!("expected BinanceTick, got {other:?}"),
+        other => panic!("expected BinanceTrade, got {other:?}"),
     }
 }
 
@@ -403,10 +409,12 @@ async fn chainlink_feed_receives_price_update() {
 
     match msg {
         FeedMessage::ChainlinkPrice {
-            price, timestamp, ..
+            price,
+            timestamp_ms,
+            ..
         } => {
             assert!((price - 42_000.0).abs() < f64::EPSILON);
-            assert_eq!(timestamp, 1_700_000_000_000);
+            assert_eq!(timestamp_ms, 1_700_000_000_000);
         }
         other => panic!("expected ChainlinkPrice, got {other:?}"),
     }
@@ -445,7 +453,7 @@ async fn chainlink_feed_detects_staleness() {
     let stale_found = timeout(Duration::from_secs(5), async {
         loop {
             match rx.recv().await {
-                Some(FeedMessage::ChainlinkStale) => return true,
+                Some(FeedMessage::ChainlinkStale { .. }) => return true,
                 Some(_) => {}
                 None => return false,
             }
@@ -478,10 +486,12 @@ async fn chainlink_feed_reconnects_after_stale() {
         let mut saw_stale = false;
         loop {
             match rx.recv().await {
-                Some(FeedMessage::ChainlinkStale) => {
+                Some(FeedMessage::ChainlinkStale { .. }) => {
                     saw_stale = true;
                 }
-                Some(FeedMessage::FeedConnected(name)) if name == "chainlink" && saw_stale => {
+                Some(FeedMessage::FeedConnected { name, .. })
+                    if name == "chainlink" && saw_stale =>
+                {
                     return true;
                 }
                 Some(_) => {}
@@ -513,7 +523,7 @@ async fn chainlink_feed_handles_invalid_text_gracefully() {
         .await
         .expect("timed out waiting for FeedConnected")
         .expect("channel closed");
-    assert!(matches!(msg, FeedMessage::FeedConnected(_)));
+    assert!(matches!(msg, FeedMessage::FeedConnected { .. }));
 
     server.send("not valid json at all {{{{").await;
 
@@ -539,10 +549,12 @@ async fn chainlink_feed_handles_invalid_text_gracefully() {
 
     match msg {
         FeedMessage::ChainlinkPrice {
-            price, timestamp, ..
+            price,
+            timestamp_ms,
+            ..
         } => {
             assert!((price - 43_000.0).abs() < f64::EPSILON);
-            assert_eq!(timestamp, 1_700_000_000_100);
+            assert_eq!(timestamp_ms, 1_700_000_000_100);
         }
         other => panic!("expected ChainlinkPrice, got {other:?}"),
     }

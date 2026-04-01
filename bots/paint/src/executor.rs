@@ -130,6 +130,16 @@ impl ExecutionEngine {
         )?;
 
         if !self.can_queue_order(signal, window, false, 1, db, config)? {
+            if let Some(telemetry) = signal.telemetry.as_ref() {
+                let _ = db.upsert_signal_telemetry(
+                    signal_id,
+                    telemetry,
+                    Some(signal.timestamp),
+                    Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
+                    Some("rejected"),
+                    Some("position_limits"),
+                );
+            }
             return Ok(Some(signal_id));
         }
 
@@ -146,6 +156,16 @@ impl ExecutionEngine {
             clock,
         );
         if requested_size <= 0.0 {
+            if let Some(telemetry) = signal.telemetry.as_ref() {
+                let _ = db.upsert_signal_telemetry(
+                    signal_id,
+                    telemetry,
+                    Some(signal.timestamp),
+                    Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
+                    Some("rejected"),
+                    Some("capital_reservation"),
+                );
+            }
             return Ok(Some(signal_id));
         }
 
@@ -172,6 +192,16 @@ impl ExecutionEngine {
 
         self.stats.submitted_orders += 1;
         self.stats.total_requested_size += requested_size;
+        if let Some(telemetry) = signal.telemetry.as_ref() {
+            let _ = db.upsert_signal_telemetry(
+                signal_id,
+                telemetry,
+                Some(signal.timestamp),
+                Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
+                Some("submitted"),
+                None,
+            );
+        }
 
         Ok(Some(signal_id))
     }
@@ -191,6 +221,14 @@ impl ExecutionEngine {
         let arrival_ts = spread_arrival_ts(signals, config, clock);
         let signal_ids = log_spread_signals(signals, window, db, arrival_ts, execution_fidelity)?;
         if !self.can_queue_spread(signals, window, db, config)? {
+            update_spread_signal_metrics(
+                db,
+                signals,
+                &signal_ids,
+                arrival_ts,
+                "rejected",
+                Some("position_limits"),
+            );
             return Ok(signal_ids);
         }
         let Some((up_signal, down_signal, up_signal_id, down_signal_id)) =
@@ -207,6 +245,14 @@ impl ExecutionEngine {
             fee_params.exponent,
         ) <= 0.0
         {
+            update_spread_signal_metrics(
+                db,
+                signals,
+                &signal_ids,
+                arrival_ts,
+                "rejected",
+                Some("net_edge"),
+            );
             return Ok(signal_ids);
         }
         let (up_tokens, down_tokens) = bankroll.reserve_spread_capital(
@@ -217,6 +263,14 @@ impl ExecutionEngine {
             clock,
         );
         if up_tokens <= 0.0 || down_tokens <= 0.0 {
+            update_spread_signal_metrics(
+                db,
+                signals,
+                &signal_ids,
+                arrival_ts,
+                "rejected",
+                Some("capital_reservation"),
+            );
             return Ok(signal_ids);
         }
         let group_id = format!("spread-{}", self.next_group_id);
@@ -245,6 +299,7 @@ impl ExecutionEngine {
             },
             down_tokens,
         ));
+        update_spread_signal_metrics(db, signals, &signal_ids, arrival_ts, "submitted", None);
         Ok(signal_ids)
     }
 
@@ -308,6 +363,8 @@ impl ExecutionEngine {
         let fallback_signal = Signal {
             timestamp: 0,
             strategy: "spread-capture".to_string(),
+            strategy_version: "v2".to_string(),
+            feature_mode: "legacy_core".to_string(),
             direction: SignalDirection::Up,
             confidence: 1.0,
             binance_price: 0.0,
@@ -316,7 +373,9 @@ impl ExecutionEngine {
             down_ask: 0.0,
             up_bid: 0.0,
             down_bid: 0.0,
+            expected_edge: None,
             metadata: serde_json::json!({}),
+            telemetry: None,
         };
         let signal = signals.first().unwrap_or(&fallback_signal);
         self.can_queue_order(signal, window, true, 2, db, config)
@@ -505,6 +564,29 @@ fn log_spread_signals(
         signal_ids.push(signal_id);
     }
     Ok(signal_ids)
+}
+
+/// Persist telemetry updates for all legs in one spread bundle.
+fn update_spread_signal_metrics(
+    db: &Database,
+    signals: &[Signal],
+    signal_ids: &[i64],
+    arrival_ts: u64,
+    decision_status: &str,
+    rejection_reason: Option<&str>,
+) {
+    for (signal, signal_id) in signals.iter().zip(signal_ids.iter().copied()) {
+        if let Some(telemetry) = signal.telemetry.as_ref() {
+            let _ = db.upsert_signal_telemetry(
+                signal_id,
+                telemetry,
+                Some(signal.timestamp),
+                Some(arrival_ts),
+                Some(decision_status),
+                rejection_reason,
+            );
+        }
+    }
 }
 
 /// Calculate the arrival timestamp for a spread signal bundle.
@@ -726,6 +808,8 @@ mod tests {
         Signal {
             timestamp,
             strategy: "latency-arb".to_string(),
+            strategy_version: "v2".to_string(),
+            feature_mode: "legacy_core".to_string(),
             direction: side,
             confidence: 1.0,
             binance_price: 68_000.0,
@@ -734,7 +818,9 @@ mod tests {
             down_ask: 0.45,
             up_bid: 0.54,
             down_bid: 0.44,
+            expected_edge: None,
             metadata: serde_json::json!({ "momentum": 0.0012 }),
+            telemetry: None,
         }
     }
 
@@ -744,6 +830,8 @@ mod tests {
             Signal {
                 timestamp,
                 strategy: "spread-capture".to_string(),
+                strategy_version: "v2".to_string(),
+                feature_mode: "legacy_core".to_string(),
                 direction: SignalDirection::Up,
                 confidence: 1.0,
                 binance_price: 68_000.0,
@@ -752,11 +840,15 @@ mod tests {
                 down_ask,
                 up_bid: up_ask - 0.01,
                 down_bid: down_ask - 0.01,
+                expected_edge: None,
                 metadata: serde_json::json!({ "spread": up_ask + down_ask }),
+                telemetry: None,
             },
             Signal {
                 timestamp,
                 strategy: "spread-capture".to_string(),
+                strategy_version: "v2".to_string(),
+                feature_mode: "legacy_core".to_string(),
                 direction: SignalDirection::Down,
                 confidence: 1.0,
                 binance_price: 68_000.0,
@@ -765,7 +857,9 @@ mod tests {
                 down_ask,
                 up_bid: up_ask - 0.01,
                 down_bid: down_ask - 0.01,
+                expected_edge: None,
                 metadata: serde_json::json!({ "spread": up_ask + down_ask }),
+                telemetry: None,
             },
         ]
     }

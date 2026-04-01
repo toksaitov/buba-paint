@@ -293,6 +293,7 @@ async fn bot_status_noop_returns_inactive() {
     let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["active"], false);
+    assert_eq!(json["control_available"], false);
     assert!(json["pid"].is_null());
 }
 

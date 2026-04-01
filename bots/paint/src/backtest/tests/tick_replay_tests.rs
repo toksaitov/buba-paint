@@ -29,10 +29,51 @@ fn insert_tick(
     .unwrap();
 }
 
+/// Helper: insert one feed-event row.
+#[allow(clippy::too_many_arguments)]
+fn insert_feed_event(
+    conn: &rusqlite::Connection,
+    received_at_ms: i64,
+    received_at_us: Option<i64>,
+    source: &str,
+    event_type: &str,
+    price: Option<f64>,
+    bid: Option<f64>,
+    ask: Option<f64>,
+    fidelity: &str,
+) {
+    conn.execute(
+        "INSERT INTO feed_events (
+            received_at_ms,
+            event_at_ms,
+            received_at_us,
+            event_at_us,
+            source,
+            event_type,
+            price,
+            best_bid,
+            best_ask,
+            fidelity
+         ) VALUES (?1, ?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            received_at_ms,
+            received_at_us,
+            source,
+            event_type,
+            price,
+            bid,
+            ask,
+            fidelity
+        ],
+    )
+    .unwrap();
+}
+
 /// Helper: build a raw tick for in-memory tests.
 fn tick(ts: u64, source: &str, price: Option<f64>) -> RawTick {
     RawTick {
         timestamp: ts,
+        timestamp_us: None,
         source: source.to_string(),
         event_type: "legacy_snapshot".to_string(),
         market_id: None,
@@ -190,6 +231,7 @@ fn all_four_sources_grouped() {
         tick(1003, "chainlink", Some(41_999.0)),
         RawTick {
             timestamp: 1006,
+            timestamp_us: None,
             source: "clob_up".into(),
             event_type: "legacy_snapshot".into(),
             market_id: None,
@@ -203,6 +245,7 @@ fn all_four_sources_grouped() {
         },
         RawTick {
             timestamp: 1009,
+            timestamp_us: None,
             source: "clob_down".into(),
             event_type: "legacy_snapshot".into(),
             market_id: None,
@@ -309,6 +352,86 @@ fn from_db_groups_within_10ms() {
     assert!(group.chainlink.is_some());
     assert!(group.clob_up.is_some());
     assert!(group.clob_down.is_none());
+    assert!(replay.next_group().is_none());
+}
+
+/// Verifies that raw feed-events are ordered by microsecond receive time.
+#[test]
+fn from_db_feed_events_preserve_raw_event_microsecond_order() {
+    let conn = setup_test_db();
+    insert_feed_event(
+        &conn,
+        1000,
+        Some(1_000_500),
+        "chainlink",
+        "price_update",
+        Some(41_999.0),
+        None,
+        None,
+        "raw_event",
+    );
+    insert_feed_event(
+        &conn,
+        1000,
+        Some(1_000_100),
+        "binance",
+        "aggTrade",
+        Some(42_000.0),
+        None,
+        None,
+        "raw_event",
+    );
+
+    let mut replay = TickReplay::from_db(&conn, 0, 2000).unwrap();
+    assert_eq!(replay.total_ticks(), 2);
+
+    let first = replay.next_group().unwrap();
+    assert_eq!(first.timestamp, 1000);
+    assert_eq!(first.timestamp_us, Some(1_000_100));
+    assert_eq!(first.fidelity, ReplayFidelity::RawEvent);
+    assert!(first.binance.is_some());
+    assert!(first.chainlink.is_none());
+
+    let second = replay.next_group().unwrap();
+    assert_eq!(second.timestamp_us, Some(1_000_500));
+    assert!(second.chainlink.is_some());
+    assert!(second.binance.is_none());
+}
+
+/// Verifies that raw feed-events with identical microsecond timestamps share one group.
+#[test]
+fn from_db_groups_raw_events_with_identical_microsecond_timestamp() {
+    let conn = setup_test_db();
+    insert_feed_event(
+        &conn,
+        1000,
+        Some(1_000_250),
+        "binance",
+        "aggTrade",
+        Some(42_000.0),
+        None,
+        None,
+        "raw_event",
+    );
+    insert_feed_event(
+        &conn,
+        1000,
+        Some(1_000_250),
+        "chainlink",
+        "price_update",
+        Some(42_001.0),
+        None,
+        None,
+        "raw_event",
+    );
+
+    let mut replay = TickReplay::from_db(&conn, 0, 2000).unwrap();
+    let group = replay.next_group().unwrap();
+
+    assert_eq!(group.fidelity, ReplayFidelity::RawEvent);
+    assert_eq!(group.timestamp_us, Some(1_000_250));
+    assert!(group.binance.is_some());
+    assert!(group.chainlink.is_some());
     assert!(replay.next_group().is_none());
 }
 

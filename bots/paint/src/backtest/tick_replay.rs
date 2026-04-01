@@ -15,6 +15,7 @@ use crate::types::ReplayFidelity;
 #[derive(Debug, Clone)]
 pub struct RawTick {
     pub timestamp: u64,
+    pub timestamp_us: Option<u64>,
     pub source: String,
     pub event_type: String,
     pub market_id: Option<String>,
@@ -41,6 +42,7 @@ pub struct TickSample {
 #[derive(Debug, Clone)]
 pub struct TickGroup {
     pub timestamp: u64,
+    pub timestamp_us: Option<u64>,
     pub binance: Option<TickSample>,
     pub chainlink: Option<TickSample>,
     pub clob_up: Option<TickSample>,
@@ -98,10 +100,10 @@ impl TickReplay {
                 let mut stmt = conn
                     .prepare(
                         "SELECT received_at_ms, source, event_type, market_id, asset_id, price,
-                            best_bid, best_ask, bid_size, ask_size, fidelity
+                            best_bid, best_ask, bid_size, ask_size, fidelity, received_at_us
                      FROM feed_events
                      WHERE received_at_ms >= ?1 AND received_at_ms <= ?2
-                     ORDER BY received_at_ms, id",
+                     ORDER BY COALESCE(received_at_us, received_at_ms * 1000), id",
                     )
                     .context("preparing feed_events query")?;
 
@@ -118,6 +120,7 @@ impl TickReplay {
                         })?;
                         Ok(RawTick {
                             timestamp: ts_i64 as u64,
+                            timestamp_us: row.get(11)?,
                             source: row.get(1)?,
                             event_type: row.get(2)?,
                             market_id: row.get(3)?,
@@ -153,6 +156,7 @@ impl TickReplay {
                 let ts_i64: i64 = row.get(0)?;
                 Ok(RawTick {
                     timestamp: ts_i64 as u64,
+                    timestamp_us: Some((ts_i64 as u64).saturating_mul(1_000)),
                     source: row.get(1)?,
                     event_type: "legacy_snapshot".to_string(),
                     market_id: None,
@@ -197,8 +201,12 @@ impl TickReplay {
         }
 
         let ts = self.ticks[self.cursor].timestamp;
+        let ts_us = self.ticks[self.cursor]
+            .timestamp_us
+            .unwrap_or_else(|| ts.saturating_mul(1_000));
         let mut group = TickGroup {
             timestamp: ts,
+            timestamp_us: Some(ts_us),
             binance: None,
             chainlink: None,
             clob_up: None,
@@ -211,9 +219,19 @@ impl TickReplay {
             ReplayFidelity::LegacySnapshot => 10,
         };
 
-        while self.cursor < self.ticks.len()
-            && self.ticks[self.cursor].timestamp.saturating_sub(ts) <= group_window_ms
-        {
+        while self.cursor < self.ticks.len() {
+            let tick_ts_us = self.ticks[self.cursor]
+                .timestamp_us
+                .unwrap_or_else(|| self.ticks[self.cursor].timestamp.saturating_mul(1_000));
+            let within_window = match self.ticks[self.cursor].fidelity {
+                ReplayFidelity::RawEvent => tick_ts_us == ts_us,
+                ReplayFidelity::LegacySnapshot => {
+                    self.ticks[self.cursor].timestamp.saturating_sub(ts) <= group_window_ms
+                }
+            };
+            if !within_window {
+                break;
+            }
             let tick = &self.ticks[self.cursor];
             let sample = TickSample {
                 price: tick.price,

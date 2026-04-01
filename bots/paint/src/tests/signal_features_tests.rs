@@ -1,0 +1,171 @@
+use super::*;
+use crate::types::{BookState, MarketWindow, OrderLevel, TopOfBook};
+
+/// Build a representative crypto market window for feature-engine tests.
+fn market_window() -> MarketWindow {
+    MarketWindow {
+        market_id: "mkt-1".to_string(),
+        question: "Will BTC close up?".to_string(),
+        up_token_id: "up-token".to_string(),
+        down_token_id: "down-token".to_string(),
+        condition_id: "cond-1".to_string(),
+        start_time: 100_000,
+        end_time: 400_000,
+        slug: "btc-updown-5m".to_string(),
+        outcome: None,
+        resolution_source: Some("gamma".to_string()),
+        fee_profile: Some("crypto".to_string()),
+        order_min_size: Some(1.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: None,
+        taker_base_fee: None,
+        rewards_min_size: None,
+        rewards_max_spread: None,
+    }
+}
+
+/// Build a symmetric binary-market book snapshot.
+fn book_state(timestamp: u64) -> BookState {
+    BookState {
+        up: Some(TopOfBook {
+            best_bid: 0.48,
+            best_ask: 0.49,
+            bid_size: 100.0,
+            ask_size: 120.0,
+            timestamp,
+        }),
+        down: Some(TopOfBook {
+            best_bid: 0.49,
+            best_ask: 0.50,
+            bid_size: 90.0,
+            ask_size: 110.0,
+            timestamp,
+        }),
+    }
+}
+
+/// Verify that legacy inputs still produce a stable legacy-core feature snapshot.
+#[test]
+fn compute_returns_legacy_core_without_raw_only_inputs() {
+    let config = crate::config::Config::default();
+    let window = market_window();
+    let mut state = SignalState::new();
+    state.update_binance_trade(70_000.0, 1.0, None, 100_000, None);
+    state.update_binance_trade(70_030.0, 1.0, None, 100_600, None);
+    state.update_chainlink(70_010.0, 100_650, None);
+    state.update_clob(book_state(100_700), 100_700, None);
+
+    let snapshot = SignalFeatureEngine::compute(
+        &mut state,
+        Some(&window),
+        Some(69_900.0),
+        0.0012,
+        101_000,
+        None,
+        &config,
+    );
+
+    assert_eq!(snapshot.feature_mode, FeatureMode::LegacyCore);
+    assert!(snapshot.distance_from_open_bps.is_some());
+    assert!(snapshot.summed_ask_edge.is_some());
+    assert!(snapshot.quote_age_ms.is_some());
+    assert!(snapshot.expected_up_fee.is_some());
+    assert!(snapshot.available_feature_count() >= 6);
+}
+
+/// Verify that raw-event inputs unlock the richer feature mode and lag metrics.
+#[test]
+fn compute_returns_raw_event_full_when_raw_features_are_available() {
+    let config = crate::config::Config::default();
+    let window = market_window();
+    let mut state = SignalState::new();
+    state.update_binance_trade(70_000.0, 1.0, Some(1.0), 100_000, Some(100_000_000));
+    state.update_binance_trade(70_020.0, 2.0, Some(-2.0), 100_100, Some(100_100_000));
+    state.update_binance_trade(70_060.0, 3.0, Some(3.0), 100_200, Some(100_200_000));
+    state.update_binance_book(
+        69_995.0,
+        70_005.0,
+        8.0,
+        4.0,
+        100_250,
+        Some("42".to_string()),
+    );
+    state.update_binance_depth(
+        vec![
+            OrderLevel {
+                price: 69_995.0,
+                size: 8.0,
+            },
+            OrderLevel {
+                price: 69_990.0,
+                size: 6.0,
+            },
+        ],
+        vec![
+            OrderLevel {
+                price: 70_005.0,
+                size: 4.0,
+            },
+            OrderLevel {
+                price: 70_010.0,
+                size: 3.0,
+            },
+        ],
+        100_260,
+        Some("43".to_string()),
+    );
+    state.update_chainlink(70_010.0, 100_270, Some(100_270_000));
+    state.update_clob(book_state(100_280), 100_280, Some(100_280_000));
+    state.update_clob(
+        BookState {
+            up: Some(TopOfBook {
+                best_bid: 0.47,
+                best_ask: 0.48,
+                bid_size: 110.0,
+                ask_size: 100.0,
+                timestamp: 100_500,
+            }),
+            down: Some(TopOfBook {
+                best_bid: 0.50,
+                best_ask: 0.51,
+                bid_size: 120.0,
+                ask_size: 90.0,
+                timestamp: 100_500,
+            }),
+        },
+        100_500,
+        Some(100_500_000),
+    );
+
+    let snapshot = SignalFeatureEngine::compute(
+        &mut state,
+        Some(&window),
+        Some(69_950.0),
+        0.0014,
+        100_700,
+        Some(100_700_000),
+        &config,
+    );
+
+    assert_eq!(snapshot.feature_mode, FeatureMode::RawEventFull);
+    assert!(snapshot.binance_signed_trade_imbalance.is_some());
+    assert!(snapshot.binance_book_imbalance.is_some());
+    assert!(snapshot.binance_depth_sweep_cost.is_some());
+    assert!(snapshot.polymarket_quote_churn_per_s.is_some());
+    assert!(snapshot.polymarket_microprice_skew.is_some());
+    assert!(snapshot.event_to_decision_lag_us.is_some());
+}
+
+/// Verify that pruning discards stale trade and quote history outside the configured window.
+#[test]
+fn prune_discards_stale_history() {
+    let mut state = SignalState::new();
+    state.update_binance_trade(70_000.0, 1.0, Some(1.0), 100_000, Some(100_000_000));
+    state.update_binance_trade(70_010.0, 1.0, Some(1.0), 106_500, Some(106_500_000));
+    state.update_clob(book_state(100_100), 100_100, Some(100_100_000));
+    state.update_clob(book_state(106_500), 106_500, Some(106_500_000));
+    state.prune(106_500);
+
+    assert_eq!(state.binance_trades.len(), 1);
+    assert_eq!(state.clob_quote_churn_per_s(106_500, 1_000), None);
+}

@@ -36,6 +36,7 @@ async fn noop_status_returns_inactive() {
     let mgr = NoopProcessManager::new(None);
     let status = mgr.status().await.unwrap();
     assert!(!status.active);
+    assert!(!status.control_available);
     assert!(status.pid.is_none());
     assert!(status.uptime_secs.is_none());
 }
@@ -77,6 +78,7 @@ async fn child_start_spawns_process() {
     let mgr = ChildProcessManager::new(sleep_config(60));
     let status = mgr.start().await.unwrap();
     assert!(status.active);
+    assert!(status.control_available);
     assert!(status.pid.is_some());
 
     mgr.stop().await.unwrap();
@@ -116,7 +118,7 @@ async fn child_status_tracks_uptime() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let status = mgr.status().await.unwrap();
     assert!(status.active);
-
+    assert!(status.control_available);
     assert!(status.uptime_secs.is_some());
 
     mgr.stop().await.unwrap();

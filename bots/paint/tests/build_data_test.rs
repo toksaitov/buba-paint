@@ -305,3 +305,133 @@ fn build_data_end_to_end() {
     );
     assert_eq!(outcome, "UP");
 }
+
+/// Verifies that build-data preserves compact feed-event columns when present.
+#[test]
+fn build_data_preserves_compact_feed_event_columns() {
+    let dir = TempDir::new().unwrap();
+    let runs_dir = dir.path().join("runs");
+    std::fs::create_dir_all(&runs_dir).unwrap();
+    let run_dir = runs_dir.join("004");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let run_db = run_dir.join("buba-paint.db");
+    create_fixture_run_db(
+        run_db.to_str().unwrap(),
+        &[(1_000_i64, "binance", 42_000.0)],
+        &[(
+            "mkt-1",
+            "Will BTC go up?",
+            "cond-1",
+            "btc-up-1",
+            "tok-up-1",
+            "tok-down-1",
+            900_i64,
+            1_300_i64,
+        )],
+        &[],
+    );
+
+    let source = Connection::open(&run_db).unwrap();
+    source
+        .execute_batch(
+            "CREATE TABLE feed_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at_ms INTEGER NOT NULL,
+                event_at_ms INTEGER NOT NULL,
+                received_at_us INTEGER,
+                event_at_us INTEGER,
+                source TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                source_topic TEXT,
+                source_symbol TEXT,
+                connection_id TEXT,
+                sequence_key TEXT,
+                market_id TEXT,
+                asset_id TEXT,
+                price REAL,
+                trade_size REAL,
+                signed_quantity REAL,
+                best_bid REAL,
+                best_ask REAL,
+                bid_size REAL,
+                ask_size REAL,
+                depth_bid_notional REAL,
+                depth_ask_notional REAL,
+                depth_imbalance REAL,
+                microprice REAL,
+                payload_json TEXT,
+                details_json TEXT,
+                fidelity TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+    source
+        .execute(
+            "INSERT INTO feed_events (
+                received_at_ms, event_at_ms, received_at_us, event_at_us, source, event_type,
+                source_topic, source_symbol, connection_id, sequence_key, market_id, asset_id,
+                price, trade_size, signed_quantity, best_bid, best_ask, bid_size, ask_size,
+                depth_bid_notional, depth_ask_notional, depth_imbalance, microprice,
+                payload_json, details_json, fidelity
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26
+             )",
+            params![
+                1_000_i64,
+                1_000_i64,
+                1_000_000_i64,
+                1_000_000_i64,
+                "binance",
+                "aggTrade",
+                "btcusdt@aggTrade",
+                "BTCUSDT",
+                "binance-1",
+                "123",
+                "mkt-1",
+                rusqlite::types::Null,
+                42_000.0_f64,
+                0.25_f64,
+                -0.25_f64,
+                41_999.0_f64,
+                42_001.0_f64,
+                10.0_f64,
+                8.0_f64,
+                50_000.0_f64,
+                45_000.0_f64,
+                0.0526315789_f64,
+                42_000.111_f64,
+                rusqlite::types::Null,
+                rusqlite::types::Null,
+                "raw_event",
+            ],
+        )
+        .unwrap();
+    drop(source);
+
+    let output_path = dir.path().join("data").join("market-data.db");
+    buba_paint::db::build_data::build_market_data(
+        runs_dir.to_str().unwrap(),
+        output_path.to_str().unwrap(),
+    )
+    .unwrap();
+
+    let merged = Connection::open(output_path).unwrap();
+    let (trade_size, signed_quantity, depth_bid_notional, microprice): (f64, f64, f64, f64) =
+        merged
+            .query_row(
+                "SELECT trade_size, signed_quantity, depth_bid_notional, microprice
+                 FROM feed_events
+                 WHERE source = 'binance' AND event_type = 'aggTrade'
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+    assert!((trade_size - 0.25).abs() < f64::EPSILON);
+    assert!((signed_quantity + 0.25).abs() < f64::EPSILON);
+    assert!((depth_bid_notional - 50_000.0).abs() < f64::EPSILON);
+    assert!((microprice - 42_000.111).abs() < 0.001);
+}

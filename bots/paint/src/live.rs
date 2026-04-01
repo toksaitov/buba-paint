@@ -10,15 +10,18 @@ use crate::config::Config;
 use crate::db::database::Database;
 use crate::executor::ExecutionEngine;
 use crate::feeds::FeedMessage;
+use crate::feeds::util::now_us;
+use crate::live_storage::FeedEventStorageState;
 use crate::market_discovery::{self, MarketDiscoveryEvent};
 use crate::position_manager::PositionManager;
+use crate::signal_features::{SignalFeatureEngine, SignalState};
 use crate::strategies::latency_arb::LatencyArbStrategy;
 use crate::strategies::spread_capture::SpreadCaptureStrategy;
 use crate::strategies::{Strategy, StrategyResult};
 use crate::tick_logger::{self, TickLoggerState};
 use crate::trend_tracker::TrendTracker;
 use crate::types::{
-    BookState, FeedEvent, MarketWindow, ReplayFidelity, SignalDirection, StrategyContext,
+    FeedEvent, FeedHealthEvent, MarketWindow, ReplayFidelity, SignalDirection, StrategyContext,
 };
 
 struct DeferredResolution {
@@ -28,28 +31,62 @@ struct DeferredResolution {
 }
 
 struct LiveState {
-    binance_price: Option<f64>,
-    chainlink_price: Option<f64>,
-    book_state: BookState,
+    signal_state: SignalState,
     current_window: Option<MarketWindow>,
-    /// Open prices captured per `market_id` (so we can settle any window,
-    /// not just the current one).
     window_open_prices: std::collections::HashMap<String, f64>,
-    /// All windows we've seen (for resolving trades when window closes).
     known_windows: std::collections::HashMap<String, MarketWindow>,
+}
+
+/// Local receive-time pair captured when a feed message enters the live loop.
+struct ReceiveTimes {
+    ms: u64,
+    micros: Option<u64>,
+}
+
+/// Context required to persist one live `CLOB` event into `feed_events`.
+struct LiveClobLogEvent<'a> {
+    receive_ms: u64,
+    receive_micros: Option<u64>,
+    event_ms: u64,
+    event_micros: Option<u64>,
+    event_type: &'a str,
+    book_state: &'a crate::types::BookState,
+    current_window: Option<&'a MarketWindow>,
+    asset_id: Option<&'a str>,
+    source_topic: Option<&'a str>,
+    connection_id: &'a str,
+    payload_json: Option<&'a str>,
+    details_json: Option<&'a str>,
+}
+
+/// Context required to persist one feed-health event.
+struct FeedHealthLogEvent<'a> {
+    timestamp_ms: u64,
+    timestamp_micros: Option<u64>,
+    source: &'a str,
+    event_type: &'a str,
+    connection_id: Option<&'a str>,
+    market_id: Option<&'a str>,
+    details_json: Option<&'a str>,
 }
 
 impl LiveState {
     /// Creates a new `LiveState`.
     fn new() -> Self {
         Self {
-            binance_price: None,
-            chainlink_price: None,
-            book_state: BookState::default(),
+            signal_state: SignalState::new(),
             current_window: None,
             window_open_prices: std::collections::HashMap::new(),
             known_windows: std::collections::HashMap::new(),
         }
+    }
+}
+
+/// Capture the current local receive timestamps for one incoming live event.
+fn capture_receive_times(clock: &dyn Clock) -> ReceiveTimes {
+    ReceiveTimes {
+        ms: clock.now(),
+        micros: Some(now_us()),
     }
 }
 
@@ -137,10 +174,14 @@ pub async fn run_live(
     });
 
     let mut state = LiveState::new();
+    let mut storage_state = FeedEventStorageState::new(config.feed_event_storage_profile);
 
     let (resolution_tx, mut resolution_rx) = tokio::sync::mpsc::channel::<DeferredResolution>(32);
 
     let (activate_tx, mut activate_rx) = tokio::sync::mpsc::channel::<MarketWindow>(32);
+    let mut storage_report_timer = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
+    storage_report_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let _ = storage_report_timer.tick().await;
 
     info!("all tasks spawned, entering main loop");
 
@@ -156,41 +197,77 @@ pub async fn run_live(
                 };
 
                 match msg {
-                    FeedMessage::BinanceTick { price, timestamp, payload_json } => {
-                        let received_at_ms = clock.now();
-                        state.binance_price = Some(price);
-                        momentum.push(price, timestamp);
+                    FeedMessage::BinanceTrade {
+                        price,
+                        quantity,
+                        signed_quantity,
+                        timestamp_ms,
+                        timestamp_us: source_micros,
+                        source_topic,
+                        source_symbol,
+                        sequence_key,
+                        connection_id,
+                        payload_json,
+                        details_json,
+                    } => {
+                        let receive = capture_receive_times(&clock);
+                        state.signal_state.update_binance_trade(
+                            price,
+                            quantity,
+                            signed_quantity,
+                            receive.ms,
+                            receive.micros,
+                        );
+                        momentum.push(price, receive.ms);
                         execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
 
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.binance_price = Some(price);
                         }
 
-                        let _ = db.log_feed_event(&FeedEvent {
-                            id: None,
-                            received_at_ms,
-                            event_at_ms: timestamp,
-                            source: "binance".to_string(),
-                            event_type: "binance_tick".to_string(),
-                            market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
-                            asset_id: None,
-                            price: Some(price),
-                            best_bid: None,
-                            best_ask: None,
-                            bid_size: None,
-                            ask_size: None,
-                            payload_json,
-                            fidelity: ReplayFidelity::RawEvent,
-                        });
+                        let event = storage_state.prepare_binance_trade(
+                            FeedEvent {
+                                id: None,
+                                received_at_ms: receive.ms,
+                                event_at_ms: timestamp_ms,
+                                received_at_us: receive.micros,
+                                event_at_us: source_micros,
+                                source: "binance".to_string(),
+                                event_type: "aggTrade".to_string(),
+                                source_topic,
+                                source_symbol,
+                                connection_id: Some(connection_id),
+                                sequence_key,
+                                market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                                asset_id: None,
+                                price: Some(price),
+                                trade_size: None,
+                                signed_quantity: None,
+                                best_bid: None,
+                                best_ask: None,
+                                bid_size: None,
+                                ask_size: None,
+                                depth_bid_notional: None,
+                                depth_ask_notional: None,
+                                depth_imbalance: None,
+                                microprice: None,
+                                payload_json,
+                                details_json,
+                                fidelity: ReplayFidelity::RawEvent,
+                            },
+                            quantity,
+                            signed_quantity,
+                        );
+                        let _ = persist_feed_event(&db, &mut storage_state, &event);
 
                         if let Some(ref w) = state.current_window {
                             state.window_open_prices.entry(w.market_id.clone()).or_insert(price);
                         }
 
                         let _ = execution_engine.process_due_orders(
-                            received_at_ms,
+                            receive.ms,
                             state.current_window.as_ref(),
-                            &state.book_state,
+                            &state.signal_state.book_state,
                             &db,
                             &mut bankroll,
                             &config,
@@ -208,40 +285,235 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
-                            received_at_ms,
+                            receive.ms,
                         );
                     }
 
-                    FeedMessage::ChainlinkPrice { price, timestamp, payload_json } => {
-                        let received_at_ms = clock.now();
-                        state.chainlink_price = Some(price);
+                    FeedMessage::BinanceBookTicker {
+                        best_bid,
+                        best_ask,
+                        bid_size,
+                        ask_size,
+                        timestamp_ms,
+                        timestamp_us: source_micros,
+                        source_topic,
+                        source_symbol,
+                        sequence_key,
+                        connection_id,
+                        payload_json,
+                        details_json,
+                    } => {
+                        let receive = capture_receive_times(&clock);
+                        state.signal_state.update_binance_book(
+                            best_bid,
+                            best_ask,
+                            bid_size,
+                            ask_size,
+                            receive.ms,
+                            sequence_key.clone(),
+                        );
+                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
+
+                        if let Some(event) = storage_state.prepare_binance_book_ticker(FeedEvent {
+                            id: None,
+                            received_at_ms: receive.ms,
+                            event_at_ms: timestamp_ms,
+                            received_at_us: receive.micros,
+                            event_at_us: source_micros,
+                            source: "binance".to_string(),
+                            event_type: "bookTicker".to_string(),
+                            source_topic,
+                            source_symbol,
+                            connection_id: Some(connection_id),
+                            sequence_key,
+                            market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                            asset_id: None,
+                            price: None,
+                            trade_size: None,
+                            signed_quantity: None,
+                            best_bid: Some(best_bid),
+                            best_ask: Some(best_ask),
+                            bid_size: Some(bid_size),
+                            ask_size: Some(ask_size),
+                            depth_bid_notional: None,
+                            depth_ask_notional: None,
+                            depth_imbalance: None,
+                            microprice: None,
+                            payload_json,
+                            details_json,
+                            fidelity: ReplayFidelity::RawEvent,
+                        }) {
+                            let _ = persist_feed_event(&db, &mut storage_state, &event);
+                        }
+
+                        let _ = execution_engine.process_due_orders(
+                            receive.ms,
+                            state.current_window.as_ref(),
+                            &state.signal_state.book_state,
+                            &db,
+                            &mut bankroll,
+                            &config,
+                            &clock,
+                        );
+
+                        evaluate_strategies(
+                            &mut state,
+                            &momentum,
+                            &config,
+                            &clock,
+                            &db,
+                            &mut strategies,
+                            &mut execution_engine,
+                            &mut bankroll,
+                            &mut circuit_breaker,
+                            &mut trend_tracker,
+                            receive.ms,
+                        );
+                    }
+
+                    FeedMessage::BinanceDepth {
+                        bid_levels,
+                        ask_levels,
+                        timestamp_ms,
+                        timestamp_us: source_micros,
+                        source_topic,
+                        source_symbol,
+                        sequence_key,
+                        connection_id,
+                        payload_json,
+                        details_json,
+                    } => {
+                        let receive = capture_receive_times(&clock);
+                        let best_bid = bid_levels.first().map(|level| level.price);
+                        let best_ask = ask_levels.first().map(|level| level.price);
+                        let bid_size = bid_levels.first().map(|level| level.size);
+                        let ask_size = ask_levels.first().map(|level| level.size);
+                        let depth_event = storage_state.prepare_binance_depth(
+                            FeedEvent {
+                                id: None,
+                                received_at_ms: receive.ms,
+                                event_at_ms: timestamp_ms,
+                                received_at_us: receive.micros,
+                                event_at_us: source_micros,
+                                source: "binance".to_string(),
+                                event_type: "depth".to_string(),
+                                source_topic,
+                                source_symbol: source_symbol.clone(),
+                                connection_id: Some(connection_id.clone()),
+                                sequence_key: sequence_key.clone(),
+                                market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                                asset_id: None,
+                                price: None,
+                                trade_size: None,
+                                signed_quantity: None,
+                                best_bid,
+                                best_ask,
+                                bid_size,
+                                ask_size,
+                                depth_bid_notional: None,
+                                depth_ask_notional: None,
+                                depth_imbalance: None,
+                                microprice: None,
+                                payload_json,
+                                details_json,
+                                fidelity: ReplayFidelity::RawEvent,
+                            },
+                            source_symbol.as_deref(),
+                            &bid_levels,
+                            &ask_levels,
+                        );
+                        state.signal_state.update_binance_depth(
+                            bid_levels,
+                            ask_levels,
+                            receive.ms,
+                            sequence_key.clone(),
+                        );
+                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
+
+                        if let Some(event) = depth_event {
+                            let _ = persist_feed_event(&db, &mut storage_state, &event);
+                        }
+
+                        let _ = execution_engine.process_due_orders(
+                            receive.ms,
+                            state.current_window.as_ref(),
+                            &state.signal_state.book_state,
+                            &db,
+                            &mut bankroll,
+                            &config,
+                            &clock,
+                        );
+
+                        evaluate_strategies(
+                            &mut state,
+                            &momentum,
+                            &config,
+                            &clock,
+                            &db,
+                            &mut strategies,
+                            &mut execution_engine,
+                            &mut bankroll,
+                            &mut circuit_breaker,
+                            &mut trend_tracker,
+                            receive.ms,
+                        );
+                    }
+
+                    FeedMessage::ChainlinkPrice {
+                        price,
+                        timestamp_ms,
+                        timestamp_us: source_micros,
+                        source_topic,
+                        source_symbol,
+                        connection_id,
+                        payload_json,
+                        details_json,
+                    } => {
+                        let receive = capture_receive_times(&clock);
+                        state
+                            .signal_state
+                            .update_chainlink(price, receive.ms, receive.micros);
                         execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
 
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.chainlink_price = Some(price);
                         }
 
-                        let _ = db.log_feed_event(&FeedEvent {
+                        let event = storage_state.prepare_chainlink_price(FeedEvent {
                             id: None,
-                            received_at_ms,
-                            event_at_ms: timestamp,
+                            received_at_ms: receive.ms,
+                            event_at_ms: timestamp_ms,
+                            received_at_us: receive.micros,
+                            event_at_us: source_micros,
                             source: "chainlink".to_string(),
                             event_type: "chainlink_price".to_string(),
+                            source_topic,
+                            source_symbol,
+                            connection_id: Some(connection_id),
+                            sequence_key: None,
                             market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
                             asset_id: None,
                             price: Some(price),
+                            trade_size: None,
+                            signed_quantity: None,
                             best_bid: None,
                             best_ask: None,
                             bid_size: None,
                             ask_size: None,
+                            depth_bid_notional: None,
+                            depth_ask_notional: None,
+                            depth_imbalance: None,
+                            microprice: None,
                             payload_json,
+                            details_json,
                             fidelity: ReplayFidelity::RawEvent,
                         });
+                        let _ = persist_feed_event(&db, &mut storage_state, &event);
 
                         let _ = execution_engine.process_due_orders(
-                            received_at_ms,
+                            receive.ms,
                             state.current_window.as_ref(),
-                            &state.book_state,
+                            &state.signal_state.book_state,
                             &db,
                             &mut bankroll,
                             &config,
@@ -249,9 +521,20 @@ pub async fn run_live(
                         );
                     }
 
-                    FeedMessage::ClobBook { book_state, timestamp, payload_json } => {
-                        let received_at_ms = clock.now();
-                        state.book_state = book_state.clone();
+                    FeedMessage::ClobBook {
+                        book_state,
+                        timestamp_ms,
+                        timestamp_us: source_micros,
+                        asset_id,
+                        source_topic,
+                        connection_id,
+                        payload_json,
+                        details_json,
+                    } => {
+                        let receive = capture_receive_times(&clock);
+                        state
+                            .signal_state
+                            .update_clob(book_state.clone(), receive.ms, receive.micros);
                         execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
 
                         if let Ok(mut tls) = tick_logger_state.try_write() {
@@ -260,18 +543,27 @@ pub async fn run_live(
 
                         let _ = log_live_clob_event(
                             &db,
-                            received_at_ms,
-                            timestamp,
-                            "clob_snapshot",
-                            &book_state,
-                            state.current_window.as_ref(),
-                            payload_json.as_deref(),
+                            &mut storage_state,
+                            &LiveClobLogEvent {
+                                receive_ms: receive.ms,
+                                receive_micros: receive.micros,
+                                event_ms: timestamp_ms,
+                                event_micros: source_micros,
+                                event_type: "book",
+                                book_state: &book_state,
+                                current_window: state.current_window.as_ref(),
+                                asset_id: asset_id.as_deref(),
+                                source_topic: source_topic.as_deref(),
+                                connection_id: &connection_id,
+                                payload_json: payload_json.as_deref(),
+                                details_json: details_json.as_deref(),
+                            },
                         );
 
                         let _ = execution_engine.process_due_orders(
-                            received_at_ms,
+                            receive.ms,
                             state.current_window.as_ref(),
-                            &state.book_state,
+                            &state.signal_state.book_state,
                             &db,
                             &mut bankroll,
                             &config,
@@ -289,13 +581,24 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
-                            received_at_ms,
+                            receive.ms,
                         );
                     }
 
-                    FeedMessage::ClobPriceChange { book_state, timestamp, payload_json } => {
-                        let received_at_ms = clock.now();
-                        state.book_state = book_state.clone();
+                    FeedMessage::ClobPriceChange {
+                        book_state,
+                        timestamp_ms,
+                        timestamp_us: source_micros,
+                        asset_id,
+                        source_topic,
+                        connection_id,
+                        payload_json,
+                        details_json,
+                    } => {
+                        let receive = capture_receive_times(&clock);
+                        state
+                            .signal_state
+                            .update_clob(book_state.clone(), receive.ms, receive.micros);
                         execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
 
                         if let Ok(mut tls) = tick_logger_state.try_write() {
@@ -304,18 +607,27 @@ pub async fn run_live(
 
                         let _ = log_live_clob_event(
                             &db,
-                            received_at_ms,
-                            timestamp,
-                            "clob_price_change",
-                            &book_state,
-                            state.current_window.as_ref(),
-                            payload_json.as_deref(),
+                            &mut storage_state,
+                            &LiveClobLogEvent {
+                                receive_ms: receive.ms,
+                                receive_micros: receive.micros,
+                                event_ms: timestamp_ms,
+                                event_micros: source_micros,
+                                event_type: "price_change",
+                                book_state: &book_state,
+                                current_window: state.current_window.as_ref(),
+                                asset_id: asset_id.as_deref(),
+                                source_topic: source_topic.as_deref(),
+                                connection_id: &connection_id,
+                                payload_json: payload_json.as_deref(),
+                                details_json: details_json.as_deref(),
+                            },
                         );
 
                         let _ = execution_engine.process_due_orders(
-                            received_at_ms,
+                            receive.ms,
                             state.current_window.as_ref(),
-                            &state.book_state,
+                            &state.signal_state.book_state,
                             &db,
                             &mut bankroll,
                             &config,
@@ -333,21 +645,165 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
-                            received_at_ms,
+                            receive.ms,
                         );
                     }
 
-                    FeedMessage::FeedConnected(name) => {
+                    FeedMessage::ClobBestBidAsk {
+                        book_state,
+                        timestamp_ms,
+                        timestamp_us: source_micros,
+                        asset_id,
+                        source_topic,
+                        connection_id,
+                        payload_json,
+                        details_json,
+                    } => {
+                        let receive = capture_receive_times(&clock);
+                        state
+                            .signal_state
+                            .update_clob(book_state.clone(), receive.ms, receive.micros);
+                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
+
+                        if let Ok(mut tls) = tick_logger_state.try_write() {
+                            tls.book_state = book_state.clone();
+                        }
+
+                        let _ = log_live_clob_event(
+                            &db,
+                            &mut storage_state,
+                            &LiveClobLogEvent {
+                                receive_ms: receive.ms,
+                                receive_micros: receive.micros,
+                                event_ms: timestamp_ms,
+                                event_micros: source_micros,
+                                event_type: "best_bid_ask",
+                                book_state: &book_state,
+                                current_window: state.current_window.as_ref(),
+                                asset_id: asset_id.as_deref(),
+                                source_topic: source_topic.as_deref(),
+                                connection_id: &connection_id,
+                                payload_json: payload_json.as_deref(),
+                                details_json: details_json.as_deref(),
+                            },
+                        );
+
+                        let _ = execution_engine.process_due_orders(
+                            receive.ms,
+                            state.current_window.as_ref(),
+                            &state.signal_state.book_state,
+                            &db,
+                            &mut bankroll,
+                            &config,
+                            &clock,
+                        );
+
+                        evaluate_strategies(
+                            &mut state,
+                            &momentum,
+                            &config,
+                            &clock,
+                            &db,
+                            &mut strategies,
+                            &mut execution_engine,
+                            &mut bankroll,
+                            &mut circuit_breaker,
+                            &mut trend_tracker,
+                            receive.ms,
+                        );
+                    }
+
+                    FeedMessage::ClobMetaEvent {
+                        event_type,
+                        timestamp_ms,
+                        timestamp_us: source_micros,
+                        asset_id,
+                        source_topic,
+                        connection_id,
+                        payload_json,
+                        details_json,
+                    } => {
+                        let receive = capture_receive_times(&clock);
+                        if let Some(event) = storage_state.prepare_clob_meta(FeedEvent {
+                            id: None,
+                            received_at_ms: receive.ms,
+                            event_at_ms: timestamp_ms,
+                            received_at_us: receive.micros,
+                            event_at_us: source_micros,
+                            source: "clob".to_string(),
+                            event_type,
+                            source_topic,
+                            source_symbol: None,
+                            connection_id: Some(connection_id),
+                            sequence_key: None,
+                            market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                            asset_id,
+                            price: None,
+                            trade_size: None,
+                            signed_quantity: None,
+                            best_bid: None,
+                            best_ask: None,
+                            bid_size: None,
+                            ask_size: None,
+                            depth_bid_notional: None,
+                            depth_ask_notional: None,
+                            depth_imbalance: None,
+                            microprice: None,
+                            payload_json,
+                            details_json,
+                            fidelity: ReplayFidelity::RawEvent,
+                        }) {
+                            let _ = persist_feed_event(&db, &mut storage_state, &event);
+                        }
+                    }
+
+                    FeedMessage::FeedConnected { name, connection_id } => {
                         info!(feed = %name, "feed connected");
+                        let _ = log_feed_health_event(
+                            &db,
+                            &FeedHealthLogEvent {
+                                timestamp_ms: clock.now(),
+                                timestamp_micros: Some(now_us()),
+                                source: &name,
+                                event_type: "connected",
+                                connection_id: Some(&connection_id),
+                                market_id: state.current_window.as_ref().map(|w| w.market_id.as_str()),
+                                details_json: None,
+                            },
+                        );
                     }
 
-                    FeedMessage::FeedDisconnected(name) => {
+                    FeedMessage::FeedDisconnected { name, connection_id } => {
                         warn!(feed = %name, "feed disconnected");
+                        let _ = log_feed_health_event(
+                            &db,
+                            &FeedHealthLogEvent {
+                                timestamp_ms: clock.now(),
+                                timestamp_micros: Some(now_us()),
+                                source: &name,
+                                event_type: "disconnected",
+                                connection_id: connection_id.as_deref(),
+                                market_id: state.current_window.as_ref().map(|w| w.market_id.as_str()),
+                                details_json: None,
+                            },
+                        );
                     }
 
-                    FeedMessage::ChainlinkStale => {
+                    FeedMessage::ChainlinkStale { connection_id } => {
                         warn!("chainlink price is stale");
-                        state.chainlink_price = None;
+                        state.signal_state.chainlink_price = None;
+                        let _ = log_feed_health_event(
+                            &db,
+                            &FeedHealthLogEvent {
+                                timestamp_ms: clock.now(),
+                                timestamp_micros: Some(now_us()),
+                                source: "chainlink",
+                                event_type: "stale",
+                                connection_id: connection_id.as_deref(),
+                                market_id: state.current_window.as_ref().map(|w| w.market_id.as_str()),
+                                details_json: None,
+                            },
+                        );
                     }
                 }
             }
@@ -400,9 +856,9 @@ pub async fn run_live(
                         if let Some(window) = state.known_windows.remove(&closed_id) {
                             let open = state.window_open_prices.remove(&closed_id).unwrap_or_else(|| {
                                 warn!(market_id = %closed_id, "no open price captured, using current Binance price");
-                                state.binance_price.unwrap_or(0.0)
+                                state.signal_state.binance_price.unwrap_or(0.0)
                             });
-                            let close = state.binance_price.unwrap_or(open);
+                            let close = state.signal_state.binance_price.unwrap_or(open);
                             let provisional_outcome = if close >= open {
                                 SignalDirection::Up
                             } else {
@@ -447,7 +903,7 @@ pub async fn run_live(
 
                             if state.current_window.as_ref().is_some_and(|w| w.market_id == closed_id) {
                                 state.current_window = None;
-                                state.book_state = BookState::default();
+                                state.signal_state.book_state = crate::types::BookState::default();
                             }
                         }
                     }
@@ -457,6 +913,24 @@ pub async fn run_live(
             window = activate_rx.recv() => {
                 if let Some(window) = window {
                     activate_window(&mut state, &window, &clob_handle);
+                }
+            }
+
+            _ = storage_report_timer.tick() => {
+                if let Ok(footprint) = db.storage_footprint() {
+                    let rows = storage_state.take_row_counts();
+                    let row_summary = rows
+                        .iter()
+                        .map(|(key, count)| format!("{key}={count}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    info!(
+                        db_bytes = footprint.db_bytes,
+                        wal_bytes = footprint.wal_bytes,
+                        feed_events = footprint.feed_event_count,
+                        rows = row_summary,
+                        "live storage footprint"
+                    );
                 }
             }
 
@@ -523,9 +997,9 @@ fn activate_window(
         }
     });
 
-    state.book_state = BookState::default();
+    state.signal_state.book_state = crate::types::BookState::default();
 
-    if let Some(bp) = state.binance_price {
+    if let Some(bp) = state.signal_state.binance_price {
         state
             .window_open_prices
             .entry(window.market_id.clone())
@@ -535,48 +1009,192 @@ fn activate_window(
     state.current_window = Some(window.clone());
 }
 
+/// Insert one persisted feed row and update storage counters on success.
+fn persist_feed_event(
+    db: &Database,
+    storage_state: &mut FeedEventStorageState,
+    event: &FeedEvent,
+) -> anyhow::Result<()> {
+    db.log_feed_event(event)?;
+    storage_state.record_persisted(event);
+    Ok(())
+}
+
+/// Carry the fields that vary between materialized per-side `CLOB` rows.
+struct LiveClobRowSpec {
+    source: &'static str,
+    asset_id: Option<String>,
+    market_id: Option<String>,
+    payload_json: Option<String>,
+    details_json: Option<String>,
+}
+
+/// Build the relevant per-side `CLOB` rows for one live top-of-book event.
+fn build_live_clob_events(event: &LiveClobLogEvent<'_>) -> Vec<FeedEvent> {
+    let mut events = Vec::new();
+    let current_market_id = event.current_window.map(|window| window.market_id.clone());
+    let payload_json = event.payload_json.map(ToString::to_string);
+    let details_json = event.details_json.map(ToString::to_string);
+
+    if let Some(window) = event.current_window {
+        if let Some(asset_id) = event.asset_id {
+            if asset_id == window.up_token_id {
+                push_live_clob_event(
+                    &mut events,
+                    event,
+                    event.book_state.up.as_ref(),
+                    LiveClobRowSpec {
+                        source: "clob_up",
+                        asset_id: Some(window.up_token_id.clone()),
+                        market_id: current_market_id,
+                        payload_json,
+                        details_json,
+                    },
+                );
+                return events;
+            }
+            if asset_id == window.down_token_id {
+                push_live_clob_event(
+                    &mut events,
+                    event,
+                    event.book_state.down.as_ref(),
+                    LiveClobRowSpec {
+                        source: "clob_down",
+                        asset_id: Some(window.down_token_id.clone()),
+                        market_id: current_market_id,
+                        payload_json,
+                        details_json,
+                    },
+                );
+                return events;
+            }
+        }
+        push_live_clob_event(
+            &mut events,
+            event,
+            event.book_state.up.as_ref(),
+            LiveClobRowSpec {
+                source: "clob_up",
+                asset_id: Some(window.up_token_id.clone()),
+                market_id: current_market_id.clone(),
+                payload_json: payload_json.clone(),
+                details_json: details_json.clone(),
+            },
+        );
+        push_live_clob_event(
+            &mut events,
+            event,
+            event.book_state.down.as_ref(),
+            LiveClobRowSpec {
+                source: "clob_down",
+                asset_id: Some(window.down_token_id.clone()),
+                market_id: current_market_id,
+                payload_json,
+                details_json,
+            },
+        );
+        return events;
+    }
+
+    push_live_clob_event(
+        &mut events,
+        event,
+        event.book_state.up.as_ref(),
+        LiveClobRowSpec {
+            source: "clob_up",
+            asset_id: event.asset_id.map(str::to_string),
+            market_id: None,
+            payload_json: payload_json.clone(),
+            details_json: details_json.clone(),
+        },
+    );
+    push_live_clob_event(
+        &mut events,
+        event,
+        event.book_state.down.as_ref(),
+        LiveClobRowSpec {
+            source: "clob_down",
+            asset_id: event.asset_id.map(str::to_string),
+            market_id: None,
+            payload_json,
+            details_json,
+        },
+    );
+    events
+}
+
+/// Append one materialized `CLOB` row when the corresponding book side exists.
+fn push_live_clob_event(
+    events: &mut Vec<FeedEvent>,
+    context: &LiveClobLogEvent<'_>,
+    book: Option<&crate::types::TopOfBook>,
+    spec: LiveClobRowSpec,
+) {
+    let Some(book) = book else {
+        return;
+    };
+    events.push(FeedEvent {
+        id: None,
+        received_at_ms: context.receive_ms,
+        event_at_ms: context.event_ms,
+        received_at_us: context.receive_micros,
+        event_at_us: context.event_micros,
+        source: spec.source.to_string(),
+        event_type: context.event_type.to_string(),
+        source_topic: context.source_topic.map(str::to_string),
+        source_symbol: None,
+        connection_id: Some(context.connection_id.to_string()),
+        sequence_key: None,
+        market_id: spec.market_id,
+        asset_id: spec.asset_id,
+        price: None,
+        trade_size: None,
+        signed_quantity: None,
+        best_bid: Some(book.best_bid),
+        best_ask: Some(book.best_ask),
+        bid_size: Some(book.bid_size),
+        ask_size: Some(book.ask_size),
+        depth_bid_notional: None,
+        depth_ask_notional: None,
+        depth_imbalance: None,
+        microprice: None,
+        payload_json: spec.payload_json,
+        details_json: spec.details_json,
+        fidelity: ReplayFidelity::RawEvent,
+    });
+}
+
 /// Logs live clob event.
 fn log_live_clob_event(
     db: &Database,
-    received_at_ms: u64,
-    event_at_ms: u64,
-    event_type: &str,
-    book_state: &BookState,
-    current_window: Option<&MarketWindow>,
-    payload_json: Option<&str>,
+    storage_state: &mut FeedEventStorageState,
+    event: &LiveClobLogEvent<'_>,
 ) -> anyhow::Result<()> {
-    for (source, asset_id, book) in [
-        (
-            "clob_up",
-            current_window.map(|window| window.up_token_id.clone()),
-            book_state.up.as_ref(),
-        ),
-        (
-            "clob_down",
-            current_window.map(|window| window.down_token_id.clone()),
-            book_state.down.as_ref(),
-        ),
-    ] {
-        if let Some(book) = book {
-            db.log_feed_event(&FeedEvent {
-                id: None,
-                received_at_ms,
-                event_at_ms,
-                source: source.to_string(),
-                event_type: event_type.to_string(),
-                market_id: current_window.map(|window| window.market_id.clone()),
-                asset_id,
-                price: None,
-                best_bid: Some(book.best_bid),
-                best_ask: Some(book.best_ask),
-                bid_size: Some(book.bid_size),
-                ask_size: Some(book.ask_size),
-                payload_json: payload_json.map(ToString::to_string),
-                fidelity: ReplayFidelity::RawEvent,
-            })?;
+    for feed_event in build_live_clob_events(event) {
+        let prepared = match event.event_type {
+            "book" => storage_state.prepare_clob_book_snapshot(feed_event),
+            "price_change" | "best_bid_ask" => storage_state.prepare_clob_top_of_book(feed_event),
+            _ => Some(feed_event),
+        };
+        if let Some(feed_event) = prepared {
+            persist_feed_event(db, storage_state, &feed_event)?;
         }
     }
+    Ok(())
+}
 
+/// Record one feed lifecycle or health event in the database.
+fn log_feed_health_event(db: &Database, event: &FeedHealthLogEvent<'_>) -> anyhow::Result<()> {
+    db.log_feed_health_event(&FeedHealthEvent {
+        id: None,
+        timestamp_ms: event.timestamp_ms,
+        timestamp_us: event.timestamp_micros,
+        source: event.source.to_string(),
+        event_type: event.event_type.to_string(),
+        connection_id: event.connection_id.map(str::to_string),
+        market_id: event.market_id.map(str::to_string),
+        details_json: event.details_json.map(str::to_string),
+    })?;
     Ok(())
 }
 
@@ -643,7 +1261,7 @@ fn evaluate_strategies(
     let Some(window) = state.current_window.as_ref() else {
         return;
     };
-    let Some(binance_price) = state.binance_price else {
+    let Some(binance_price) = state.signal_state.binance_price else {
         return;
     };
 
@@ -652,12 +1270,27 @@ fn evaluate_strategies(
         return;
     }
 
+    let window_open_price = state.window_open_prices.get(&window.market_id).copied();
+    let now_us = Some(now_us());
+    let features = SignalFeatureEngine::compute(
+        &mut state.signal_state,
+        Some(window),
+        window_open_price,
+        momentum.get(),
+        now,
+        now_us,
+        config,
+    );
+
     let ctx = StrategyContext {
         binance_price,
         binance_momentum: momentum.get(),
-        chainlink_price: state.chainlink_price,
-        book_state: state.book_state.clone(),
+        chainlink_price: state.signal_state.chainlink_price,
+        book_state: state.signal_state.book_state.clone(),
+        window_open_price,
         window_time_remaining_ms: window.end_time.saturating_sub(now),
+        now_us,
+        features,
     };
 
     for strategy in strategies.iter_mut() {
@@ -667,7 +1300,24 @@ fn evaluate_strategies(
             StrategyResult::None => {}
             StrategyResult::Single(signal) => {
                 if trend_tracker.should_suppress(signal.direction) {
-                    let _ = db.log_signal(&signal);
+                    if let Ok(signal_id) = db.log_signal_with_context(
+                        &signal,
+                        Some(&window.market_id),
+                        Some(ReplayFidelity::RawEvent),
+                        None,
+                        None,
+                    ) {
+                        if let Some(telemetry) = signal.telemetry.as_ref() {
+                            let _ = db.upsert_signal_telemetry(
+                                signal_id,
+                                telemetry,
+                                None,
+                                None,
+                                Some("suppressed"),
+                                Some("trend_filter"),
+                            );
+                        }
+                    }
                     info!(
                         strategy = %signal.strategy,
                         direction = %signal.direction,
@@ -676,7 +1326,6 @@ fn evaluate_strategies(
                     continue;
                 }
 
-                let _ = db.log_signal(&signal);
                 info!(
                     strategy = %signal.strategy,
                     direction = %signal.direction,

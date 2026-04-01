@@ -42,6 +42,8 @@ fn up_signal() -> Signal {
     Signal {
         timestamp: 1_700_000_100_000,
         strategy: "latency-arb".into(),
+        strategy_version: "v2".into(),
+        feature_mode: "legacy_core".into(),
         direction: SignalDirection::Up,
         confidence: 0.72,
         binance_price: 42_000.0,
@@ -50,7 +52,9 @@ fn up_signal() -> Signal {
         down_ask: 0.50,
         up_bid: 0.40,
         down_bid: 0.46,
+        expected_edge: None,
         metadata: serde_json::json!({}),
+        telemetry: None,
     }
 }
 
@@ -59,6 +63,8 @@ fn down_signal() -> Signal {
     Signal {
         timestamp: 1_700_000_100_000,
         strategy: "latency-arb".into(),
+        strategy_version: "v2".into(),
+        feature_mode: "legacy_core".into(),
         direction: SignalDirection::Down,
         confidence: 0.72,
         binance_price: 42_000.0,
@@ -67,7 +73,9 @@ fn down_signal() -> Signal {
         down_ask: 0.50,
         up_bid: 0.40,
         down_bid: 0.46,
+        expected_edge: None,
         metadata: serde_json::json!({}),
+        telemetry: None,
     }
 }
 
@@ -77,6 +85,8 @@ fn spread_signals() -> Vec<Signal> {
         Signal {
             timestamp: 1_700_000_100_000,
             strategy: "spread-capture".into(),
+            strategy_version: "v2".into(),
+            feature_mode: "legacy_core".into(),
             direction: SignalDirection::Up,
             confidence: 0.60,
             binance_price: 42_000.0,
@@ -85,11 +95,15 @@ fn spread_signals() -> Vec<Signal> {
             down_ask: 0.50,
             up_bid: 0.40,
             down_bid: 0.46,
+            expected_edge: None,
             metadata: serde_json::json!({}),
+            telemetry: None,
         },
         Signal {
             timestamp: 1_700_000_100_000,
             strategy: "spread-capture".into(),
+            strategy_version: "v2".into(),
+            feature_mode: "legacy_core".into(),
             direction: SignalDirection::Down,
             confidence: 0.60,
             binance_price: 42_000.0,
@@ -98,7 +112,9 @@ fn spread_signals() -> Vec<Signal> {
             down_ask: 0.50,
             up_bid: 0.40,
             down_bid: 0.46,
+            expected_edge: None,
             metadata: serde_json::json!({}),
+            telemetry: None,
         },
     ]
 }

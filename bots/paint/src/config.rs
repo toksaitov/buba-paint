@@ -26,6 +26,49 @@ fn env_bool(key: &str, default: bool) -> bool {
     env::var(key).ok().map_or(default, |v| v == "true")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedEventStorageProfile {
+    Compact,
+    FullDebug,
+}
+
+impl FeedEventStorageProfile {
+    /// Return the persisted environment label for this storage profile.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::FullDebug => "full_debug",
+        }
+    }
+
+    /// Parse one environment override into a supported storage profile.
+    #[must_use]
+    pub fn from_env_value(raw: Option<&str>) -> Self {
+        match raw {
+            Some("full_debug") => Self::FullDebug,
+            _ => Self::Compact,
+        }
+    }
+}
+
+/// Build the default Binance stream URL from the configured stream names.
+fn default_binance_ws_url(
+    trade_stream: &str,
+    book_ticker_stream: &str,
+    depth_stream: &str,
+    use_microseconds: bool,
+) -> String {
+    let base = format!(
+        "wss://stream.binance.com:9443/stream?streams={trade_stream}/{book_ticker_stream}/{depth_stream}"
+    );
+    if use_microseconds {
+        format!("{base}&timeUnit=MICROSECOND")
+    } else {
+        base
+    }
+}
+
 /// Resolves str.
 #[cfg(test)]
 fn resolve_str(raw: Option<&str>, default: &str) -> String {
@@ -53,6 +96,9 @@ fn resolve_bool(raw: Option<&str>, default: bool) -> bool {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub binance_ws_url: String,
+    pub binance_trade_stream: String,
+    pub binance_book_ticker_stream: String,
+    pub binance_depth_stream: String,
     pub clob_ws_url: String,
     pub rtds_ws_url: String,
     pub gamma_api_url: String,
@@ -122,8 +168,11 @@ pub struct Config {
     pub taker_fee_override_explicit: bool,
 
     pub execution_mode: String,
+    pub feed_event_storage_profile: FeedEventStorageProfile,
     pub sim_order_latency_ms: u64,
     pub max_book_staleness_ms: u64,
+    pub max_signal_feed_age_ms: u64,
+    pub max_quote_age_ms: u64,
 
     pub resolution_poll_retries: u32,
     pub resolution_initial_delay_ms: u64,
@@ -182,6 +231,8 @@ impl Config {
             }
             "SIM_ORDER_LATENCY_MS" => self.sim_order_latency_ms = value as u64,
             "MAX_BOOK_STALENESS_MS" => self.max_book_staleness_ms = value as u64,
+            "MAX_SIGNAL_FEED_AGE_MS" => self.max_signal_feed_age_ms = value as u64,
+            "MAX_QUOTE_AGE_MS" => self.max_quote_age_ms = value as u64,
             _ => {
                 eprintln!("Unknown sweep param: {name}");
                 return false;
@@ -195,14 +246,26 @@ impl Config {
         dotenvy::dotenv().ok();
         let taker_fee_rate_override = env::var("TAKER_FEE_RATE").ok();
         let taker_fee_exponent_override = env::var("TAKER_FEE_EXPONENT").ok();
+        let trade_stream = env_str("BINANCE_TRADE_STREAM", "btcusdt@aggTrade");
+        let book_ticker_stream = env_str("BINANCE_BOOK_TICKER_STREAM", "btcusdt@bookTicker");
+        let depth_stream = env_str("BINANCE_DEPTH_STREAM", "btcusdt@depth5@100ms");
+        let request_microseconds = env_bool("BINANCE_REQUEST_MICROSECONDS", true);
+        let legacy_binance_ws_url = env::var("BINANCE_WS_URL").ok();
         let taker_fee_override_explicit =
             taker_fee_rate_override.is_some() || taker_fee_exponent_override.is_some();
 
         Self {
-            binance_ws_url: env_str(
-                "BINANCE_WS_URL",
-                "wss://stream.binance.com:9443/ws/btcusdt@aggTrade",
-            ),
+            binance_ws_url: legacy_binance_ws_url.unwrap_or_else(|| {
+                default_binance_ws_url(
+                    &trade_stream,
+                    &book_ticker_stream,
+                    &depth_stream,
+                    request_microseconds,
+                )
+            }),
+            binance_trade_stream: trade_stream,
+            binance_book_ticker_stream: book_ticker_stream,
+            binance_depth_stream: depth_stream,
             clob_ws_url: env_str(
                 "CLOB_WS_URL",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/market",
@@ -281,8 +344,13 @@ impl Config {
             taker_fee_override_explicit,
 
             execution_mode: env_str("EXECUTION_MODE", "paper"),
+            feed_event_storage_profile: FeedEventStorageProfile::from_env_value(
+                env::var("FEED_EVENT_STORAGE_PROFILE").ok().as_deref(),
+            ),
             sim_order_latency_ms: env_u64("SIM_ORDER_LATENCY_MS", 250),
             max_book_staleness_ms: env_u64("MAX_BOOK_STALENESS_MS", 1_000),
+            max_signal_feed_age_ms: env_u64("MAX_SIGNAL_FEED_AGE_MS", 1_000),
+            max_quote_age_ms: env_u64("MAX_QUOTE_AGE_MS", 750),
 
             resolution_poll_retries: 30,
             resolution_initial_delay_ms: env_u64("RESOLUTION_INITIAL_DELAY_MS", 30_000),
@@ -294,8 +362,19 @@ impl Config {
 impl Default for Config {
     /// Returns defaults without reading environment variables (useful for tests).
     fn default() -> Self {
+        let trade_stream = "btcusdt@aggTrade".to_string();
+        let book_ticker_stream = "btcusdt@bookTicker".to_string();
+        let depth_stream = "btcusdt@depth5@100ms".to_string();
         Self {
-            binance_ws_url: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade".to_string(),
+            binance_ws_url: default_binance_ws_url(
+                &trade_stream,
+                &book_ticker_stream,
+                &depth_stream,
+                true,
+            ),
+            binance_trade_stream: trade_stream,
+            binance_book_ticker_stream: book_ticker_stream,
+            binance_depth_stream: depth_stream,
             clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market".to_string(),
             rtds_ws_url: "wss://ws-live-data.polymarket.com".to_string(),
             gamma_api_url: "https://gamma-api.polymarket.com".to_string(),
@@ -365,8 +444,11 @@ impl Default for Config {
             taker_fee_override_explicit: false,
 
             execution_mode: "paper".to_string(),
+            feed_event_storage_profile: FeedEventStorageProfile::Compact,
             sim_order_latency_ms: 250,
             max_book_staleness_ms: 1_000,
+            max_signal_feed_age_ms: 1_000,
+            max_quote_age_ms: 750,
 
             resolution_poll_retries: 30,
             resolution_initial_delay_ms: 30_000,

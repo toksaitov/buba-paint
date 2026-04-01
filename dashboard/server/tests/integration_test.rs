@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::middleware;
 use axum::routing::{get, post};
 use axum::{Extension, Router};
+use tower_http::services::{ServeDir, ServeFile};
 
 use buba_dashboard::api::auth_routes::{self, AppState};
 use buba_dashboard::api::bots;
@@ -22,6 +23,14 @@ fn test_agent(url: &str) -> AgentConfig {
 
 /// Spawns dashboard.
 async fn spawn_dashboard(agent_url: &str) -> (String, Arc<DashboardDb>) {
+    spawn_dashboard_with_static(agent_url, None).await
+}
+
+/// Spawns dashboard with an optional static dir.
+async fn spawn_dashboard_with_static(
+    agent_url: &str,
+    static_dir: Option<&std::path::Path>,
+) -> (String, Arc<DashboardDb>) {
     let db = Arc::new(DashboardDb::new(":memory:").unwrap());
 
     let state = AppState {
@@ -35,7 +44,7 @@ async fn spawn_dashboard(agent_url: &str) -> (String, Arc<DashboardDb>) {
         db: Arc::clone(&db),
     };
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/api/auth/login", post(auth_routes::login))
         .route("/api/auth/me", get(auth_routes::me))
         .route("/api/users", post(auth_routes::create_user))
@@ -44,6 +53,11 @@ async fn spawn_dashboard(agent_url: &str) -> (String, Arc<DashboardDb>) {
         .layer(middleware::from_fn(auth::require_auth))
         .layer(Extension(auth_state))
         .with_state(state);
+
+    if let Some(dir) = static_dir {
+        let index = dir.join("index.html");
+        app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
+    }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -197,4 +211,25 @@ async fn proxy_status_returns_not_found_for_unknown_bot() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+/// Verifies that SPA deep links fall back to the built index file.
+#[tokio::test]
+async fn static_routes_fall_back_to_index_file() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("index.html"),
+        "<!doctype html><html><body>dashboard shell</body></html>",
+    )
+    .unwrap();
+
+    let (base, _db) = spawn_dashboard_with_static("http://127.0.0.1:1", Some(temp.path())).await;
+    let client = reqwest::Client::new();
+
+    for route in ["/", "/login", "/logs"] {
+        let resp = client.get(format!("{base}{route}")).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("dashboard shell"));
+    }
 }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::types::{
-    MarketWindow, Signal, SignalDirection, SimulatedTrade, TradeResult, TradeStatus,
+    FeedEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection, SimulatedTrade, TradeResult,
+    TradeStatus,
 };
 use tempfile::NamedTempFile;
 
@@ -67,6 +68,8 @@ fn sample_signal() -> Signal {
     Signal {
         timestamp: 1_700_000_000_000,
         strategy: "latency-arb".into(),
+        strategy_version: "v2".into(),
+        feature_mode: "legacy_core".into(),
         direction: SignalDirection::Up,
         confidence: 0.72,
         binance_price: 42_000.0,
@@ -75,7 +78,42 @@ fn sample_signal() -> Signal {
         down_ask: 0.50,
         up_bid: 0.48,
         down_bid: 0.46,
+        expected_edge: None,
         metadata: serde_json::json!({"momentum": 0.0015}),
+        telemetry: None,
+    }
+}
+
+/// Sample feed event.
+fn sample_feed_event() -> FeedEvent {
+    FeedEvent {
+        id: None,
+        received_at_ms: 1_700_000_000_000,
+        event_at_ms: 1_700_000_000_000,
+        received_at_us: Some(1_700_000_000_000_000),
+        event_at_us: Some(1_700_000_000_000_000),
+        source: "binance".into(),
+        event_type: "aggTrade".into(),
+        source_topic: Some("btcusdt@aggTrade".into()),
+        source_symbol: Some("BTCUSDT".into()),
+        connection_id: Some("binance-1".into()),
+        sequence_key: Some("123".into()),
+        market_id: Some("mkt-1".into()),
+        asset_id: None,
+        price: Some(42_000.0),
+        trade_size: Some(0.25),
+        signed_quantity: Some(-0.25),
+        best_bid: None,
+        best_ask: None,
+        bid_size: None,
+        ask_size: None,
+        depth_bid_notional: None,
+        depth_ask_notional: None,
+        depth_imbalance: None,
+        microprice: None,
+        payload_json: Some("{\"raw\":true}".into()),
+        details_json: Some("{\"debug\":true}".into()),
+        fidelity: ReplayFidelity::RawEvent,
     }
 }
 
@@ -184,6 +222,35 @@ fn log_signal_direction_stored_as_text() {
         .query_row("SELECT direction FROM signals LIMIT 1", [], |r| r.get(0))
         .unwrap();
     assert_eq!(dir, "UP");
+}
+
+/// Verifies that feed-event logging stores compact typed fields.
+#[test]
+fn log_feed_event_stores_compact_columns() {
+    let (db, _tmp) = temp_db();
+    db.log_feed_event(&sample_feed_event()).unwrap();
+    let (trade_size, signed_quantity): (f64, f64) = db
+        .conn
+        .query_row(
+            "SELECT trade_size, signed_quantity FROM feed_events LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!((trade_size - 0.25).abs() < f64::EPSILON);
+    assert!((signed_quantity + 0.25).abs() < f64::EPSILON);
+}
+
+/// Verifies that storage footprint reports grouped feed-event counts.
+#[test]
+fn storage_footprint_reports_grouped_feed_events() {
+    let (db, _tmp) = temp_db();
+    db.log_feed_event(&sample_feed_event()).unwrap();
+    let footprint = db.storage_footprint().unwrap();
+    assert_eq!(footprint.feed_event_count, 1);
+    assert_eq!(footprint.grouped_feed_events.len(), 1);
+    assert_eq!(footprint.grouped_feed_events[0].source, "binance");
+    assert_eq!(footprint.grouped_feed_events[0].event_type, "aggTrade");
 }
 
 /// Verifies that open trade returns id.

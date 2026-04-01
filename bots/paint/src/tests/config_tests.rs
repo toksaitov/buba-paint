@@ -7,7 +7,7 @@ fn default_values_match_typescript() {
 
     assert_eq!(
         cfg.binance_ws_url,
-        "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
+        "wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker/btcusdt@depth5@100ms&timeUnit=MICROSECOND"
     );
     assert_eq!(
         cfg.clob_ws_url,
@@ -72,6 +72,10 @@ fn default_values_match_typescript() {
     assert_eq!(cfg.log_level, "info");
 
     assert_eq!(cfg.gamma_market_limit, 20);
+    assert_eq!(
+        cfg.feed_event_storage_profile,
+        FeedEventStorageProfile::Compact
+    );
 
     assert_eq!(cfg.resolution_poll_retries, 30);
     assert_eq!(cfg.resolution_initial_delay_ms, 30_000);
@@ -374,6 +378,32 @@ fn from_env_smoke_test() {
     assert_eq!(cfg.reconnect_max_delay, default.reconnect_max_delay);
     assert_eq!(cfg.reconnect_min_stable_ms, default.reconnect_min_stable_ms);
     assert_eq!(cfg.gamma_market_limit, default.gamma_market_limit);
+    assert_eq!(
+        cfg.feed_event_storage_profile,
+        default.feed_event_storage_profile
+    );
+}
+
+/// Verifies that storage profile env parsing accepts full debug mode.
+#[test]
+fn storage_profile_env_parses_full_debug() {
+    assert_eq!(
+        FeedEventStorageProfile::from_env_value(Some("full_debug")),
+        FeedEventStorageProfile::FullDebug
+    );
+}
+
+/// Verifies that storage profile env parsing defaults to compact mode.
+#[test]
+fn storage_profile_env_defaults_to_compact() {
+    assert_eq!(
+        FeedEventStorageProfile::from_env_value(Some("unexpected")),
+        FeedEventStorageProfile::Compact
+    );
+    assert_eq!(
+        FeedEventStorageProfile::from_env_value(None),
+        FeedEventStorageProfile::Compact
+    );
 }
 
 /// Verifies that resolve f64 empty string returns default.

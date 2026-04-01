@@ -5,6 +5,7 @@ use axum::middleware;
 use axum::routing::{get, post};
 use clap::Parser;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 use buba_dashboard::api::auth_routes::{self, AppState};
 use buba_dashboard::api::bots;
@@ -88,7 +89,8 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     if let Some(dir) = cli.static_dir {
-        app = app.fallback_service(tower_http::services::ServeDir::new(dir));
+        let index = std::path::PathBuf::from(&dir).join("index.html");
+        app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
     }
 
     let addr = format!("0.0.0.0:{port}");

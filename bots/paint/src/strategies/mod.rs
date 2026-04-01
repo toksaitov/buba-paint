@@ -5,7 +5,7 @@ pub mod spread_capture;
 
 pub enum StrategyResult {
     None,
-    Single(Signal),
+    Single(Box<Signal>),
     Batch(Vec<Signal>),
 }
 

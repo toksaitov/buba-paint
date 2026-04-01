@@ -1,4 +1,5 @@
 use super::*;
+use crate::signal_features::SignalFeatureSnapshot;
 use crate::types::{BookState, TopOfBook};
 
 /// Test config.
@@ -33,7 +34,10 @@ fn ctx_with_book(book_state: BookState) -> StrategyContext {
         binance_momentum: 0.0,
         chainlink_price: Some(41_999.0),
         book_state,
+        window_open_price: Some(41_900.0),
         window_time_remaining_ms: 120_000,
+        now_us: Some(1_000_000_000),
+        features: SignalFeatureSnapshot::default(),
     }
 }
 
@@ -54,7 +58,7 @@ fn batch_signals_when_total_ask_below_threshold() {
     let config = test_config();
     let mut strat = SpreadCaptureStrategy::new();
 
-    let ctx = ctx_with_book(book(0.45, 0.49, 0.45, 0.49));
+    let ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
     match result {
         StrategyResult::Batch(signals) => {
@@ -96,7 +100,7 @@ fn confidence_calculation() {
     let config = test_config();
     let mut strat = SpreadCaptureStrategy::new();
 
-    let ctx = ctx_with_book(book(0.45, 0.49, 0.45, 0.49));
+    let ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
     if let StrategyResult::Batch(signals) = strat.evaluate(&ctx, &config, 1_000_000) {
         assert!((signals[0].confidence - 1.0).abs() < 1e-9);
         assert!((signals[1].confidence - 1.0).abs() < 1e-9);
@@ -115,8 +119,7 @@ fn confidence_always_saturates_at_one() {
         config.spread_capture_threshold = threshold;
         config.spread_capture_min_ask = 0.10;
 
-        let half = (threshold - 0.001) / 2.0;
-        let ctx = ctx_with_book(book(0.40, half, 0.40, half));
+        let ctx = ctx_with_book(book(0.35, 0.40, 0.35, 0.40));
         if let StrategyResult::Batch(signals) = strat.evaluate(&ctx, &config, 1_000_000) {
             assert!(
                 (signals[0].confidence - 1.0).abs() < 1e-9,
@@ -134,13 +137,13 @@ fn metadata_contains_spread_edge() {
     let config = test_config();
     let mut strat = SpreadCaptureStrategy::new();
 
-    let ctx = ctx_with_book(book(0.45, 0.49, 0.45, 0.49));
+    let ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
     if let StrategyResult::Batch(signals) = strat.evaluate(&ctx, &config, 1_000_000) {
         let meta = &signals[0].metadata;
         let total_ask = meta["totalAsk"].as_f64().unwrap();
         let spread_edge = meta["spreadEdge"].as_f64().unwrap();
-        assert!((total_ask - 0.98).abs() < 1e-9);
-        assert!((spread_edge - 0.02).abs() < 1e-9);
+        assert!((total_ask - 0.90).abs() < 1e-9);
+        assert!((spread_edge - 0.10).abs() < 1e-9);
     } else {
         panic!("expected Batch result");
     }
@@ -201,7 +204,7 @@ fn just_below_threshold_fires_batch() {
     config.spread_capture_min_ask = 0.10;
     let mut strat = SpreadCaptureStrategy::new();
 
-    let ctx = ctx_with_book(book(0.45, 0.4989, 0.45, 0.4989));
+    let ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
     assert!(matches!(result, StrategyResult::Batch(_)));
 }
@@ -216,8 +219,11 @@ fn chainlink_none_uses_zero() {
         binance_price: 42_000.0,
         binance_momentum: 0.0,
         chainlink_price: None,
-        book_state: book(0.45, 0.49, 0.45, 0.49),
+        book_state: book(0.40, 0.45, 0.40, 0.45),
+        window_open_price: Some(41_900.0),
         window_time_remaining_ms: 120_000,
+        now_us: Some(1_000_000_000),
+        features: SignalFeatureSnapshot::default(),
     };
     if let StrategyResult::Batch(signals) = strat.evaluate(&ctx, &config, 1_000_000) {
         assert!(
@@ -235,12 +241,12 @@ fn chainlink_none_uses_zero() {
 fn signal_prices_match_book() {
     let config = test_config();
     let mut strat = SpreadCaptureStrategy::new();
-    let ctx = ctx_with_book(book(0.40, 0.49, 0.42, 0.48));
+    let ctx = ctx_with_book(book(0.38, 0.45, 0.40, 0.44));
     if let StrategyResult::Batch(signals) = strat.evaluate(&ctx, &config, 1_000_000) {
-        assert!((signals[0].up_ask - 0.49).abs() < f64::EPSILON);
-        assert!((signals[0].down_ask - 0.48).abs() < f64::EPSILON);
-        assert!((signals[0].up_bid - 0.40).abs() < f64::EPSILON);
-        assert!((signals[0].down_bid - 0.42).abs() < f64::EPSILON);
+        assert!((signals[0].up_ask - 0.45).abs() < f64::EPSILON);
+        assert!((signals[0].down_ask - 0.44).abs() < f64::EPSILON);
+        assert!((signals[0].up_bid - 0.38).abs() < f64::EPSILON);
+        assert!((signals[0].down_bid - 0.40).abs() < f64::EPSILON);
         assert!((signals[0].binance_price - 42_000.0).abs() < f64::EPSILON);
     } else {
         panic!("expected Batch result");

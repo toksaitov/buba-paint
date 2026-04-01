@@ -1,6 +1,6 @@
 # buba
 
-Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy that consumes Binance spot trades, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, and raw feed-event capture for new runs. Historical runs `004` through `008` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream.
+Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy that consumes Binance market data, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, raw feed-event capture for new runs, and a shared signal-feature engine. Historical runs `004` through `009` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream while still merging older legacy data with future richer runs.
 
 Settlements are applied only on authoritative Polymarket outcomes. Dynamic taker fees follow the March 30, 2026 crypto schedule by default (`feeRate=0.072`, `exponent=1`) while still supporting historical-by-date fee resolution and explicit overrides for sweeps. A shared agent monitors bot databases and exposes REST + WebSocket APIs. A dashboard (Rust backend + React frontend) provides a unified UI for status, trades, signals, and process control.
 
@@ -10,11 +10,11 @@ No real orders, no wallet, no private keys. This is still a data-collection and 
 
 ```bash
 cargo build --release              # optimized binaries (paint, agent, dashboard)
-cargo test                         # 784 Rust tests across all crates
+cargo test                         # Rust test suites across all crates
 cargo clippy -- -D warnings        # lint (zero warnings required)
 make lint                          # fmt + clippy + strict Rust + TS comment audits
 
-cd dashboard/client && npm install && npm test   # 144 frontend tests
+cd dashboard/client && npm install && npm test   # frontend Vitest suite
 cd dashboard/client && npm run dev               # dev server on :3000 (proxies to :3001)
 
 # Or run the full stack via Docker:
@@ -31,13 +31,13 @@ Latency arb: Binance spot price moves first, Polymarket sometimes lags. When Bin
 
 Spread capture: when UP ask + DOWN ask is cheap enough after fees, the bot queues two independent taker buys. The pair is not modeled as atomic. If only one leg fills, the residual directional position stays open and settles like any other trade.
 
-For new live paper runs, raw feed events are written to `feed_events` and replayed exactly by timestamp. For older runs, the simulator falls back to synthetic `legacy_snapshot` events built from 1 Hz `tick_data`. That path is intentionally conservative and should be treated as lower-fidelity than new raw-event runs.
+For new live paper runs, compact raw feed events are written to `feed_events` and replayed by timestamp. The default storage profile keeps typed replay fields and drops bulky hot-path payload blobs so week-long paper runs remain practical. Signal-generation telemetry is persisted to `signal_metrics`, and feed lifecycle events are persisted to `feed_health_events`. For older runs, the simulator falls back to synthetic `legacy_snapshot` events built from 1 Hz `tick_data`. That path is intentionally conservative and should be treated as lower-fidelity than new raw-event runs.
 
 At window close, the bot records a provisional estimate for observability but waits for the authoritative Polymarket resolution before applying settlement to bankroll, Kelly state, trend tracking, or the circuit breaker. Fees use Polymarket's dynamic formula: `fee = shares * price * feeRate * (price * (1 - price))^exponent`. The default live crypto params are `feeRate=0.072` and `exponent=1` as of March 30, 2026.
 
 ### Three Feeds
 
-- Binance aggTrade (`wss://stream.binance.com:9443/ws/btcusdt@aggTrade`): per-trade BTC/USDT price, ~20-100 msg/s.
+- Binance market data (`wss://stream.binance.com:9443/stream?...`): combined `aggTrade`, `bookTicker`, and `depth@100ms` streams, with microsecond timestamps when supported.
 - Polymarket CLOB (`wss://ws-subscriptions-clob.polymarket.com/ws/market`): order book snapshots + price changes, variable rate.
 - Chainlink RTDS (`wss://ws-live-data.polymarket.com`): oracle BTC/USD price used as settlement reference, ~1 msg/s.
 
@@ -60,11 +60,11 @@ Authentication happens at two layers: the frontend authenticates to the dashboar
 
 ### paint bot modules
 
-Core loop: `cli.rs` (clap CLI parsing, command dispatch), `live.rs` (live trading loop combining feeds + discovery + event-driven strategies + authoritative settlement), `config.rs` (all env-configurable settings, `set_param` for sweeps).
+Core loop: `cli.rs` (clap CLI parsing, command dispatch), `live.rs` (live trading loop combining feeds + discovery + event-driven strategies + authoritative settlement), `config.rs` (all env-configurable settings, `set_param` for sweeps), `latency_probe.rs` (operator-facing endpoint/feed latency benchmark).
 
-Strategies: `strategies/latency_arb.rs` (momentum vs stale odds, adaptive threshold, cooldown), `strategies/spread_capture.rs` (UP ask + DOWN ask < threshold, buys both sides).
+Strategies: `strategies/latency_arb.rs` (feature-scored stale-odds signal, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `signal_features.rs` (shared feature engine used by live paper and backtests).
 
-Feeds: `feeds/binance_feed.rs` (Binance aggTrade stream), `feeds/clob_feed.rs` (CLOB order book with incremental updates, best-bid-ask support, and dynamic resubscription), `feeds/chainlink_feed.rs` (RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
+Feeds: `feeds/binance_feed.rs` (combined Binance trade, top-of-book, and shallow-depth stream), `feeds/clob_feed.rs` (CLOB order book with incremental updates, best-bid-ask support, and dynamic resubscription), `feeds/chainlink_feed.rs` (RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
 
 Data: `bankroll.rs` (per-strategy half-Kelly sizing, caps, confidence curve, DD pause), `position_manager.rs` (trade lifecycle, opposing position guard, authoritative settlement), `circuit_breaker.rs` (pause after consecutive losses), `tick_logger.rs` (1s telemetry sampling for dashboards and coarse inspection), `trend_tracker.rs` (experimental directional trend filter, off by default).
 
@@ -76,7 +76,7 @@ SDK integration: `polymarket.rs` (read-only wrapper around the official `polymar
 
 Backtesting: `backtest/runner.rs` (core replay loop), `backtest/sweep.rs` (parallel parameter sweep via rayon, PID-based temp DBs), `backtest/tick_replay.rs` (loads `feed_events` when available and falls back to `tick_data`), `backtest/window_manager.rs` (replays market windows from DB), `backtest/feed_state.rs` (simulated feed state), `backtest/momentum.rs` (rolling window momentum calculator).
 
-Database: `db/database.rs` (rusqlite wrapper, prepared statements, WAL mode), `db/schema.rs` (additive schema migrations), `db/build_data.rs` (merges enriched run DBs into `market-data.db`), `db/upgrade_history.rs` (in-place historical upgrade and metadata backfill for runs `004` through `009`).
+Database: `db/database.rs` (rusqlite wrapper, prepared statements, WAL mode, bounded WAL settings, footprint reporting), `db/schema.rs` (additive schema migrations), `db/build_data.rs` (merges enriched run DBs into `market-data.db`, including signals and optional telemetry tables when present), `db/upgrade_history.rs` (in-place historical upgrade and metadata backfill for runs `004` through `009`).
 
 Shared: `types.rs` (Signal, BookState, MarketWindow, TradeResult with settlement_status), `clock.rs` (Clock trait + SystemClock + BacktestClock), `errors.rs` (thiserror error types).
 
@@ -129,7 +129,7 @@ buba-paint/
   scripts/                         # Python analysis scripts + demo DB seed
   data/                            # derived data (reproducible)
   runs/                            # primary live data (IRREPLACEABLE)
-    001/ ... 008/                  #   DB, logs, analysis PNGs (LFS)
+    001/ ... 009/                  #   DB, logs, analysis PNGs (LFS)
 ```
 
 `runs/` contains primary data collected during live paper trading sessions over weeks. Do not edit these DBs manually. The only supported in-place mutation is `upgrade-history`, which performs additive schema upgrades and metadata backfills on historical runs. `data/` is derived and reproducible.
@@ -157,12 +157,14 @@ cargo run -p buba-paint --release -- backtest \
 ```bash
 cargo run -p buba-paint --release -- sweep \
   --data data/market-data.db \
-  --start 2026-02-15 --end 2026-03-27 \
+  --start 2026-02-15 --end 2026-03-31 \
   --sweep LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008,0.0010,0.0012,0.0014,0.0016,0.0018 \
   --sweep LATENCY_ARB_MAX_ASK=0.50,0.55,0.60,0.65,0.70 \
   --sweep MAX_POSITION_FRACTION=0.03,0.05,0.075,0.10,0.125 \
-  --set SPREAD_CAPTURE_THRESHOLD=0.50 --set PEAK_DD_PAUSE_PCT=1.0 \
-  --output data/sweeps/rust-009/sweep.csv
+  --sweep SPREAD_CAPTURE_THRESHOLD=0.965,0.970,0.975,0.980,0.985 \
+  --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 \
+  --set SIM_ORDER_LATENCY_MS=250 \
+  --output data/sweeps/example/sweep.csv
 ```
 
 `--sweep PARAM=start:end:step` generates a range; `--sweep PARAM=a,b,c` enumerates. `--set PARAM=value` fixes a parameter without sweeping.
@@ -197,17 +199,40 @@ Merges tick data, markets, and trade results from all run DBs into a single data
 ```bash
 cargo run -p buba-paint --release -- upgrade-history
 cargo run -p buba-paint --release -- upgrade-history \
-  --runs-dir runs --from-run 4 --to-run 8 \
+  --runs-dir runs --from-run 4 --to-run 9 \
   --rebuild-derived --output data/market-data.db
 ```
 
 Adds the latest schema, backfills market metadata and authoritative outcomes into run DBs, synthesizes `feed_events` from legacy `tick_data`, and optionally rebuilds `data/market-data.db`. HTTP payloads are cached under `data/backfill-cache/`.
 
+### Probe endpoint and feed latency (paint)
+
+```bash
+cargo run -p buba-paint --release -- latency-probe
+cargo run -p buba-paint --release -- latency-probe --timeout-ms 3000
+```
+
+Measures the current host's request or websocket-connect timing to Gamma, Binance, RTDS, and the Polymarket CLOB. For websocket feeds it also waits for the first data message and reports message age when the payload exposes a source timestamp.
+
+### Inspect live DB footprint (paint)
+
+```bash
+cargo run -p buba-paint --release -- db-footprint --db-path /tmp/paint.db
+```
+
+Prints on-disk DB and WAL sizes plus grouped `feed_events` counts by source and event type. Use this before long paper runs if storage growth looks suspicious.
+
 ## Configuration
 
 All settings via environment variables or `--set` CLI flag.
 
-Core: `DB_PATH` (default `./data/paint.db`) is the SQLite database path. `LOG_LEVEL` (default `info`): debug, info, warn, error. `TICK_INTERVAL` (default `1000`): coarse telemetry sampling interval in ms. `GAMMA_POLL_INTERVAL` (default `60000`): Gamma API poll interval in ms. `CHAINLINK_STALE_MS` (default `30000`): force-reconnect after silence.
+- `FEED_EVENT_STORAGE_PROFILE=compact|full_debug`
+  - `compact` is the production default. It keeps typed replay fields, drops bulky hot-path payload blobs, buckets Binance depth rows, and suppresses high-rate book-ticker persistence.
+  - `full_debug` keeps raw payload retention for short local diagnostics and should not be the week-long live-paper default.
+
+Core: `DB_PATH` (default `./data/paint.db`) is the SQLite database path. `LOG_LEVEL` (default `info`): debug, info, warn, error. `TICK_INTERVAL` (default `1000`): coarse telemetry sampling interval in ms. `GAMMA_POLL_INTERVAL` (default `60000`): Gamma API poll interval in ms. `CHAINLINK_STALE_MS` (default `30000`): force-reconnect after silence. `MAX_SIGNAL_FEED_AGE_MS` and `MAX_QUOTE_AGE_MS` cap stale inputs for signal generation.
+
+Binance feed: `BINANCE_TRADE_STREAM`, `BINANCE_BOOK_TICKER_STREAM`, and `BINANCE_DEPTH_STREAM` control the combined Binance market-data subscription. `BINANCE_WS_URL` remains as a backward-compatible override for older aggTrade-only setups.
 
 Latency arb: `LATENCY_ARB_MOMENTUM_THRESHOLD` (default `0.0015`) is the base momentum fraction (0.15%). `LATENCY_ARB_ADAPTIVE_WINDOW_MS` (default `1800000`) is the rolling time window used by the adaptive threshold. `LATENCY_ARB_MAX_ASK` (default `0.55`): max ask to consider stale. `LATENCY_ARB_MIN_ASK` (default `0.30`): min ask, rejects cheap tokens. `LATENCY_ARB_COOLDOWN_MS` (default `60000`): cooldown between signals. `MOMENTUM_WINDOW_MS` (default `30000`): momentum rolling window.
 
@@ -235,6 +260,8 @@ SQLite (WAL mode). Python scripts can read concurrently while the bot writes.
 - feed_events: canonical replay source for the live-like simulator. Stores raw or synthesized event timing with normalized book fields and a fidelity marker (`raw_event` or `legacy_snapshot`).
 - markets: one row per 5-minute window. Columns: market_id (Gamma API ID), question, condition_id, slug, up_token_id, down_token_id, start_time, end_time, status (active/closed/resolved), outcome (authoritative runtime outcome), polymarket_outcome, resolution_source, fee_profile, min-size and tick-size metadata, and reward metadata.
 - signals: every strategy detection event. Includes the market link, replay fidelity, and execution timing fields when available.
+- signal_metrics: per-signal telemetry. Stores generation, submission, and expected-arrival timing, per-feed ages, expected fee/slippage/edge, and a JSON feature snapshot.
+- feed_health_events: feed lifecycle telemetry. Stores connect, disconnect, stale, reconnect, and resubscribe events with optional market context.
 - simulated_trades: opened positions. Links to market and signal, tracks requested size/price, filled size/average fill, fill status, execution group id for spread pairs, execution mode, and optional live order ids.
 - trade_results: settlement P&L. Links to trade, records settlement price, gross/net PnL fields, fee_amount, and settlement status.
 - balance_log: bankroll history. Records every balance change with timestamp, event type (init, trade_close, settlement_correction), trade reference, amount, and running balance.
@@ -278,17 +305,17 @@ Pre-live-like sweeps often fixed `PEAK_DD_PAUSE_PCT=1.0` and an artificially low
 
 ## Testing
 
-930 tests total: 784 Rust + 144 frontend unit/integration + 2 Playwright browser E2E.
+Test inventory changes frequently as the workspace evolves. Use `cargo test`, `make test-all`, and the frontend test commands below as the authoritative source of truth instead of relying on hard-coded counts.
 
-- paint bot: 605 Rust tests. Covers backtest/replay logic, execution engine fill paths, fee schedules, DB migrations and backfill helpers, feeds, bankroll/accounting, strategy logic, and integration suites with mock WebSocket + HTTP services. The slow live-system lane now runs 18 green scenarios in automation, including circuit-breaker recovery within the same bot run.
-- agent: 95 Rust tests. Covers REST endpoints, WS polling/broadcast, DB reader compatibility across legacy/new schemas, process manager, and auth middleware.
-- dashboard server: 84 Rust tests. Covers auth/JWT, bot proxy handlers, WS proxy, config parsing, error mapping, and integration proxy flows against a mock agent.
-- dashboard client: 144 Vitest tests across API, WS, auth store, hooks, components, and pages. Uses vitest + @testing-library/react + jsdom. Network-bound tests now support MSW. Browser E2E uses Playwright.
+- paint bot: broad Rust unit and integration coverage across replay, execution, fees, accounting, migrations, feeds, strategy logic, and mocked live-system scenarios. The slow live-system lane includes circuit-breaker recovery within the same bot run.
+- agent: Rust tests cover REST endpoints, WS polling/broadcast, DB reader compatibility across legacy/new schemas, process manager behavior, and auth middleware.
+- dashboard server: Rust tests cover auth/JWT, bot proxy handlers, WS proxy, config parsing, error mapping, and integration proxy flows against a mock agent.
+- dashboard client: Vitest covers API, WS, auth store, hooks, components, and pages. Network-bound tests support MSW. Browser E2E uses Playwright.
 - Coverage gates now measure Rust library and integration-test coverage while explicitly excluding thin `main.rs` bootstrapping entrypoints. Floors are currently `80%` for `buba-paint`, `90%` for `buba-agent`, `90%` for `buba-dashboard`, and `80%` for the frontend.
 - Comment policy: `tools/rust-comment-policy/` enforces concise rustdoc on every Rust function and rejects non-doc Rust comments. `scripts/ts_comment_audit.mjs` rejects non-directive comments in the frontend TypeScript code. `make lint` runs both checks, and `make comment-audit` prints the current Rust and TS/TSX audit summaries.
 
 ```bash
-cargo test                              # all 784 Rust tests
+cargo test                              # all Rust test suites
 cargo clippy --workspace -- -D warnings # lint
 cargo fmt --all --check                 # format check
 make lint                              # fmt + clippy + strict Rust + TS comment audits
@@ -300,7 +327,7 @@ make test-e2e                           # Playwright browser tests
 make test-all                           # fast + integration + slow + browser E2E
 make coverage                           # Rust coverage summaries + frontend coverage
 make coverage-gate                      # component coverage regression floors
-cd dashboard/client && npm test         # all 144 frontend Vitest tests
+cd dashboard/client && npm test         # frontend Vitest suite
 cd dashboard/client && npm run test:e2e # Playwright browser E2E
 cd dashboard/client && npm run test:coverage
 ```
@@ -318,11 +345,14 @@ The full stack requires three processes: bot, agent, and dashboard.
 cargo build --release
 cd dashboard/client && npm run build  # produces dist/ for static serving
 
+# Seed the bot DB once
+./target/release/buba-paint init-db --db-path runs/010/buba-paint.db --balance 200
+
 # 2. Start the agent (manages bot lifecycle)
 AGENT_SECRET=your-secret ./target/release/buba-agent \
   --db-path runs/010/buba-paint.db \
   --port 9090 \
-  --bot-cmd "./target/release/buba-paint live --db-path runs/010/buba-paint.db --balance 200 --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0012 --set LATENCY_ARB_MAX_ASK=0.60 --set MAX_POSITION_FRACTION=0.05 --set SPREAD_CAPTURE_THRESHOLD=0.50"
+  --bot-cmd "./target/release/buba-paint live --db-path runs/010/buba-paint.db --balance 200 --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008 --set LATENCY_ARB_MAX_ASK=0.65 --set MAX_POSITION_FRACTION=0.05 --set SPREAD_CAPTURE_THRESHOLD=0.970 --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 --set SIM_ORDER_LATENCY_MS=250"
 
 # 3. Start the dashboard (serves frontend + proxies to agent)
 ADMIN_USER=admin ADMIN_PASSWORD=changeme JWT_SECRET=your-jwt-secret \

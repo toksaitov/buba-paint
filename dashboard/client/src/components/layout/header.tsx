@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "../../hooks/use-auth";
+import { useBotStatus } from "../../hooks/use-bot-status";
 import { useProcessStatus } from "../../hooks/use-process-status";
 import { botStart, botStop, botRestart } from "../../lib/api";
 import { cn } from "../../lib/utils";
@@ -33,11 +34,22 @@ function formatUptime(secs: number): string {
 export function Header({ bot, botId, collapsed, onToggle }: HeaderProps) {
   const { user, logout } = useAuth();
   const { data: process } = useProcessStatus(botId);
+  const { data: status } = useBotStatus(botId);
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isRunning = process?.active ?? false;
+  const processRunning = process?.active ?? false;
+  const controlAvailable = process?.control_available ?? true;
+  const observedRunning =
+    !processRunning &&
+    !controlAvailable &&
+    status?.last_tick_at != null &&
+    Date.now() - status.last_tick_at < 15_000;
+  const isRunning = processRunning || observedRunning;
+  const actionUnavailableTitle = controlAvailable
+    ? null
+    : "Process control unavailable in monitor-only mode";
 
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -102,28 +114,37 @@ export function Header({ bot, botId, collapsed, onToggle }: HeaderProps) {
             <div className="flex items-center gap-0.5 mr-3">
               <button
                 onClick={() => run(() => botStart(botId))}
-                disabled={busy || isRunning}
+                disabled={busy || !controlAvailable || isRunning}
                 className="p-1.5 hover:bg-surface transition-colors text-accent-green disabled:opacity-40"
-                title={isRunning ? "Bot is already running" : "Start bot"}
+                title={
+                  actionUnavailableTitle ??
+                  (isRunning ? "Bot is already running" : "Start bot")
+                }
               >
                 <Play size={14} />
               </button>
               <button
                 onClick={() => run(() => botStop(botId))}
-                disabled={busy || !isRunning}
+                disabled={busy || !controlAvailable || !processRunning}
                 className="p-1.5 hover:bg-surface transition-colors text-accent-red disabled:opacity-40"
-                title={!isRunning ? "Bot is not running" : "Stop bot"}
+                title={
+                  actionUnavailableTitle ??
+                  (!processRunning ? "Bot is not running" : "Stop bot")
+                }
               >
                 <Square size={14} />
               </button>
               <button
                 onClick={() => run(() => botRestart(botId))}
-                disabled={busy || !isRunning}
+                disabled={busy || !controlAvailable || !processRunning}
                 className={cn(
                   "p-1.5 hover:bg-surface transition-colors text-muted disabled:opacity-40",
                   busy && "animate-spin",
                 )}
-                title={!isRunning ? "Bot is not running" : "Restart bot"}
+                title={
+                  actionUnavailableTitle ??
+                  (!processRunning ? "Bot is not running" : "Restart bot")
+                }
               >
                 <RotateCw size={14} />
               </button>

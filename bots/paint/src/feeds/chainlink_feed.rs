@@ -6,9 +6,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
 use super::FeedMessage;
-use crate::config::Config;
+use crate::config::{Config, FeedEventStorageProfile};
 
-use super::util::{backoff_delay, now_ms, should_reset_backoff};
+use super::util::{backoff_delay, now_ms, now_us, should_reset_backoff};
 
 /// Run the Chainlink (RTDS) price feed.
 ///
@@ -25,6 +25,7 @@ pub async fn run_chainlink_feed(
     tx: mpsc::Sender<FeedMessage>,
 ) -> anyhow::Result<()> {
     let url = &config.rtds_ws_url;
+    let retain_payloads = config.feed_event_storage_profile == FeedEventStorageProfile::FullDebug;
     let ping_interval_ms = config.rtds_ping_interval;
     let stale_ms = config.chainlink_stale_ms;
     let base_delay = config.reconnect_base_delay;
@@ -40,8 +41,12 @@ pub async fn run_chainlink_feed(
         match tokio_tungstenite::connect_async(url).await {
             Ok((ws_stream, _response)) => {
                 let connected_at = now_ms();
+                let connection_id = format!("chainlink-{}", now_us());
                 if tx
-                    .send(FeedMessage::FeedConnected("chainlink".to_string()))
+                    .send(FeedMessage::FeedConnected {
+                        name: "chainlink".to_string(),
+                        connection_id: connection_id.clone(),
+                    })
                     .await
                     .is_err()
                 {
@@ -61,7 +66,10 @@ pub async fn run_chainlink_feed(
                 if let Err(e) = write.send(Message::Text(sub_msg.to_string().into())).await {
                     error!(feed = "chainlink", "failed to send subscription: {e}");
                     let _ = tx
-                        .send(FeedMessage::FeedDisconnected("chainlink".to_string()))
+                        .send(FeedMessage::FeedDisconnected {
+                            name: "chainlink".to_string(),
+                            connection_id: Some(connection_id.clone()),
+                        })
                         .await;
                     if attempt >= max_failures {
                         error!(
@@ -90,7 +98,7 @@ pub async fn run_chainlink_feed(
                         msg = read.next() => {
                             match msg {
                                 Some(Ok(Message::Text(text))) => {
-                                    match process_chainlink_message(&text, &tx).await {
+                                    match process_chainlink_message(&text, &tx, &connection_id, retain_payloads).await {
                                         Ok(true) => {
 
                                             stale_sleep.as_mut().reset(
@@ -134,7 +142,11 @@ pub async fn run_chainlink_feed(
                         }
                         () = &mut stale_sleep => {
                             warn!(feed = "chainlink", "no update in {stale_ms}ms — stale");
-                            let _ = tx.send(FeedMessage::ChainlinkStale).await;
+                            let _ = tx
+                                .send(FeedMessage::ChainlinkStale {
+                                    connection_id: Some(connection_id.clone()),
+                                })
+                                .await;
 
                             break;
                         }
@@ -151,7 +163,10 @@ pub async fn run_chainlink_feed(
         }
 
         let _ = tx
-            .send(FeedMessage::FeedDisconnected("chainlink".to_string()))
+            .send(FeedMessage::FeedDisconnected {
+                name: "chainlink".to_string(),
+                connection_id: None,
+            })
             .await;
 
         if attempt >= max_failures {
@@ -252,6 +267,8 @@ pub(crate) fn process_chainlink_text(text: &str) -> Vec<(f64, u64)> {
 async fn process_chainlink_message(
     text: &str,
     tx: &mpsc::Sender<FeedMessage>,
+    connection_id: &str,
+    retain_payloads: bool,
 ) -> anyhow::Result<bool> {
     let pairs = process_chainlink_text(text);
 
@@ -260,10 +277,26 @@ async fn process_chainlink_message(
     }
 
     for (price, timestamp) in &pairs {
+        let (timestamp_ms, source_time_us) = if *timestamp >= 10_000_000_000_000 {
+            (*timestamp / 1_000, Some(*timestamp))
+        } else {
+            (*timestamp, None)
+        };
         tx.send(FeedMessage::ChainlinkPrice {
             price: *price,
-            timestamp: *timestamp,
-            payload_json: Some(text.to_string()),
+            timestamp_ms,
+            timestamp_us: source_time_us,
+            source_topic: Some("crypto_prices_chainlink".to_string()),
+            source_symbol: Some("BTC/USD".to_string()),
+            connection_id: connection_id.to_string(),
+            payload_json: retain_payloads.then(|| text.to_string()),
+            details_json: retain_payloads.then(|| {
+                serde_json::json!({
+                    "topic": "crypto_prices_chainlink",
+                    "timestamp": timestamp_ms,
+                })
+                .to_string()
+            }),
         })
         .await
         .map_err(|_| anyhow::anyhow!("channel closed"))?;

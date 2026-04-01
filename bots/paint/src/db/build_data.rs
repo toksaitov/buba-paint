@@ -97,18 +97,92 @@ const CREATE_SCHEMA: &str = "
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         received_at_ms  INTEGER NOT NULL,
         event_at_ms     INTEGER NOT NULL,
+        received_at_us  INTEGER,
+        event_at_us     INTEGER,
         source          TEXT NOT NULL,
         event_type      TEXT NOT NULL,
+        source_topic    TEXT,
+        source_symbol   TEXT,
+        connection_id   TEXT,
+        sequence_key    TEXT,
         market_id       TEXT,
         asset_id        TEXT,
         price           REAL,
+        trade_size      REAL,
+        signed_quantity REAL,
         best_bid        REAL,
         best_ask        REAL,
         bid_size        REAL,
         ask_size        REAL,
+        depth_bid_notional REAL,
+        depth_ask_notional REAL,
+        depth_imbalance REAL,
+        microprice      REAL,
         payload_json    TEXT,
+        details_json    TEXT,
         fidelity        TEXT NOT NULL,
         run_id          INTEGER NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES runs(id)
+    );
+
+    CREATE TABLE signals (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id                INTEGER NOT NULL,
+        signal_id             INTEGER NOT NULL,
+        timestamp             INTEGER NOT NULL,
+        strategy              TEXT NOT NULL,
+        direction             TEXT NOT NULL,
+        market_id             TEXT,
+        binance_price         REAL,
+        chainlink_price       REAL,
+        up_ask                REAL,
+        down_ask              REAL,
+        up_bid                REAL,
+        down_bid              REAL,
+        metadata              TEXT,
+        execution_fidelity    TEXT,
+        strategy_version      TEXT,
+        feature_mode          TEXT,
+        order_submitted_at_ms INTEGER,
+        order_arrival_at_ms   INTEGER,
+        FOREIGN KEY (run_id) REFERENCES runs(id)
+    );
+
+    CREATE TABLE signal_metrics (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id                INTEGER NOT NULL,
+        signal_id             INTEGER NOT NULL,
+        generated_at_ms       INTEGER NOT NULL,
+        generated_at_us       INTEGER,
+        order_submitted_at_ms INTEGER,
+        order_submitted_at_us INTEGER,
+        expected_arrival_at_ms INTEGER,
+        expected_arrival_at_us INTEGER,
+        binance_age_ms        INTEGER,
+        chainlink_age_ms      INTEGER,
+        clob_age_ms           INTEGER,
+        quote_age_ms          INTEGER,
+        book_staleness_ms     INTEGER,
+        expected_fee          REAL,
+        expected_slippage     REAL,
+        expected_edge         REAL,
+        available_feature_count INTEGER NOT NULL DEFAULT 0,
+        decision_status       TEXT NOT NULL,
+        rejection_reason      TEXT,
+        features_json         TEXT NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES runs(id)
+    );
+
+    CREATE TABLE feed_health_events (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id         INTEGER NOT NULL,
+        timestamp_ms   INTEGER NOT NULL,
+        timestamp_us   INTEGER,
+        source         TEXT NOT NULL,
+        event_type     TEXT NOT NULL,
+        connection_id  TEXT,
+        market_id      TEXT,
+        details_json   TEXT,
         FOREIGN KEY (run_id) REFERENCES runs(id)
     );
 
@@ -154,8 +228,14 @@ const CREATE_INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS idx_markets_outcome ON markets(outcome);
     CREATE INDEX IF NOT EXISTS idx_markets_run ON markets(run_id);
     CREATE INDEX IF NOT EXISTS idx_feed_events_ts ON feed_events(received_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_feed_events_ts_us ON feed_events(received_at_us);
     CREATE INDEX IF NOT EXISTS idx_feed_events_source_ts ON feed_events(source, received_at_ms);
     CREATE INDEX IF NOT EXISTS idx_feed_events_market_ts ON feed_events(market_id, received_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_signals_run ON signals(run_id, signal_id);
+    CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_signals_market ON signals(market_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_signal_metrics_run ON signal_metrics(run_id, signal_id);
+    CREATE INDEX IF NOT EXISTS idx_feed_health_run_ts ON feed_health_events(run_id, timestamp_ms);
     CREATE INDEX IF NOT EXISTS idx_htrades_run ON historical_trades(run_id);
 ";
 
@@ -366,8 +446,118 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
     )?;
     log(&format!("  markets: {market_count} rows"));
 
+    let has_signals = conn.prepare("SELECT id FROM src.signals LIMIT 0").is_ok();
+    let has_signal_market_id = conn
+        .prepare("SELECT market_id FROM src.signals LIMIT 0")
+        .is_ok();
+    let has_signal_execution_fidelity = conn
+        .prepare("SELECT execution_fidelity FROM src.signals LIMIT 0")
+        .is_ok();
+    let has_signal_strategy_version = conn
+        .prepare("SELECT strategy_version FROM src.signals LIMIT 0")
+        .is_ok();
+    let has_signal_feature_mode = conn
+        .prepare("SELECT feature_mode FROM src.signals LIMIT 0")
+        .is_ok();
+    let has_signal_order_submitted = conn
+        .prepare("SELECT order_submitted_at_ms FROM src.signals LIMIT 0")
+        .is_ok();
+    let has_signal_order_arrival = conn
+        .prepare("SELECT order_arrival_at_ms FROM src.signals LIMIT 0")
+        .is_ok();
+
+    if has_signals {
+        log("  Copying signals...");
+        conn.execute(
+            &format!(
+                "INSERT INTO signals (
+                    run_id, signal_id, timestamp, strategy, direction, market_id,
+                    binance_price, chainlink_price, up_ask, down_ask, up_bid, down_bid,
+                    metadata, execution_fidelity, strategy_version, feature_mode,
+                    order_submitted_at_ms, order_arrival_at_ms
+                 )
+                 SELECT
+                    {run_id}, id, timestamp, strategy, direction, {market_id},
+                    binance_price, chainlink_price, up_ask, down_ask, up_bid, down_bid,
+                    metadata, {execution_fidelity}, {strategy_version}, {feature_mode},
+                    {order_submitted_at_ms}, {order_arrival_at_ms}
+                 FROM src.signals",
+                market_id = if has_signal_market_id {
+                    "market_id"
+                } else {
+                    "NULL"
+                },
+                execution_fidelity = if has_signal_execution_fidelity {
+                    "execution_fidelity"
+                } else {
+                    "NULL"
+                },
+                strategy_version = if has_signal_strategy_version {
+                    "strategy_version"
+                } else {
+                    "'v1'"
+                },
+                feature_mode = if has_signal_feature_mode {
+                    "feature_mode"
+                } else {
+                    "'legacy_core'"
+                },
+                order_submitted_at_ms = if has_signal_order_submitted {
+                    "order_submitted_at_ms"
+                } else {
+                    "NULL"
+                },
+                order_arrival_at_ms = if has_signal_order_arrival {
+                    "order_arrival_at_ms"
+                } else {
+                    "NULL"
+                },
+            ),
+            [],
+        )?;
+    }
+
     let has_feed_events = conn
         .prepare("SELECT id FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_received_at_us = conn
+        .prepare("SELECT received_at_us FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_event_at_us = conn
+        .prepare("SELECT event_at_us FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_source_topic = conn
+        .prepare("SELECT source_topic FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_source_symbol = conn
+        .prepare("SELECT source_symbol FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_connection_id = conn
+        .prepare("SELECT connection_id FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_sequence_key = conn
+        .prepare("SELECT sequence_key FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_details_json = conn
+        .prepare("SELECT details_json FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_trade_size = conn
+        .prepare("SELECT trade_size FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_signed_quantity = conn
+        .prepare("SELECT signed_quantity FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_depth_bid_notional = conn
+        .prepare("SELECT depth_bid_notional FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_depth_ask_notional = conn
+        .prepare("SELECT depth_ask_notional FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_depth_imbalance = conn
+        .prepare("SELECT depth_imbalance FROM src.feed_events LIMIT 0")
+        .is_ok();
+    let has_feed_event_microprice = conn
+        .prepare("SELECT microprice FROM src.feed_events LIMIT 0")
         .is_ok();
 
     log("  Copying feed_events...");
@@ -375,13 +565,85 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
         conn.execute(
             &format!(
                 "INSERT INTO feed_events (
-                    received_at_ms, event_at_ms, source, event_type, market_id, asset_id,
-                    price, best_bid, best_ask, bid_size, ask_size, payload_json, fidelity, run_id
+                    received_at_ms, event_at_ms, received_at_us, event_at_us, source, event_type,
+                    source_topic, source_symbol, connection_id, sequence_key, market_id, asset_id,
+                    price, trade_size, signed_quantity, best_bid, best_ask, bid_size, ask_size,
+                    depth_bid_notional, depth_ask_notional, depth_imbalance, microprice,
+                    payload_json, details_json, fidelity, run_id
                  )
                  SELECT
-                    received_at_ms, event_at_ms, source, event_type, market_id, asset_id,
-                    price, best_bid, best_ask, bid_size, ask_size, payload_json, fidelity, {run_id}
-                 FROM src.feed_events"
+                    received_at_ms, event_at_ms, {received_at_us}, {event_at_us}, source,
+                    event_type, {source_topic}, {source_symbol}, {connection_id},
+                    {sequence_key}, market_id, asset_id, price, {trade_size},
+                    {signed_quantity}, best_bid, best_ask, bid_size, ask_size,
+                    {depth_bid_notional}, {depth_ask_notional}, {depth_imbalance},
+                    {microprice}, payload_json, {details_json}, fidelity, {run_id}
+                 FROM src.feed_events",
+                received_at_us = if has_feed_event_received_at_us {
+                    "received_at_us".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                event_at_us = if has_feed_event_event_at_us {
+                    "event_at_us".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                source_topic = if has_feed_event_source_topic {
+                    "source_topic".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                source_symbol = if has_feed_event_source_symbol {
+                    "source_symbol".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                connection_id = if has_feed_event_connection_id {
+                    "connection_id".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                sequence_key = if has_feed_event_sequence_key {
+                    "sequence_key".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                details_json = if has_feed_event_details_json {
+                    "details_json".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                trade_size = if has_feed_event_trade_size {
+                    "trade_size".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                signed_quantity = if has_feed_event_signed_quantity {
+                    "signed_quantity".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                depth_bid_notional = if has_feed_event_depth_bid_notional {
+                    "depth_bid_notional".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                depth_ask_notional = if has_feed_event_depth_ask_notional {
+                    "depth_ask_notional".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                depth_imbalance = if has_feed_event_depth_imbalance {
+                    "depth_imbalance".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                microprice = if has_feed_event_microprice {
+                    "microprice".to_string()
+                } else {
+                    "NULL".to_string()
+                }
             ),
             [],
         )?;
@@ -389,16 +651,23 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
         conn.execute(
             &format!(
                 "INSERT INTO feed_events (
-                    received_at_ms, event_at_ms, source, event_type, market_id, asset_id,
-                    price, best_bid, best_ask, bid_size, ask_size, payload_json, fidelity, run_id
+                    received_at_ms, event_at_ms, received_at_us, event_at_us, source, event_type,
+                    source_topic, source_symbol, connection_id, sequence_key, market_id, asset_id,
+                    price, trade_size, signed_quantity, best_bid, best_ask, bid_size, ask_size,
+                    depth_bid_notional, depth_ask_notional, depth_imbalance, microprice,
+                    payload_json, details_json, fidelity, run_id
                  )
                  SELECT
-                    timestamp, timestamp, source,
+                    timestamp, timestamp, timestamp * 1000, timestamp * 1000, source,
                     CASE source
                         WHEN 'binance' THEN 'binance_tick'
                         WHEN 'chainlink' THEN 'chainlink_price'
                         ELSE 'clob_snapshot'
                     END,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
                     CASE
                         WHEN source IN ('clob_up', 'clob_down') THEN (
                             SELECT market_id
@@ -430,10 +699,17 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
                         ELSE NULL
                     END,
                     price,
+                    NULL,
+                    NULL,
                     bid,
                     ask,
                     bid_size,
                     ask_size,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
                     NULL,
                     'legacy_snapshot',
                     {run_id}
@@ -511,6 +787,93 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
         |r| r.get(0),
     )?;
     log(&format!("  historical_trades: {trade_count} rows"));
+
+    let has_signal_metrics = conn
+        .prepare("SELECT signal_id FROM src.signal_metrics LIMIT 0")
+        .is_ok();
+    if has_signal_metrics {
+        log("  Copying signal_metrics...");
+        conn.execute(
+            &format!(
+                "INSERT INTO signal_metrics (
+                    run_id, signal_id, generated_at_ms, generated_at_us, order_submitted_at_ms,
+                    order_submitted_at_us, expected_arrival_at_ms, expected_arrival_at_us,
+                    binance_age_ms, chainlink_age_ms, clob_age_ms, quote_age_ms,
+                    book_staleness_ms, expected_fee, expected_slippage, expected_edge,
+                    available_feature_count, decision_status, rejection_reason, features_json
+                 )
+                 SELECT
+                    {run_id}, signal_id, generated_at_ms, {generated_at_us},
+                    order_submitted_at_ms, {order_submitted_at_us}, {expected_arrival_at_ms},
+                    {expected_arrival_at_us}, binance_age_ms, chainlink_age_ms, clob_age_ms,
+                    quote_age_ms, book_staleness_ms, expected_fee, expected_slippage,
+                    expected_edge, available_feature_count, decision_status, rejection_reason,
+                    features_json
+                 FROM src.signal_metrics",
+                generated_at_us = if conn
+                    .prepare("SELECT generated_at_us FROM src.signal_metrics LIMIT 0")
+                    .is_ok()
+                {
+                    "generated_at_us".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                order_submitted_at_us = if conn
+                    .prepare("SELECT order_submitted_at_us FROM src.signal_metrics LIMIT 0")
+                    .is_ok()
+                {
+                    "order_submitted_at_us".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                expected_arrival_at_ms = if conn
+                    .prepare("SELECT expected_arrival_at_ms FROM src.signal_metrics LIMIT 0")
+                    .is_ok()
+                {
+                    "expected_arrival_at_ms".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                expected_arrival_at_us = if conn
+                    .prepare("SELECT expected_arrival_at_us FROM src.signal_metrics LIMIT 0")
+                    .is_ok()
+                {
+                    "expected_arrival_at_us".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+            ),
+            [],
+        )?;
+    }
+
+    let has_feed_health_events = conn
+        .prepare("SELECT id FROM src.feed_health_events LIMIT 0")
+        .is_ok();
+    if has_feed_health_events {
+        log("  Copying feed_health_events...");
+        conn.execute(
+            &format!(
+                "INSERT INTO feed_health_events (
+                    run_id, timestamp_ms, timestamp_us, source, event_type, connection_id,
+                    market_id, details_json
+                 )
+                 SELECT
+                    {run_id}, timestamp_ms, {timestamp_us}, source, event_type, connection_id,
+                    market_id, details_json
+                 FROM src.feed_health_events",
+                timestamp_us = if conn
+                    .prepare("SELECT timestamp_us FROM src.feed_health_events LIMIT 0")
+                    .is_ok()
+                {
+                    "timestamp_us".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+            ),
+            [],
+        )?;
+    }
 
     let time_range: (Option<i64>, Option<i64>) = conn.query_row(
         "SELECT MIN(timestamp), MAX(timestamp) FROM tick_data WHERE run_id = ?1",

@@ -117,6 +117,7 @@ pub struct BotProcessStatus {
     pub active: bool,
     pub pid: Option<u32>,
     pub uptime_secs: Option<u64>,
+    pub control_available: bool,
 }
 
 /// Bot log response.
