@@ -1,8 +1,12 @@
 use crate::config::Config;
 use crate::strategies::{Strategy, StrategyResult};
-use crate::types::{Signal, SignalDirection, SignalTelemetry, StrategyContext};
+use crate::types::{
+    Signal, SignalDirection, SignalTelemetry, StrategyContext, StrategyRejection,
+    StrategyRejectionReason, StrategyRejectionSample,
+};
 
 const MOMENTUM_BUFFER_SIZE: usize = 1800;
+const STRATEGY_NAME: &str = "latency-arb";
 
 pub struct LatencyArbStrategy {
     last_signal_time: u64,
@@ -25,6 +29,15 @@ impl LatencyArbStrategy {
             adaptive_window_ms: 1_800_000,
             last_threshold_calc: 0,
         }
+    }
+
+    /// Builds one explicit rejected result for live diagnostics.
+    fn reject(reason: StrategyRejectionReason, sample: StrategyRejectionSample) -> StrategyResult {
+        StrategyResult::Rejected(Box::new(StrategyRejection::new(
+            STRATEGY_NAME,
+            reason,
+            sample,
+        )))
     }
 
     /// Returns adaptive threshold.
@@ -204,13 +217,39 @@ impl LatencyArbStrategy {
         )
     }
 
-    /// Build the persisted signal record for the selected direction.
-    fn build_signal(
-        &self,
+    /// Builds a rejection sample that captures the current quote and edge state.
+    fn rejection_sample_with_edges(
         ctx: &StrategyContext,
-        now: u64,
-        build: &SignalBuildContext<'_>,
-    ) -> Signal {
+        external_bias: Option<f64>,
+        up_edge: Option<f64>,
+        down_edge: Option<f64>,
+    ) -> StrategyRejectionSample {
+        let mut sample = StrategyRejectionSample::from_ctx(ctx);
+        sample.external_bias = external_bias;
+        sample.up_edge = up_edge;
+        sample.down_edge = down_edge;
+        sample
+    }
+
+    /// Builds a rejection sample that also stores expected execution costs.
+    fn rejection_sample_with_costs(
+        ctx: &StrategyContext,
+        external_bias: Option<f64>,
+        up_edge: Option<f64>,
+        down_edge: Option<f64>,
+        expected_fee: Option<f64>,
+        expected_slippage: Option<f64>,
+        expected_edge: Option<f64>,
+    ) -> StrategyRejectionSample {
+        let mut sample = Self::rejection_sample_with_edges(ctx, external_bias, up_edge, down_edge);
+        sample.expected_fee = expected_fee;
+        sample.expected_slippage = expected_slippage;
+        sample.expected_edge = expected_edge;
+        sample
+    }
+
+    /// Build the persisted signal record for the selected direction.
+    fn build_signal(&self, ctx: &StrategyContext, now: u64, build: &SignalBuildContext) -> Signal {
         Signal {
             timestamp: now,
             strategy: self.name().to_string(),
@@ -247,10 +286,10 @@ impl LatencyArbStrategy {
 }
 
 /// Hold the selected latency-arb side and its expected execution context.
-struct SignalBuildContext<'a> {
+struct SignalBuildContext {
     direction: SignalDirection,
     confidence: f64,
-    price_levels: &'a PriceLevels,
+    price_levels: PriceLevels,
     effective_threshold: f64,
     external_bias: f64,
     up_edge: f64,
@@ -261,6 +300,7 @@ struct SignalBuildContext<'a> {
 }
 
 /// Hold the current best bid/ask pair for both market sides.
+#[derive(Clone, Copy)]
 struct PriceLevels {
     up_ask: f64,
     down_ask: f64,
@@ -268,31 +308,53 @@ struct PriceLevels {
     down_bid: f64,
 }
 
-impl Strategy for LatencyArbStrategy {
-    /// Returns the persisted name for the latency-arbitrage strategy.
-    fn name(&self) -> &'static str {
-        "latency-arb"
-    }
+/// Hold the selected side plus the net-edge context for one signal.
+struct LatencyArbDecision {
+    direction: SignalDirection,
+    confidence: f64,
+    effective_threshold: f64,
+    external_bias: f64,
+    up_edge: f64,
+    down_edge: f64,
+    expected_fee: Option<f64>,
+    expected_slippage: Option<f64>,
+    expected_edge: Option<f64>,
+}
 
-    /// Evaluates the current book and momentum snapshot for a latency-arb signal.
-    fn evaluate(&mut self, ctx: &StrategyContext, config: &Config, now: u64) -> StrategyResult {
-        self.adaptive_window_ms = config.latency_arb_adaptive_window_ms;
-        self.record_momentum_sample(ctx.binance_momentum, now);
-
+impl LatencyArbStrategy {
+    /// Validates one evaluation and extracts the current tradable price levels.
+    fn price_levels_for_evaluation(
+        &self,
+        ctx: &StrategyContext,
+        config: &Config,
+        now: u64,
+    ) -> Result<PriceLevels, StrategyResult> {
         if ctx.window_time_remaining_ms < config.min_window_time_ms {
-            return StrategyResult::None;
+            return Err(Self::reject(
+                StrategyRejectionReason::WindowTooLate,
+                StrategyRejectionSample::from_ctx(ctx),
+            ));
         }
 
         let (Some(up_book), Some(down_book)) = (&ctx.book_state.up, &ctx.book_state.down) else {
-            return StrategyResult::None;
+            return Err(Self::reject(
+                StrategyRejectionReason::BookUnavailable,
+                StrategyRejectionSample::from_ctx(ctx),
+            ));
         };
 
         if !Self::features_are_fresh(ctx, config) {
-            return StrategyResult::None;
+            return Err(Self::reject(
+                StrategyRejectionReason::FeaturesStale,
+                StrategyRejectionSample::from_ctx(ctx),
+            ));
         }
 
         if now - self.last_signal_time < config.latency_arb_cooldown_ms {
-            return StrategyResult::None;
+            return Err(Self::reject(
+                StrategyRejectionReason::CooldownActive,
+                StrategyRejectionSample::from_ctx(ctx),
+            ));
         }
 
         let price_levels = PriceLevels {
@@ -303,9 +365,23 @@ impl Strategy for LatencyArbStrategy {
         };
 
         if price_levels.up_ask <= 0.0 || price_levels.down_ask <= 0.0 {
-            return StrategyResult::None;
+            return Err(Self::reject(
+                StrategyRejectionReason::NonPositiveQuotes,
+                StrategyRejectionSample::from_ctx(ctx),
+            ));
         }
 
+        Ok(price_levels)
+    }
+
+    /// Converts one validated quote snapshot into a signal decision.
+    fn build_decision(
+        &mut self,
+        ctx: &StrategyContext,
+        config: &Config,
+        now: u64,
+        price_levels: PriceLevels,
+    ) -> Result<LatencyArbDecision, StrategyResult> {
         let effective_threshold =
             self.get_adaptive_threshold(now, config.latency_arb_momentum_threshold);
         let external_bias = Self::external_bias_score(ctx, effective_threshold);
@@ -314,11 +390,18 @@ impl Strategy for LatencyArbStrategy {
         let down_edge = Self::stale_price_edge(ctx, SignalDirection::Down, effective_threshold)
             .unwrap_or_default();
 
-        let direction =
-            Self::select_direction(config, external_bias, &price_levels, up_edge, down_edge);
-
-        let Some(direction) = direction else {
-            return StrategyResult::None;
+        let Some(direction) =
+            Self::select_direction(config, external_bias, &price_levels, up_edge, down_edge)
+        else {
+            return Err(Self::reject(
+                StrategyRejectionReason::DirectionNotSelected,
+                Self::rejection_sample_with_edges(
+                    ctx,
+                    Some(external_bias),
+                    Some(up_edge),
+                    Some(down_edge),
+                ),
+            ));
         };
 
         let entry_ask = match direction {
@@ -327,14 +410,33 @@ impl Strategy for LatencyArbStrategy {
         };
 
         if entry_ask < config.latency_arb_min_ask {
-            return StrategyResult::None;
+            return Err(Self::reject(
+                StrategyRejectionReason::EntryAskBelowMin,
+                Self::rejection_sample_with_edges(
+                    ctx,
+                    Some(external_bias),
+                    Some(up_edge),
+                    Some(down_edge),
+                ),
+            ));
         }
 
         let (expected_fee, expected_slippage, expected_edge) =
             Self::expected_trade_costs(ctx, direction, up_edge, down_edge);
 
         if expected_edge.unwrap_or_default() <= 0.0 {
-            return StrategyResult::None;
+            return Err(Self::reject(
+                StrategyRejectionReason::ExpectedEdgeNonPositive,
+                Self::rejection_sample_with_costs(
+                    ctx,
+                    Some(external_bias),
+                    Some(up_edge),
+                    Some(down_edge),
+                    expected_fee,
+                    expected_slippage,
+                    expected_edge,
+                ),
+            ));
         }
 
         let score_strength = match direction {
@@ -342,13 +444,11 @@ impl Strategy for LatencyArbStrategy {
             SignalDirection::Down => -external_bias,
         };
         let confidence = (0.35 + 0.20 * score_strength + expected_edge.unwrap_or_default() * 4.0)
-            .clamp(0.35, 1.0);
+            .clamp(0.0, 1.0);
 
-        self.last_signal_time = now;
-        let build = SignalBuildContext {
+        Ok(LatencyArbDecision {
             direction,
             confidence,
-            price_levels: &price_levels,
             effective_threshold,
             external_bias,
             up_edge,
@@ -356,6 +456,42 @@ impl Strategy for LatencyArbStrategy {
             expected_fee,
             expected_slippage,
             expected_edge,
+        })
+    }
+}
+
+impl Strategy for LatencyArbStrategy {
+    /// Returns the persisted name for the latency-arbitrage strategy.
+    fn name(&self) -> &'static str {
+        STRATEGY_NAME
+    }
+
+    /// Evaluates the current book and momentum snapshot for a latency-arb signal.
+    fn evaluate(&mut self, ctx: &StrategyContext, config: &Config, now: u64) -> StrategyResult {
+        self.adaptive_window_ms = config.latency_arb_adaptive_window_ms;
+        self.record_momentum_sample(ctx.binance_momentum, now);
+
+        let price_levels = match self.price_levels_for_evaluation(ctx, config, now) {
+            Ok(levels) => levels,
+            Err(rejection) => return rejection,
+        };
+        let decision = match self.build_decision(ctx, config, now, price_levels) {
+            Ok(decision) => decision,
+            Err(rejection) => return rejection,
+        };
+
+        self.last_signal_time = now;
+        let build = SignalBuildContext {
+            direction: decision.direction,
+            confidence: decision.confidence,
+            price_levels,
+            effective_threshold: decision.effective_threshold,
+            external_bias: decision.external_bias,
+            up_edge: decision.up_edge,
+            down_edge: decision.down_edge,
+            expected_fee: decision.expected_fee,
+            expected_slippage: decision.expected_slippage,
+            expected_edge: decision.expected_edge,
         };
 
         StrategyResult::Single(Box::new(self.build_signal(ctx, now, &build)))

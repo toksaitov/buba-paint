@@ -14,6 +14,7 @@ use crate::feeds::util::now_us;
 use crate::live_storage::FeedEventStorageState;
 use crate::market_discovery::{self, MarketDiscoveryEvent};
 use crate::position_manager::PositionManager;
+use crate::rejection_diagnostics::StrategyRejectionTracker;
 use crate::signal_features::{SignalFeatureEngine, SignalState};
 use crate::strategies::latency_arb::LatencyArbStrategy;
 use crate::strategies::spread_capture::SpreadCaptureStrategy;
@@ -175,6 +176,7 @@ pub async fn run_live(
 
     let mut state = LiveState::new();
     let mut storage_state = FeedEventStorageState::new(config.feed_event_storage_profile);
+    let mut rejection_tracker = StrategyRejectionTracker::new();
 
     let (resolution_tx, mut resolution_rx) = tokio::sync::mpsc::channel::<DeferredResolution>(32);
 
@@ -285,6 +287,7 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
+                            &mut rejection_tracker,
                             receive.ms,
                         );
                     }
@@ -367,6 +370,7 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
+                            &mut rejection_tracker,
                             receive.ms,
                         );
                     }
@@ -455,6 +459,7 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
+                            &mut rejection_tracker,
                             receive.ms,
                         );
                     }
@@ -581,6 +586,7 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
+                            &mut rejection_tracker,
                             receive.ms,
                         );
                     }
@@ -645,6 +651,7 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
+                            &mut rejection_tracker,
                             receive.ms,
                         );
                     }
@@ -709,6 +716,7 @@ pub async fn run_live(
                             &mut bankroll,
                             &mut circuit_breaker,
                             &mut trend_tracker,
+                            &mut rejection_tracker,
                             receive.ms,
                         );
                     }
@@ -831,7 +839,7 @@ pub async fn run_live(
                         let now_ms = clock.now();
                         if window.start_time <= now_ms {
 
-                            activate_window(&mut state, &window, &clob_handle);
+                            activate_window(&db, &mut state, &window, &clob_handle);
                         } else {
 
                             let delay_ms = window.start_time.saturating_sub(now_ms);
@@ -855,8 +863,8 @@ pub async fn run_live(
                         let closed_id = closed_window.market_id.clone();
                         if let Some(window) = state.known_windows.remove(&closed_id) {
                             let open = state.window_open_prices.remove(&closed_id).unwrap_or_else(|| {
-                                warn!(market_id = %closed_id, "no open price captured, using current Binance price");
-                                state.signal_state.binance_price.unwrap_or(0.0)
+                                warn!(market_id = %closed_id, "no cached open price captured, recovering from persisted ticks");
+                                recover_window_open_price(&db, &state, &window).unwrap_or(0.0)
                             });
                             let close = state.signal_state.binance_price.unwrap_or(open);
                             let provisional_outcome = if close >= open {
@@ -905,6 +913,13 @@ pub async fn run_live(
                                 state.current_window = None;
                                 state.signal_state.book_state = crate::types::BookState::default();
                             }
+
+                            flush_rejection_summaries_for_market(
+                                &db,
+                                &mut rejection_tracker,
+                                &closed_id,
+                                clock.now(),
+                            );
                         }
                     }
                 }
@@ -912,11 +927,12 @@ pub async fn run_live(
 
             window = activate_rx.recv() => {
                 if let Some(window) = window {
-                    activate_window(&mut state, &window, &clob_handle);
+                    activate_window(&db, &mut state, &window, &clob_handle);
                 }
             }
 
             _ = storage_report_timer.tick() => {
+                log_rejection_rollups(&rejection_tracker.snapshot_all(clock.now()));
                 if let Ok(footprint) = db.storage_footprint() {
                     let rows = storage_state.take_row_counts();
                     let row_summary = rows
@@ -956,6 +972,8 @@ pub async fn run_live(
         }
     }
 
+    flush_all_rejection_summaries(&db, &mut rejection_tracker, clock.now());
+
     let final_stats = bankroll.get_stats();
     info!(
         starting_balance = final_stats.starting_balance,
@@ -979,6 +997,7 @@ pub async fn run_live(
 /// Activate a market window: set it as current, resubscribe the `CLOB` feed to
 /// the window's tokens, reset the book state, and capture the open price.
 fn activate_window(
+    db: &Database,
     state: &mut LiveState,
     window: &MarketWindow,
     clob_handle: &crate::feeds::clob_feed::ClobFeedHandle,
@@ -999,14 +1018,265 @@ fn activate_window(
 
     state.signal_state.book_state = crate::types::BookState::default();
 
-    if let Some(bp) = state.signal_state.binance_price {
+    if let Some(open_price) = recover_window_open_price(db, state, window) {
         state
             .window_open_prices
             .entry(window.market_id.clone())
-            .or_insert(bp);
+            .or_insert(open_price);
     }
 
     state.current_window = Some(window.clone());
+}
+
+/// Returns the best available market-open price for one live window.
+fn recover_window_open_price(
+    db: &Database,
+    state: &LiveState,
+    window: &MarketWindow,
+) -> Option<f64> {
+    match db.earliest_binance_price_in_window(window.start_time, window.end_time) {
+        Ok(Some(price)) => Some(price),
+        Ok(None) => state.signal_state.binance_price,
+        Err(error) => {
+            warn!(market_id = %window.market_id, "failed to recover persisted window open price: {error}");
+            state.signal_state.binance_price
+        }
+    }
+}
+
+/// Persists and logs every pending rejection summary for all active markets.
+fn flush_all_rejection_summaries(
+    db: &Database,
+    tracker: &mut StrategyRejectionTracker,
+    timestamp_ms: u64,
+) {
+    let rows = tracker.drain_all(timestamp_ms);
+    persist_rejection_summary_rows(db, &rows);
+}
+
+/// Persists and logs every pending rejection summary for one market.
+fn flush_rejection_summaries_for_market(
+    db: &Database,
+    tracker: &mut StrategyRejectionTracker,
+    market_id: &str,
+    timestamp_ms: u64,
+) {
+    let rows = tracker.drain_market(market_id, timestamp_ms);
+    persist_rejection_summary_rows(db, &rows);
+}
+
+/// Writes rejection summaries to `SQLite` and mirrors them into structured logs.
+fn persist_rejection_summary_rows(
+    db: &Database,
+    rows: &[crate::types::StrategyRejectionSummaryRecord],
+) {
+    if rows.is_empty() {
+        return;
+    }
+
+    for row in rows {
+        if let Err(error) = db.log_strategy_rejection_summary(row) {
+            error!(
+                market_id = %row.market_id,
+                strategy = %row.strategy,
+                reason = %row.reason,
+                "failed to persist strategy rejection summary: {error}"
+            );
+        }
+    }
+
+    log_rejection_rollups(rows);
+}
+
+/// Track one weighted mean across already-aggregated rejection summaries.
+#[derive(Default)]
+struct WeightedMetric {
+    sum: f64,
+    weight: u64,
+}
+
+impl WeightedMetric {
+    /// Record one optional value together with the number of evaluations it represents.
+    fn record(&mut self, value: Option<f64>, weight: u64) {
+        if let Some(value) = value {
+            self.sum += value * weight as f64;
+            self.weight += weight;
+        }
+    }
+
+    /// Return the weighted arithmetic mean when at least one sample was recorded.
+    fn mean(&self) -> Option<f64> {
+        if self.weight == 0 {
+            return None;
+        }
+        Some(self.sum / self.weight as f64)
+    }
+}
+
+/// Aggregate all rejection reasons and numeric means for one market/strategy pair.
+#[derive(Default)]
+struct RejectionRollup {
+    market_id: String,
+    strategy: String,
+    total_count: u64,
+    reasons: std::collections::HashMap<String, u64>,
+    quote_age_ms: WeightedMetric,
+    book_staleness_ms: WeightedMetric,
+    up_ask: WeightedMetric,
+    down_ask: WeightedMetric,
+    total_ask: WeightedMetric,
+    quote_churn_per_s: WeightedMetric,
+    move_velocity: WeightedMetric,
+}
+
+/// Human-readable rejection rollup emitted into the operator log.
+#[derive(Debug, PartialEq, Eq)]
+struct FormattedRejectionRollup {
+    market_id: String,
+    strategy: String,
+    total_count: u64,
+    reason_summary: String,
+    metrics_summary: String,
+}
+
+/// Build concise operator-facing rejection rollups from persisted summaries.
+fn build_rejection_rollups(
+    rows: &[crate::types::StrategyRejectionSummaryRecord],
+) -> Vec<FormattedRejectionRollup> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let mut rollups: std::collections::HashMap<(String, String), RejectionRollup> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let details = match serde_json::from_str::<serde_json::Value>(&row.details_json) {
+            Ok(details) => details,
+            Err(error) => {
+                warn!(
+                    market_id = %row.market_id,
+                    strategy = %row.strategy,
+                    reason = %row.reason,
+                    "failed to parse rejection summary details for rollup: {error}"
+                );
+                continue;
+            }
+        };
+        let mean = details.get("mean").cloned().unwrap_or_default();
+        let entry = rollups
+            .entry((row.market_id.clone(), row.strategy.clone()))
+            .or_insert_with(|| RejectionRollup {
+                market_id: row.market_id.clone(),
+                strategy: row.strategy.clone(),
+                ..RejectionRollup::default()
+            });
+        entry.total_count += row.count;
+        *entry.reasons.entry(row.reason.clone()).or_insert(0) += row.count;
+        entry
+            .quote_age_ms
+            .record(json_u64_as_f64(mean.get("quoteAgeMs")), row.count);
+        entry
+            .book_staleness_ms
+            .record(json_u64_as_f64(mean.get("bookStalenessMs")), row.count);
+        entry.up_ask.record(json_f64(mean.get("upAsk")), row.count);
+        entry
+            .down_ask
+            .record(json_f64(mean.get("downAsk")), row.count);
+        entry
+            .total_ask
+            .record(json_f64(mean.get("totalAsk")), row.count);
+        entry
+            .quote_churn_per_s
+            .record(json_f64(mean.get("quoteChurnPerS")), row.count);
+        entry
+            .move_velocity
+            .record(json_f64(mean.get("moveVelocity")), row.count);
+    }
+
+    let mut rollups = rollups.into_values().collect::<Vec<_>>();
+    rollups.sort_by(|left, right| {
+        left.market_id
+            .cmp(&right.market_id)
+            .then_with(|| left.strategy.cmp(&right.strategy))
+    });
+
+    rollups
+        .into_iter()
+        .map(|rollup| {
+        let mut reasons = rollup.reasons.into_iter().collect::<Vec<_>>();
+        reasons.sort_by(|left, right| {
+            right
+                .1
+                .cmp(&left.1)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        let reason_summary = reasons
+            .into_iter()
+            .take(3)
+            .map(|(reason, count)| {
+                format!(
+                    "{reason}={:.1}%",
+                    (count as f64 / rollup.total_count.max(1) as f64) * 100.0
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let metrics_summary = format!(
+            "quoteAgeMs={} bookStalenessMs={} upAsk={} downAsk={} totalAsk={} quoteChurnPerS={} moveVelocity={}",
+            format_optional_u64(rollup.quote_age_ms.mean()),
+            format_optional_u64(rollup.book_staleness_ms.mean()),
+            format_optional_f64(rollup.up_ask.mean(), 3),
+            format_optional_f64(rollup.down_ask.mean(), 3),
+            format_optional_f64(rollup.total_ask.mean(), 3),
+            format_optional_f64(rollup.quote_churn_per_s.mean(), 1),
+            format_optional_f64(rollup.move_velocity.mean(), 6),
+        );
+            FormattedRejectionRollup {
+                market_id: rollup.market_id,
+                strategy: rollup.strategy,
+                total_count: rollup.total_count,
+                reason_summary,
+                metrics_summary,
+            }
+        })
+        .collect()
+}
+
+/// Emit concise operator-facing rejection rollups for one batch of summaries.
+fn log_rejection_rollups(rows: &[crate::types::StrategyRejectionSummaryRecord]) {
+    for rollup in build_rejection_rollups(rows) {
+        info!(
+            market_id = %rollup.market_id,
+            strategy = %rollup.strategy,
+            evaluations = rollup.total_count,
+            top_reasons = %rollup.reason_summary,
+            metrics = %rollup.metrics_summary,
+            "strategy rejection rollup"
+        );
+    }
+}
+
+/// Return one optional numeric value from a JSON summary node.
+fn json_f64(value: Option<&serde_json::Value>) -> Option<f64> {
+    value.and_then(serde_json::Value::as_f64)
+}
+
+/// Return one optional integer-like JSON value as a floating-point sample.
+fn json_u64_as_f64(value: Option<&serde_json::Value>) -> Option<f64> {
+    value.and_then(|value| value.as_u64().map(|value| value as f64))
+}
+
+/// Format one optional floating-point metric for concise operator logs.
+fn format_optional_f64(value: Option<f64>, precision: usize) -> String {
+    value.map_or_else(|| "na".to_string(), |value| format!("{value:.precision$}"))
+}
+
+/// Format one optional millisecond metric for concise operator logs.
+fn format_optional_u64(value: Option<f64>) -> String {
+    value.map_or_else(
+        || "na".to_string(),
+        |value| format!("{}", value.round() as u64),
+    )
 }
 
 /// Insert one persisted feed row and update storage counters on success.
@@ -1243,6 +1513,141 @@ fn handle_deferred_resolution(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    /// Verifies that persisted Binance ticks take precedence when recovering a window open.
+    #[test]
+    fn recover_window_open_price_prefers_persisted_tick() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
+        db.log_tick(1_100, "binance", Some(42_100.0), None, None, None, None)
+            .unwrap();
+        db.log_tick(1_200, "binance", Some(42_200.0), None, None, None, None)
+            .unwrap();
+
+        let mut state = LiveState::new();
+        state.signal_state.binance_price = Some(43_000.0);
+        let window = MarketWindow {
+            market_id: "mkt-1".to_string(),
+            question: "Will BTC go up?".to_string(),
+            up_token_id: "up".to_string(),
+            down_token_id: "down".to_string(),
+            condition_id: "cond-1".to_string(),
+            start_time: 1_000,
+            end_time: 2_000,
+            slug: "btc-updown-5m-1".to_string(),
+            outcome: None,
+            resolution_source: None,
+            fee_profile: None,
+            order_min_size: None,
+            order_price_min_tick_size: None,
+            maker_base_fee: None,
+            taker_base_fee: None,
+            rewards_min_size: None,
+            rewards_max_spread: None,
+        };
+
+        let open_price = recover_window_open_price(&db, &state, &window);
+        assert_eq!(open_price, Some(42_100.0));
+    }
+
+    /// Verifies that the latest in-memory Binance price is used only when no persisted tick exists.
+    #[test]
+    fn recover_window_open_price_falls_back_to_live_price() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
+
+        let mut state = LiveState::new();
+        state.signal_state.binance_price = Some(43_000.0);
+        let window = MarketWindow {
+            market_id: "mkt-1".to_string(),
+            question: "Will BTC go up?".to_string(),
+            up_token_id: "up".to_string(),
+            down_token_id: "down".to_string(),
+            condition_id: "cond-1".to_string(),
+            start_time: 1_000,
+            end_time: 2_000,
+            slug: "btc-updown-5m-1".to_string(),
+            outcome: None,
+            resolution_source: None,
+            fee_profile: None,
+            order_min_size: None,
+            order_price_min_tick_size: None,
+            maker_base_fee: None,
+            taker_base_fee: None,
+            rewards_min_size: None,
+            rewards_max_spread: None,
+        };
+
+        let open_price = recover_window_open_price(&db, &state, &window);
+        assert_eq!(open_price, Some(43_000.0));
+    }
+
+    /// Verifies that operator-facing rejection rollups stay concise while
+    /// preserving reason percentages and mean quote context.
+    #[test]
+    fn build_rejection_rollups_formats_concise_reason_summary() {
+        let rows = vec![
+            crate::types::StrategyRejectionSummaryRecord {
+                timestamp_ms: 1_000,
+                market_id: "mkt-1".to_string(),
+                strategy: "latency-arb".to_string(),
+                reason: "features_stale".to_string(),
+                count: 75,
+                details_json: serde_json::json!({
+                    "last": {"upAsk": 0.50},
+                    "mean": {
+                        "quoteAgeMs": 120,
+                        "bookStalenessMs": 140,
+                        "upAsk": 0.51,
+                        "downAsk": 0.49,
+                        "totalAsk": 1.00,
+                        "quoteChurnPerS": 8.0,
+                        "moveVelocity": 0.0002
+                    }
+                })
+                .to_string(),
+            },
+            crate::types::StrategyRejectionSummaryRecord {
+                timestamp_ms: 1_000,
+                market_id: "mkt-1".to_string(),
+                strategy: "latency-arb".to_string(),
+                reason: "window_too_late".to_string(),
+                count: 25,
+                details_json: serde_json::json!({
+                    "last": {"upAsk": 0.55},
+                    "mean": {
+                        "quoteAgeMs": 200,
+                        "bookStalenessMs": 240,
+                        "upAsk": 0.55,
+                        "downAsk": 0.45,
+                        "totalAsk": 1.00,
+                        "quoteChurnPerS": 4.0,
+                        "moveVelocity": 0.0001
+                    }
+                })
+                .to_string(),
+            },
+        ];
+
+        let rollups = build_rejection_rollups(&rows);
+        assert_eq!(rollups.len(), 1);
+        assert_eq!(rollups[0].market_id, "mkt-1");
+        assert_eq!(rollups[0].strategy, "latency-arb");
+        assert_eq!(rollups[0].total_count, 100);
+        assert_eq!(
+            rollups[0].reason_summary,
+            "features_stale=75.0%, window_too_late=25.0%"
+        );
+        assert!(rollups[0].metrics_summary.contains("quoteAgeMs=140"));
+        assert!(rollups[0].metrics_summary.contains("bookStalenessMs=165"));
+        assert!(!rollups[0].metrics_summary.contains('{'));
+    }
+}
+
 /// Evaluate strategies.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn evaluate_strategies(
@@ -1256,6 +1661,7 @@ fn evaluate_strategies(
     bankroll: &mut BankrollManager,
     circuit_breaker: &mut CircuitBreaker,
     trend_tracker: &mut TrendTracker,
+    rejection_tracker: &mut StrategyRejectionTracker,
     now: u64,
 ) {
     let Some(window) = state.current_window.as_ref() else {
@@ -1298,6 +1704,9 @@ fn evaluate_strategies(
 
         match result {
             StrategyResult::None => {}
+            StrategyResult::Rejected(rejection) => {
+                rejection_tracker.record(&window.market_id, &rejection);
+            }
             StrategyResult::Single(signal) => {
                 if trend_tracker.should_suppress(signal.direction) {
                     if let Ok(signal_id) = db.log_signal_with_context(

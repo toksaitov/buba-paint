@@ -123,6 +123,7 @@ fn book_state_with_one_side() {
             bid_size: 100.0,
             ask_size: 200.0,
             timestamp: 1_700_000_000_000,
+            observed_at_ms: 1_700_000_000_000,
         }),
         down: None,
     };
@@ -433,6 +434,7 @@ fn top_of_book_clone() {
         bid_size: 100.0,
         ask_size: 200.0,
         timestamp: 1_700_000_000_000,
+        observed_at_ms: 1_700_000_000_000,
     };
     let cloned = original.clone();
     assert!((cloned.best_bid - 0.45).abs() < f64::EPSILON);

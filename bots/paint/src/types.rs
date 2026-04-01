@@ -78,6 +78,7 @@ pub struct TopOfBook {
     pub bid_size: f64,
     pub ask_size: f64,
     pub timestamp: u64,
+    pub observed_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -180,6 +181,152 @@ pub struct Signal {
     pub expected_edge: Option<f64>,
     pub metadata: serde_json::Value,
     pub telemetry: Option<SignalTelemetry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StrategyRejectionReason {
+    WindowTooLate,
+    BookUnavailable,
+    FeaturesStale,
+    CooldownActive,
+    NonPositiveQuotes,
+    DirectionNotSelected,
+    EntryAskBelowMin,
+    SpreadThresholdNotMet,
+    LeggingRiskTooHigh,
+    ExpectedEdgeNonPositive,
+}
+
+impl StrategyRejectionReason {
+    /// Returns the persisted rejection label used in logs and `SQLite` summaries.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WindowTooLate => "window_too_late",
+            Self::BookUnavailable => "book_unavailable",
+            Self::FeaturesStale => "features_stale",
+            Self::CooldownActive => "cooldown_active",
+            Self::NonPositiveQuotes => "non_positive_quotes",
+            Self::DirectionNotSelected => "direction_not_selected",
+            Self::EntryAskBelowMin => "entry_ask_below_min",
+            Self::SpreadThresholdNotMet => "spread_threshold_not_met",
+            Self::LeggingRiskTooHigh => "legging_risk_too_high",
+            Self::ExpectedEdgeNonPositive => "expected_edge_non_positive",
+        }
+    }
+}
+
+impl fmt::Display for StrategyRejectionReason {
+    /// Formats the rejection reason using the persisted lowercase label.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StrategyRejectionSample {
+    pub up_ask: Option<f64>,
+    pub down_ask: Option<f64>,
+    pub total_ask: Option<f64>,
+    pub external_bias: Option<f64>,
+    pub up_edge: Option<f64>,
+    pub down_edge: Option<f64>,
+    pub expected_fee: Option<f64>,
+    pub expected_slippage: Option<f64>,
+    pub expected_edge: Option<f64>,
+    pub quote_age_ms: Option<u64>,
+    pub book_staleness_ms: Option<u64>,
+    pub window_time_remaining_ms: Option<u64>,
+    pub quote_churn_per_s: Option<f64>,
+    pub move_velocity: Option<f64>,
+}
+
+impl StrategyRejectionSample {
+    /// Builds a sample with the common quote and timing fields taken from one strategy context.
+    #[must_use]
+    pub fn from_ctx(ctx: &StrategyContext) -> Self {
+        let up_ask = ctx.book_state.up.as_ref().map(|book| book.best_ask);
+        let down_ask = ctx.book_state.down.as_ref().map(|book| book.best_ask);
+        Self {
+            up_ask,
+            down_ask,
+            total_ask: match (up_ask, down_ask) {
+                (Some(up), Some(down)) => Some(up + down),
+                _ => None,
+            },
+            external_bias: None,
+            up_edge: None,
+            down_edge: None,
+            expected_fee: None,
+            expected_slippage: None,
+            expected_edge: None,
+            quote_age_ms: ctx.features.quote_age_ms,
+            book_staleness_ms: ctx.features.book_staleness_ms,
+            window_time_remaining_ms: Some(ctx.window_time_remaining_ms),
+            quote_churn_per_s: ctx.features.polymarket_quote_churn_per_s,
+            move_velocity: ctx
+                .features
+                .return_250ms
+                .or(ctx.features.return_500ms)
+                .or(ctx.features.return_1000ms)
+                .or(Some(ctx.binance_momentum))
+                .map(f64::abs),
+        }
+    }
+
+    /// Returns a JSON representation used by aggregated rejection summaries.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "upAsk": self.up_ask,
+            "downAsk": self.down_ask,
+            "totalAsk": self.total_ask,
+            "externalBias": self.external_bias,
+            "upEdge": self.up_edge,
+            "downEdge": self.down_edge,
+            "expectedFee": self.expected_fee,
+            "expectedSlippage": self.expected_slippage,
+            "expectedEdge": self.expected_edge,
+            "quoteAgeMs": self.quote_age_ms,
+            "bookStalenessMs": self.book_staleness_ms,
+            "windowTimeRemainingMs": self.window_time_remaining_ms,
+            "quoteChurnPerS": self.quote_churn_per_s,
+            "moveVelocity": self.move_velocity,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StrategyRejection {
+    pub strategy: String,
+    pub reason: StrategyRejectionReason,
+    pub sample: StrategyRejectionSample,
+}
+
+impl StrategyRejection {
+    /// Builds one structured rejection observation for live aggregation.
+    #[must_use]
+    pub fn new(
+        strategy: impl Into<String>,
+        reason: StrategyRejectionReason,
+        sample: StrategyRejectionSample,
+    ) -> Self {
+        Self {
+            strategy: strategy.into(),
+            reason,
+            sample,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StrategyRejectionSummaryRecord {
+    pub timestamp_ms: u64,
+    pub market_id: String,
+    pub strategy: String,
+    pub reason: String,
+    pub count: u64,
+    pub details_json: String,
 }
 
 #[derive(Debug, Clone)]

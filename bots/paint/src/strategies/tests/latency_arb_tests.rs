@@ -1,6 +1,6 @@
 use super::*;
 use crate::signal_features::SignalFeatureSnapshot;
-use crate::types::{BookState, TopOfBook};
+use crate::types::{BookState, StrategyRejectionReason, TopOfBook};
 
 /// Build a default config suitable for tests.
 fn test_config() -> Config {
@@ -16,6 +16,7 @@ fn book(up_bid: f64, up_ask: f64, down_bid: f64, down_ask: f64) -> BookState {
             bid_size: 100.0,
             ask_size: 100.0,
             timestamp: 0,
+            observed_at_ms: 0,
         }),
         down: Some(TopOfBook {
             best_bid: down_bid,
@@ -23,6 +24,7 @@ fn book(up_bid: f64, up_ask: f64, down_bid: f64, down_ask: f64) -> BookState {
             bid_size: 100.0,
             ask_size: 100.0,
             timestamp: 0,
+            observed_at_ms: 0,
         }),
     }
 }
@@ -42,6 +44,14 @@ fn ctx_with(momentum: f64, book_state: BookState, remaining_ms: u64) -> Strategy
     }
 }
 
+/// Verifies that one strategy result is the expected explicit rejection.
+fn assert_rejected(result: StrategyResult, reason: StrategyRejectionReason) {
+    match result {
+        StrategyResult::Rejected(rejection) => assert_eq!(rejection.reason, reason),
+        other => panic!("expected Rejected({reason}), got {other:?}"),
+    }
+}
+
 /// Verifies that no signal below threshold.
 #[test]
 fn no_signal_below_threshold() {
@@ -49,7 +59,7 @@ fn no_signal_below_threshold() {
     let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
     let ctx = ctx_with(0.0005, book(0.45, 0.50, 0.45, 0.50), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
 }
 
 /// Verifies that signal fires above threshold.
@@ -102,7 +112,7 @@ fn cooldown_blocks_repeated_signals() {
 
     let t2 = t1 + 30_000;
     let result2 = strat.evaluate(&ctx, &config, t2);
-    assert!(matches!(result2, StrategyResult::None));
+    assert_rejected(result2, StrategyRejectionReason::CooldownActive);
 
     let t3 = t1 + 60_001;
     let result3 = strat.evaluate(&ctx, &config, t3);
@@ -127,10 +137,7 @@ fn adaptive_threshold_with_enough_samples() {
 
     let t = 100_000 + 200 * 11_000;
     let result = strat.evaluate(&ctx, &config, t);
-    assert!(
-        matches!(result, StrategyResult::None),
-        "adaptive threshold should have raised above 0.0020"
-    );
+    assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
 }
 
 /// Verifies that min ask filter blocks cheap entries.
@@ -141,7 +148,7 @@ fn min_ask_filter_blocks_cheap_entries() {
 
     let ctx = ctx_with(0.0020, book(0.15, 0.20, 0.45, 0.50), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::EntryAskBelowMin);
 }
 
 /// Verifies that window time filter blocks near expiry.
@@ -152,7 +159,7 @@ fn window_time_filter_blocks_near_expiry() {
 
     let ctx = ctx_with(0.0020, book(0.45, 0.50, 0.45, 0.50), 30_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::WindowTooLate);
 }
 
 /// Verifies that missing book side returns none.
@@ -162,7 +169,7 @@ fn missing_book_side_returns_none() {
     let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
     let ctx = ctx_with(0.0020, BookState::default(), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::BookUnavailable);
 }
 
 /// Verifies that stale Chainlink does not block signals when other inputs are fresh.
@@ -188,7 +195,7 @@ fn max_ask_filter_blocks_expensive_entries() {
 
     let ctx = ctx_with(0.0020, book(0.55, 0.60, 0.45, 0.50), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
 }
 
 /// Verifies that confidence is correct.
@@ -307,7 +314,7 @@ fn zero_ask_prices_return_none() {
 
     let ctx = ctx_with(0.0020, book(0.0, 0.0, 0.0, 0.0), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::NonPositiveQuotes);
 }
 
 /// Verifies that min ask filter blocks down direction.
@@ -318,7 +325,7 @@ fn min_ask_filter_blocks_down_direction() {
 
     let ctx = ctx_with(-0.0020, book(0.45, 0.50, 0.15, 0.20), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::EntryAskBelowMin);
 }
 
 /// Verifies that max ask filter blocks down direction.
@@ -329,7 +336,7 @@ fn max_ask_filter_blocks_down_direction() {
 
     let ctx = ctx_with(-0.0020, book(0.45, 0.50, 0.55, 0.60), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
 }
 
 /// Verifies that adaptive threshold returns base with few samples.
@@ -421,10 +428,7 @@ fn momentum_exactly_at_threshold_does_not_fire() {
     let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
     let ctx = ctx_with(0.001, book(0.45, 0.50, 0.45, 0.50), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(
-        matches!(result, StrategyResult::None),
-        "momentum exactly at threshold should not fire (uses > not >=)"
-    );
+    assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
 }
 
 /// Verifies that slight momentum alone is not enough without a stale-price setup.
@@ -444,10 +448,7 @@ fn momentum_just_above_threshold_needs_stale_price_confirmation() {
         features: SignalFeatureSnapshot::default(),
     };
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(
-        matches!(result, StrategyResult::None),
-        "slight momentum without mispricing confirmation should not fire"
-    );
+    assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
 }
 
 /// Verifies that ask exactly at max does not fire.
@@ -458,10 +459,33 @@ fn ask_exactly_at_max_does_not_fire() {
 
     let ctx = ctx_with(0.0020, book(0.50, 0.55, 0.45, 0.50), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(
-        matches!(result, StrategyResult::None),
-        "ask exactly at max_ask should not fire (uses < not <=)"
-    );
+    assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
+}
+
+/// Verifies that stale quote data is rejected explicitly.
+#[test]
+fn stale_features_return_features_stale_rejection() {
+    let config = test_config();
+    let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
+    let mut ctx = ctx_with(0.0020, book(0.45, 0.50, 0.45, 0.50), 120_000);
+    ctx.features.binance_age_ms = Some(config.max_signal_feed_age_ms + 1);
+    ctx.features.quote_age_ms = Some(config.max_quote_age_ms + 1);
+    ctx.features.book_staleness_ms = Some(config.max_book_staleness_ms + 1);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    assert_rejected(result, StrategyRejectionReason::FeaturesStale);
+}
+
+/// Verifies that a selected side with negative projected edge is rejected explicitly.
+#[test]
+fn negative_projected_edge_returns_expected_edge_rejection() {
+    let config = test_config();
+    let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
+    let mut ctx = ctx_with(0.0020, book(0.01, 0.50, 0.45, 0.95), 120_000);
+    ctx.features.expected_up_slippage = Some(0.30);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    assert_rejected(result, StrategyRejectionReason::ExpectedEdgeNonPositive);
 }
 
 /// Verifies that ask exactly at min does not fire.

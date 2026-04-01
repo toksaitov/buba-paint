@@ -48,6 +48,7 @@ impl FeedState {
                         bid_size: sample.bid_size.unwrap_or(0.0),
                         ask_size: sample.ask_size.unwrap_or(0.0),
                         timestamp: group.timestamp,
+                        observed_at_ms: group.timestamp,
                     });
                 }
             }
@@ -59,6 +60,7 @@ impl FeedState {
                         bid_size: sample.bid_size.unwrap_or(0.0),
                         ask_size: sample.ask_size.unwrap_or(0.0),
                         timestamp: group.timestamp,
+                        observed_at_ms: group.timestamp,
                     });
                 }
             }

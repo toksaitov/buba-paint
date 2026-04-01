@@ -33,6 +33,7 @@ fn book_state(timestamp: u64) -> BookState {
             bid_size: 100.0,
             ask_size: 120.0,
             timestamp,
+            observed_at_ms: timestamp,
         }),
         down: Some(TopOfBook {
             best_bid: 0.49,
@@ -40,6 +41,7 @@ fn book_state(timestamp: u64) -> BookState {
             bid_size: 90.0,
             ask_size: 110.0,
             timestamp,
+            observed_at_ms: timestamp,
         }),
     }
 }
@@ -124,6 +126,7 @@ fn compute_returns_raw_event_full_when_raw_features_are_available() {
                 bid_size: 110.0,
                 ask_size: 100.0,
                 timestamp: 100_500,
+                observed_at_ms: 100_500,
             }),
             down: Some(TopOfBook {
                 best_bid: 0.50,
@@ -131,6 +134,7 @@ fn compute_returns_raw_event_full_when_raw_features_are_available() {
                 bid_size: 120.0,
                 ask_size: 90.0,
                 timestamp: 100_500,
+                observed_at_ms: 100_500,
             }),
         },
         100_500,
@@ -168,4 +172,50 @@ fn prune_discards_stale_history() {
 
     assert_eq!(state.binance_trades.len(), 1);
     assert_eq!(state.clob_quote_churn_per_s(106_500, 1_000), None);
+}
+
+/// Verify that live quote freshness uses observed receipt time when the raw
+/// CLOB source timestamp is missing.
+#[test]
+fn compute_uses_observed_freshness_when_source_timestamp_is_zero() {
+    let config = crate::config::Config::default();
+    let window = market_window();
+    let mut state = SignalState::new();
+    state.update_binance_trade(70_000.0, 1.0, None, 100_000, None);
+    state.update_chainlink(70_005.0, 100_600, None);
+    state.update_clob(
+        BookState {
+            up: Some(TopOfBook {
+                best_bid: 0.48,
+                best_ask: 0.49,
+                bid_size: 100.0,
+                ask_size: 120.0,
+                timestamp: 0,
+                observed_at_ms: 100_650,
+            }),
+            down: Some(TopOfBook {
+                best_bid: 0.49,
+                best_ask: 0.50,
+                bid_size: 90.0,
+                ask_size: 110.0,
+                timestamp: 0,
+                observed_at_ms: 100_650,
+            }),
+        },
+        100_650,
+        None,
+    );
+
+    let snapshot = SignalFeatureEngine::compute(
+        &mut state,
+        Some(&window),
+        Some(69_900.0),
+        0.0012,
+        100_700,
+        None,
+        &config,
+    );
+
+    assert_eq!(snapshot.quote_age_ms, Some(50));
+    assert_eq!(snapshot.book_staleness_ms, Some(50));
 }

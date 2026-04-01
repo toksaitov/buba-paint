@@ -281,6 +281,7 @@ fn reset_clears_everything() {
         bid_size: 100.0,
         ask_size: 200.0,
         timestamp: 1_000,
+        observed_at_ms: 1_000,
     });
 
     state.reset();

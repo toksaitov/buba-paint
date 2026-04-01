@@ -241,6 +241,17 @@ fn ensure_additive_tables(conn: &rusqlite::Connection) {
             details_json TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_feed_health_source_ts ON feed_health_events(source, timestamp_ms);
+        CREATE TABLE IF NOT EXISTS strategy_rejection_summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_ms INTEGER NOT NULL,
+            market_id TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            details_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_rejections_market_ts ON strategy_rejection_summaries(market_id, timestamp_ms);
+        CREATE INDEX IF NOT EXISTS idx_strategy_rejections_reason_ts ON strategy_rejection_summaries(reason, timestamp_ms);
         CREATE TABLE IF NOT EXISTS history_upgrades (
             key TEXT PRIMARY KEY,
             completed_at_ms INTEGER NOT NULL

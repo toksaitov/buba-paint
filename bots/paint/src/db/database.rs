@@ -8,7 +8,8 @@ use rusqlite::params;
 use super::schema;
 use crate::types::{
     FeedEvent, FeedHealthEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection,
-    SignalMetricRecord, SignalTelemetry, SimulatedTrade, TradeResult, TradeStatus,
+    SignalMetricRecord, SignalTelemetry, SimulatedTrade, StrategyRejectionSummaryRecord,
+    TradeResult, TradeStatus,
 };
 
 /// Thin wrapper around a `SQLite` connection that mirrors the `TypeScript` `Database`
@@ -357,6 +358,49 @@ impl Database {
             event.details_json,
         ])?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Persists one aggregated strategy-rejection summary row.
+    pub fn log_strategy_rejection_summary(
+        &self,
+        record: &StrategyRejectionSummaryRecord,
+    ) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO strategy_rejection_summaries (
+                timestamp_ms, market_id, strategy, reason, count, details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        stmt.execute(params![
+            record.timestamp_ms,
+            record.market_id,
+            record.strategy,
+            record.reason,
+            record.count,
+            record.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Returns the earliest persisted Binance price within one market window.
+    pub fn earliest_binance_price_in_window(
+        &self,
+        start_time_ms: u64,
+        end_time_ms: u64,
+    ) -> anyhow::Result<Option<f64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT price
+             FROM tick_data
+             WHERE source = 'binance'
+               AND timestamp >= ?1
+               AND timestamp < ?2
+               AND price IS NOT NULL
+             ORDER BY timestamp ASC, id ASC
+             LIMIT 1",
+        )?;
+        let price = stmt
+            .query_row(params![start_time_ms, end_time_ms], |row| row.get(0))
+            .optional()?;
+        Ok(price)
     }
 
     /// Insert a new open trade and return the auto-generated row ID.

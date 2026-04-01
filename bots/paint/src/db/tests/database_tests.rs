@@ -1,7 +1,7 @@
 use super::*;
 use crate::types::{
-    FeedEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection, SimulatedTrade, TradeResult,
-    TradeStatus,
+    FeedEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection, SimulatedTrade,
+    StrategyRejectionSummaryRecord, TradeResult, TradeStatus,
 };
 use tempfile::NamedTempFile;
 
@@ -117,6 +117,22 @@ fn sample_feed_event() -> FeedEvent {
     }
 }
 
+/// Sample rejection-summary row.
+fn sample_rejection_summary() -> StrategyRejectionSummaryRecord {
+    StrategyRejectionSummaryRecord {
+        timestamp_ms: 1_700_000_000_000,
+        market_id: "mkt-1".into(),
+        strategy: "latency-arb".into(),
+        reason: "direction_not_selected".into(),
+        count: 7,
+        details_json: serde_json::json!({
+            "last": {"upAsk": 0.54},
+            "mean": {"upAsk": 0.51}
+        })
+        .to_string(),
+    }
+}
+
 /// Verifies that insert tick and verify count.
 #[test]
 fn insert_tick_and_verify_count() {
@@ -209,6 +225,49 @@ fn log_signal_stores_metadata_as_json() {
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&meta).unwrap();
     assert!((parsed["momentum"].as_f64().unwrap() - 0.0015).abs() < f64::EPSILON);
+}
+
+/// Verifies that rejection-summary rows are persisted with their details payload.
+#[test]
+fn log_strategy_rejection_summary_persists_row() {
+    let (db, _tmp) = temp_db();
+    let summary = sample_rejection_summary();
+    db.log_strategy_rejection_summary(&summary).unwrap();
+
+    let (count, details_json): (i64, String) = db
+        .conn
+        .query_row(
+            "SELECT count, details_json FROM strategy_rejection_summaries LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 7);
+    let details: serde_json::Value = serde_json::from_str(&details_json).unwrap();
+    assert_eq!(details["mean"]["upAsk"], 0.51);
+}
+
+/// Verifies that earliest Binance price lookup returns the first tick inside the window.
+#[test]
+fn earliest_binance_price_in_window_returns_first_tick() {
+    let (db, _tmp) = temp_db();
+    db.log_tick(1_000, "binance", Some(42_100.0), None, None, None, None)
+        .unwrap();
+    db.log_tick(2_000, "binance", Some(42_200.0), None, None, None, None)
+        .unwrap();
+    db.log_tick(3_000, "binance", Some(42_300.0), None, None, None, None)
+        .unwrap();
+
+    let price = db.earliest_binance_price_in_window(1_500, 3_500).unwrap();
+    assert_eq!(price, Some(42_200.0));
+}
+
+/// Verifies that earliest Binance price lookup returns none when no tick exists.
+#[test]
+fn earliest_binance_price_in_window_returns_none_for_empty_window() {
+    let (db, _tmp) = temp_db();
+    let price = db.earliest_binance_price_in_window(1_500, 3_500).unwrap();
+    assert!(price.is_none());
 }
 
 /// Verifies that log signal direction stored as text.

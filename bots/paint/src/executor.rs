@@ -873,6 +873,7 @@ mod tests {
                 bid_size: ask_size,
                 ask_size,
                 timestamp,
+                observed_at_ms: timestamp,
             }),
             down: None,
         }

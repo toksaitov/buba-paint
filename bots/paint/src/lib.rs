@@ -15,6 +15,7 @@ mod live_storage;
 pub mod market_discovery;
 pub mod polymarket;
 pub mod position_manager;
+mod rejection_diagnostics;
 pub mod signal_features;
 pub mod strategies;
 pub mod tick_logger;

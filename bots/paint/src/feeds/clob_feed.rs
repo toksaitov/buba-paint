@@ -783,6 +783,7 @@ fn apply_price_change_entries(
     changes: &[ClobPriceChangeEntry],
     timestamp_ms: u64,
 ) {
+    let observed_at_ms = now_ms();
     for entry in changes {
         let top_of_book = resolve_top_of_book(book_state, up_token, down_token, &entry.asset_id);
         let Some(top_of_book) = top_of_book else {
@@ -802,6 +803,7 @@ fn apply_price_change_entries(
         }
 
         top_of_book.timestamp = timestamp_ms;
+        top_of_book.observed_at_ms = observed_at_ms;
     }
 }
 
@@ -819,6 +821,7 @@ fn resolve_top_of_book<'a>(
             bid_size: 0.0,
             ask_size: 0.0,
             timestamp: 0,
+            observed_at_ms: 0,
         }));
     }
     if asset_id == down_token {
@@ -828,6 +831,7 @@ fn resolve_top_of_book<'a>(
             bid_size: 0.0,
             ask_size: 0.0,
             timestamp: 0,
+            observed_at_ms: 0,
         }));
     }
     None
@@ -920,12 +924,14 @@ fn apply_book_snapshot(
     ask_size: f64,
     timestamp_ms: u64,
 ) {
+    let observed_at_ms = now_ms();
     let top_of_book = TopOfBook {
         best_bid,
         best_ask,
         bid_size,
         ask_size,
         timestamp: timestamp_ms,
+        observed_at_ms,
     };
 
     if asset_id == up_token {
@@ -975,6 +981,7 @@ fn apply_direct_tob(
     down_token: &str,
     update: &DirectTopOfBookUpdate<'_>,
 ) {
+    let observed_at_ms = now_ms();
     let target = if update.asset_id == up_token {
         &mut book_state.up
     } else if update.asset_id == down_token {
@@ -989,6 +996,7 @@ fn apply_direct_tob(
         bid_size: 0.0,
         ask_size: 0.0,
         timestamp: update.timestamp_ms,
+        observed_at_ms,
     });
 
     if let Some(best_bid) = update.best_bid {
@@ -1004,6 +1012,7 @@ fn apply_direct_tob(
         book.ask_size = ask_size;
     }
     book.timestamp = update.timestamp_ms;
+    book.observed_at_ms = observed_at_ms;
 }
 
 /// Normalize a `CLOB` source timestamp into millisecond and optional

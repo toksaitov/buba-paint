@@ -51,6 +51,7 @@ fn all_sources_four_entries() {
                 bid_size: 100.0,
                 ask_size: 200.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
             down: Some(TopOfBook {
                 best_bid: 0.44,
@@ -58,6 +59,7 @@ fn all_sources_four_entries() {
                 bid_size: 150.0,
                 ask_size: 250.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
         },
     };
@@ -96,6 +98,7 @@ fn only_book_up_two_entries_skipped_prices() {
                 bid_size: 500.0,
                 ask_size: 300.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
             down: None,
         },
@@ -119,6 +122,7 @@ fn prices_and_one_book_side_three_entries() {
                 bid_size: 150.0,
                 ask_size: 250.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
         },
     };
@@ -142,6 +146,7 @@ fn entry_order_is_deterministic() {
                 bid_size: 10.0,
                 ask_size: 20.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
             down: Some(TopOfBook {
                 best_bid: 0.3,
@@ -149,6 +154,7 @@ fn entry_order_is_deterministic() {
                 bid_size: 30.0,
                 ask_size: 40.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
         },
     };
@@ -176,6 +182,7 @@ fn only_down_book_one_entry_clob_down() {
                 bid_size: 150.0,
                 ask_size: 250.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
         },
     };
@@ -230,6 +237,7 @@ fn both_books_no_prices_two_entries() {
                 bid_size: 100.0,
                 ask_size: 200.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
             down: Some(TopOfBook {
                 best_bid: 0.44,
@@ -237,6 +245,7 @@ fn both_books_no_prices_two_entries() {
                 bid_size: 150.0,
                 ask_size: 250.0,
                 timestamp: 0,
+                observed_at_ms: 0,
             }),
         },
     };

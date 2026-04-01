@@ -258,6 +258,52 @@ fn parse_clob_text_single_object() {
     }
 }
 
+/// Verifies that live book snapshots keep raw zero timestamps but refresh
+/// observed freshness for trading.
+#[test]
+fn book_snapshot_without_source_timestamp_sets_observed_freshness() {
+    let mut book_state = crate::types::BookState::default();
+    apply_book_snapshot(
+        &mut book_state,
+        "tok-up",
+        "tok-down",
+        "tok-up",
+        0.45,
+        0.55,
+        100.0,
+        150.0,
+        0,
+    );
+
+    let up = book_state.up.expect("up book should exist");
+    assert_eq!(up.timestamp, 0);
+    assert!(up.observed_at_ms > 0);
+}
+
+/// Verifies that direct best-bid-ask updates keep raw zero timestamps while
+/// carrying a usable observed freshness timestamp.
+#[test]
+fn direct_best_bid_ask_without_source_timestamp_sets_observed_freshness() {
+    let mut book_state = crate::types::BookState::default();
+    apply_direct_tob(
+        &mut book_state,
+        "tok-up",
+        "tok-down",
+        &DirectTopOfBookUpdate {
+            asset_id: "tok-down",
+            timestamp_ms: 0,
+            best_bid: Some(0.44),
+            best_ask: Some(0.56),
+            bid_size: Some(120.0),
+            ask_size: Some(140.0),
+        },
+    );
+
+    let down = book_state.down.expect("down book should exist");
+    assert_eq!(down.timestamp, 0);
+    assert!(down.observed_at_ms > 0);
+}
+
 /// Verifies that parse clob event price change empty changes.
 #[test]
 fn parse_clob_event_price_change_empty_changes() {

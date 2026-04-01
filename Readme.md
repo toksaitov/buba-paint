@@ -31,7 +31,7 @@ Latency arb: Binance spot price moves first, Polymarket sometimes lags. When Bin
 
 Spread capture: when UP ask + DOWN ask is cheap enough after fees, the bot queues two independent taker buys. The pair is not modeled as atomic. If only one leg fills, the residual directional position stays open and settles like any other trade.
 
-For new live paper runs, compact raw feed events are written to `feed_events` and replayed by timestamp. The default storage profile keeps typed replay fields and drops bulky hot-path payload blobs so week-long paper runs remain practical. Signal-generation telemetry is persisted to `signal_metrics`, and feed lifecycle events are persisted to `feed_health_events`. For older runs, the simulator falls back to synthetic `legacy_snapshot` events built from 1 Hz `tick_data`. That path is intentionally conservative and should be treated as lower-fidelity than new raw-event runs.
+For new live paper runs, compact raw feed events are written to `feed_events` and replayed by timestamp. The default storage profile keeps typed replay fields and drops bulky hot-path payload blobs so week-long paper runs remain practical. Signal-generation telemetry is persisted to `signal_metrics`, feed lifecycle events are persisted to `feed_health_events`, and no-signal strategy decisions are summarized into `strategy_rejection_summaries` so live diagnostics can explain why a strategy kept returning `None`. Live quote freshness now uses observed local receipt time when the CLOB source timestamp is missing or zero, while the raw `feed_events.event_at_ms` value is still preserved for replay/debugging truth. For older runs, the simulator falls back to synthetic `legacy_snapshot` events built from 1 Hz `tick_data`. That path is intentionally conservative and should be treated as lower-fidelity than new raw-event runs.
 
 At window close, the bot records a provisional estimate for observability but waits for the authoritative Polymarket resolution before applying settlement to bankroll, Kelly state, trend tracking, or the circuit breaker. Fees use Polymarket's dynamic formula: `fee = shares * price * feeRate * (price * (1 - price))^exponent`. The default live crypto params are `feeRate=0.072` and `exponent=1` as of March 30, 2026.
 
@@ -222,6 +222,17 @@ cargo run -p buba-paint --release -- db-footprint --db-path /tmp/paint.db
 
 Prints on-disk DB and WAL sizes plus grouped `feed_events` counts by source and event type. Use this before long paper runs if storage growth looks suspicious.
 
+Example no-signal inspection query:
+
+```sql
+SELECT timestamp_ms, market_id, strategy, reason, count, details_json
+FROM strategy_rejection_summaries
+ORDER BY timestamp_ms DESC
+LIMIT 20;
+```
+
+If the normal bot log only needs the operator view, look for `strategy rejection rollup` lines. Those rollups keep the top reasons and mean quote/freshness context readable in the log, while the full structured detail stays in `strategy_rejection_summaries`.
+
 ## Configuration
 
 All settings via environment variables or `--set` CLI flag.
@@ -262,6 +273,7 @@ SQLite (WAL mode). Python scripts can read concurrently while the bot writes.
 - signals: every strategy detection event. Includes the market link, replay fidelity, and execution timing fields when available.
 - signal_metrics: per-signal telemetry. Stores generation, submission, and expected-arrival timing, per-feed ages, expected fee/slippage/edge, and a JSON feature snapshot.
 - feed_health_events: feed lifecycle telemetry. Stores connect, disconnect, stale, reconnect, and resubscribe events with optional market context.
+- strategy_rejection_summaries: aggregated no-signal diagnostics. Stores the strategy, rejection reason, count, and compact JSON summaries of representative quote, freshness, and edge values. The human log mirrors these as concise rollups instead of dumping the full JSON blob.
 - simulated_trades: opened positions. Links to market and signal, tracks requested size/price, filled size/average fill, fill status, execution group id for spread pairs, execution mode, and optional live order ids.
 - trade_results: settlement P&L. Links to trade, records settlement price, gross/net PnL fields, fee_amount, and settlement status.
 - balance_log: bankroll history. Records every balance change with timestamp, event type (init, trade_close, settlement_correction), trade reference, amount, and running balance.
@@ -368,6 +380,10 @@ curl -X POST -H "Authorization: Bearer your-secret" http://localhost:9090/api/bo
 For Docker deployment: `cp dashboard.toml.example dashboard.toml`, edit secrets, then `docker compose up -d`.
 
 The paint bot runs indefinitely, rolling through 5-minute windows. Ctrl+C for graceful shutdown (final stats printed, feeds disconnect, DB closes).
+
+If the bot is redeployed mid-window, it now recovers the earliest persisted Binance tick inside that market window before falling back to the current live Binance price. That keeps the window-open drift calculation stable across restarts on the same DB.
+
+When the live CLOB feed omits a usable source timestamp, the bot now treats the local observed receipt time as the freshness clock for trading decisions. That prevents missing upstream timestamps from poisoning quote age and book staleness while still preserving the raw source timestamp in `feed_events`.
 
 ## Analysis Scripts
 

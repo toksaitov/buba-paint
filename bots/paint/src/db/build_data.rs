@@ -186,6 +186,18 @@ const CREATE_SCHEMA: &str = "
         FOREIGN KEY (run_id) REFERENCES runs(id)
     );
 
+    CREATE TABLE strategy_rejection_summaries (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id       INTEGER NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        market_id    TEXT NOT NULL,
+        strategy     TEXT NOT NULL,
+        reason       TEXT NOT NULL,
+        count        INTEGER NOT NULL,
+        details_json TEXT NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES runs(id)
+    );
+
     CREATE TABLE data_quality (
         hour_start     INTEGER NOT NULL,
         source         TEXT NOT NULL,
@@ -236,6 +248,7 @@ const CREATE_INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS idx_signals_market ON signals(market_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_signal_metrics_run ON signal_metrics(run_id, signal_id);
     CREATE INDEX IF NOT EXISTS idx_feed_health_run_ts ON feed_health_events(run_id, timestamp_ms);
+    CREATE INDEX IF NOT EXISTS idx_strategy_rejections_run_ts ON strategy_rejection_summaries(run_id, timestamp_ms);
     CREATE INDEX IF NOT EXISTS idx_htrades_run ON historical_trades(run_id);
 ";
 
@@ -870,6 +883,24 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
                 } else {
                     "NULL".to_string()
                 },
+            ),
+            [],
+        )?;
+    }
+
+    let has_strategy_rejection_summaries = conn
+        .prepare("SELECT id FROM src.strategy_rejection_summaries LIMIT 0")
+        .is_ok();
+    if has_strategy_rejection_summaries {
+        log("  Copying strategy_rejection_summaries...");
+        conn.execute(
+            &format!(
+                "INSERT INTO strategy_rejection_summaries (
+                    run_id, timestamp_ms, market_id, strategy, reason, count, details_json
+                 )
+                 SELECT
+                    {run_id}, timestamp_ms, market_id, strategy, reason, count, details_json
+                 FROM src.strategy_rejection_summaries",
             ),
             [],
         )?;

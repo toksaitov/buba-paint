@@ -1,10 +1,12 @@
-use crate::types::Signal;
+use crate::types::{Signal, StrategyRejection};
 
 pub mod latency_arb;
 pub mod spread_capture;
 
+#[derive(Debug)]
 pub enum StrategyResult {
     None,
+    Rejected(Box<StrategyRejection>),
     Single(Box<Signal>),
     Batch(Vec<Signal>),
 }

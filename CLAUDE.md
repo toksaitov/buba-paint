@@ -25,7 +25,7 @@ make test-all               # fast + integration + slow + browser E2E
 make coverage               # Rust coverage summaries + frontend coverage
 make coverage-gate          # component coverage floors
 
-cd dashboard/client && npm test         # run all 144 frontend Vitest tests
+cd dashboard/client && npm test         # run the frontend Vitest suite
 cd dashboard/client && npm run test:e2e # run browser E2E
 cd dashboard/client && npm run test:coverage
 ```
@@ -186,6 +186,9 @@ Test inventory changes frequently. Use `cargo test`, `make test-all`, and the fr
 - Chainlink RTDS: initial dump `{payload:{data:[...]}}` (no `topic`), then live `{topic:"crypto_prices_chainlink", payload:{...}}`.
 - Binance live capture: the default market-data URL now combines `aggTrade`, `bookTicker`, and `depth@100ms`, and requests microsecond timestamps when Binance exposes them.
 - Live storage profile: `FEED_EVENT_STORAGE_PROFILE=compact` is the production default. It keeps typed replay fields, suppresses `bookTicker` persistence, buckets Binance depth to 250ms summaries, coalesces `CLOB` top-of-book writes, and drops bulky hot-path payload blobs. `full_debug` is only for short local diagnostics.
+- No-signal diagnostics: live runs aggregate explicit strategy rejection reasons into `strategy_rejection_summaries` and concise structured log rollups. Inspect those before guessing a retune when a run shows zero signals. The DB keeps the full JSON detail; the normal log should stay operator-readable.
+- Restart continuity: when a bot restarts over an existing live DB, the active window should recover its open price from the earliest persisted Binance tick inside that window before falling back to the current in-memory price.
+- Live CLOB freshness: trading freshness must use observed local receipt time when `best_bid_ask` / `book` / `price_change` messages omit a usable source timestamp. Preserve the raw source timestamp in `feed_events`, but do not let `event_at_ms=0` poison quote age.
 - Staleness: if no Chainlink data for `CHAINLINK_STALE_MS`, force-reconnect. During staleness, settlement falls back to Binance price.
 - Momentum: `(latest - oldest) / oldest` over rolling window. Guarded against division by zero (oldest price <= 0 returns 0).
 - Opposing position guard: single signals block same-strategy same-window. Batch signals (spread-capture) only block exact duplicates. All rejections are logged at debug level with the reason.
@@ -198,7 +201,7 @@ Test inventory changes frequently. Use `cargo test`, `make test-all`, and the fr
 ## Common Issues
 
 - "No active 5-min BTC market found": between windows or Gamma API hiccup. Retries automatically.
-- No signals generated: thresholds too tight. Lower `LATENCY_ARB_MOMENTUM_THRESHOLD`.
+- No signals generated: inspect `strategy_rejection_summaries` first, then read the concise `strategy rejection rollup` log lines. The dominant reason should tell you whether the blocker is spread threshold, stale features, expected edge, or direction selection. Do not retune blindly.
 - "Balance below minimum": drawdown hit safety limit. Increase `STARTING_BALANCE`.
 - Chainlink feed stale: RTDS stopped sending while WS stays open. Auto-detected, force-reconnects.
 - Sweep results differ between runs: stale temp DBs. PID-based paths prevent this; check `/tmp/`.
@@ -217,9 +220,16 @@ Test inventory changes frequently. Use `cargo test`, `make test-all`, and the fr
 SELECT 'tick_data' t, COUNT(*) FROM tick_data
 UNION SELECT 'markets', COUNT(*) FROM markets
 UNION SELECT 'signals', COUNT(*) FROM signals
+UNION SELECT 'rejections', COUNT(*) FROM strategy_rejection_summaries
 UNION SELECT 'trades', COUNT(*) FROM simulated_trades
 UNION SELECT 'results', COUNT(*) FROM trade_results
 UNION SELECT 'balance', COUNT(*) FROM balance_log;
+
+-- Recent no-signal summaries
+SELECT timestamp_ms, market_id, strategy, reason, count, details_json
+FROM strategy_rejection_summaries
+ORDER BY timestamp_ms DESC
+LIMIT 20;
 
 -- Trade results by strategy
 SELECT t.strategy, COUNT(*) trades,

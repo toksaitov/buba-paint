@@ -1,6 +1,6 @@
 use super::*;
 use crate::signal_features::SignalFeatureSnapshot;
-use crate::types::{BookState, TopOfBook};
+use crate::types::{BookState, StrategyRejectionReason, TopOfBook};
 
 /// Test config.
 fn test_config() -> Config {
@@ -16,6 +16,7 @@ fn book(up_bid: f64, up_ask: f64, down_bid: f64, down_ask: f64) -> BookState {
             bid_size: 100.0,
             ask_size: 100.0,
             timestamp: 0,
+            observed_at_ms: 0,
         }),
         down: Some(TopOfBook {
             best_bid: down_bid,
@@ -23,6 +24,7 @@ fn book(up_bid: f64, up_ask: f64, down_bid: f64, down_ask: f64) -> BookState {
             bid_size: 100.0,
             ask_size: 100.0,
             timestamp: 0,
+            observed_at_ms: 0,
         }),
     }
 }
@@ -41,6 +43,14 @@ fn ctx_with_book(book_state: BookState) -> StrategyContext {
     }
 }
 
+/// Verifies that one spread-capture result is the expected explicit rejection.
+fn assert_rejected(result: StrategyResult, reason: StrategyRejectionReason) {
+    match result {
+        StrategyResult::Rejected(rejection) => assert_eq!(rejection.reason, reason),
+        other => panic!("expected Rejected({reason}), got {other:?}"),
+    }
+}
+
 /// Verifies that no signal when total ask above threshold.
 #[test]
 fn no_signal_when_total_ask_above_threshold() {
@@ -49,7 +59,7 @@ fn no_signal_when_total_ask_above_threshold() {
 
     let ctx = ctx_with_book(book(0.45, 0.50, 0.45, 0.50));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::SpreadThresholdNotMet);
 }
 
 /// Verifies that batch signals when total ask below threshold.
@@ -80,7 +90,7 @@ fn min_ask_filter_rejects_degenerate_books() {
 
     let ctx = ctx_with_book(book(0.05, 0.10, 0.45, 0.49));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::EntryAskBelowMin);
 }
 
 /// Verifies that min ask filter rejects down side.
@@ -91,7 +101,7 @@ fn min_ask_filter_rejects_down_side() {
 
     let ctx = ctx_with_book(book(0.45, 0.49, 0.05, 0.10));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::EntryAskBelowMin);
 }
 
 /// Verifies that confidence calculation.
@@ -156,7 +166,7 @@ fn missing_book_returns_none() {
     let mut strat = SpreadCaptureStrategy::new();
     let ctx = ctx_with_book(BookState::default());
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::BookUnavailable);
 }
 
 /// Verifies that zero ask returns none.
@@ -166,7 +176,7 @@ fn zero_ask_returns_none() {
     let mut strat = SpreadCaptureStrategy::new();
     let ctx = ctx_with_book(book(0.0, 0.0, 0.45, 0.49));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::NonPositiveQuotes);
 }
 
 /// Verifies that strategy name.
@@ -193,7 +203,7 @@ fn exact_threshold_boundary_returns_none() {
 
     let ctx = ctx_with_book(book(0.45, 0.499, 0.45, 0.499));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::SpreadThresholdNotMet);
 }
 
 /// Verifies that just below threshold fires batch.
@@ -266,10 +276,11 @@ fn missing_only_up_book_returns_none() {
             bid_size: 100.0,
             ask_size: 100.0,
             timestamp: 0,
+            observed_at_ms: 0,
         }),
     });
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::BookUnavailable);
 }
 
 /// Verifies that down ask zero returns none.
@@ -280,7 +291,7 @@ fn down_ask_zero_returns_none() {
 
     let ctx = ctx_with_book(book(0.45, 0.49, 0.00, 0.00));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(matches!(result, StrategyResult::None));
+    assert_rejected(result, StrategyRejectionReason::NonPositiveQuotes);
 }
 
 /// Verifies that threshold exactly one no divide by zero.
@@ -317,8 +328,46 @@ fn total_ask_exactly_at_threshold_returns_none() {
 
     let ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
     let result = strat.evaluate(&ctx, &config, 1_000_000);
-    assert!(
-        matches!(result, StrategyResult::None),
-        "total_ask exactly at threshold should return None (uses >= not >)"
-    );
+    assert_rejected(result, StrategyRejectionReason::SpreadThresholdNotMet);
+}
+
+/// Verifies that stale quotes are rejected explicitly.
+#[test]
+fn stale_quotes_return_features_stale_rejection() {
+    let config = test_config();
+    let mut strat = SpreadCaptureStrategy::new();
+    let mut ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
+    ctx.features.quote_age_ms = Some(config.max_quote_age_ms + 1);
+    ctx.features.book_staleness_ms = Some(config.max_book_staleness_ms + 1);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    assert_rejected(result, StrategyRejectionReason::FeaturesStale);
+}
+
+/// Verifies that high quote churn and move velocity are rejected explicitly.
+#[test]
+fn elevated_legging_risk_returns_rejection() {
+    let config = test_config();
+    let mut strat = SpreadCaptureStrategy::new();
+    let mut ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
+    ctx.features.return_250ms = Some(config.latency_arb_momentum_threshold * 2.5);
+    ctx.features.polymarket_quote_churn_per_s = Some(9.0);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    assert_rejected(result, StrategyRejectionReason::LeggingRiskTooHigh);
+}
+
+/// Verifies that negative net edge is rejected explicitly.
+#[test]
+fn negative_net_edge_returns_expected_edge_rejection() {
+    let mut config = test_config();
+    config.spread_capture_threshold = 0.98;
+    config.spread_capture_min_ask = 0.10;
+    let mut strat = SpreadCaptureStrategy::new();
+    let mut ctx = ctx_with_book(book(0.01, 0.45, 0.01, 0.45));
+    ctx.features.expected_up_slippage = Some(0.06);
+    ctx.features.expected_down_slippage = Some(0.06);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    assert_rejected(result, StrategyRejectionReason::ExpectedEdgeNonPositive);
 }

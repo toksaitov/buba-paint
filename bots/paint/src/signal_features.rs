@@ -159,10 +159,12 @@ impl SignalState {
     /// Record a Polymarket top-of-book update and quote-churn history.
     pub fn update_clob(
         &mut self,
-        book_state: BookState,
+        mut book_state: BookState,
         event_time_ms: u64,
         event_micros: Option<u64>,
     ) {
+        normalize_observed_timestamp(book_state.up.as_mut());
+        normalize_observed_timestamp(book_state.down.as_mut());
         self.book_state = book_state;
         self.clob_last_event_ms = Some(event_time_ms);
         self.clob_last_event_us = event_micros;
@@ -629,7 +631,22 @@ fn current_summed_midpoint(book_state: &BookState) -> Option<f64> {
 fn quote_age_ms(book_state: &BookState, now_ms: u64) -> Option<u64> {
     let up = book_state.up.as_ref()?;
     let down = book_state.down.as_ref()?;
-    Some(now_ms.saturating_sub(up.timestamp.max(down.timestamp)))
+    Some(now_ms.saturating_sub(effective_book_timestamp(up).max(effective_book_timestamp(down))))
+}
+
+/// Return the best available freshness timestamp for one top-of-book snapshot.
+fn effective_book_timestamp(book: &TopOfBook) -> u64 {
+    book.observed_at_ms.max(book.timestamp)
+}
+
+/// Fill observed freshness from the raw source timestamp when tests or replay
+/// supply older `TopOfBook` values without the live-only freshness field.
+fn normalize_observed_timestamp(book: Option<&mut TopOfBook>) {
+    if let Some(book) = book {
+        if book.observed_at_ms == 0 && book.timestamp > 0 {
+            book.observed_at_ms = book.timestamp;
+        }
+    }
 }
 
 /// Compute the weighted-average execution price for a set of depth levels.

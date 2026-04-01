@@ -166,6 +166,21 @@ async fn send_rising_binance_ticks(binance_mock: &MockWsServer, count: u32) {
     }
 }
 
+/// Helper: send a burst of flat Binance ticks that should not create strong momentum.
+async fn send_flat_binance_ticks(binance_mock: &MockWsServer, count: u32) {
+    let base_price = 42_000.0;
+    for i in 0..count {
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_100_000_000_u64 + u64::from(i) * 100,
+            base_price,
+            1_700_100_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Helper: send `CLOB` book snapshots with a low UP ask (triggers latency-arb).
 async fn send_clob_book(clob_mock: &MockWsServer) {
     let timestamp = current_test_ms();
@@ -177,6 +192,36 @@ async fn send_clob_book(clob_mock: &MockWsServer) {
     clob_mock
         .send(&format!(
             r#"{{"asset_id":"tok-down-sys","timestamp":{timestamp},"bids":[{{"price":"0.40","size":"100"}}],"asks":[{{"price":"0.50","size":"100"}}]}}"#
+        ))
+        .await;
+}
+
+/// Helper: send `CLOB` book snapshots without a source timestamp so the live
+/// path must rely on observed freshness instead.
+async fn send_clob_book_without_timestamp(clob_mock: &MockWsServer) {
+    clob_mock
+        .send(
+            r#"{"asset_id":"tok-up-sys","bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.45","size":"100"}]}"#,
+        )
+        .await;
+    clob_mock
+        .send(
+            r#"{"asset_id":"tok-down-sys","bids":[{"price":"0.40","size":"100"}],"asks":[{"price":"0.50","size":"100"}]}"#,
+        )
+        .await;
+}
+
+/// Helper: send `CLOB` books that remain too expensive for spread-capture and latency-arb.
+async fn send_high_ask_clob_book(clob_mock: &MockWsServer) {
+    let timestamp = current_test_ms();
+    clob_mock
+        .send(&format!(
+            r#"{{"asset_id":"tok-up-sys","timestamp":{timestamp},"bids":[{{"price":"0.10","size":"100"}}],"asks":[{{"price":"0.70","size":"100"}}]}}"#
+        ))
+        .await;
+    clob_mock
+        .send(&format!(
+            r#"{{"asset_id":"tok-down-sys","timestamp":{timestamp},"bids":[{{"price":"0.10","size":"100"}}],"asks":[{{"price":"0.70","size":"100"}}]}}"#
         ))
         .await;
 }
@@ -924,6 +969,157 @@ async fn live_bot_multiple_windows_in_sequence() {
         )
         .unwrap();
     assert!(has_w2, "Expected mkt-window-2 in markets table");
+}
+
+/// Verifies that a no-signal live window persists aggregated rejection summaries.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_persists_rejection_summaries_for_no_signal_window() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    config.spread_capture_threshold = 0.97;
+    config.latency_arb_max_ask = 0.60;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    send_flat_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_high_ask_clob_book(&clob_mock).await;
+
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(
+        result.is_ok(),
+        "bot did not shut down within timeout after shutdown signal"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot task panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let summary_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM strategy_rejection_summaries",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        summary_count > 0,
+        "Expected rejection summaries for a no-signal window, got {summary_count}"
+    );
+
+    let spread_threshold_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM strategy_rejection_summaries
+             WHERE strategy = 'spread-capture' AND reason = 'spread_threshold_not_met'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        spread_threshold_count > 0,
+        "Expected spread_threshold_not_met summaries, got {spread_threshold_count}"
+    );
+}
+
+/// Verifies that missing `CLOB` source timestamps no longer poison live quote
+/// freshness and still allow latency-arb to generate signals.
+#[tokio::test]
+async fn live_bot_zero_timestamp_clob_books_still_generate_signal() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    config.spread_capture_threshold = 0.97;
+    config.latency_arb_momentum_threshold = 0.0005;
+    config.latency_arb_max_ask = 0.60;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book_without_timestamp(&clob_mock).await;
+    send_rising_binance_ticks(&binance_mock, 10).await;
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(result.is_ok(), "bot did not shut down within timeout");
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let signal_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM signals", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        signal_count > 0,
+        "Expected at least one generated signal with zero-timestamp CLOB books, got {signal_count}"
+    );
+
+    let stale_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM strategy_rejection_summaries
+             WHERE strategy = 'latency-arb' AND reason = 'features_stale'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stale_count, 0,
+        "Expected zero latency-arb features_stale summaries after the observed-freshness fix, got {stale_count}"
+    );
 }
 
 /// A5: Verify that the `StrategyResult::Batch` path (spread-capture strategy)

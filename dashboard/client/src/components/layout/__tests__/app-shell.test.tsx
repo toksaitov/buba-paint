@@ -103,7 +103,9 @@ it("auto-selects the first bot and persists it", async () => {
   });
 
   expect(screen.getByTestId("header-bot-name")).toHaveTextContent("Paint One");
-  expect(sessionStorage.getItem("activeBotId")).toBe("bot-1");
+  await waitFor(() => {
+    expect(sessionStorage.getItem("activeBotId")).toBe("bot-1");
+  });
   expect(liveUpdatesMock).toHaveBeenLastCalledWith("bot-1");
 });
 
@@ -135,7 +137,9 @@ it("recovers from stale session storage and updates on manual selection", async 
     expect(screen.getByTestId("header-bot-id")).toHaveTextContent("bot-2");
   });
 
-  expect(sessionStorage.getItem("activeBotId")).toBe("bot-2");
+  await waitFor(() => {
+    expect(sessionStorage.getItem("activeBotId")).toBe("bot-2");
+  });
   expect(liveUpdatesMock).toHaveBeenLastCalledWith("bot-2");
 });
 

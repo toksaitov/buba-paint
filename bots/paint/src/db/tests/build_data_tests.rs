@@ -162,6 +162,7 @@ fn creates_schema_with_all_tables() {
         "feed_events",
         "signal_metrics",
         "feed_health_events",
+        "strategy_rejection_summaries",
         "data_quality",
         "historical_trades",
     ] {
@@ -922,4 +923,61 @@ fn build_data_creates_parent_dirs() {
         .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 0, "DB should be valid with empty tables");
+}
+
+/// Verifies that optional rejection-summary telemetry is copied when present.
+#[test]
+fn imports_strategy_rejection_summaries_when_present() {
+    let (_dir, runs_dir, output) =
+        setup_fixture_runs(&[("004", &[(1_000_000, "binance", 42_000.0)], &[], &[])]);
+
+    let source_path = std::path::Path::new(&runs_dir)
+        .join("004")
+        .join("buba-paint.db");
+    let source = Connection::open(source_path).unwrap();
+    source
+        .execute_batch(
+            "CREATE TABLE strategy_rejection_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms INTEGER NOT NULL,
+                market_id TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                count INTEGER NOT NULL,
+                details_json TEXT
+            );",
+        )
+        .unwrap();
+    source
+        .execute(
+            "INSERT INTO strategy_rejection_summaries (
+                timestamp_ms, market_id, strategy, reason, count, details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                1_234_567_i64,
+                "mkt-1",
+                "latency-arb",
+                "direction_not_selected",
+                3_i64,
+                "{\"last\":{\"upAsk\":0.7}}",
+            ],
+        )
+        .unwrap();
+
+    build_market_data(&runs_dir, &output).unwrap();
+
+    let db = Connection::open(&output).unwrap();
+    let (run_id, market_id, strategy, reason, count): (i64, String, String, String, i64) = db
+        .query_row(
+            "SELECT run_id, market_id, strategy, reason, count
+             FROM strategy_rejection_summaries",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(run_id, 4);
+    assert_eq!(market_id, "mkt-1");
+    assert_eq!(strategy, "latency-arb");
+    assert_eq!(reason, "direction_not_selected");
+    assert_eq!(count, 3);
 }

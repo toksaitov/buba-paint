@@ -248,7 +248,7 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             let result = strategy.evaluate(&ctx, config, replay_ts);
 
             match result {
-                StrategyResult::None => {}
+                StrategyResult::None | StrategyResult::Rejected(_) => {}
                 StrategyResult::Single(signal) => {
                     if trend_tracker.should_suppress(signal.direction) {
                         if let Ok(signal_id) = results_db.log_signal_with_context(
