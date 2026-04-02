@@ -102,3 +102,32 @@ async fn empty_secret_still_requires_matching() {
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+/// Verifies that missing agent secret is rejected by startup validation.
+#[test]
+fn required_shared_secret_rejects_missing_value() {
+    let error = required_shared_secret(None).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("AGENT_SECRET must be set and non-empty")
+    );
+}
+
+/// Verifies that blank agent secret is rejected by startup validation.
+#[test]
+fn required_shared_secret_rejects_blank_value() {
+    let error = required_shared_secret(Some("   ".to_string())).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("AGENT_SECRET must be set and non-empty")
+    );
+}
+
+/// Verifies that non-empty agent secrets are accepted unchanged.
+#[test]
+fn required_shared_secret_accepts_value() {
+    let secret = required_shared_secret(Some("my-secret".to_string())).unwrap();
+    assert_eq!(secret.0, "my-secret");
+}

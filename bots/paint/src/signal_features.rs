@@ -627,15 +627,15 @@ fn current_summed_midpoint(book_state: &BookState) -> Option<f64> {
     Some(f64::midpoint(up.best_bid, up.best_ask) + f64::midpoint(down.best_bid, down.best_ask))
 }
 
-/// Return the age of the freshest complete binary quote snapshot.
+/// Return the age of the stalest side in the current complete binary quote snapshot.
 fn quote_age_ms(book_state: &BookState, now_ms: u64) -> Option<u64> {
     let up = book_state.up.as_ref()?;
     let down = book_state.down.as_ref()?;
-    Some(now_ms.saturating_sub(effective_book_timestamp(up).max(effective_book_timestamp(down))))
+    Some(now_ms.saturating_sub(effective_book_timestamp(up).min(effective_book_timestamp(down))))
 }
 
 /// Return the best available freshness timestamp for one top-of-book snapshot.
-fn effective_book_timestamp(book: &TopOfBook) -> u64 {
+pub(crate) fn effective_book_timestamp(book: &TopOfBook) -> u64 {
     book.observed_at_ms.max(book.timestamp)
 }
 

@@ -36,6 +36,16 @@ pub struct DbFootprint {
     pub grouped_feed_events: Vec<FeedEventFootprintRow>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExecutionStatusRollup {
+    pub submitted: u64,
+    pub filled: u64,
+    pub missed: u64,
+    pub partial: u64,
+    pub mean_effective_arrival_delay_ms: Option<f64>,
+    pub miss_reasons: Vec<(String, u64)>,
+}
+
 impl Database {
     /// Open (or create) the database at `db_path`, enable WAL mode + NORMAL
     /// synchronous, and run all schema migrations.
@@ -237,15 +247,17 @@ impl Database {
             "INSERT INTO signal_metrics (
                 signal_id, generated_at_ms, generated_at_us, order_submitted_at_ms,
                 order_submitted_at_us, expected_arrival_at_ms, expected_arrival_at_us,
+                order_processed_at_ms, order_processed_at_us, effective_arrival_delay_ms,
                 binance_age_ms, chainlink_age_ms, clob_age_ms, quote_age_ms,
                 book_staleness_ms, expected_fee, expected_slippage, expected_edge,
                 available_feature_count, decision_status, rejection_reason, features_json
              ) VALUES (
                 ?1, ?2, ?3, ?4,
-                ?5, ?6, ?7,
-                ?8, ?9, ?10, ?11,
-                ?12, ?13, ?14, ?15,
-                ?16, ?17, ?18, ?19
+                ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20,
+                ?21, ?22
              )
              ON CONFLICT(signal_id) DO UPDATE SET
                 generated_at_ms = excluded.generated_at_ms,
@@ -254,6 +266,9 @@ impl Database {
                 order_submitted_at_us = excluded.order_submitted_at_us,
                 expected_arrival_at_ms = excluded.expected_arrival_at_ms,
                 expected_arrival_at_us = excluded.expected_arrival_at_us,
+                order_processed_at_ms = excluded.order_processed_at_ms,
+                order_processed_at_us = excluded.order_processed_at_us,
+                effective_arrival_delay_ms = excluded.effective_arrival_delay_ms,
                 binance_age_ms = excluded.binance_age_ms,
                 chainlink_age_ms = excluded.chainlink_age_ms,
                 clob_age_ms = excluded.clob_age_ms,
@@ -275,6 +290,9 @@ impl Database {
             record.order_submitted_at_us,
             record.expected_arrival_at_ms,
             record.expected_arrival_at_us,
+            record.order_processed_at_ms,
+            record.order_processed_at_us,
+            record.effective_arrival_delay_ms,
             record.binance_age_ms,
             record.chainlink_age_ms,
             record.clob_age_ms,
@@ -320,6 +338,9 @@ impl Database {
                 expected_arrival_at_ms.or(telemetry.expected_arrival_at_ms),
                 telemetry.expected_arrival_at_us,
             ),
+            order_processed_at_ms: telemetry.order_processed_at_ms,
+            order_processed_at_us: telemetry.order_processed_at_us,
+            effective_arrival_delay_ms: telemetry.effective_arrival_delay_ms,
             binance_age_ms: telemetry.binance_age_ms,
             chainlink_age_ms: telemetry.chainlink_age_ms,
             clob_age_ms: telemetry.clob_age_ms,
@@ -338,6 +359,41 @@ impl Database {
             features_json,
         };
         self.upsert_signal_metrics(&record)
+    }
+
+    /// Update one queued order's final execution outcome after arrival processing.
+    pub fn update_signal_execution_outcome(
+        &self,
+        signal_id: i64,
+        processed_at_ms: u64,
+        processed_at_micros: Option<u64>,
+        effective_arrival_delay_ms: u64,
+        decision_status: &str,
+        rejection_reason: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE signal_metrics
+             SET order_processed_at_ms = ?2,
+                 order_processed_at_us = ?3,
+                 effective_arrival_delay_ms = ?4,
+                 decision_status = ?5,
+                 rejection_reason = ?6
+             WHERE signal_id = ?1",
+        )?;
+        let updated = stmt.execute(params![
+            signal_id,
+            processed_at_ms,
+            processed_at_micros,
+            effective_arrival_delay_ms,
+            decision_status,
+            rejection_reason,
+        ])?;
+        if updated != 1 {
+            anyhow::bail!(
+                "expected exactly one signal_metrics row for signal_id={signal_id}, updated {updated}"
+            );
+        }
+        Ok(())
     }
 
     /// Persist one feed-health lifecycle or anomaly event.
@@ -401,6 +457,71 @@ impl Database {
             .query_row(params![start_time_ms, end_time_ms], |row| row.get(0))
             .optional()?;
         Ok(price)
+    }
+
+    /// Summarize submitted and processed execution outcomes for one market window.
+    pub fn execution_rollup_for_market(
+        &self,
+        market_id: &str,
+    ) -> anyhow::Result<ExecutionStatusRollup> {
+        let (submitted, filled, missed, mean_effective_arrival_delay_ms): (
+            u64,
+            u64,
+            u64,
+            Option<f64>,
+        ) = self.conn.query_row(
+            "SELECT
+                COUNT(*),
+                SUM(CASE WHEN sm.decision_status = 'filled' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN sm.decision_status = 'missed' THEN 1 ELSE 0 END),
+                AVG(sm.effective_arrival_delay_ms)
+             FROM signal_metrics sm
+             JOIN signals s ON s.id = sm.signal_id
+             WHERE s.market_id = ?1
+               AND sm.order_submitted_at_ms IS NOT NULL",
+            params![market_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get::<_, Option<u64>>(1)?.unwrap_or(0),
+                    row.get::<_, Option<u64>>(2)?.unwrap_or(0),
+                    row.get(3)?,
+                ))
+            },
+        )?;
+
+        let partial: u64 = self.conn.query_row(
+            "SELECT COUNT(*)
+             FROM simulated_trades
+             WHERE market_id = ?1
+               AND fill_status = 'partial'",
+            params![market_id],
+            |row| row.get(0),
+        )?;
+
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT rejection_reason, COUNT(*)
+             FROM signal_metrics sm
+             JOIN signals s ON s.id = sm.signal_id
+             WHERE s.market_id = ?1
+               AND sm.decision_status = 'missed'
+               AND sm.rejection_reason IS NOT NULL
+             GROUP BY rejection_reason
+             ORDER BY COUNT(*) DESC, rejection_reason ASC
+             LIMIT 3",
+        )?;
+        let miss_reasons = stmt
+            .query_map(params![market_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<(String, u64)>>>()?;
+
+        Ok(ExecutionStatusRollup {
+            submitted,
+            filled,
+            missed,
+            partial,
+            mean_effective_arrival_delay_ms,
+            miss_reasons,
+        })
     }
 
     /// Insert a new open trade and return the auto-generated row ID.

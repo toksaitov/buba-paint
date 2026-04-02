@@ -347,8 +347,8 @@ pub(crate) enum ClobUpdate {
         asset_id: String,
         best_bid: f64,
         best_ask: f64,
-        bid_size: f64,
-        ask_size: f64,
+        bid_size: Option<f64>,
+        ask_size: Option<f64>,
         timestamp: u64,
         timestamp_us: Option<u64>,
     },
@@ -428,11 +428,9 @@ fn parse_best_bid_ask_event(
         best_bid: parse_f64_field(value, "best_bid").unwrap_or(0.0),
         best_ask: parse_f64_field(value, "best_ask").unwrap_or(0.0),
         bid_size: parse_f64_field(value, "bid_size")
-            .or_else(|| parse_f64_field(value, "best_bid_size"))
-            .unwrap_or(0.0),
+            .or_else(|| parse_f64_field(value, "best_bid_size")),
         ask_size: parse_f64_field(value, "ask_size")
-            .or_else(|| parse_f64_field(value, "best_ask_size"))
-            .unwrap_or(0.0),
+            .or_else(|| parse_f64_field(value, "best_ask_size")),
         timestamp: timestamp_ms,
         timestamp_us: source_micros,
     }
@@ -683,9 +681,15 @@ async fn handle_clob_update(
                     timestamp_ms: timestamp,
                     best_bid: Some(best_bid),
                     best_ask: Some(best_ask),
-                    bid_size: Some(bid_size),
-                    ask_size: Some(ask_size),
+                    bid_size,
+                    ask_size,
                 },
+            );
+            let (merged_bid_size, merged_ask_size) = merged_side_sizes(
+                context.book_state,
+                context.up_token,
+                context.down_token,
+                &asset_id,
             );
             send_clob_best_bid_ask(
                 context.tx,
@@ -697,8 +701,8 @@ async fn handle_clob_update(
                 timestamp_us,
                 best_bid,
                 best_ask,
-                bid_size,
-                ask_size,
+                merged_bid_size,
+                merged_ask_size,
                 context.retain_payloads,
             )
             .await
@@ -1001,9 +1005,15 @@ fn apply_direct_tob(
 
     if let Some(best_bid) = update.best_bid {
         book.best_bid = best_bid;
+        if best_bid <= 0.0 {
+            book.bid_size = 0.0;
+        }
     }
     if let Some(best_ask) = update.best_ask {
         book.best_ask = best_ask;
+        if best_ask <= 0.0 {
+            book.ask_size = 0.0;
+        }
     }
     if let Some(bid_size) = update.bid_size {
         book.bid_size = bid_size;
@@ -1013,6 +1023,23 @@ fn apply_direct_tob(
     }
     book.timestamp = update.timestamp_ms;
     book.observed_at_ms = observed_at_ms;
+}
+
+/// Return the merged live sizes for the asset targeted by one direct update.
+fn merged_side_sizes(
+    book_state: &BookState,
+    up_token: &str,
+    down_token: &str,
+    asset_id: &str,
+) -> (f64, f64) {
+    let book = if asset_id == up_token {
+        book_state.up.as_ref()
+    } else if asset_id == down_token {
+        book_state.down.as_ref()
+    } else {
+        None
+    };
+    book.map_or((0.0, 0.0), |book| (book.bid_size, book.ask_size))
 }
 
 /// Normalize a `CLOB` source timestamp into millisecond and optional

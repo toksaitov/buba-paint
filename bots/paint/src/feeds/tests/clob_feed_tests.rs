@@ -304,6 +304,99 @@ fn direct_best_bid_ask_without_source_timestamp_sets_observed_freshness() {
     assert!(down.observed_at_ms > 0);
 }
 
+/// Verifies that omitted direct top-of-book sizes preserve the previously known liquidity.
+#[test]
+fn direct_best_bid_ask_without_sizes_preserves_existing_liquidity() {
+    let mut book_state = crate::types::BookState::default();
+    apply_book_snapshot(
+        &mut book_state,
+        "tok-up",
+        "tok-down",
+        "tok-up",
+        0.44,
+        0.55,
+        120.0,
+        140.0,
+        1_000,
+    );
+
+    apply_direct_tob(
+        &mut book_state,
+        "tok-up",
+        "tok-down",
+        &DirectTopOfBookUpdate {
+            asset_id: "tok-up",
+            timestamp_ms: 0,
+            best_bid: Some(0.45),
+            best_ask: Some(0.54),
+            bid_size: None,
+            ask_size: None,
+        },
+    );
+
+    let up = book_state.up.expect("up book should exist");
+    assert_eq!(up.best_bid, 0.45);
+    assert_eq!(up.best_ask, 0.54);
+    assert_eq!(up.bid_size, 120.0);
+    assert_eq!(up.ask_size, 140.0);
+}
+
+/// Verifies that explicit non-positive quotes clear the corresponding live size.
+#[test]
+fn direct_best_bid_ask_clears_size_when_quote_is_non_positive() {
+    let mut book_state = crate::types::BookState::default();
+    apply_book_snapshot(
+        &mut book_state,
+        "tok-up",
+        "tok-down",
+        "tok-down",
+        0.45,
+        0.55,
+        90.0,
+        110.0,
+        1_000,
+    );
+
+    apply_direct_tob(
+        &mut book_state,
+        "tok-up",
+        "tok-down",
+        &DirectTopOfBookUpdate {
+            asset_id: "tok-down",
+            timestamp_ms: 0,
+            best_bid: Some(0.0),
+            best_ask: Some(0.56),
+            bid_size: None,
+            ask_size: None,
+        },
+    );
+
+    let down = book_state.down.expect("down book should exist");
+    assert_eq!(down.bid_size, 0.0);
+    assert_eq!(down.ask_size, 110.0);
+}
+
+/// Verifies that direct best-bid-ask parsing keeps missing sizes optional.
+#[test]
+fn parse_best_bid_ask_without_sizes_keeps_size_fields_optional() {
+    let v = serde_json::json!({
+        "event_type": "best_bid_ask",
+        "asset_id": "tok-up",
+        "best_bid": "0.45",
+        "best_ask": "0.55",
+        "timestamp": 100
+    });
+    match parse_clob_event(&v) {
+        ClobUpdate::BestBidAsk {
+            bid_size, ask_size, ..
+        } => {
+            assert_eq!(bid_size, None);
+            assert_eq!(ask_size, None);
+        }
+        other => panic!("expected BestBidAsk, got {other:?}"),
+    }
+}
+
 /// Verifies that parse clob event price change empty changes.
 #[test]
 fn parse_clob_event_price_change_empty_changes() {

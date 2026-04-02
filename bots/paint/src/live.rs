@@ -8,7 +8,7 @@ use crate::circuit_breaker::CircuitBreaker;
 use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::db::database::Database;
-use crate::executor::ExecutionEngine;
+use crate::executor::{ExecutionEngine, OrderOutcomeDisposition, ProcessedOrderOutcome};
 use crate::feeds::FeedMessage;
 use crate::feeds::util::now_us;
 use crate::live_storage::FeedEventStorageState;
@@ -266,8 +266,10 @@ pub async fn run_live(
                             state.window_open_prices.entry(w.market_id.clone()).or_insert(price);
                         }
 
-                        let _ = execution_engine.process_due_orders(
+                        process_due_orders_and_log(
+                            &mut execution_engine,
                             receive.ms,
+                            receive.micros,
                             state.current_window.as_ref(),
                             &state.signal_state.book_state,
                             &db,
@@ -349,8 +351,10 @@ pub async fn run_live(
                             let _ = persist_feed_event(&db, &mut storage_state, &event);
                         }
 
-                        let _ = execution_engine.process_due_orders(
+                        process_due_orders_and_log(
+                            &mut execution_engine,
                             receive.ms,
+                            receive.micros,
                             state.current_window.as_ref(),
                             &state.signal_state.book_state,
                             &db,
@@ -438,8 +442,10 @@ pub async fn run_live(
                             let _ = persist_feed_event(&db, &mut storage_state, &event);
                         }
 
-                        let _ = execution_engine.process_due_orders(
+                        process_due_orders_and_log(
+                            &mut execution_engine,
                             receive.ms,
+                            receive.micros,
                             state.current_window.as_ref(),
                             &state.signal_state.book_state,
                             &db,
@@ -515,8 +521,10 @@ pub async fn run_live(
                         });
                         let _ = persist_feed_event(&db, &mut storage_state, &event);
 
-                        let _ = execution_engine.process_due_orders(
+                        process_due_orders_and_log(
+                            &mut execution_engine,
                             receive.ms,
+                            receive.micros,
                             state.current_window.as_ref(),
                             &state.signal_state.book_state,
                             &db,
@@ -565,8 +573,10 @@ pub async fn run_live(
                             },
                         );
 
-                        let _ = execution_engine.process_due_orders(
+                        process_due_orders_and_log(
+                            &mut execution_engine,
                             receive.ms,
+                            receive.micros,
                             state.current_window.as_ref(),
                             &state.signal_state.book_state,
                             &db,
@@ -630,8 +640,10 @@ pub async fn run_live(
                             },
                         );
 
-                        let _ = execution_engine.process_due_orders(
+                        process_due_orders_and_log(
+                            &mut execution_engine,
                             receive.ms,
+                            receive.micros,
                             state.current_window.as_ref(),
                             &state.signal_state.book_state,
                             &db,
@@ -695,8 +707,10 @@ pub async fn run_live(
                             },
                         );
 
-                        let _ = execution_engine.process_due_orders(
+                        process_due_orders_and_log(
+                            &mut execution_engine,
                             receive.ms,
+                            receive.micros,
                             state.current_window.as_ref(),
                             &state.signal_state.book_state,
                             &db,
@@ -920,6 +934,7 @@ pub async fn run_live(
                                 &closed_id,
                                 clock.now(),
                             );
+                            log_execution_rollup_for_market(&db, &closed_id);
                         }
                     }
                 }
@@ -1253,6 +1268,103 @@ fn log_rejection_rollups(rows: &[crate::types::StrategyRejectionSummaryRecord]) 
             metrics = %rollup.metrics_summary,
             "strategy rejection rollup"
         );
+    }
+}
+
+/// Process all due paper orders at the current live timestamp and emit concise outcome logs.
+#[allow(clippy::too_many_arguments)]
+fn process_due_orders_and_log(
+    execution_engine: &mut ExecutionEngine,
+    current_ms: u64,
+    current_micros: Option<u64>,
+    current_window: Option<&MarketWindow>,
+    book_state: &crate::types::BookState,
+    db: &Database,
+    bankroll: &mut BankrollManager,
+    config: &Config,
+    clock: &SystemClock,
+) {
+    match execution_engine.process_due_orders(
+        current_ms,
+        current_micros,
+        current_window,
+        book_state,
+        db,
+        bankroll,
+        config,
+        clock,
+    ) {
+        Ok(_) => log_processed_order_outcomes(execution_engine.take_recent_outcomes()),
+        Err(error) => error!("failed to process due paper orders: {error}"),
+    }
+}
+
+/// Emit one concise operator-facing log line for each processed paper order.
+fn log_processed_order_outcomes(outcomes: Vec<ProcessedOrderOutcome>) {
+    for outcome in outcomes {
+        match outcome.disposition {
+            OrderOutcomeDisposition::Filled => {
+                info!(
+                    signal_id = outcome.signal_id,
+                    market_id = %outcome.market_id,
+                    strategy = %outcome.strategy,
+                    side = %outcome.side,
+                    best_ask = outcome.best_ask.unwrap_or_default(),
+                    ask_size = outcome.ask_size.unwrap_or_default(),
+                    freshness_ms = outcome.freshness_ms.unwrap_or_default(),
+                    requested_size = outcome.requested_size,
+                    filled_size = outcome.filled_size,
+                    effective_arrival_delay_ms = outcome.effective_arrival_delay_ms,
+                    partial_fill = outcome.partial_fill,
+                    "paper order filled"
+                );
+            }
+            OrderOutcomeDisposition::Missed => {
+                info!(
+                    signal_id = outcome.signal_id,
+                    market_id = %outcome.market_id,
+                    strategy = %outcome.strategy,
+                    side = %outcome.side,
+                    reason = %outcome.reason.as_deref().unwrap_or("unknown"),
+                    best_ask = outcome.best_ask.unwrap_or_default(),
+                    ask_size = outcome.ask_size.unwrap_or_default(),
+                    freshness_ms = outcome.freshness_ms.unwrap_or_default(),
+                    requested_size = outcome.requested_size,
+                    effective_arrival_delay_ms = outcome.effective_arrival_delay_ms,
+                    "paper order missed"
+                );
+            }
+        }
+    }
+}
+
+/// Emit one concise market-close execution rollup from persisted signal metrics.
+fn log_execution_rollup_for_market(db: &Database, market_id: &str) {
+    match db.execution_rollup_for_market(market_id) {
+        Ok(rollup) => {
+            let miss_reasons = if rollup.miss_reasons.is_empty() {
+                "none".to_string()
+            } else {
+                rollup
+                    .miss_reasons
+                    .into_iter()
+                    .map(|(reason, count)| format!("{reason}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            info!(
+                market_id,
+                submitted = rollup.submitted,
+                filled = rollup.filled,
+                missed = rollup.missed,
+                partial = rollup.partial,
+                mean_effective_arrival_delay_ms =
+                    format_optional_u64(rollup.mean_effective_arrival_delay_ms),
+                top_miss_reasons = miss_reasons,
+                "paper execution rollup"
+            );
+        }
+        Err(error) => warn!(market_id, "failed to build paper execution rollup: {error}"),
     }
 }
 

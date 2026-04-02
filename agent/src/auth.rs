@@ -43,6 +43,15 @@ pub async fn require_secret(
 #[derive(Clone, Debug)]
 pub struct SharedSecret(pub String);
 
+/// Validates the configured shared secret required by the agent API.
+pub fn required_shared_secret(secret: Option<String>) -> anyhow::Result<SharedSecret> {
+    let secret = secret.unwrap_or_default();
+    if secret.trim().is_empty() {
+        anyhow::bail!("AGENT_SECRET must be set and non-empty");
+    }
+    Ok(SharedSecret(secret))
+}
+
 #[cfg(test)]
 #[path = "tests/auth_tests.rs"]
 mod tests;

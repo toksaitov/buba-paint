@@ -233,6 +233,23 @@ LIMIT 20;
 
 If the normal bot log only needs the operator view, look for `strategy rejection rollup` lines. Those rollups keep the top reasons and mean quote/freshness context readable in the log, while the full structured detail stays in `strategy_rejection_summaries`.
 
+Example execution inspection query:
+
+```sql
+SELECT signal_id,
+       decision_status,
+       rejection_reason,
+       order_submitted_at_ms,
+       expected_arrival_at_ms,
+       order_processed_at_ms,
+       effective_arrival_delay_ms
+FROM signal_metrics
+ORDER BY signal_id DESC
+LIMIT 20;
+```
+
+Normal operator logs now also emit `paper order filled`, `paper order missed`, and `paper execution rollup` lines so queued-order outcomes are readable without opening SQLite.
+
 ## Configuration
 
 All settings via environment variables or `--set` CLI flag.
@@ -255,7 +272,7 @@ Kelly criterion: `KELLY_FRACTION` (default `0.5`) is the half-Kelly multiplier. 
 
 Fees: `TAKER_FEE_RATE` (default `0.072`) and `TAKER_FEE_EXPONENT` (default `1`) are the live crypto defaults as of March 30, 2026. If not explicitly overridden, the engine can still resolve historical fee params by market end timestamp when replaying older periods.
 
-Execution: `EXECUTION_MODE` (default `paper`): paper or live. Live order placement is still not implemented, but paper/live simulation uses the shared execution engine. `SIM_ORDER_LATENCY_MS` (default `250`) controls simulated order-arrival delay. `MAX_BOOK_STALENESS_MS` (default `1500`) rejects fills against stale books.
+Execution: `EXECUTION_MODE` (default `paper`): paper or live. Live order placement is still not implemented, but paper/live simulation uses the shared execution engine. `SIM_ORDER_LATENCY_MS` (default `250`) controls simulated order-arrival delay. It is a paper-trading heuristic, not a measured venue latency, so later calibration should use the persisted effective-arrival telemetry rather than treating `250` as ground truth. `MAX_BOOK_STALENESS_MS` (default `1500`) rejects fills against stale books.
 
 Position limits and safety: `MAX_OPEN_POSITIONS` (default `5`): max concurrent positions. `MIN_WINDOW_TIME_MS` (default `90000`): don't enter with <90s left. `CIRCUIT_BREAKER_LOSSES` (default `3`): pause after N consecutive losses. `CIRCUIT_BREAKER_PAUSE_MS` (default `900000`): pause duration (15 min). `PEAK_DD_PAUSE_PCT` (default `0.30`): pause at 30% drawdown from peak. `PEAK_DD_PAUSE_MS` (default `3600000`): DD pause duration (1 hour). `DD_PAUSE_RECOVERY_PCT` (default `0.05`): DD must recover by 5% before re-arming. `RECONNECT_MIN_STABLE_MS` (default `5000`): min connection duration to reset backoff. `RECONNECT_MAX_FAILURES` (default `20`): feed circuit breaker threshold. `RECONNECT_PAUSE_MS` (default `300000`): feed circuit breaker pause (5 min).
 
@@ -271,7 +288,7 @@ SQLite (WAL mode). Python scripts can read concurrently while the bot writes.
 - feed_events: canonical replay source for the live-like simulator. Stores raw or synthesized event timing with normalized book fields and a fidelity marker (`raw_event` or `legacy_snapshot`).
 - markets: one row per 5-minute window. Columns: market_id (Gamma API ID), question, condition_id, slug, up_token_id, down_token_id, start_time, end_time, status (active/closed/resolved), outcome (authoritative runtime outcome), polymarket_outcome, resolution_source, fee_profile, min-size and tick-size metadata, and reward metadata.
 - signals: every strategy detection event. Includes the market link, replay fidelity, and execution timing fields when available.
-- signal_metrics: per-signal telemetry. Stores generation, submission, and expected-arrival timing, per-feed ages, expected fee/slippage/edge, and a JSON feature snapshot.
+- signal_metrics: per-signal telemetry. Stores generation, submission, expected-arrival timing, actual order-processing timing, effective arrival delay, per-feed ages, expected fee/slippage/edge, and a JSON feature snapshot. `decision_status` now progresses from `submitted` to `filled` or `missed`, and `rejection_reason` is reused for post-submission miss reasons such as stale books or zero liquidity on arrival.
 - feed_health_events: feed lifecycle telemetry. Stores connect, disconnect, stale, reconnect, and resubscribe events with optional market context.
 - strategy_rejection_summaries: aggregated no-signal diagnostics. Stores the strategy, rejection reason, count, and compact JSON summaries of representative quote, freshness, and edge values. The human log mirrors these as concise rollups instead of dumping the full JSON blob.
 - simulated_trades: opened positions. Links to market and signal, tracks requested size/price, filled size/average fill, fill status, execution group id for spread pairs, execution mode, and optional live order ids.
@@ -377,13 +394,17 @@ ADMIN_USER=admin ADMIN_PASSWORD=changeme JWT_SECRET=your-jwt-secret \
 curl -X POST -H "Authorization: Bearer your-secret" http://localhost:9090/api/bot/start
 ```
 
+`AGENT_SECRET` is mandatory in production-style startup. The agent now exits nonzero if it is missing or blank instead of silently accepting an empty secret.
+
+The dashboard frontend currently builds with a Node 20+ toolchain. If the production host remains on Node 18, build `dashboard/client/dist` on a Node 20+ machine first and deploy the static bundle instead of building it on the server.
+
 For Docker deployment: `cp dashboard.toml.example dashboard.toml`, edit secrets, then `docker compose up -d`.
 
 The paint bot runs indefinitely, rolling through 5-minute windows. Ctrl+C for graceful shutdown (final stats printed, feeds disconnect, DB closes).
 
 If the bot is redeployed mid-window, it now recovers the earliest persisted Binance tick inside that market window before falling back to the current live Binance price. That keeps the window-open drift calculation stable across restarts on the same DB.
 
-When the live CLOB feed omits a usable source timestamp, the bot now treats the local observed receipt time as the freshness clock for trading decisions. That prevents missing upstream timestamps from poisoning quote age and book staleness while still preserving the raw source timestamp in `feed_events`.
+When the live CLOB feed omits a usable source timestamp, the bot now treats the local observed receipt time as the freshness clock for trading decisions. Freshness for a binary market now reflects the older of the two book sides, so one fresh side cannot mask one stale side while the raw source timestamps remain preserved in `feed_events`.
 
 ## Analysis Scripts
 

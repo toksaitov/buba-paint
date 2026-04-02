@@ -211,6 +211,21 @@ async fn send_clob_book_without_timestamp(clob_mock: &MockWsServer) {
         .await;
 }
 
+/// Helper: send direct best-bid-ask updates without size fields so the live
+/// path must preserve the existing book liquidity.
+async fn send_clob_best_bid_ask_without_sizes(clob_mock: &MockWsServer) {
+    clob_mock
+        .send(
+            r#"{"event_type":"best_bid_ask","asset_id":"tok-up-sys","best_bid":"0.40","best_ask":"0.45"}"#,
+        )
+        .await;
+    clob_mock
+        .send(
+            r#"{"event_type":"best_bid_ask","asset_id":"tok-down-sys","best_bid":"0.40","best_ask":"0.50"}"#,
+        )
+        .await;
+}
+
 /// Helper: send `CLOB` books that remain too expensive for spread-capture and latency-arb.
 async fn send_high_ask_clob_book(clob_mock: &MockWsServer) {
     let timestamp = current_test_ms();
@@ -1119,6 +1134,97 @@ async fn live_bot_zero_timestamp_clob_books_still_generate_signal() {
     assert_eq!(
         stale_count, 0,
         "Expected zero latency-arb features_stale summaries after the observed-freshness fix, got {stale_count}"
+    );
+}
+
+/// Verifies that direct best-bid-ask updates without size fields preserve
+/// liquidity and allow queued paper orders to fill.
+#[tokio::test]
+async fn live_bot_best_bid_ask_without_sizes_still_opens_trade() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    config.spread_capture_threshold = 0.97;
+    config.latency_arb_momentum_threshold = 0.0005;
+    config.latency_arb_max_ask = 0.60;
+    config.sim_order_latency_ms = 100;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book(&clob_mock).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    send_rising_binance_ticks(&binance_mock, 6).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    send_clob_best_bid_ask_without_sizes(&clob_mock).await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(result.is_ok(), "bot did not shut down within timeout");
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let trade_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM simulated_trades", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        trade_count > 0,
+        "Expected at least one trade after direct best_bid_ask without sizes, got {trade_count}"
+    );
+
+    let filled_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM signal_metrics WHERE decision_status = 'filled'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        filled_count > 0,
+        "Expected at least one filled signal metric, got {filled_count}"
+    );
+
+    let persisted_best_bid_ask_with_size: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM feed_events
+             WHERE event_type = 'best_bid_ask'
+               AND source IN ('clob_up', 'clob_down')
+               AND ask_size > 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        persisted_best_bid_ask_with_size > 0,
+        "Expected persisted best_bid_ask rows to preserve positive ask_size, got {persisted_best_bid_ask_with_size}"
     );
 }
 

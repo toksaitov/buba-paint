@@ -158,6 +158,9 @@ const CREATE_SCHEMA: &str = "
         order_submitted_at_us INTEGER,
         expected_arrival_at_ms INTEGER,
         expected_arrival_at_us INTEGER,
+        order_processed_at_ms INTEGER,
+        order_processed_at_us INTEGER,
+        effective_arrival_delay_ms INTEGER,
         binance_age_ms        INTEGER,
         chainlink_age_ms      INTEGER,
         clob_age_ms           INTEGER,
@@ -811,6 +814,7 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
                 "INSERT INTO signal_metrics (
                     run_id, signal_id, generated_at_ms, generated_at_us, order_submitted_at_ms,
                     order_submitted_at_us, expected_arrival_at_ms, expected_arrival_at_us,
+                    order_processed_at_ms, order_processed_at_us, effective_arrival_delay_ms,
                     binance_age_ms, chainlink_age_ms, clob_age_ms, quote_age_ms,
                     book_staleness_ms, expected_fee, expected_slippage, expected_edge,
                     available_feature_count, decision_status, rejection_reason, features_json
@@ -818,7 +822,8 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
                  SELECT
                     {run_id}, signal_id, generated_at_ms, {generated_at_us},
                     order_submitted_at_ms, {order_submitted_at_us}, {expected_arrival_at_ms},
-                    {expected_arrival_at_us}, binance_age_ms, chainlink_age_ms, clob_age_ms,
+                    {expected_arrival_at_us}, {order_processed_at_ms}, {order_processed_at_us},
+                    {effective_arrival_delay_ms}, binance_age_ms, chainlink_age_ms, clob_age_ms,
                     quote_age_ms, book_staleness_ms, expected_fee, expected_slippage,
                     expected_edge, available_feature_count, decision_status, rejection_reason,
                     features_json
@@ -852,6 +857,30 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
                     .is_ok()
                 {
                     "expected_arrival_at_us".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                order_processed_at_ms = if conn
+                    .prepare("SELECT order_processed_at_ms FROM src.signal_metrics LIMIT 0")
+                    .is_ok()
+                {
+                    "order_processed_at_ms".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                order_processed_at_us = if conn
+                    .prepare("SELECT order_processed_at_us FROM src.signal_metrics LIMIT 0")
+                    .is_ok()
+                {
+                    "order_processed_at_us".to_string()
+                } else {
+                    "NULL".to_string()
+                },
+                effective_arrival_delay_ms = if conn
+                    .prepare("SELECT effective_arrival_delay_ms FROM src.signal_metrics LIMIT 0")
+                    .is_ok()
+                {
+                    "effective_arrival_delay_ms".to_string()
                 } else {
                     "NULL".to_string()
                 },

@@ -165,6 +165,20 @@ fn insert_tick_and_verify_count() {
     assert_eq!(count, 2);
 }
 
+/// Verifies that execution outcomes require a pre-existing telemetry row.
+#[test]
+fn update_signal_execution_outcome_requires_existing_signal_metric_row() {
+    let (db, _tmp) = temp_db();
+    let error = db
+        .update_signal_execution_outcome(999, 1_000, Some(1_000_000), 250, "missed", Some("x"))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("expected exactly one signal_metrics row")
+    );
+}
+
 /// Verifies that tick source check constraint.
 #[test]
 fn tick_source_check_constraint() {

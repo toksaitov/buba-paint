@@ -156,6 +156,7 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
 
         let opened_now = execution_engine.process_due_orders(
             replay_ts,
+            None,
             current_window_for_execution.as_ref(),
             &feed_state.signal_state.book_state,
             &results_db,

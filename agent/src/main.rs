@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
 use buba_agent::api::{self, AppState};
-use buba_agent::auth::{SharedSecret, require_secret};
+use buba_agent::auth::{require_secret, required_shared_secret};
 use buba_agent::db_reader::DbReader;
 use buba_agent::process_manager::{ChildProcessManager, NoopProcessManager, ProcessConfig};
 use buba_agent::ws as agent_ws;
@@ -66,10 +66,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let secret = std::env::var("AGENT_SECRET").unwrap_or_else(|_| {
-        tracing::warn!("AGENT_SECRET not set — using empty string (development only)");
-        String::new()
-    });
+    let secret = required_shared_secret(std::env::var("AGENT_SECRET").ok())?;
 
     let db = Arc::new(DbReader::new(&cli.db_path)?);
 
@@ -111,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/bot/status", get(api::bot_status))
         .route("/ws/live", get(api::ws_live))
         .layer(middleware::from_fn(require_secret))
-        .layer(axum::Extension(SharedSecret(secret)))
+        .layer(axum::Extension(secret))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

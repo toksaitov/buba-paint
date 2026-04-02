@@ -219,3 +219,48 @@ fn compute_uses_observed_freshness_when_source_timestamp_is_zero() {
     assert_eq!(snapshot.quote_age_ms, Some(50));
     assert_eq!(snapshot.book_staleness_ms, Some(50));
 }
+
+/// Verify that combined freshness reflects the older side of the binary quote.
+#[test]
+fn compute_uses_stalest_side_for_combined_quote_age() {
+    let config = crate::config::Config::default();
+    let window = market_window();
+    let mut state = SignalState::new();
+    state.update_binance_trade(70_000.0, 1.0, None, 100_000, None);
+    state.update_chainlink(70_005.0, 100_650, None);
+    state.update_clob(
+        BookState {
+            up: Some(TopOfBook {
+                best_bid: 0.48,
+                best_ask: 0.49,
+                bid_size: 100.0,
+                ask_size: 120.0,
+                timestamp: 0,
+                observed_at_ms: 100_695,
+            }),
+            down: Some(TopOfBook {
+                best_bid: 0.49,
+                best_ask: 0.50,
+                bid_size: 90.0,
+                ask_size: 110.0,
+                timestamp: 0,
+                observed_at_ms: 100_100,
+            }),
+        },
+        100_695,
+        None,
+    );
+
+    let snapshot = SignalFeatureEngine::compute(
+        &mut state,
+        Some(&window),
+        Some(69_900.0),
+        0.0012,
+        100_700,
+        None,
+        &config,
+    );
+
+    assert_eq!(snapshot.quote_age_ms, Some(600));
+    assert_eq!(snapshot.book_staleness_ms, Some(600));
+}

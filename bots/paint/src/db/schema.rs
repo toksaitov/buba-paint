@@ -89,6 +89,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     ensure_legacy_columns(conn);
     ensure_additive_tables(conn);
     ensure_feed_event_columns(conn);
+    ensure_signal_metric_columns(conn);
 
     Ok(())
 }
@@ -156,6 +157,7 @@ fn ensure_legacy_columns(conn: &rusqlite::Connection) {
 }
 
 /// Create additive runtime tables required by upgraded historical runs.
+#[allow(clippy::too_many_lines)]
 fn ensure_additive_tables(conn: &rusqlite::Connection) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS settlement_audit (
@@ -216,6 +218,9 @@ fn ensure_additive_tables(conn: &rusqlite::Connection) {
             order_submitted_at_us INTEGER,
             expected_arrival_at_ms INTEGER,
             expected_arrival_at_us INTEGER,
+            order_processed_at_ms INTEGER,
+            order_processed_at_us INTEGER,
+            effective_arrival_delay_ms INTEGER,
             binance_age_ms INTEGER,
             chainlink_age_ms INTEGER,
             clob_age_ms INTEGER,
@@ -274,6 +279,18 @@ fn ensure_feed_event_columns(conn: &rusqlite::Connection) {
     add_column_if_missing(conn, "feed_events", "depth_ask_notional", "REAL");
     add_column_if_missing(conn, "feed_events", "depth_imbalance", "REAL");
     add_column_if_missing(conn, "feed_events", "microprice", "REAL");
+}
+
+/// Add any post-creation `signal_metrics` columns required by newer runs.
+fn ensure_signal_metric_columns(conn: &rusqlite::Connection) {
+    add_column_if_missing(conn, "signal_metrics", "order_processed_at_ms", "INTEGER");
+    add_column_if_missing(conn, "signal_metrics", "order_processed_at_us", "INTEGER");
+    add_column_if_missing(
+        conn,
+        "signal_metrics",
+        "effective_arrival_delay_ms",
+        "INTEGER",
+    );
 }
 
 /// Add a column to a table if it does not already exist.
