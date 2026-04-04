@@ -219,6 +219,23 @@ fn just_below_threshold_fires_batch() {
     assert!(matches!(result, StrategyResult::Batch(_)));
 }
 
+/// Verifies that the quote-churn legging gate is configurable for live retunes.
+#[test]
+fn configurable_quote_churn_gate_can_allow_live_like_books() {
+    let mut config = test_config();
+    config.spread_capture_threshold = 1.0;
+    config.spread_capture_max_quote_churn_per_s = 50.0;
+    let mut strat = SpreadCaptureStrategy::new();
+
+    let mut ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
+    ctx.features.quote_age_ms = Some(1);
+    ctx.features.book_staleness_ms = Some(1);
+    ctx.features.polymarket_quote_churn_per_s = Some(40.0);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    assert!(matches!(result, StrategyResult::Batch(_)));
+}
+
 /// Verifies that chainlink none uses zero.
 #[test]
 fn chainlink_none_uses_zero() {
@@ -342,6 +359,36 @@ fn stale_quotes_return_features_stale_rejection() {
 
     let result = strat.evaluate(&ctx, &config, 1_000_000);
     assert_rejected(result, StrategyRejectionReason::FeaturesStale);
+}
+
+/// Verifies that mixed-time legs are rejected explicitly before edge evaluation.
+#[test]
+fn out_of_sync_legs_return_rejection() {
+    let config = test_config();
+    let mut strat = SpreadCaptureStrategy::new();
+    let mut ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
+    ctx.features.quote_age_ms = Some(5);
+    ctx.features.book_staleness_ms = Some(5);
+    ctx.features.inter_leg_skew_ms = Some(config.spread_capture_max_leg_skew_ms + 1);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    assert_rejected(result, StrategyRejectionReason::LegsOutOfSync);
+}
+
+/// Verifies that modest inter-leg skew still allows a valid spread setup.
+#[test]
+fn synchronized_legs_still_allow_batch_signal() {
+    let config = test_config();
+    let mut strat = SpreadCaptureStrategy::new();
+    let mut ctx = ctx_with_book(book(0.40, 0.45, 0.40, 0.45));
+    ctx.features.quote_age_ms = Some(5);
+    ctx.features.book_staleness_ms = Some(5);
+    ctx.features.inter_leg_skew_ms = Some(config.spread_capture_max_leg_skew_ms);
+
+    assert!(matches!(
+        strat.evaluate(&ctx, &config, 1_000_000),
+        StrategyResult::Batch(_)
+    ));
 }
 
 /// Verifies that high quote churn and move velocity are rejected explicitly.

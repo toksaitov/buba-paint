@@ -241,6 +241,22 @@ async fn send_high_ask_clob_book(clob_mock: &MockWsServer) {
         .await;
 }
 
+/// Helper: send a spread-capture candidate that is attractive on price but too
+/// expensive to satisfy the per-leg minimum under a `$200` bankroll and `5%` cap.
+async fn send_unaffordable_spread_clob_book(clob_mock: &MockWsServer) {
+    let timestamp = current_test_ms();
+    clob_mock
+        .send(&format!(
+            r#"{{"asset_id":"tok-up-sys","timestamp":{timestamp},"bids":[{{"price":"0.45","size":"100"}}],"asks":[{{"price":"0.46","size":"100"}}]}}"#
+        ))
+        .await;
+    clob_mock
+        .send(&format!(
+            r#"{{"asset_id":"tok-down-sys","timestamp":{timestamp},"bids":[{{"price":"0.49","size":"100"}}],"asks":[{{"price":"0.50","size":"100"}}]}}"#
+        ))
+        .await;
+}
+
 /// Helper: send a Chainlink reference price.
 async fn send_chainlink_price(chainlink_mock: &MockWsServer) {
     chainlink_mock
@@ -1061,6 +1077,134 @@ async fn live_bot_persists_rejection_summaries_for_no_signal_window() {
     assert!(
         spread_threshold_count > 0,
         "Expected spread_threshold_not_met summaries, got {spread_threshold_count}"
+    );
+}
+
+/// Verifies that impossible spread setups are rejected before signal persistence.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_rejects_unaffordable_spread_before_logging_signal_rows() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.min_window_time_ms = 0;
+    config.spread_capture_threshold = 1.0;
+    config.spread_capture_max_quote_churn_per_s = 50.0;
+    config.max_position_fraction = 0.05;
+    config.spread_capture_max_position_fraction = Some(0.05);
+    config.max_position_usd_fraction = 1.0;
+    config.max_position_usd = 1_000.0;
+    config.latency_arb_max_ask = 0.60;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    send_flat_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_unaffordable_spread_clob_book(&clob_mock).await;
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(
+        result.is_ok(),
+        "bot did not shut down within timeout after shutdown signal"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot task panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let signal_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM signals WHERE strategy = 'spread-capture'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        signal_count, 0,
+        "Expected no persisted spread signals for impossible pre-queue setups, got {signal_count}"
+    );
+
+    let metric_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM signal_metrics
+             WHERE signal_id IN (
+                 SELECT id FROM signals WHERE strategy = 'spread-capture'
+             )",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        metric_count, 0,
+        "Expected no spread signal_metrics rows for impossible pre-queue setups, got {metric_count}"
+    );
+
+    let rejection_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM strategy_rejection_summaries
+             WHERE strategy = 'spread-capture' AND reason = 'spread_budget_too_small'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        rejection_count > 0,
+        "Expected spread_budget_too_small rejection summaries, got {rejection_count}"
+    );
+
+    let details_json: String = conn
+        .query_row(
+            "SELECT details_json
+             FROM strategy_rejection_summaries
+             WHERE strategy = 'spread-capture' AND reason = 'spread_budget_too_small'
+             ORDER BY id DESC
+             LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let details: serde_json::Value = serde_json::from_str(&details_json).unwrap();
+    let available = details["last"]["availableSpreadBudget"].as_f64().unwrap();
+    let required = details["last"]["requiredPairNotional"].as_f64().unwrap();
+    let units = details["last"]["requiredPairUnits"].as_f64().unwrap();
+    assert!(
+        (available - 10.0).abs() < 1e-9,
+        "expected available spread budget near 10.0, got {available}"
+    );
+    assert!(
+        required > available,
+        "expected required notional to exceed available budget, got required={required} available={available}"
+    );
+    assert!(
+        (units - 11.0).abs() < 1e-9,
+        "expected 11 pair units to satisfy the per-leg minimum, got {units}"
     );
 }
 

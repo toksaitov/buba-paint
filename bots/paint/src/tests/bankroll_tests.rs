@@ -174,8 +174,35 @@ fn min_bet_floor_activates() {
 
     let tokens = mgr.reserve_capital(0.45, 0.9, "latency-arb", &cfg, &clock);
     assert!(
-        (tokens - 11.0).abs() < f64::EPSILON,
-        "expected 11 tokens (min bet floor), got {tokens}"
+        (tokens - 12.0).abs() < f64::EPSILON,
+        "expected 12 tokens (min bet floor), got {tokens}"
+    );
+}
+
+/// Verifies that single-side reservation can size from the live ask while reserving at the limit.
+#[test]
+fn reserve_capital_with_reserve_price_honors_min_bet_at_entry_price() {
+    let mut cfg = test_config();
+    cfg.starting_balance = 30.0;
+    cfg.min_bet_usd = 5.0;
+    cfg.max_position_fraction = 0.10;
+    cfg.max_position_usd_fraction = 0.50;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = BankrollManager::new(cfg.starting_balance, &cfg, &db, &clock);
+
+    let tokens =
+        mgr.reserve_capital_with_reserve_price(0.56, 0.65, 0.9, "latency-arb", &cfg, &clock);
+    assert!(
+        (tokens - 9.0).abs() < f64::EPSILON,
+        "expected 9 tokens (ceil min-bet floor), got {tokens}"
+    );
+    assert!(
+        (mgr.reserved_capital - 5.85).abs() < 1e-10,
+        "expected 5.85 reserved at limit price, got {}",
+        mgr.reserved_capital
     );
 }
 
@@ -494,6 +521,131 @@ fn reserve_spread_capital_basic() {
         "expected 19.6 reserved, got {}",
         mgr.reserved_capital
     );
+}
+
+/// Verifies that spread reservation falls back to the global position fraction when unset.
+#[test]
+fn reserve_spread_capital_falls_back_to_global_fraction() {
+    let mut cfg = test_config();
+    cfg.max_position_fraction = 0.05;
+    cfg.spread_capture_max_position_fraction = None;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    let (up, down) = mgr.reserve_spread_capital(0.48, 0.50, 1.0, &cfg, &clock);
+    assert_eq!((up, down), (10.0, 10.0));
+    assert!((mgr.reserved_capital - 9.8).abs() < 1e-10);
+}
+
+/// Verifies that spread reservation uses the spread-only position fraction when configured.
+#[test]
+fn reserve_spread_capital_uses_spread_specific_fraction() {
+    let mut cfg = test_config();
+    cfg.max_position_fraction = 0.05;
+    cfg.spread_capture_max_position_fraction = Some(0.10);
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    let (up, down) = mgr.reserve_spread_capital(0.48, 0.50, 1.0, &cfg, &clock);
+    assert_eq!((up, down), (20.0, 20.0));
+    assert!((mgr.reserved_capital - 19.6).abs() < 1e-10);
+}
+
+/// Verifies that live-like spread quotes fail the affordability precheck under the conservative cap.
+#[test]
+fn assess_spread_affordability_rejects_budget_too_small_setup() {
+    let mut cfg = test_config();
+    cfg.max_position_fraction = 0.05;
+    cfg.spread_capture_max_position_fraction = Some(0.05);
+    cfg.max_position_usd_fraction = 1.0;
+    cfg.max_position_usd = 1_000.0;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mgr = make_manager(&cfg, &db, &clock);
+
+    let assessment = mgr.assess_spread_affordability(0.46, 0.50, 1.0, &cfg);
+    assert!(!assessment.queueable);
+    assert_eq!(
+        assessment.failure_reason,
+        Some(SpreadAffordabilityFailureReason::SpreadBudgetTooSmall)
+    );
+    assert!((assessment.available_spread_budget - 10.0).abs() < 1e-10);
+    assert!((assessment.required_pair_units - 11.0).abs() < f64::EPSILON);
+    assert!((assessment.required_pair_notional - 10.56).abs() < 1e-10);
+}
+
+/// Verifies that the same spread becomes queueable once the spread cap is raised.
+#[test]
+fn assess_spread_affordability_passes_when_spread_cap_is_high_enough() {
+    let mut cfg = test_config();
+    cfg.max_position_fraction = 0.05;
+    cfg.spread_capture_max_position_fraction = Some(0.10);
+    cfg.max_position_usd_fraction = 1.0;
+    cfg.max_position_usd = 1_000.0;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mgr = make_manager(&cfg, &db, &clock);
+
+    let assessment = mgr.assess_spread_affordability(0.46, 0.50, 1.0, &cfg);
+    assert!(assessment.queueable);
+    assert_eq!(assessment.failure_reason, None);
+    assert!((assessment.available_spread_budget - 20.0).abs() < 1e-10);
+    assert!((assessment.required_pair_units - 11.0).abs() < f64::EPSILON);
+    assert!((assessment.required_pair_notional - 10.56).abs() < 1e-10);
+}
+
+/// Verifies that spread reservation can return sub-minimum pair sizes for an explicit executor rejection.
+#[test]
+fn reserve_spread_capital_returns_affordable_pair_units_before_submit_guard() {
+    let mut cfg = test_config();
+    cfg.starting_balance = 20.0;
+    cfg.max_position_fraction = 0.10;
+    cfg.max_position_usd_fraction = 1.0;
+    cfg.min_balance_threshold = 1.0;
+    cfg.peak_dd_pause_pct = 1.0;
+    cfg.max_drawdown_pct = 1.0;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = BankrollManager::new(cfg.starting_balance, &cfg, &db, &clock);
+
+    let (up, down) = mgr.reserve_spread_capital(0.64, 0.35, 1.0, &cfg, &clock);
+    assert_eq!((up, down), (2.0, 2.0));
+    assert!(
+        (mgr.reserved_capital - 1.98).abs() < 1e-10,
+        "expected 1.98 reserved, got {}",
+        mgr.reserved_capital
+    );
+}
+
+/// Verifies that spread reservation still respects the shared hard USD cap.
+#[test]
+fn reserve_spread_capital_respects_global_hard_usd_cap() {
+    let mut cfg = test_config();
+    cfg.max_position_fraction = 0.20;
+    cfg.spread_capture_max_position_fraction = Some(0.20);
+    cfg.max_position_usd_fraction = 1.0;
+    cfg.max_position_usd = 8.0;
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    let (up, down) = mgr.reserve_spread_capital(0.48, 0.50, 1.0, &cfg, &clock);
+    assert_eq!((up, down), (8.0, 8.0));
+    assert!((mgr.reserved_capital - 7.84).abs() < 1e-10);
 }
 
 /// Verifies that reserve spread capital invalid asks.

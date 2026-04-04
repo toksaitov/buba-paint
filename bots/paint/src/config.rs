@@ -125,6 +125,9 @@ pub struct Config {
 
     pub spread_capture_threshold: f64,
     pub spread_capture_min_ask: f64,
+    pub spread_capture_max_leg_skew_ms: u64,
+    pub spread_capture_max_quote_churn_per_s: f64,
+    pub spread_capture_max_position_fraction: Option<f64>,
 
     pub momentum_window_ms: u64,
 
@@ -195,6 +198,13 @@ impl Config {
             "MAX_POSITION_USD" => self.max_position_usd = value,
             "SPREAD_CAPTURE_THRESHOLD" => self.spread_capture_threshold = value,
             "SPREAD_CAPTURE_MIN_ASK" => self.spread_capture_min_ask = value,
+            "SPREAD_CAPTURE_MAX_LEG_SKEW_MS" => self.spread_capture_max_leg_skew_ms = value as u64,
+            "SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S" => {
+                self.spread_capture_max_quote_churn_per_s = value;
+            }
+            "SPREAD_CAPTURE_MAX_POSITION_FRACTION" => {
+                self.spread_capture_max_position_fraction = Some(value);
+            }
             "PEAK_DD_PAUSE_PCT" => self.peak_dd_pause_pct = value,
             "PEAK_DD_PAUSE_MS" => self.peak_dd_pause_ms = value as u64,
             "DD_PAUSE_RECOVERY_PCT" => self.dd_pause_recovery_pct = value,
@@ -242,6 +252,7 @@ impl Config {
     }
 
     /// Build config by reading environment variables (with `.env` file support).
+    #[allow(clippy::too_many_lines)]
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
         let taker_fee_rate_override = env::var("TAKER_FEE_RATE").ok();
@@ -295,6 +306,14 @@ impl Config {
 
             spread_capture_threshold: env_f64("SPREAD_CAPTURE_THRESHOLD", 0.998),
             spread_capture_min_ask: env_f64("SPREAD_CAPTURE_MIN_ASK", 0.15),
+            spread_capture_max_leg_skew_ms: env_u64("SPREAD_CAPTURE_MAX_LEG_SKEW_MS", 25),
+            spread_capture_max_quote_churn_per_s: env_f64(
+                "SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S",
+                8.0,
+            ),
+            spread_capture_max_position_fraction: env::var("SPREAD_CAPTURE_MAX_POSITION_FRACTION")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok()),
 
             momentum_window_ms: env_u64("MOMENTUM_WINDOW_MS", 30_000),
 
@@ -401,6 +420,9 @@ impl Default for Config {
 
             spread_capture_threshold: 0.998,
             spread_capture_min_ask: 0.15,
+            spread_capture_max_leg_skew_ms: 25,
+            spread_capture_max_quote_churn_per_s: 8.0,
+            spread_capture_max_position_fraction: None,
 
             momentum_window_ms: 30_000,
 

@@ -68,7 +68,8 @@ impl SpreadCaptureStrategy {
             .unwrap_or(ctx.binance_momentum)
             .abs();
         let quote_churn = ctx.features.polymarket_quote_churn_per_s.unwrap_or(0.0);
-        move_velocity <= config.latency_arb_momentum_threshold * 2.0 && quote_churn <= 8.0
+        move_velocity <= config.latency_arb_momentum_threshold * 2.0
+            && quote_churn <= config.spread_capture_max_quote_churn_per_s
     }
 
     /// Build the persisted telemetry snapshot for both spread legs.
@@ -133,6 +134,17 @@ impl SpreadCaptureStrategy {
         if !Self::quotes_are_fresh(ctx, config) {
             return Err(Self::reject(
                 StrategyRejectionReason::FeaturesStale,
+                StrategyRejectionSample::from_ctx(ctx),
+            ));
+        }
+
+        if ctx
+            .features
+            .inter_leg_skew_ms
+            .is_some_and(|skew| skew > config.spread_capture_max_leg_skew_ms)
+        {
+            return Err(Self::reject(
+                StrategyRejectionReason::LegsOutOfSync,
                 StrategyRejectionSample::from_ctx(ctx),
             ));
         }

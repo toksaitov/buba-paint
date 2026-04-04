@@ -37,6 +37,8 @@ fn default_values_match_typescript() {
 
     assert!((cfg.spread_capture_threshold - 0.998).abs() < f64::EPSILON);
     assert!((cfg.spread_capture_min_ask - 0.15).abs() < f64::EPSILON);
+    assert!((cfg.spread_capture_max_quote_churn_per_s - 8.0).abs() < f64::EPSILON);
+    assert_eq!(cfg.spread_capture_max_position_fraction, None);
 
     assert_eq!(cfg.momentum_window_ms, 30_000);
 
@@ -519,6 +521,12 @@ fn set_param_verifies_every_f64_field_value() {
 
     cfg.set_param("SPREAD_CAPTURE_MIN_ASK", 0.20);
     assert!((cfg.spread_capture_min_ask - 0.20).abs() < f64::EPSILON);
+
+    cfg.set_param("SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S", 50.0);
+    assert!((cfg.spread_capture_max_quote_churn_per_s - 50.0).abs() < f64::EPSILON);
+
+    cfg.set_param("SPREAD_CAPTURE_MAX_POSITION_FRACTION", 0.15);
+    assert_eq!(cfg.spread_capture_max_position_fraction, Some(0.15));
 
     cfg.set_param("MAX_POSITION_USD_FRACTION", 0.15);
     assert!((cfg.max_position_usd_fraction - 0.15).abs() < f64::EPSILON);

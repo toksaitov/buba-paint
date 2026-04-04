@@ -41,9 +41,11 @@ pub struct ExecutionStatusRollup {
     pub submitted: u64,
     pub filled: u64,
     pub missed: u64,
+    pub rejected_before_queue: u64,
     pub partial: u64,
     pub mean_effective_arrival_delay_ms: Option<f64>,
     pub miss_reasons: Vec<(String, u64)>,
+    pub queue_rejection_reasons: Vec<(String, u64)>,
 }
 
 impl Database {
@@ -464,28 +466,30 @@ impl Database {
         &self,
         market_id: &str,
     ) -> anyhow::Result<ExecutionStatusRollup> {
-        let (submitted, filled, missed, mean_effective_arrival_delay_ms): (
+        let (submitted, filled, missed, rejected_before_queue, mean_effective_arrival_delay_ms): (
+            u64,
             u64,
             u64,
             u64,
             Option<f64>,
         ) = self.conn.query_row(
             "SELECT
-                COUNT(*),
+                SUM(CASE WHEN sm.decision_status IN ('submitted', 'filled', 'missed') THEN 1 ELSE 0 END),
                 SUM(CASE WHEN sm.decision_status = 'filled' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN sm.decision_status = 'missed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN sm.decision_status = 'rejected' THEN 1 ELSE 0 END),
                 AVG(sm.effective_arrival_delay_ms)
              FROM signal_metrics sm
              JOIN signals s ON s.id = sm.signal_id
-             WHERE s.market_id = ?1
-               AND sm.order_submitted_at_ms IS NOT NULL",
+             WHERE s.market_id = ?1",
             params![market_id],
             |row| {
                 Ok((
-                    row.get(0)?,
+                    row.get::<_, Option<u64>>(0)?.unwrap_or(0),
                     row.get::<_, Option<u64>>(1)?.unwrap_or(0),
                     row.get::<_, Option<u64>>(2)?.unwrap_or(0),
-                    row.get(3)?,
+                    row.get::<_, Option<u64>>(3)?.unwrap_or(0),
+                    row.get(4)?,
                 ))
             },
         )?;
@@ -514,13 +518,30 @@ impl Database {
             .query_map(params![market_id], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<Vec<(String, u64)>>>()?;
 
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT rejection_reason, COUNT(*)
+             FROM signal_metrics sm
+             JOIN signals s ON s.id = sm.signal_id
+             WHERE s.market_id = ?1
+               AND sm.decision_status = 'rejected'
+               AND sm.rejection_reason IS NOT NULL
+             GROUP BY rejection_reason
+             ORDER BY COUNT(*) DESC, rejection_reason ASC
+             LIMIT 3",
+        )?;
+        let queue_rejection_reasons = stmt
+            .query_map(params![market_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<(String, u64)>>>()?;
+
         Ok(ExecutionStatusRollup {
             submitted,
             filled,
             missed,
+            rejected_before_queue,
             partial,
             mean_effective_arrival_delay_ms,
             miss_reasons,
+            queue_rejection_reasons,
         })
     }
 

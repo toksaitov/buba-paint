@@ -3,12 +3,14 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::backtest::momentum::MomentumCalculator;
-use crate::bankroll::BankrollManager;
+use crate::bankroll::{BankrollManager, SpreadAffordabilityCheck};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::db::database::Database;
-use crate::executor::{ExecutionEngine, OrderOutcomeDisposition, ProcessedOrderOutcome};
+use crate::executor::{
+    ExecutionEngine, OrderOutcomeDisposition, ProcessedOrderOutcome, SubmissionOutcome,
+};
 use crate::feeds::FeedMessage;
 use crate::feeds::util::now_us;
 use crate::live_storage::FeedEventStorageState;
@@ -22,7 +24,8 @@ use crate::strategies::{Strategy, StrategyResult};
 use crate::tick_logger::{self, TickLoggerState};
 use crate::trend_tracker::TrendTracker;
 use crate::types::{
-    FeedEvent, FeedHealthEvent, MarketWindow, ReplayFidelity, SignalDirection, StrategyContext,
+    FeedEvent, FeedHealthEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection,
+    StrategyContext, StrategyRejection, StrategyRejectionReason, StrategyRejectionSample,
 };
 
 struct DeferredResolution {
@@ -89,6 +92,51 @@ fn capture_receive_times(clock: &dyn Clock) -> ReceiveTimes {
         ms: clock.now(),
         micros: Some(now_us()),
     }
+}
+
+/// Return the up/down leg pair from one spread batch when both sides are present.
+fn spread_signal_pair(signals: &[Signal]) -> Option<(&Signal, &Signal)> {
+    let up_signal = signals
+        .iter()
+        .find(|signal| signal.direction == SignalDirection::Up)?;
+    let down_signal = signals
+        .iter()
+        .find(|signal| signal.direction == SignalDirection::Down)?;
+    Some((up_signal, down_signal))
+}
+
+/// Build the current non-mutating affordability assessment for one spread batch.
+fn assess_spread_batch_affordability(
+    signals: &[Signal],
+    window: &MarketWindow,
+    bankroll: &BankrollManager,
+    config: &Config,
+) -> Option<SpreadAffordabilityCheck> {
+    let (up_signal, down_signal) = spread_signal_pair(signals)?;
+    Some(bankroll.assess_spread_affordability(
+        up_signal.up_ask,
+        down_signal.down_ask,
+        window.order_min_size.unwrap_or(0.0),
+        config,
+    ))
+}
+
+/// Build the structured rejection sample persisted for an impossible spread batch.
+fn spread_budget_rejection_sample(
+    ctx: &StrategyContext,
+    signals: &[Signal],
+    affordability: SpreadAffordabilityCheck,
+) -> StrategyRejectionSample {
+    let mut sample = StrategyRejectionSample::from_ctx(ctx);
+    if let Some((up_signal, down_signal)) = spread_signal_pair(signals) {
+        sample.up_ask = Some(up_signal.up_ask);
+        sample.down_ask = Some(down_signal.down_ask);
+        sample.total_ask = Some(up_signal.up_ask + down_signal.down_ask);
+    }
+    sample.available_spread_budget = Some(affordability.available_spread_budget);
+    sample.required_pair_notional = Some(affordability.required_pair_notional);
+    sample.required_pair_units = Some(affordability.required_pair_units);
+    sample
 }
 
 /// Run the live paper trading bot.
@@ -1352,15 +1400,27 @@ fn log_execution_rollup_for_market(db: &Database, market_id: &str) {
                     .collect::<Vec<_>>()
                     .join(", ")
             };
+            let queue_rejection_reasons = if rollup.queue_rejection_reasons.is_empty() {
+                "none".to_string()
+            } else {
+                rollup
+                    .queue_rejection_reasons
+                    .into_iter()
+                    .map(|(reason, count)| format!("{reason}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             info!(
                 market_id,
                 submitted = rollup.submitted,
                 filled = rollup.filled,
                 missed = rollup.missed,
+                rejected_before_queue = rollup.rejected_before_queue,
                 partial = rollup.partial,
                 mean_effective_arrival_delay_ms =
                     format_optional_u64(rollup.mean_effective_arrival_delay_ms),
                 top_miss_reasons = miss_reasons,
+                top_queue_rejection_reasons = queue_rejection_reasons,
                 "paper execution rollup"
             );
         }
@@ -1847,14 +1907,7 @@ fn evaluate_strategies(
                     continue;
                 }
 
-                info!(
-                    strategy = %signal.strategy,
-                    direction = %signal.direction,
-                    confidence = signal.confidence,
-                    "signal generated"
-                );
-
-                if let Ok(Some(_)) = execution_engine.submit_single(
+                match execution_engine.submit_single(
                     &signal,
                     window,
                     db,
@@ -1863,17 +1916,63 @@ fn evaluate_strategies(
                     clock,
                     ReplayFidelity::RawEvent,
                 ) {
-                    tracing::debug!(strategy = %signal.strategy, "order queued");
+                    Ok(SubmissionOutcome::Queued { signal_ids }) => {
+                        info!(
+                            signal_id = signal_ids.first().copied().unwrap_or_default(),
+                            strategy = %signal.strategy,
+                            direction = %signal.direction,
+                            confidence = signal.confidence,
+                            "signal queued"
+                        );
+                    }
+                    Ok(SubmissionOutcome::Rejected { signal_ids, reason }) => {
+                        info!(
+                            signal_id = signal_ids.first().copied().unwrap_or_default(),
+                            strategy = %signal.strategy,
+                            direction = %signal.direction,
+                            reason = %reason,
+                            "signal rejected before queue"
+                        );
+                    }
+                    Err(error) => {
+                        error!(
+                            strategy = %signal.strategy,
+                            direction = %signal.direction,
+                            "failed to submit signal: {error}"
+                        );
+                    }
                 }
             }
             StrategyResult::Batch(signals) => {
-                info!(
-                    strategy = signals.first().map_or("?", |s| &s.strategy),
-                    count = signals.len(),
-                    "batch signal generated"
-                );
-
-                let _ = execution_engine.submit_spread(
+                let strategy_name = signals.first().map_or("?", |s| &s.strategy);
+                if let Some(affordability) =
+                    assess_spread_batch_affordability(&signals, window, bankroll, config)
+                {
+                    if !affordability.queueable {
+                        let failure_reason = affordability
+                            .failure_reason
+                            .map_or("spread_budget_too_small", |reason| reason.as_str());
+                        rejection_tracker.record(
+                            &window.market_id,
+                            &StrategyRejection::new(
+                                strategy_name,
+                                StrategyRejectionReason::SpreadBudgetTooSmall,
+                                spread_budget_rejection_sample(&ctx, &signals, affordability),
+                            ),
+                        );
+                        info!(
+                            strategy = strategy_name,
+                            count = signals.len(),
+                            reason = failure_reason,
+                            available_spread_budget = affordability.available_spread_budget,
+                            required_pair_notional = affordability.required_pair_notional,
+                            required_pair_units = affordability.required_pair_units,
+                            "batch rejected before signal persistence"
+                        );
+                        continue;
+                    }
+                }
+                match execution_engine.submit_spread(
                     &signals,
                     window,
                     db,
@@ -1881,7 +1980,29 @@ fn evaluate_strategies(
                     config,
                     clock,
                     ReplayFidelity::RawEvent,
-                );
+                ) {
+                    Ok(SubmissionOutcome::Queued { signal_ids }) => {
+                        info!(
+                            strategy = strategy_name,
+                            count = signal_ids.len(),
+                            "batch queued"
+                        );
+                    }
+                    Ok(SubmissionOutcome::Rejected { signal_ids, reason }) => {
+                        info!(
+                            strategy = strategy_name,
+                            count = signal_ids.len(),
+                            reason = %reason,
+                            "batch rejected before queue"
+                        );
+                    }
+                    Err(error) => {
+                        error!(
+                            strategy = strategy_name,
+                            "failed to submit batch signal: {error}"
+                        );
+                    }
+                }
             }
         }
     }

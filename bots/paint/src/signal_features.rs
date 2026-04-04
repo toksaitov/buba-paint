@@ -301,11 +301,17 @@ pub struct SignalFeatureSnapshot {
     pub chainlink_basis_bps: Option<f64>,
     pub summed_ask_edge: Option<f64>,
     pub summed_mid_edge: Option<f64>,
+    pub up_ask: Option<f64>,
+    pub down_ask: Option<f64>,
+    pub total_ask: Option<f64>,
     pub binance_age_ms: Option<u64>,
     pub chainlink_age_ms: Option<u64>,
     pub clob_age_ms: Option<u64>,
     pub quote_age_ms: Option<u64>,
     pub book_staleness_ms: Option<u64>,
+    pub up_effective_book_ts_ms: Option<u64>,
+    pub down_effective_book_ts_ms: Option<u64>,
+    pub inter_leg_skew_ms: Option<u64>,
     pub binance_signed_trade_imbalance: Option<f64>,
     pub binance_book_imbalance: Option<f64>,
     pub binance_depth_sweep_cost: Option<f64>,
@@ -331,11 +337,17 @@ impl Default for SignalFeatureSnapshot {
             chainlink_basis_bps: None,
             summed_ask_edge: None,
             summed_mid_edge: None,
+            up_ask: None,
+            down_ask: None,
+            total_ask: None,
             binance_age_ms: None,
             chainlink_age_ms: None,
             clob_age_ms: None,
             quote_age_ms: None,
             book_staleness_ms: None,
+            up_effective_book_ts_ms: None,
+            down_effective_book_ts_ms: None,
+            inter_leg_skew_ms: None,
             binance_signed_trade_imbalance: None,
             binance_book_imbalance: None,
             binance_depth_sweep_cost: None,
@@ -362,11 +374,17 @@ impl SignalFeatureSnapshot {
             self.chainlink_basis_bps.map(|_| 1),
             self.summed_ask_edge.map(|_| 1),
             self.summed_mid_edge.map(|_| 1),
+            self.up_ask.map(|_| 1),
+            self.down_ask.map(|_| 1),
+            self.total_ask.map(|_| 1),
             self.binance_age_ms.map(|_| 1),
             self.chainlink_age_ms.map(|_| 1),
             self.clob_age_ms.map(|_| 1),
             self.quote_age_ms.map(|_| 1),
             self.book_staleness_ms.map(|_| 1),
+            self.up_effective_book_ts_ms.map(|_| 1),
+            self.down_effective_book_ts_ms.map(|_| 1),
+            self.inter_leg_skew_ms.map(|_| 1),
             self.binance_signed_trade_imbalance.map(|_| 1),
             self.binance_book_imbalance.map(|_| 1),
             self.binance_depth_sweep_cost.map(|_| 1),
@@ -394,11 +412,17 @@ impl SignalFeatureSnapshot {
             "chainlinkBasisBps": self.chainlink_basis_bps,
             "summedAskEdge": self.summed_ask_edge,
             "summedMidEdge": self.summed_mid_edge,
+            "upAsk": self.up_ask,
+            "downAsk": self.down_ask,
+            "totalAsk": self.total_ask,
             "binanceAgeMs": self.binance_age_ms,
             "chainlinkAgeMs": self.chainlink_age_ms,
             "clobAgeMs": self.clob_age_ms,
             "quoteAgeMs": self.quote_age_ms,
             "bookStalenessMs": self.book_staleness_ms,
+            "upEffectiveBookTsMs": self.up_effective_book_ts_ms,
+            "downEffectiveBookTsMs": self.down_effective_book_ts_ms,
+            "interLegSkewMs": self.inter_leg_skew_ms,
             "binanceSignedTradeImbalance": self.binance_signed_trade_imbalance,
             "binanceBookImbalance": self.binance_book_imbalance,
             "binanceDepthSweepCost": self.binance_depth_sweep_cost,
@@ -443,8 +467,21 @@ impl SignalFeatureEngine {
             compute_chainlink_basis_bps(state.binance_price, state.chainlink_price);
         let summed_ask_edge = current_summed_ask_edge(&state.book_state);
         let summed_mid_edge = current_summed_mid_edge(&state.book_state);
+        let up_ask = state.book_state.up.as_ref().map(|book| book.best_ask);
+        let down_ask = state.book_state.down.as_ref().map(|book| book.best_ask);
+        let total_ask = match (up_ask, down_ask) {
+            (Some(up), Some(down)) => Some(up + down),
+            _ => None,
+        };
         let quote_age_ms = quote_age_ms(&state.book_state, now_ms);
         let book_staleness_ms = quote_age_ms;
+        let up_effective_book_ts_ms = state.book_state.up.as_ref().map(effective_book_timestamp);
+        let down_effective_book_ts_ms =
+            state.book_state.down.as_ref().map(effective_book_timestamp);
+        let inter_leg_skew_ms = match (up_effective_book_ts_ms, down_effective_book_ts_ms) {
+            (Some(up_ts), Some(down_ts)) => Some(up_ts.abs_diff(down_ts)),
+            _ => None,
+        };
         let binance_age_ms = event_age_ms(state.binance_last_event_ms, now_ms);
         let chainlink_age_ms = event_age_ms(state.chainlink_last_event_ms, now_ms);
         let clob_age_ms = event_age_ms(state.clob_last_event_ms, now_ms);
@@ -482,11 +519,17 @@ impl SignalFeatureEngine {
             chainlink_basis_bps,
             summed_ask_edge,
             summed_mid_edge,
+            up_ask,
+            down_ask,
+            total_ask,
             binance_age_ms,
             chainlink_age_ms,
             clob_age_ms,
             quote_age_ms,
             book_staleness_ms,
+            up_effective_book_ts_ms,
+            down_effective_book_ts_ms,
+            inter_leg_skew_ms,
             binance_signed_trade_imbalance,
             binance_book_imbalance,
             binance_depth_sweep_cost,

@@ -188,6 +188,8 @@ pub enum StrategyRejectionReason {
     WindowTooLate,
     BookUnavailable,
     FeaturesStale,
+    LegsOutOfSync,
+    SpreadBudgetTooSmall,
     CooldownActive,
     NonPositiveQuotes,
     DirectionNotSelected,
@@ -205,6 +207,8 @@ impl StrategyRejectionReason {
             Self::WindowTooLate => "window_too_late",
             Self::BookUnavailable => "book_unavailable",
             Self::FeaturesStale => "features_stale",
+            Self::LegsOutOfSync => "legs_out_of_sync",
+            Self::SpreadBudgetTooSmall => "spread_budget_too_small",
             Self::CooldownActive => "cooldown_active",
             Self::NonPositiveQuotes => "non_positive_quotes",
             Self::DirectionNotSelected => "direction_not_selected",
@@ -236,6 +240,10 @@ pub struct StrategyRejectionSample {
     pub expected_edge: Option<f64>,
     pub quote_age_ms: Option<u64>,
     pub book_staleness_ms: Option<u64>,
+    pub inter_leg_skew_ms: Option<u64>,
+    pub available_spread_budget: Option<f64>,
+    pub required_pair_notional: Option<f64>,
+    pub required_pair_units: Option<f64>,
     pub window_time_remaining_ms: Option<u64>,
     pub quote_churn_per_s: Option<f64>,
     pub move_velocity: Option<f64>,
@@ -245,15 +253,21 @@ impl StrategyRejectionSample {
     /// Builds a sample with the common quote and timing fields taken from one strategy context.
     #[must_use]
     pub fn from_ctx(ctx: &StrategyContext) -> Self {
-        let up_ask = ctx.book_state.up.as_ref().map(|book| book.best_ask);
-        let down_ask = ctx.book_state.down.as_ref().map(|book| book.best_ask);
+        let up_ask = ctx
+            .features
+            .up_ask
+            .or_else(|| ctx.book_state.up.as_ref().map(|book| book.best_ask));
+        let down_ask = ctx
+            .features
+            .down_ask
+            .or_else(|| ctx.book_state.down.as_ref().map(|book| book.best_ask));
         Self {
             up_ask,
             down_ask,
-            total_ask: match (up_ask, down_ask) {
+            total_ask: ctx.features.total_ask.or(match (up_ask, down_ask) {
                 (Some(up), Some(down)) => Some(up + down),
                 _ => None,
-            },
+            }),
             external_bias: None,
             up_edge: None,
             down_edge: None,
@@ -262,6 +276,10 @@ impl StrategyRejectionSample {
             expected_edge: None,
             quote_age_ms: ctx.features.quote_age_ms,
             book_staleness_ms: ctx.features.book_staleness_ms,
+            inter_leg_skew_ms: ctx.features.inter_leg_skew_ms,
+            available_spread_budget: None,
+            required_pair_notional: None,
+            required_pair_units: None,
             window_time_remaining_ms: Some(ctx.window_time_remaining_ms),
             quote_churn_per_s: ctx.features.polymarket_quote_churn_per_s,
             move_velocity: ctx
@@ -289,6 +307,10 @@ impl StrategyRejectionSample {
             "expectedEdge": self.expected_edge,
             "quoteAgeMs": self.quote_age_ms,
             "bookStalenessMs": self.book_staleness_ms,
+            "interLegSkewMs": self.inter_leg_skew_ms,
+            "availableSpreadBudget": self.available_spread_budget,
+            "requiredPairNotional": self.required_pair_notional,
+            "requiredPairUnits": self.required_pair_units,
             "windowTimeRemainingMs": self.window_time_remaining_ms,
             "quoteChurnPerS": self.quote_churn_per_s,
             "moveVelocity": self.move_velocity,

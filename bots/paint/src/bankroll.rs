@@ -4,6 +4,32 @@ use crate::clock::Clock;
 use crate::config::Config;
 use crate::db::database::Database;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpreadAffordabilityFailureReason {
+    SpreadBudgetTooSmall,
+    BelowMarketMinSizeOnSubmit,
+}
+
+impl SpreadAffordabilityFailureReason {
+    #[must_use]
+    /// Return the stable persisted label for one pre-signal spread-affordability failure.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SpreadBudgetTooSmall => "spread_budget_too_small",
+            Self::BelowMarketMinSizeOnSubmit => "below_market_min_size_on_submit",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpreadAffordabilityCheck {
+    pub queueable: bool,
+    pub available_spread_budget: f64,
+    pub required_pair_units: f64,
+    pub required_pair_notional: f64,
+    pub failure_reason: Option<SpreadAffordabilityFailureReason>,
+}
+
 #[derive(Debug, Clone)]
 struct StrategyRecord {
     wins: u64,
@@ -97,10 +123,35 @@ impl BankrollManager {
         config: &Config,
         clock: &dyn Clock,
     ) -> f64 {
+        self.reserve_capital_with_reserve_price(
+            entry_price,
+            entry_price,
+            confidence,
+            strategy,
+            config,
+            clock,
+        )
+    }
+
+    /// Reserve capital for a single-side trade using one price for sizing and
+    /// another for worst-case capital reservation.
+    ///
+    /// The returned token count is sized from `entry_price` but must still be
+    /// affordable at `reserve_price`.
+    pub fn reserve_capital_with_reserve_price(
+        &mut self,
+        entry_price: f64,
+        reserve_price: f64,
+        confidence: f64,
+        strategy: &str,
+        config: &Config,
+        clock: &dyn Clock,
+    ) -> f64 {
         if !self.can_trade(config, clock) {
             return 0.0;
         }
-        if entry_price <= 0.0 || entry_price >= 1.0 {
+        if entry_price <= 0.0 || entry_price >= 1.0 || reserve_price <= 0.0 || reserve_price >= 1.0
+        {
             return 0.0;
         }
 
@@ -121,11 +172,13 @@ impl BankrollManager {
             .min(max_position_usd)
             .min(config.max_position_usd);
 
-        let mut token_count = (notional / entry_price).floor();
+        let mut token_count = (notional / reserve_price).floor();
 
         if token_count > 0.0 && token_count * entry_price < config.min_bet_usd {
-            let min_tokens = (config.min_bet_usd / entry_price).floor();
-            if min_tokens * entry_price <= available && min_tokens * entry_price <= max_position_usd
+            let min_tokens = (config.min_bet_usd / entry_price).ceil();
+            if min_tokens * reserve_price <= available
+                && min_tokens * reserve_price <= max_position_usd
+                && min_tokens * reserve_price <= config.max_position_usd
             {
                 token_count = min_tokens;
             }
@@ -135,7 +188,7 @@ impl BankrollManager {
             return 0.0;
         }
 
-        let cost = token_count * entry_price;
+        let cost = token_count * reserve_price;
         self.reserved_capital += cost;
         token_count
     }
@@ -166,9 +219,7 @@ impl BankrollManager {
         }
 
         let total_ask_per_unit = up_ask + down_ask;
-        let max_position_usd = self.current_balance * config.max_position_usd_fraction;
-        let max_from_balance = self.current_balance * config.max_position_fraction;
-        let notional = max_from_balance.min(available).min(max_position_usd);
+        let notional = self.available_spread_budget(config);
 
         let pair_units = (notional / total_ask_per_unit).floor();
         if pair_units <= 0.0 {
@@ -181,6 +232,72 @@ impl BankrollManager {
         let _ = confidence;
 
         (pair_units, pair_units)
+    }
+
+    #[must_use]
+    /// Assess whether a spread bundle can be legally queued right now without
+    /// mutating reserved capital or other bankroll state.
+    pub fn assess_spread_affordability(
+        &self,
+        up_ask: f64,
+        down_ask: f64,
+        order_min_size: f64,
+        config: &Config,
+    ) -> SpreadAffordabilityCheck {
+        let available_spread_budget = self.available_spread_budget(config);
+        let total_ask_per_unit = up_ask + down_ask;
+
+        if up_ask <= 0.0
+            || down_ask <= 0.0
+            || up_ask >= 1.0
+            || down_ask >= 1.0
+            || total_ask_per_unit <= 0.0
+        {
+            return SpreadAffordabilityCheck {
+                queueable: false,
+                available_spread_budget,
+                required_pair_units: 0.0,
+                required_pair_notional: 0.0,
+                failure_reason: Some(SpreadAffordabilityFailureReason::SpreadBudgetTooSmall),
+            };
+        }
+
+        let min_pair_units_for_bet = (config.min_bet_usd / up_ask)
+            .ceil()
+            .max((config.min_bet_usd / down_ask).ceil());
+        let min_pair_units_for_market = if order_min_size > 0.0 {
+            order_min_size.ceil()
+        } else {
+            0.0
+        };
+        let required_pair_units = min_pair_units_for_bet
+            .max(min_pair_units_for_market)
+            .max(1.0);
+        let required_pair_notional = required_pair_units * total_ask_per_unit;
+
+        if available_spread_budget + 1e-9 >= required_pair_notional {
+            return SpreadAffordabilityCheck {
+                queueable: true,
+                available_spread_budget,
+                required_pair_units,
+                required_pair_notional,
+                failure_reason: None,
+            };
+        }
+
+        let failure_reason = if min_pair_units_for_market > min_pair_units_for_bet {
+            SpreadAffordabilityFailureReason::BelowMarketMinSizeOnSubmit
+        } else {
+            SpreadAffordabilityFailureReason::SpreadBudgetTooSmall
+        };
+
+        SpreadAffordabilityCheck {
+            queueable: false,
+            available_spread_budget,
+            required_pair_units,
+            required_pair_notional,
+            failure_reason: Some(failure_reason),
+        }
     }
 
     /// Record the result of a closed trade, updating balance, win/loss tallies,
@@ -462,6 +579,27 @@ impl BankrollManager {
 
         full_kelly * config.kelly_fraction
     }
+
+    #[must_use]
+    /// Return the current maximum notional budget available for one spread bundle.
+    fn available_spread_budget(&self, config: &Config) -> f64 {
+        let available = (self.current_balance - self.reserved_capital).max(0.0);
+        let spread_position_fraction = spread_position_fraction(config);
+        let max_position_usd = self.current_balance * config.max_position_usd_fraction;
+        let max_from_balance = self.current_balance * spread_position_fraction;
+        max_from_balance
+            .min(available)
+            .min(max_position_usd)
+            .min(config.max_position_usd)
+            .max(0.0)
+    }
+}
+
+/// Return the balance-fraction cap used by spread-capture sizing.
+fn spread_position_fraction(config: &Config) -> f64 {
+    config
+        .spread_capture_max_position_fraction
+        .unwrap_or(config.max_position_fraction)
 }
 
 #[cfg(test)]

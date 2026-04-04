@@ -52,6 +52,10 @@ struct StrategyRejectionAccumulator {
     quote_age_ms: NumericAggregate,
     book_staleness_ms: NumericAggregate,
     window_time_remaining_ms: NumericAggregate,
+    inter_leg_skew_ms: NumericAggregate,
+    available_spread_budget: NumericAggregate,
+    required_pair_notional: NumericAggregate,
+    required_pair_units: NumericAggregate,
     quote_churn_per_s: NumericAggregate,
     move_velocity: NumericAggregate,
 }
@@ -74,8 +78,15 @@ impl StrategyRejectionAccumulator {
             .record(sample.quote_age_ms.map(|value| value as f64));
         self.book_staleness_ms
             .record(sample.book_staleness_ms.map(|value| value as f64));
+        self.available_spread_budget
+            .record(sample.available_spread_budget);
+        self.required_pair_notional
+            .record(sample.required_pair_notional);
+        self.required_pair_units.record(sample.required_pair_units);
         self.window_time_remaining_ms
             .record(sample.window_time_remaining_ms.map(|value| value as f64));
+        self.inter_leg_skew_ms
+            .record(sample.inter_leg_skew_ms.map(|value| value as f64));
         self.quote_churn_per_s.record(sample.quote_churn_per_s);
         self.move_velocity.record(sample.move_velocity);
     }
@@ -97,8 +108,15 @@ impl StrategyRejectionAccumulator {
                 .book_staleness_ms
                 .mean()
                 .map(|value| value.round() as u64),
+            available_spread_budget: self.available_spread_budget.mean(),
+            required_pair_notional: self.required_pair_notional.mean(),
+            required_pair_units: self.required_pair_units.mean(),
             window_time_remaining_ms: self
                 .window_time_remaining_ms
+                .mean()
+                .map(|value| value.round() as u64),
+            inter_leg_skew_ms: self
+                .inter_leg_skew_ms
                 .mean()
                 .map(|value| value.round() as u64),
             quote_churn_per_s: self.quote_churn_per_s.mean(),

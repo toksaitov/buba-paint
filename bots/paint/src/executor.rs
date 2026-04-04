@@ -69,6 +69,36 @@ pub struct ProcessedOrderOutcome {
     pub partial_fill: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueRejectionReason {
+    MaxOpenPositions,
+    DuplicateOpenPosition,
+    DuplicatePendingOrder,
+}
+
+impl QueueRejectionReason {
+    #[must_use]
+    /// Return the stable persisted label for one queue-rejection reason.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxOpenPositions => "max_open_positions",
+            Self::DuplicateOpenPosition => "duplicate_open_position",
+            Self::DuplicatePendingOrder => "duplicate_pending_order",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubmissionOutcome {
+    Queued {
+        signal_ids: Vec<i64>,
+    },
+    Rejected {
+        signal_ids: Vec<i64>,
+        reason: String,
+    },
+}
+
 impl ExecutionStats {
     /// Return the share of submitted orders that filled at least partially.
     pub fn fill_rate(&self) -> f64 {
@@ -153,7 +183,7 @@ impl ExecutionEngine {
         config: &Config,
         clock: &dyn Clock,
         execution_fidelity: ReplayFidelity,
-    ) -> anyhow::Result<Option<i64>> {
+    ) -> anyhow::Result<SubmissionOutcome> {
         let signal_id = db.log_signal_with_context(
             signal,
             Some(&window.market_id),
@@ -162,18 +192,13 @@ impl ExecutionEngine {
             Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
         )?;
 
-        if !self.can_queue_order(signal, window, false, 1, db, config)? {
-            if let Some(telemetry) = signal.telemetry.as_ref() {
-                let _ = db.upsert_signal_telemetry(
-                    signal_id,
-                    telemetry,
-                    Some(signal.timestamp),
-                    Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
-                    Some("rejected"),
-                    Some("position_limits"),
-                );
-            }
-            return Ok(Some(signal_id));
+        if let Some(reason) = self.can_queue_order(signal, window, false, 1, db, config)? {
+            return Ok(reject_single_submission(
+                db,
+                signal,
+                signal_id,
+                reason.as_str(),
+            ));
         }
 
         let requested_price = match signal.direction {
@@ -181,7 +206,8 @@ impl ExecutionEngine {
             SignalDirection::Down => signal.down_ask,
         };
         let limit_price = config.latency_arb_max_ask;
-        let requested_size = bankroll.reserve_capital(
+        let requested_size = bankroll.reserve_capital_with_reserve_price(
+            requested_price,
             limit_price,
             signal.confidence,
             &signal.strategy,
@@ -189,54 +215,33 @@ impl ExecutionEngine {
             clock,
         );
         if requested_size <= 0.0 {
-            if let Some(telemetry) = signal.telemetry.as_ref() {
-                let _ = db.upsert_signal_telemetry(
-                    signal_id,
-                    telemetry,
-                    Some(signal.timestamp),
-                    Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
-                    Some("rejected"),
-                    Some("capital_reservation"),
-                );
-            }
-            return Ok(Some(signal_id));
+            return Ok(reject_single_submission(
+                db,
+                signal,
+                signal_id,
+                "capital_reservation",
+            ));
         }
-
-        let token_id = match signal.direction {
-            SignalDirection::Up => window.up_token_id.clone(),
-            SignalDirection::Down => window.down_token_id.clone(),
-        };
-
-        self.pending_orders.push_back(PendingOrder {
+        if let Some(reason) = submission_size_rejection_reason(
+            requested_size,
+            requested_price,
+            window.order_min_size.unwrap_or(0.0),
+            config.min_bet_usd,
+        ) {
+            bankroll.release_reserved(requested_size * limit_price);
+            return Ok(reject_single_submission(db, signal, signal_id, reason));
+        }
+        Ok(self.queue_single_submission(
+            signal,
             signal_id,
-            signal_timestamp: signal.timestamp,
-            market_id: window.market_id.clone(),
-            strategy: signal.strategy.clone(),
-            side: signal.direction,
-            token_id,
-            arrival_ts: signal.timestamp.saturating_add(config.sim_order_latency_ms),
+            window,
             requested_price,
             limit_price,
             requested_size,
-            reserved_cost: requested_size * limit_price,
-            execution_group_id: None,
+            db,
+            config,
             execution_fidelity,
-        });
-
-        self.stats.submitted_orders += 1;
-        self.stats.total_requested_size += requested_size;
-        if let Some(telemetry) = signal.telemetry.as_ref() {
-            let _ = db.upsert_signal_telemetry(
-                signal_id,
-                telemetry,
-                Some(signal.timestamp),
-                Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
-                Some("submitted"),
-                None,
-            );
-        }
-
-        Ok(Some(signal_id))
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -250,24 +255,21 @@ impl ExecutionEngine {
         config: &Config,
         clock: &dyn Clock,
         execution_fidelity: ReplayFidelity,
-    ) -> anyhow::Result<Vec<i64>> {
+    ) -> anyhow::Result<SubmissionOutcome> {
         let arrival_ts = spread_arrival_ts(signals, config, clock);
         let signal_ids = log_spread_signals(signals, window, db, arrival_ts, execution_fidelity)?;
-        if !self.can_queue_spread(signals, window, db, config)? {
-            update_spread_signal_metrics(
+        if let Some(reason) = self.can_queue_spread(signals, window, db, config)? {
+            return Ok(reject_spread_submission(
                 db,
                 signals,
-                &signal_ids,
-                arrival_ts,
-                "rejected",
-                Some("position_limits"),
-            );
-            return Ok(signal_ids);
+                signal_ids,
+                reason.as_str(),
+            ));
         }
         let Some((up_signal, down_signal, up_signal_id, down_signal_id)) =
             spread_signal_pair(signals, &signal_ids)
         else {
-            return Ok(signal_ids);
+            return Ok(SubmissionOutcome::Queued { signal_ids });
         };
         let fee_params = resolve_fee_params(config, Some(window), window.end_time);
         if spread_net_edge(
@@ -278,15 +280,9 @@ impl ExecutionEngine {
             fee_params.exponent,
         ) <= 0.0
         {
-            update_spread_signal_metrics(
-                db,
-                signals,
-                &signal_ids,
-                arrival_ts,
-                "rejected",
-                Some("net_edge"),
-            );
-            return Ok(signal_ids);
+            return Ok(reject_spread_submission(
+                db, signals, signal_ids, "net_edge",
+            ));
         }
         let (up_tokens, down_tokens) = bankroll.reserve_spread_capital(
             up_signal.up_ask,
@@ -296,15 +292,25 @@ impl ExecutionEngine {
             clock,
         );
         if up_tokens <= 0.0 || down_tokens <= 0.0 {
-            update_spread_signal_metrics(
+            return Ok(reject_spread_submission(
                 db,
                 signals,
-                &signal_ids,
-                arrival_ts,
-                "rejected",
-                Some("capital_reservation"),
+                signal_ids,
+                "capital_reservation",
+            ));
+        }
+        if let Some(reason) = spread_submission_rejection_reason(
+            up_tokens,
+            down_tokens,
+            up_signal.up_ask,
+            down_signal.down_ask,
+            window.order_min_size.unwrap_or(0.0),
+            config.min_bet_usd,
+        ) {
+            bankroll.release_reserved(
+                (up_tokens * up_signal.up_ask) + (down_tokens * down_signal.down_ask),
             );
-            return Ok(signal_ids);
+            return Ok(reject_spread_submission(db, signals, signal_ids, reason));
         }
         let group_id = format!("spread-{}", self.next_group_id);
         self.next_group_id += 1;
@@ -332,8 +338,15 @@ impl ExecutionEngine {
             },
             down_tokens,
         ));
-        update_spread_signal_metrics(db, signals, &signal_ids, arrival_ts, "submitted", None);
-        Ok(signal_ids)
+        update_spread_signal_metrics(
+            db,
+            signals,
+            &signal_ids,
+            Some(arrival_ts),
+            "submitted",
+            None,
+        );
+        Ok(SubmissionOutcome::Queued { signal_ids })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -408,26 +421,33 @@ impl ExecutionEngine {
         window: &MarketWindow,
         db: &Database,
         config: &Config,
-    ) -> anyhow::Result<bool> {
-        let fallback_signal = Signal {
-            timestamp: 0,
-            strategy: "spread-capture".to_string(),
-            strategy_version: "v2".to_string(),
-            feature_mode: "legacy_core".to_string(),
-            direction: SignalDirection::Up,
-            confidence: 1.0,
-            binance_price: 0.0,
-            chainlink_price: 0.0,
-            up_ask: 0.0,
-            down_ask: 0.0,
-            up_bid: 0.0,
-            down_bid: 0.0,
-            expected_edge: None,
-            metadata: serde_json::json!({}),
-            telemetry: None,
-        };
-        let signal = signals.first().unwrap_or(&fallback_signal);
-        self.can_queue_order(signal, window, true, 2, db, config)
+    ) -> anyhow::Result<Option<QueueRejectionReason>> {
+        let open_count = db.count_open_trades()?;
+        let pending_count = self.pending_orders.len() as u64;
+        if open_count + pending_count + 2 > config.max_open_positions {
+            return Ok(Some(QueueRejectionReason::MaxOpenPositions));
+        }
+
+        let existing = db.get_open_trades_for_market(&window.market_id)?;
+        if signals.iter().any(|signal| {
+            existing
+                .iter()
+                .any(|trade| trade.strategy == signal.strategy && trade.side == signal.direction)
+        }) {
+            return Ok(Some(QueueRejectionReason::DuplicateOpenPosition));
+        }
+
+        if signals.iter().any(|signal| {
+            self.pending_orders.iter().any(|order| {
+                order.market_id == window.market_id
+                    && order.strategy == signal.strategy
+                    && order.side == signal.direction
+            })
+        }) {
+            return Ok(Some(QueueRejectionReason::DuplicatePendingOrder));
+        }
+
+        Ok(None)
     }
 
     /// Queue a pending order and update aggregate counters.
@@ -661,11 +681,11 @@ impl ExecutionEngine {
         required_slots: u64,
         db: &Database,
         config: &Config,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<QueueRejectionReason>> {
         let open_count = db.count_open_trades()?;
         let pending_count = self.pending_orders.len() as u64;
         if open_count + pending_count + required_slots > config.max_open_positions {
-            return Ok(false);
+            return Ok(Some(QueueRejectionReason::MaxOpenPositions));
         }
 
         let existing = db.get_open_trades_for_market(&window.market_id)?;
@@ -679,7 +699,7 @@ impl ExecutionEngine {
                 .any(|trade| trade.strategy == signal.strategy)
         };
         if duplicate_open {
-            return Ok(false);
+            return Ok(Some(QueueRejectionReason::DuplicateOpenPosition));
         }
 
         let duplicate_pending = if is_batch {
@@ -694,7 +714,55 @@ impl ExecutionEngine {
             })
         };
 
-        Ok(!duplicate_pending)
+        Ok(duplicate_pending.then_some(QueueRejectionReason::DuplicatePendingOrder))
+    }
+
+    /// Queue one single-side order and persist its submitted telemetry snapshot.
+    #[allow(clippy::too_many_arguments)]
+    fn queue_single_submission(
+        &mut self,
+        signal: &Signal,
+        signal_id: i64,
+        window: &MarketWindow,
+        requested_price: f64,
+        limit_price: f64,
+        requested_size: f64,
+        db: &Database,
+        config: &Config,
+        execution_fidelity: ReplayFidelity,
+    ) -> SubmissionOutcome {
+        let arrival_ts = signal.timestamp.saturating_add(config.sim_order_latency_ms);
+        self.queue_order(PendingOrder {
+            signal_id,
+            signal_timestamp: signal.timestamp,
+            market_id: window.market_id.clone(),
+            strategy: signal.strategy.clone(),
+            side: signal.direction,
+            token_id: match signal.direction {
+                SignalDirection::Up => window.up_token_id.clone(),
+                SignalDirection::Down => window.down_token_id.clone(),
+            },
+            arrival_ts,
+            requested_price,
+            limit_price,
+            requested_size,
+            reserved_cost: requested_size * limit_price,
+            execution_group_id: None,
+            execution_fidelity,
+        });
+        if let Some(telemetry) = signal.telemetry.as_ref() {
+            let _ = db.upsert_signal_telemetry(
+                signal_id,
+                telemetry,
+                Some(signal.timestamp),
+                Some(arrival_ts),
+                Some("submitted"),
+                None,
+            );
+        }
+        SubmissionOutcome::Queued {
+            signal_ids: vec![signal_id],
+        }
     }
 }
 
@@ -769,7 +837,7 @@ fn update_spread_signal_metrics(
     db: &Database,
     signals: &[Signal],
     signal_ids: &[i64],
-    arrival_ts: u64,
+    arrival_ts: Option<u64>,
     decision_status: &str,
     rejection_reason: Option<&str>,
 ) {
@@ -778,12 +846,49 @@ fn update_spread_signal_metrics(
             let _ = db.upsert_signal_telemetry(
                 signal_id,
                 telemetry,
-                Some(signal.timestamp),
-                Some(arrival_ts),
+                arrival_ts.map(|_| signal.timestamp),
+                arrival_ts,
                 Some(decision_status),
                 rejection_reason,
             );
         }
+    }
+}
+
+/// Persist one rejected single-order submission and return the operator outcome.
+fn reject_single_submission(
+    db: &Database,
+    signal: &Signal,
+    signal_id: i64,
+    reason: &str,
+) -> SubmissionOutcome {
+    if let Some(telemetry) = signal.telemetry.as_ref() {
+        let _ = db.upsert_signal_telemetry(
+            signal_id,
+            telemetry,
+            None,
+            None,
+            Some("rejected"),
+            Some(reason),
+        );
+    }
+    SubmissionOutcome::Rejected {
+        signal_ids: vec![signal_id],
+        reason: reason.to_string(),
+    }
+}
+
+/// Persist one rejected spread submission and return the operator outcome.
+fn reject_spread_submission(
+    db: &Database,
+    signals: &[Signal],
+    signal_ids: Vec<i64>,
+    reason: &str,
+) -> SubmissionOutcome {
+    update_spread_signal_metrics(db, signals, &signal_ids, None, "rejected", Some(reason));
+    SubmissionOutcome::Rejected {
+        signal_ids,
+        reason: reason.to_string(),
     }
 }
 
@@ -875,6 +980,36 @@ fn fill_size_rejected(
     filled_size <= 0.0
         || (market_min_size > 0.0 && filled_size < market_min_size)
         || filled_size * fill_price < min_bet_usd
+}
+
+/// Return whether a newly queued order should be rejected before it ever hits the book.
+fn submission_size_rejection_reason(
+    requested_size: f64,
+    requested_price: f64,
+    market_min_size: f64,
+    min_bet_usd: f64,
+) -> Option<&'static str> {
+    if market_min_size > 0.0 && requested_size < market_min_size {
+        return Some("below_market_min_size_on_submit");
+    }
+    if requested_size * requested_price < min_bet_usd {
+        return Some("below_min_bet_on_submit");
+    }
+    None
+}
+
+/// Return whether a spread bundle should be rejected before any leg is queued.
+fn spread_submission_rejection_reason(
+    up_size: f64,
+    down_size: f64,
+    up_price: f64,
+    down_price: f64,
+    market_min_size: f64,
+    min_bet_usd: f64,
+) -> Option<&'static str> {
+    submission_size_rejection_reason(up_size, up_price, market_min_size, min_bet_usd).or_else(
+        || submission_size_rejection_reason(down_size, down_price, market_min_size, min_bet_usd),
+    )
 }
 
 /// Build the persisted trade row for a successful execution.
@@ -1136,6 +1271,39 @@ mod tests {
         signals
     }
 
+    /// Unwrap one queued single-order submission and return the persisted signal id.
+    fn expect_single_queued(outcome: SubmissionOutcome) -> i64 {
+        match outcome {
+            SubmissionOutcome::Queued { signal_ids } => {
+                assert_eq!(signal_ids.len(), 1);
+                signal_ids[0]
+            }
+            SubmissionOutcome::Rejected { reason, .. } => {
+                panic!("expected queued submission, got rejected: {reason}")
+            }
+        }
+    }
+
+    /// Unwrap one rejected submission and return the persisted rejection reason.
+    fn expect_rejected_reason(outcome: SubmissionOutcome) -> String {
+        match outcome {
+            SubmissionOutcome::Queued { signal_ids } => {
+                panic!("expected rejected submission, got queued: {signal_ids:?}")
+            }
+            SubmissionOutcome::Rejected { reason, .. } => reason,
+        }
+    }
+
+    /// Unwrap one queued spread submission and return both persisted signal ids.
+    fn expect_batch_queued(outcome: SubmissionOutcome) -> Vec<i64> {
+        match outcome {
+            SubmissionOutcome::Queued { signal_ids } => signal_ids,
+            SubmissionOutcome::Rejected { reason, .. } => {
+                panic!("expected queued spread submission, got rejected: {reason}")
+            }
+        }
+    }
+
     /// Build a one-sided top-of-book snapshot for the UP leg.
     fn up_book(best_ask: f64, ask_size: f64, timestamp: u64) -> BookState {
         BookState {
@@ -1297,7 +1465,7 @@ mod tests {
 
         let mut bankroll = BankrollManager::new(500.0, &config, &db, &clock);
         let mut engine = ExecutionEngine::new();
-        let signal_ids = engine
+        let outcome = engine
             .submit_spread(
                 &spread_signals(30_000, 0.50, 0.50),
                 &window,
@@ -1308,6 +1476,15 @@ mod tests {
                 ReplayFidelity::LegacySnapshot,
             )
             .unwrap();
+        let signal_ids = match outcome {
+            SubmissionOutcome::Rejected { signal_ids, reason } => {
+                assert_eq!(reason, "net_edge");
+                signal_ids
+            }
+            SubmissionOutcome::Queued { signal_ids } => {
+                panic!("expected net-edge rejection, got queued: {signal_ids:?}")
+            }
+        };
 
         assert_eq!(signal_ids.len(), 2);
         assert_eq!(engine.stats().submitted_orders, 0);
@@ -1459,18 +1636,19 @@ mod tests {
         let mut engine = ExecutionEngine::new();
         let signal = latency_signal_with_telemetry(60_000, SignalDirection::Up);
 
-        let signal_id = engine
-            .submit_single(
-                &signal,
-                &window,
-                &db,
-                &mut bankroll,
-                &config,
-                &clock,
-                ReplayFidelity::RawEvent,
-            )
-            .unwrap()
-            .expect("signal should be persisted");
+        let signal_id = expect_single_queued(
+            engine
+                .submit_single(
+                    &signal,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::RawEvent,
+                )
+                .unwrap(),
+        );
 
         let opened = engine
             .process_due_orders(
@@ -1514,18 +1692,19 @@ mod tests {
         let mut engine = ExecutionEngine::new();
         let signal = latency_signal_with_telemetry(70_000, SignalDirection::Up);
 
-        let signal_id = engine
-            .submit_single(
-                &signal,
-                &window,
-                &db,
-                &mut bankroll,
-                &config,
-                &clock,
-                ReplayFidelity::RawEvent,
-            )
-            .unwrap()
-            .expect("signal should be persisted");
+        let signal_id = expect_single_queued(
+            engine
+                .submit_single(
+                    &signal,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::RawEvent,
+                )
+                .unwrap(),
+        );
 
         let opened = engine
             .process_due_orders(
@@ -1555,5 +1734,271 @@ mod tests {
         assert_eq!(metric.1, None);
         assert_eq!(metric.2, Some(70_275));
         assert_eq!(metric.3, Some(275));
+    }
+
+    #[test]
+    /// Verify that duplicate pending spread bundles are labeled explicitly.
+    fn submit_spread_labels_duplicate_pending_order_rejections() {
+        let (_dir, db) = temp_db();
+        let config = test_config();
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        let mut bankroll = BankrollManager::new(500.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signals = spread_signals_with_telemetry(80_000, 0.49, 0.48);
+
+        let queued_ids = expect_batch_queued(
+            engine
+                .submit_spread(
+                    &signals,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::LegacySnapshot,
+                )
+                .unwrap(),
+        );
+        assert_eq!(queued_ids.len(), 2);
+
+        let rejected_reason = expect_rejected_reason(
+            engine
+                .submit_spread(
+                    &signals,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::LegacySnapshot,
+                )
+                .unwrap(),
+        );
+        assert_eq!(rejected_reason, "duplicate_pending_order");
+    }
+
+    #[test]
+    /// Verify that duplicate open positions are labeled explicitly.
+    fn submit_single_labels_duplicate_open_position_rejections() {
+        let (_dir, db) = temp_db();
+        let config = test_config();
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        db.open_trade(&SimulatedTrade {
+            id: None,
+            timestamp: 10_000,
+            market_id: window.market_id.clone(),
+            strategy: "latency-arb".to_string(),
+            side: SignalDirection::Up,
+            token_id: window.up_token_id.clone(),
+            entry_price: 0.55,
+            size: 10.0,
+            status: TradeStatus::Open,
+            signal_id: None,
+            requested_price: None,
+            requested_size: None,
+            filled_size: None,
+            avg_fill_price: None,
+            fill_status: None,
+            fill_reason: None,
+            fill_latency_ms: None,
+            execution_group_id: None,
+            execution_fidelity: None,
+            execution_mode: None,
+            order_id: None,
+            fill_price: None,
+        })
+        .unwrap();
+
+        let mut bankroll = BankrollManager::new(1_000.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signal = latency_signal_with_telemetry(81_000, SignalDirection::Up);
+
+        let rejected_reason = expect_rejected_reason(
+            engine
+                .submit_single(
+                    &signal,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::LegacySnapshot,
+                )
+                .unwrap(),
+        );
+        assert_eq!(rejected_reason, "duplicate_open_position");
+    }
+
+    #[test]
+    /// Verify that true position-cap breaches are labeled explicitly.
+    fn submit_single_labels_max_open_position_rejections() {
+        let (_dir, db) = temp_db();
+        let mut config = test_config();
+        config.max_open_positions = 1;
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        db.open_trade(&SimulatedTrade {
+            id: None,
+            timestamp: 10_000,
+            market_id: window.market_id.clone(),
+            strategy: "other".to_string(),
+            side: SignalDirection::Up,
+            token_id: window.up_token_id.clone(),
+            entry_price: 0.55,
+            size: 10.0,
+            status: TradeStatus::Open,
+            signal_id: None,
+            requested_price: None,
+            requested_size: None,
+            filled_size: None,
+            avg_fill_price: None,
+            fill_status: None,
+            fill_reason: None,
+            fill_latency_ms: None,
+            execution_group_id: None,
+            execution_fidelity: None,
+            execution_mode: None,
+            order_id: None,
+            fill_price: None,
+        })
+        .unwrap();
+
+        let mut bankroll = BankrollManager::new(1_000.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signal = latency_signal_with_telemetry(82_000, SignalDirection::Up);
+
+        let rejected_reason = expect_rejected_reason(
+            engine
+                .submit_single(
+                    &signal,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::LegacySnapshot,
+                )
+                .unwrap(),
+        );
+        assert_eq!(rejected_reason, "max_open_positions");
+    }
+
+    #[test]
+    /// Verify that too-small single orders are rejected before queue with an explicit reason.
+    fn submit_single_rejects_below_min_bet_before_queue() {
+        let (_dir, db) = temp_db();
+        let mut config = test_config();
+        config.min_bet_usd = 5.0;
+        config.max_position_fraction = 0.10;
+        config.max_position_usd_fraction = 1.0;
+        config.max_position_usd = 1.0;
+        config.min_balance_threshold = 1.0;
+        config.peak_dd_pause_pct = 1.0;
+        config.max_drawdown_pct = 1.0;
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        let mut bankroll = BankrollManager::new(20.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signal = latency_signal_with_telemetry(83_000, SignalDirection::Up);
+
+        let rejected_reason = expect_rejected_reason(
+            engine
+                .submit_single(
+                    &signal,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::LegacySnapshot,
+                )
+                .unwrap(),
+        );
+        assert_eq!(rejected_reason, "below_min_bet_on_submit");
+    }
+
+    #[test]
+    /// Verify that too-small spread bundles are rejected before queue with an explicit reason.
+    fn submit_spread_rejects_below_min_bet_before_queue() {
+        let (_dir, db) = temp_db();
+        let mut config = test_config();
+        config.min_bet_usd = 5.0;
+        config.max_position_fraction = 0.10;
+        config.max_position_usd_fraction = 1.0;
+        config.max_position_usd = 1.0;
+        config.min_balance_threshold = 1.0;
+        config.peak_dd_pause_pct = 1.0;
+        config.max_drawdown_pct = 1.0;
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        let mut bankroll = BankrollManager::new(20.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signals = spread_signals_with_telemetry(84_000, 0.30, 0.30);
+
+        let rejected_reason = expect_rejected_reason(
+            engine
+                .submit_spread(
+                    &signals,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::LegacySnapshot,
+                )
+                .unwrap(),
+        );
+        assert_eq!(rejected_reason, "below_min_bet_on_submit");
+    }
+
+    #[test]
+    /// Verify that raising only the spread-specific cap can turn a rejected spread into a queued one.
+    fn submit_spread_can_queue_with_spread_specific_fraction() {
+        let (_dir, db) = temp_db();
+        let mut config = test_config();
+        config.min_bet_usd = 5.0;
+        config.max_position_fraction = 0.10;
+        config.spread_capture_max_position_fraction = Some(0.60);
+        config.max_position_usd_fraction = 1.0;
+        config.max_position_usd = 1_000.0;
+        config.min_balance_threshold = 1.0;
+        config.peak_dd_pause_pct = 1.0;
+        config.max_drawdown_pct = 1.0;
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        let mut bankroll = BankrollManager::new(20.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signals = spread_signals_with_telemetry(85_000, 0.30, 0.30);
+
+        let queued_ids = expect_batch_queued(
+            engine
+                .submit_spread(
+                    &signals,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::LegacySnapshot,
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(queued_ids.len(), 2);
+        assert_eq!(engine.stats().submitted_orders, 2);
     }
 }

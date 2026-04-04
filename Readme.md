@@ -6,6 +6,8 @@ Settlements are applied only on authoritative Polymarket outcomes. Dynamic taker
 
 No real orders, no wallet, no private keys. This is still a data-collection and strategy-validation tool. The code is structured to reduce the paper/live gap, not to place live money trades.
 
+Repository agent-instruction alias: [AGENTS.md](./AGENTS.md) points to the canonical [CLAUDE.md](./CLAUDE.md). Keep `CLAUDE.md` as the real source of truth.
+
 ## Quick Start
 
 ```bash
@@ -264,7 +266,7 @@ Binance feed: `BINANCE_TRADE_STREAM`, `BINANCE_BOOK_TICKER_STREAM`, and `BINANCE
 
 Latency arb: `LATENCY_ARB_MOMENTUM_THRESHOLD` (default `0.0015`) is the base momentum fraction (0.15%). `LATENCY_ARB_ADAPTIVE_WINDOW_MS` (default `1800000`) is the rolling time window used by the adaptive threshold. `LATENCY_ARB_MAX_ASK` (default `0.55`): max ask to consider stale. `LATENCY_ARB_MIN_ASK` (default `0.30`): min ask, rejects cheap tokens. `LATENCY_ARB_COOLDOWN_MS` (default `60000`): cooldown between signals. `MOMENTUM_WINDOW_MS` (default `30000`): momentum rolling window.
 
-Spread capture: `SPREAD_CAPTURE_THRESHOLD` (default `0.998`) is the hard outer cap on UP+DOWN ask sum. The strategy also requires positive projected net edge after fees and simulated fills. `SPREAD_CAPTURE_MIN_ASK` (default `0.15`): reject degenerate books.
+Spread capture: `SPREAD_CAPTURE_THRESHOLD` (default `0.998`) is the hard outer cap on UP+DOWN ask sum. The strategy also requires positive projected net edge after fees and simulated fills. `SPREAD_CAPTURE_MIN_ASK` (default `0.15`): reject degenerate books. `SPREAD_CAPTURE_MAX_LEG_SKEW_MS` (default `25`): require the UP and DOWN books used for one spread decision to be near-synchronous. Mixed-time books are rejected as `legs_out_of_sync`. `SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S` (default `8`) caps the observed top-of-book churn before the strategy treats the legging risk as too high.
 
 Bankroll: `STARTING_BALANCE` (default `150`) is the initial paper balance in USD. `MAX_POSITION_FRACTION` (default `0.10`): max fraction per trade (10%). `MAX_POSITION_USD_FRACTION` (default `0.20`): hard cap per trade (20%). `MAX_POSITION_USD` (default `500`): absolute hard cap in USD regardless of balance. `MIN_BALANCE_THRESHOLD` (default `20`): stop trading below this. `MAX_DRAWDOWN_PCT` (default `0.50`): stop at 50% drawdown.
 
@@ -272,7 +274,9 @@ Kelly criterion: `KELLY_FRACTION` (default `0.5`) is the half-Kelly multiplier. 
 
 Fees: `TAKER_FEE_RATE` (default `0.072`) and `TAKER_FEE_EXPONENT` (default `1`) are the live crypto defaults as of March 30, 2026. If not explicitly overridden, the engine can still resolve historical fee params by market end timestamp when replaying older periods.
 
-Execution: `EXECUTION_MODE` (default `paper`): paper or live. Live order placement is still not implemented, but paper/live simulation uses the shared execution engine. `SIM_ORDER_LATENCY_MS` (default `250`) controls simulated order-arrival delay. It is a paper-trading heuristic, not a measured venue latency, so later calibration should use the persisted effective-arrival telemetry rather than treating `250` as ground truth. `MAX_BOOK_STALENESS_MS` (default `1500`) rejects fills against stale books.
+Execution: `EXECUTION_MODE` (default `paper`): paper or live. Live order placement is still not implemented, but paper/live simulation uses the shared execution engine. `SIM_ORDER_LATENCY_MS` (default `250`) controls simulated order-arrival delay. It is a paper-trading heuristic, not a measured venue latency, so later calibration should use the persisted effective-arrival telemetry rather than treating `250` as ground truth. `MAX_BOOK_STALENESS_MS` (default `1500`) rejects fills against stale books. Submit-time sizing now checks both the market minimum size and `MIN_BET_USD` before an order is queued, so obviously too-small orders fail early as `below_market_min_size_on_submit` or `below_min_bet_on_submit` instead of turning into guaranteed misses later.
+
+Spread sizing: `SPREAD_CAPTURE_MAX_POSITION_FRACTION` is an optional spread-only balance cap. If it is unset, spread-capture falls back to `MAX_POSITION_FRACTION`. The shared hard caps `MAX_POSITION_USD_FRACTION` and `MAX_POSITION_USD` still apply.
 
 Position limits and safety: `MAX_OPEN_POSITIONS` (default `5`): max concurrent positions. `MIN_WINDOW_TIME_MS` (default `90000`): don't enter with <90s left. `CIRCUIT_BREAKER_LOSSES` (default `3`): pause after N consecutive losses. `CIRCUIT_BREAKER_PAUSE_MS` (default `900000`): pause duration (15 min). `PEAK_DD_PAUSE_PCT` (default `0.30`): pause at 30% drawdown from peak. `PEAK_DD_PAUSE_MS` (default `3600000`): DD pause duration (1 hour). `DD_PAUSE_RECOVERY_PCT` (default `0.05`): DD must recover by 5% before re-arming. `RECONNECT_MIN_STABLE_MS` (default `5000`): min connection duration to reset backoff. `RECONNECT_MAX_FAILURES` (default `20`): feed circuit breaker threshold. `RECONNECT_PAUSE_MS` (default `300000`): feed circuit breaker pause (5 min).
 
@@ -288,9 +292,9 @@ SQLite (WAL mode). Python scripts can read concurrently while the bot writes.
 - feed_events: canonical replay source for the live-like simulator. Stores raw or synthesized event timing with normalized book fields and a fidelity marker (`raw_event` or `legacy_snapshot`).
 - markets: one row per 5-minute window. Columns: market_id (Gamma API ID), question, condition_id, slug, up_token_id, down_token_id, start_time, end_time, status (active/closed/resolved), outcome (authoritative runtime outcome), polymarket_outcome, resolution_source, fee_profile, min-size and tick-size metadata, and reward metadata.
 - signals: every strategy detection event. Includes the market link, replay fidelity, and execution timing fields when available.
-- signal_metrics: per-signal telemetry. Stores generation, submission, expected-arrival timing, actual order-processing timing, effective arrival delay, per-feed ages, expected fee/slippage/edge, and a JSON feature snapshot. `decision_status` now progresses from `submitted` to `filled` or `missed`, and `rejection_reason` is reused for post-submission miss reasons such as stale books or zero liquidity on arrival.
+- signal_metrics: per-signal telemetry. Stores generation, submission, expected-arrival timing, actual order-processing timing, effective arrival delay, per-feed ages, expected fee/slippage/edge, and a JSON feature snapshot. The snapshot now also records the per-leg effective book timestamps, `interLegSkewMs`, and the actual ask pair the strategy saw. `decision_status` progresses through queue and execution outcomes, and `rejection_reason` is reused for both pre-submit queue rejections (`duplicate_pending_order`, `duplicate_open_position`, `max_open_positions`, `below_market_min_size_on_submit`, `below_min_bet_on_submit`) and post-submission miss reasons such as stale books or zero liquidity on arrival.
 - feed_health_events: feed lifecycle telemetry. Stores connect, disconnect, stale, reconnect, and resubscribe events with optional market context.
-- strategy_rejection_summaries: aggregated no-signal diagnostics. Stores the strategy, rejection reason, count, and compact JSON summaries of representative quote, freshness, and edge values. The human log mirrors these as concise rollups instead of dumping the full JSON blob.
+- strategy_rejection_summaries: aggregated no-signal diagnostics. Stores the strategy, rejection reason, count, and compact JSON summaries of representative quote, freshness, edge, and spread-leg skew values. The human log mirrors these as concise rollups instead of dumping the full JSON blob.
 - simulated_trades: opened positions. Links to market and signal, tracks requested size/price, filled size/average fill, fill status, execution group id for spread pairs, execution mode, and optional live order ids.
 - trade_results: settlement P&L. Links to trade, records settlement price, gross/net PnL fields, fee_amount, and settlement status.
 - balance_log: bankroll history. Records every balance change with timestamp, event type (init, trade_close, settlement_correction), trade reference, amount, and running balance.

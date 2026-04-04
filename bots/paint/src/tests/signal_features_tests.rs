@@ -264,3 +264,60 @@ fn compute_uses_stalest_side_for_combined_quote_age() {
     assert_eq!(snapshot.quote_age_ms, Some(600));
     assert_eq!(snapshot.book_staleness_ms, Some(600));
 }
+
+/// Verify that per-leg timestamps and skew are surfaced for live debugging.
+#[test]
+fn compute_records_leg_timestamps_and_skew() {
+    let config = crate::config::Config::default();
+    let window = market_window();
+    let mut state = SignalState::new();
+    state.update_binance_trade(70_000.0, 1.0, None, 100_000, None);
+    state.update_chainlink(70_005.0, 100_650, None);
+    state.update_clob(
+        BookState {
+            up: Some(TopOfBook {
+                best_bid: 0.48,
+                best_ask: 0.49,
+                bid_size: 100.0,
+                ask_size: 120.0,
+                timestamp: 0,
+                observed_at_ms: 100_690,
+            }),
+            down: Some(TopOfBook {
+                best_bid: 0.49,
+                best_ask: 0.50,
+                bid_size: 90.0,
+                ask_size: 110.0,
+                timestamp: 0,
+                observed_at_ms: 100_640,
+            }),
+        },
+        100_690,
+        None,
+    );
+
+    let snapshot = SignalFeatureEngine::compute(
+        &mut state,
+        Some(&window),
+        Some(69_900.0),
+        0.0012,
+        100_700,
+        None,
+        &config,
+    );
+
+    assert_eq!(snapshot.up_ask, Some(0.49));
+    assert_eq!(snapshot.down_ask, Some(0.50));
+    assert_eq!(snapshot.total_ask, Some(0.99));
+    assert_eq!(snapshot.up_effective_book_ts_ms, Some(100_690));
+    assert_eq!(snapshot.down_effective_book_ts_ms, Some(100_640));
+    assert_eq!(snapshot.inter_leg_skew_ms, Some(50));
+
+    let json = snapshot.to_json();
+    assert_eq!(json["upAsk"].as_f64(), Some(0.49));
+    assert_eq!(json["downAsk"].as_f64(), Some(0.50));
+    assert_eq!(json["totalAsk"].as_f64(), Some(0.99));
+    assert_eq!(json["upEffectiveBookTsMs"].as_u64(), Some(100_690));
+    assert_eq!(json["downEffectiveBookTsMs"].as_u64(), Some(100_640));
+    assert_eq!(json["interLegSkewMs"].as_u64(), Some(50));
+}
