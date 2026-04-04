@@ -68,8 +68,24 @@ fn default_values_match_typescript() {
     assert!(!cfg.trend_filter_enabled);
     assert!((cfg.trend_filter_threshold - 0.30).abs() < f64::EPSILON);
     assert_eq!(cfg.trend_filter_window, 10);
+    assert!(!cfg.trend_filter_per_strategy);
 
     assert!(!cfg.regime_detection_enabled);
+    assert!(cfg.latency_arb_enabled);
+    assert!(cfg.spread_capture_enabled);
+    assert!(!cfg.calm_persistence_enabled);
+    assert_eq!(cfg.latency_arb_max_position_fraction, None);
+    assert_eq!(cfg.calm_persistence_max_position_fraction, None);
+    assert_eq!(cfg.calm_persistence_min_window_time_ms, 30_000);
+    assert_eq!(cfg.calm_persistence_max_window_time_ms, 90_000);
+    assert!((cfg.calm_persistence_max_ask - 0.65).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_min_abs_distance_bps - 5.0).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_distance_vol_ratio_threshold - 2.0).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_max_realized_vol_15s_bps - 35.0).abs() < f64::EPSILON);
+    assert_eq!(cfg.calm_persistence_max_open_crosses_30s, 1);
+    assert!((cfg.calm_persistence_max_quote_churn_per_s - 20.0).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_min_alignment_fraction - 0.60).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_max_fair_bias - 0.18).abs() < f64::EPSILON);
 
     assert_eq!(cfg.log_level, "info");
 
@@ -551,4 +567,30 @@ fn set_param_verifies_every_f64_field_value() {
 
     cfg.set_param("TREND_FILTER_THRESHOLD", 0.50);
     assert!((cfg.trend_filter_threshold - 0.50).abs() < f64::EPSILON);
+}
+
+/// Verifies that calm and router fields are wired into set-param.
+#[test]
+fn set_param_supports_calm_and_router_fields() {
+    let mut cfg = Config::default();
+
+    assert!(cfg.set_param("LATENCY_ARB_ENABLED", 0.0));
+    assert!(!cfg.latency_arb_enabled);
+    assert!(cfg.set_param("SPREAD_CAPTURE_ENABLED", 0.0));
+    assert!(!cfg.spread_capture_enabled);
+    assert!(cfg.set_param("CALM_PERSISTENCE_ENABLED", 1.0));
+    assert!(cfg.calm_persistence_enabled);
+    assert!(cfg.set_param("REGIME_DETECTION_ENABLED", 1.0));
+    assert!(cfg.regime_detection_enabled);
+    assert!(cfg.set_param("TREND_FILTER_PER_STRATEGY", 1.0));
+    assert!(cfg.trend_filter_per_strategy);
+
+    assert!(cfg.set_param("LATENCY_ARB_MAX_POSITION_FRACTION", 0.04));
+    assert_eq!(cfg.latency_arb_max_position_fraction, Some(0.04));
+    assert!(cfg.set_param("CALM_PERSISTENCE_MAX_POSITION_FRACTION", 0.03));
+    assert_eq!(cfg.calm_persistence_max_position_fraction, Some(0.03));
+    assert!(cfg.set_param("CALM_PERSISTENCE_MAX_WINDOW_TIME_MS", 75_000.0));
+    assert_eq!(cfg.calm_persistence_max_window_time_ms, 75_000);
+    assert!(cfg.set_param("CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S", 2.0));
+    assert_eq!(cfg.calm_persistence_max_open_crosses_30s, 2);
 }

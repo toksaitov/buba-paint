@@ -3,8 +3,11 @@ use std::collections::HashMap;
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::db::database::Database;
+use crate::portfolio::StrategyFamily;
 
+/// Structured reasons why a spread bundle is not queueable before submission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(missing_docs)]
 pub enum SpreadAffordabilityFailureReason {
     SpreadBudgetTooSmall,
     BelowMarketMinSizeOnSubmit,
@@ -21,7 +24,9 @@ impl SpreadAffordabilityFailureReason {
     }
 }
 
+/// Result of a pure spread-affordability check against the current bankroll state.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(missing_docs)]
 pub struct SpreadAffordabilityCheck {
     pub queueable: bool,
     pub available_spread_budget: f64,
@@ -30,12 +35,14 @@ pub struct SpreadAffordabilityCheck {
     pub failure_reason: Option<SpreadAffordabilityFailureReason>,
 }
 
+/// Rolling per-strategy win/loss counts used for Kelly sizing.
 #[derive(Debug, Clone)]
 struct StrategyRecord {
     wins: u64,
     losses: u64,
 }
 
+/// One recent trade result kept for rolling strategy attribution.
 #[derive(Debug, Clone)]
 struct TradeResultRecord {
     strategy: String,
@@ -44,6 +51,7 @@ struct TradeResultRecord {
 
 /// Snapshot of key bankroll statistics.
 #[derive(Debug, Clone)]
+#[allow(missing_docs)]
 pub struct BankrollStats {
     pub starting_balance: f64,
     pub current_balance: f64,
@@ -58,6 +66,7 @@ pub struct BankrollStats {
 }
 
 #[derive(Debug, Clone)]
+#[allow(missing_docs)]
 pub struct BankrollManager {
     starting_balance: f64,
     current_balance: f64,
@@ -67,6 +76,7 @@ pub struct BankrollManager {
     total_losses: u64,
     total_trades: u64,
     reserved_capital: f64,
+    reserved_capital_by_family: HashMap<StrategyFamily, f64>,
     peak_dd_pause_until: u64,
     dd_pause_armed: bool,
     total_fees: f64,
@@ -101,6 +111,7 @@ impl BankrollManager {
             total_losses: 0,
             total_trades: 0,
             reserved_capital: 0.0,
+            reserved_capital_by_family: HashMap::new(),
             peak_dd_pause_until: 0,
             dd_pause_armed: true,
             total_fees: 0.0,
@@ -128,6 +139,7 @@ impl BankrollManager {
             entry_price,
             confidence,
             strategy,
+            family_for_strategy(strategy),
             config,
             clock,
         )
@@ -138,12 +150,14 @@ impl BankrollManager {
     ///
     /// The returned token count is sized from `entry_price` but must still be
     /// affordable at `reserve_price`.
+    #[allow(clippy::too_many_arguments)]
     pub fn reserve_capital_with_reserve_price(
         &mut self,
         entry_price: f64,
         reserve_price: f64,
         confidence: f64,
         strategy: &str,
+        family: StrategyFamily,
         config: &Config,
         clock: &dyn Clock,
     ) -> f64 {
@@ -155,12 +169,15 @@ impl BankrollManager {
             return 0.0;
         }
 
-        let available = self.current_balance - self.reserved_capital;
+        let available = self
+            .available_single_budget(family, config)
+            .min(self.current_balance - self.reserved_capital);
         if available <= 0.0 {
             return 0.0;
         }
 
-        let fraction = self.get_position_fraction(entry_price, confidence, strategy, config);
+        let fraction =
+            self.get_position_fraction(entry_price, confidence, strategy, family, config);
         if fraction <= 0.0 {
             return 0.0;
         }
@@ -189,7 +206,7 @@ impl BankrollManager {
         }
 
         let cost = token_count * reserve_price;
-        self.reserved_capital += cost;
+        self.add_reserved(family, cost);
         token_count
     }
 
@@ -204,6 +221,26 @@ impl BankrollManager {
         config: &Config,
         clock: &dyn Clock,
     ) -> (f64, f64) {
+        self.reserve_spread_capital_for_family(
+            up_ask,
+            down_ask,
+            confidence,
+            StrategyFamily::SpreadCapture,
+            config,
+            clock,
+        )
+    }
+
+    /// Reserve capital for a spread bundle using one explicit family sleeve.
+    pub fn reserve_spread_capital_for_family(
+        &mut self,
+        up_ask: f64,
+        down_ask: f64,
+        confidence: f64,
+        family: StrategyFamily,
+        config: &Config,
+        clock: &dyn Clock,
+    ) -> (f64, f64) {
         let zero = (0.0, 0.0);
 
         if !self.can_trade(config, clock) {
@@ -213,13 +250,15 @@ impl BankrollManager {
             return zero;
         }
 
-        let available = self.current_balance - self.reserved_capital;
+        let available = self
+            .available_spread_budget_for_family(family, config)
+            .min(self.current_balance - self.reserved_capital);
         if available <= 0.0 {
             return zero;
         }
 
         let total_ask_per_unit = up_ask + down_ask;
-        let notional = self.available_spread_budget(config);
+        let notional = available;
 
         let pair_units = (notional / total_ask_per_unit).floor();
         if pair_units <= 0.0 {
@@ -227,16 +266,16 @@ impl BankrollManager {
         }
 
         let total_cost = pair_units * total_ask_per_unit;
-        self.reserved_capital += total_cost;
+        self.add_reserved(family, total_cost);
 
         let _ = confidence;
 
         (pair_units, pair_units)
     }
 
-    #[must_use]
     /// Assess whether a spread bundle can be legally queued right now without
     /// mutating reserved capital or other bankroll state.
+    #[must_use]
     pub fn assess_spread_affordability(
         &self,
         up_ask: f64,
@@ -244,7 +283,26 @@ impl BankrollManager {
         order_min_size: f64,
         config: &Config,
     ) -> SpreadAffordabilityCheck {
-        let available_spread_budget = self.available_spread_budget(config);
+        self.assess_spread_affordability_for_family(
+            up_ask,
+            down_ask,
+            order_min_size,
+            StrategyFamily::SpreadCapture,
+            config,
+        )
+    }
+
+    /// Assess spread queueability against one explicit family sleeve.
+    #[must_use]
+    pub fn assess_spread_affordability_for_family(
+        &self,
+        up_ask: f64,
+        down_ask: f64,
+        order_min_size: f64,
+        family: StrategyFamily,
+        config: &Config,
+    ) -> SpreadAffordabilityCheck {
+        let available_spread_budget = self.available_spread_budget_for_family(family, config);
         let total_ask_per_unit = up_ask + down_ask;
 
         if up_ask <= 0.0
@@ -319,7 +377,7 @@ impl BankrollManager {
         let payout = settlement_price * size;
         let pnl = payout - cost - fee_amount;
 
-        self.reserved_capital = (self.reserved_capital - cost).max(0.0);
+        self.release_reserved_for_strategy(cost, strategy);
         self.current_balance += pnl;
         self.total_fees += fee_amount;
         self.total_trades += 1;
@@ -464,6 +522,19 @@ impl BankrollManager {
         self.reserved_capital = (self.reserved_capital - amount).max(0.0);
     }
 
+    /// Release previously reserved capital for one strategy family.
+    pub fn release_reserved_for_strategy(&mut self, amount: f64, strategy: &str) {
+        self.release_reserved_for_family(amount, family_for_strategy(strategy));
+    }
+
+    /// Release previously reserved capital for one explicit family sleeve.
+    pub fn release_reserved_for_family(&mut self, amount: f64, family: StrategyFamily) {
+        self.reserved_capital = (self.reserved_capital - amount).max(0.0);
+        if let Some(entry) = self.reserved_capital_by_family.get_mut(&family) {
+            *entry = (*entry - amount).max(0.0);
+        }
+    }
+
     /// Current balance.
     pub fn get_balance(&self) -> f64 {
         self.current_balance
@@ -542,6 +613,7 @@ impl BankrollManager {
         entry_price: f64,
         confidence: f64,
         strategy: &str,
+        family: StrategyFamily,
         config: &Config,
     ) -> f64 {
         let strat_total = self
@@ -553,12 +625,12 @@ impl BankrollManager {
             let win_rate = self.get_strategy_win_rate(strategy);
             self.get_kelly_fraction(entry_price, win_rate, config)
         } else {
-            config.max_position_fraction
+            position_fraction_target(family, config)
         };
 
         let confidence_multiplier = (confidence - 0.5).mul_add(2.5, 0.0).max(0.0);
         let adjusted = fraction * confidence_multiplier;
-        adjusted.min(config.max_position_fraction)
+        adjusted.min(position_fraction_target(family, config))
     }
 
     /// Half-Kelly fraction: `f* = (b*p - q) / b`, scaled by `KELLY_FRACTION`.
@@ -580,26 +652,79 @@ impl BankrollManager {
         full_kelly * config.kelly_fraction
     }
 
+    /// Return the current maximum notional budget available for one spread
+    /// bundle in one family sleeve.
     #[must_use]
-    /// Return the current maximum notional budget available for one spread bundle.
-    fn available_spread_budget(&self, config: &Config) -> f64 {
+    fn available_spread_budget_for_family(&self, family: StrategyFamily, config: &Config) -> f64 {
         let available = (self.current_balance - self.reserved_capital).max(0.0);
-        let spread_position_fraction = spread_position_fraction(config);
         let max_position_usd = self.current_balance * config.max_position_usd_fraction;
-        let max_from_balance = self.current_balance * spread_position_fraction;
-        max_from_balance
-            .min(available)
+        let per_trade_cap = self.current_balance * position_fraction_target(family, config);
+        let mut budget = available
             .min(max_position_usd)
             .min(config.max_position_usd)
-            .max(0.0)
+            .min(per_trade_cap);
+
+        if let Some(family_position_fraction) = explicit_family_sleeve_fraction(family, config) {
+            let family_reserved = self
+                .reserved_capital_by_family
+                .get(&family)
+                .copied()
+                .unwrap_or(0.0);
+            let family_budget =
+                (self.current_balance * family_position_fraction - family_reserved).max(0.0);
+            budget = budget.min(family_budget);
+        }
+
+        budget.max(0.0)
+    }
+
+    /// Return the current maximum notional budget available for one single-side
+    /// order in one family sleeve.
+    #[must_use]
+    fn available_single_budget(&self, family: StrategyFamily, config: &Config) -> f64 {
+        self.available_spread_budget_for_family(family, config)
+    }
+
+    /// Add newly reserved notional to the global and family-scoped counters.
+    fn add_reserved(&mut self, family: StrategyFamily, amount: f64) {
+        self.reserved_capital += amount;
+        *self.reserved_capital_by_family.entry(family).or_insert(0.0) += amount;
     }
 }
 
 /// Return the balance-fraction cap used by spread-capture sizing.
+/// Return the spread position-fraction cap, falling back to the global control row.
 fn spread_position_fraction(config: &Config) -> f64 {
     config
         .spread_capture_max_position_fraction
         .unwrap_or(config.max_position_fraction)
+}
+
+/// Return the explicit family sleeve fraction, if one has been configured.
+fn explicit_family_sleeve_fraction(family: StrategyFamily, config: &Config) -> Option<f64> {
+    match family {
+        StrategyFamily::LatencyArb => config.latency_arb_max_position_fraction,
+        StrategyFamily::SpreadCapture => config.spread_capture_max_position_fraction,
+        StrategyFamily::CalmPersistence => config.calm_persistence_max_position_fraction,
+    }
+}
+
+/// Return the per-trade position-fraction target for the provided strategy family.
+fn position_fraction_target(family: StrategyFamily, config: &Config) -> f64 {
+    match family {
+        StrategyFamily::LatencyArb => config
+            .latency_arb_max_position_fraction
+            .unwrap_or(config.max_position_fraction),
+        StrategyFamily::SpreadCapture => spread_position_fraction(config),
+        StrategyFamily::CalmPersistence => config
+            .calm_persistence_max_position_fraction
+            .unwrap_or(config.max_position_fraction),
+    }
+}
+
+/// Infer the portfolio family from one persisted strategy name.
+fn family_for_strategy(strategy: &str) -> StrategyFamily {
+    StrategyFamily::from_strategy_name(strategy).unwrap_or(StrategyFamily::LatencyArb)
 }
 
 #[cfg(test)]

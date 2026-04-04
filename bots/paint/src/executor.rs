@@ -7,6 +7,7 @@ use crate::clock::Clock;
 use crate::config::Config;
 use crate::db::database::Database;
 use crate::fees::{resolve_fee_params, spread_net_edge};
+use crate::portfolio::StrategyFamily;
 use crate::signal_features::effective_book_timestamp;
 use crate::types::{
     BookState, MarketWindow, ReplayFidelity, Signal, SignalDirection, SimulatedTrade, TopOfBook,
@@ -97,6 +98,11 @@ pub enum SubmissionOutcome {
         signal_ids: Vec<i64>,
         reason: String,
     },
+}
+
+/// Infer the portfolio family from one emitted signal.
+fn family_for_signal(signal: &Signal) -> StrategyFamily {
+    StrategyFamily::from_strategy_name(&signal.strategy).unwrap_or(StrategyFamily::LatencyArb)
 }
 
 impl ExecutionStats {
@@ -211,6 +217,7 @@ impl ExecutionEngine {
             limit_price,
             signal.confidence,
             &signal.strategy,
+            family_for_signal(signal),
             config,
             clock,
         );
@@ -219,7 +226,7 @@ impl ExecutionEngine {
                 db,
                 signal,
                 signal_id,
-                "capital_reservation",
+                "strategy_sleeve_exhausted",
             ));
         }
         if let Some(reason) = submission_size_rejection_reason(
@@ -228,7 +235,7 @@ impl ExecutionEngine {
             window.order_min_size.unwrap_or(0.0),
             config.min_bet_usd,
         ) {
-            bankroll.release_reserved(requested_size * limit_price);
+            bankroll.release_reserved_for_strategy(requested_size * limit_price, &signal.strategy);
             return Ok(reject_single_submission(db, signal, signal_id, reason));
         }
         Ok(self.queue_single_submission(
@@ -296,7 +303,7 @@ impl ExecutionEngine {
                 db,
                 signals,
                 signal_ids,
-                "capital_reservation",
+                "strategy_sleeve_exhausted",
             ));
         }
         if let Some(reason) = spread_submission_rejection_reason(
@@ -307,9 +314,9 @@ impl ExecutionEngine {
             window.order_min_size.unwrap_or(0.0),
             config.min_bet_usd,
         ) {
-            bankroll.release_reserved(
-                (up_tokens * up_signal.up_ask) + (down_tokens * down_signal.down_ask),
-            );
+            let reserved_spread_cost =
+                (up_tokens * up_signal.up_ask) + (down_tokens * down_signal.down_ask);
+            bankroll.release_reserved_for_strategy(reserved_spread_cost, &up_signal.strategy);
             return Ok(reject_spread_submission(db, signals, signal_ids, reason));
         }
         let group_id = format!("spread-{}", self.next_group_id);
@@ -567,7 +574,7 @@ impl ExecutionEngine {
         if order.reserved_cost > fill_cost {
             context
                 .bankroll
-                .release_reserved(order.reserved_cost - fill_cost);
+                .release_reserved_for_strategy(order.reserved_cost - fill_cost, &order.strategy);
         }
         self.record_fill(&order, book.best_ask, filled_size, context.now);
 
@@ -619,7 +626,9 @@ impl ExecutionEngine {
         context: &mut DueOrderContext<'_>,
         miss: MissedOrderContext,
     ) -> anyhow::Result<OrderDisposition> {
-        context.bankroll.release_reserved(order.reserved_cost);
+        context
+            .bankroll
+            .release_reserved_for_strategy(order.reserved_cost, &order.strategy);
         self.stats.no_fills += 1;
         let effective_arrival_delay_ms = context.now.saturating_sub(order.signal_timestamp);
         context

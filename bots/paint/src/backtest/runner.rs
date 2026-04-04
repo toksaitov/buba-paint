@@ -9,20 +9,27 @@ use crate::clock::BacktestClock;
 use crate::config::Config;
 use crate::db::database::Database;
 use crate::executor::ExecutionEngine;
+use crate::portfolio::{
+    PortfolioAttributionStats, PortfolioRegime, StrategyFamily, detect_regime,
+    select_family_for_candidates,
+};
 use crate::position_manager::PositionManager;
 use crate::signal_features::SignalFeatureEngine;
+use crate::strategies::calm_persistence::CalmPersistenceStrategy;
 use crate::strategies::latency_arb::LatencyArbStrategy;
 use crate::strategies::spread_capture::SpreadCaptureStrategy;
 use crate::strategies::{Strategy, StrategyResult};
-use crate::trend_tracker::TrendTracker;
-use crate::types::StrategyContext;
+use crate::trend_tracker::ScopedTrendTracker;
+use crate::types::{Signal, StrategyContext};
 
 use super::feed_state::FeedState;
 use super::momentum::MomentumCalculator;
 use super::tick_replay::{SharedTicks, TickReplay};
 use super::window_manager::WindowManager;
 
+/// Summary metrics and attribution emitted by one completed backtest run.
 #[derive(Debug, Clone)]
+#[allow(missing_docs)]
 pub struct BacktestResult {
     pub start_time: u64,
     pub end_time: u64,
@@ -51,9 +58,30 @@ pub struct BacktestResult {
     pub avg_slippage: f64,
     pub raw_event_batches: u64,
     pub legacy_snapshot_batches: u64,
+    pub dislocation_regime_count: u64,
+    pub structural_pair_regime_count: u64,
+    pub calm_regime_count: u64,
+    pub dislocation_queued: u64,
+    pub structural_pair_queued: u64,
+    pub calm_queued: u64,
+    pub dislocation_filled: u64,
+    pub structural_pair_filled: u64,
+    pub calm_filled: u64,
+    pub dislocation_missed: u64,
+    pub structural_pair_missed: u64,
+    pub calm_missed: u64,
+    pub latency_arb_candidates: u64,
+    pub spread_capture_candidates: u64,
+    pub calm_persistence_candidates: u64,
+    pub router_blocked_count: u64,
+    pub capital_blocked_count: u64,
+    pub latency_spread_overlap_count: u64,
+    pub latency_calm_overlap_count: u64,
+    pub spread_calm_overlap_count: u64,
 }
 
 /// How tick data is sourced.
+#[allow(missing_docs)]
 pub enum TickSource {
     /// Load from a database file.
     FromDb(String),
@@ -61,6 +89,8 @@ pub enum TickSource {
     Cached(SharedTicks),
 }
 
+/// Inputs controlling one backtest run.
+#[allow(missing_docs)]
 pub struct BacktestOptions {
     pub tick_source: TickSource,
     pub data_db_path: String,
@@ -72,7 +102,45 @@ pub struct BacktestOptions {
     pub config: Config,
 }
 
-/// Runs backtest.
+/// One evaluated strategy candidate together with its portfolio family label.
+struct EvaluatedCandidate {
+    family: StrategyFamily,
+    result: StrategyResult,
+}
+
+/// Build the enabled strategy list for one backtest configuration.
+fn build_strategies(config: &Config) -> Vec<Box<dyn Strategy>> {
+    let mut strategies: Vec<Box<dyn Strategy>> = Vec::new();
+    if config.latency_arb_enabled {
+        strategies.push(Box::new(LatencyArbStrategy::new(
+            config.latency_arb_momentum_threshold,
+        )));
+    }
+    if config.spread_capture_enabled {
+        strategies.push(Box::new(SpreadCaptureStrategy::new()));
+    }
+    if config.calm_persistence_enabled {
+        strategies.push(Box::new(CalmPersistenceStrategy::new()));
+    }
+    strategies
+}
+
+/// Infer the portfolio family from one persisted strategy name.
+fn family_for_strategy(strategy: &str) -> StrategyFamily {
+    StrategyFamily::from_strategy_name(strategy).unwrap_or(StrategyFamily::LatencyArb)
+}
+
+/// Attach regime and family metadata to one emitted signal.
+fn annotate_signal(signal: &mut Signal, regime: PortfolioRegime, family: StrategyFamily) {
+    let metadata = signal.metadata.take();
+    signal.metadata = serde_json::json!({
+        "portfolioRegime": regime.as_str(),
+        "strategyFamily": family.as_str(),
+        "strategyMetadata": metadata,
+    });
+}
+
+/// Run one backtest over the provided historical interval and return summary metrics.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> {
     let t0 = Instant::now();
@@ -106,18 +174,14 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
         config.circuit_breaker_losses as u32,
         config.circuit_breaker_pause_ms,
     );
-    let mut trend_tracker = TrendTracker::new(
+    let mut trend_tracker = ScopedTrendTracker::new(
         config.trend_filter_window as usize,
         config.trend_filter_enabled,
         config.trend_filter_threshold,
+        config.trend_filter_per_strategy,
     );
 
-    let mut strategies: Vec<Box<dyn Strategy>> = vec![
-        Box::new(LatencyArbStrategy::new(
-            config.latency_arb_momentum_threshold,
-        )),
-        Box::new(SpreadCaptureStrategy::new()),
-    ];
+    let mut strategies = build_strategies(config);
 
     let mut feed_state = FeedState::new();
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
@@ -141,6 +205,7 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
     }
 
     let mut signal_count: u64 = 0;
+    let mut portfolio_stats = PortfolioAttributionStats::default();
 
     while let Some(group) = tick_replay.next_group() {
         let replay_ts = group.timestamp;
@@ -176,6 +241,8 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
                 );
             }
         }
+        let processed_outcomes = execution_engine.take_recent_outcomes();
+        portfolio_stats.record_processed_outcomes(&processed_outcomes);
 
         if let Some(ref binance) = group.binance {
             if let Some(price) = binance.price {
@@ -201,7 +268,12 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
 
             for (trade, result) in &resolved {
                 let won = result.pnl_0pct > 0.0;
-                trend_tracker.record_outcome(trade.side, won, replay_ts);
+                trend_tracker.record_outcome(
+                    family_for_strategy(&trade.strategy),
+                    trade.side,
+                    won,
+                    replay_ts,
+                );
                 circuit_breaker.record_result(won, replay_ts);
             }
         }
@@ -245,13 +317,45 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             continue;
         }
 
+        let observed_regime = detect_regime(&ctx, config);
+        portfolio_stats.record_observed_regime(observed_regime);
+
+        let mut candidates: Vec<EvaluatedCandidate> = Vec::new();
         for strategy in &mut strategies {
             let result = strategy.evaluate(&ctx, config, replay_ts);
-
             match result {
                 StrategyResult::None | StrategyResult::Rejected(_) => {}
-                StrategyResult::Single(signal) => {
-                    if trend_tracker.should_suppress(signal.direction) {
+                StrategyResult::Single(_) | StrategyResult::Batch(_) => {
+                    candidates.push(EvaluatedCandidate {
+                        family: strategy.family(),
+                        result,
+                    });
+                }
+            }
+        }
+
+        let candidate_families: Vec<StrategyFamily> = candidates
+            .iter()
+            .map(|candidate| candidate.family)
+            .collect();
+        portfolio_stats.record_candidates(&candidate_families);
+
+        let selected_family = if config.regime_detection_enabled {
+            select_family_for_candidates(&ctx, config, &candidate_families).selected_family
+        } else {
+            None
+        };
+
+        for candidate in candidates {
+            if config.regime_detection_enabled && Some(candidate.family) != selected_family {
+                portfolio_stats.record_router_block();
+                continue;
+            }
+
+            match candidate.result {
+                StrategyResult::Single(mut signal) => {
+                    annotate_signal(&mut signal, observed_regime, candidate.family);
+                    if trend_tracker.should_suppress(candidate.family, signal.direction) {
                         if let Ok(signal_id) = results_db.log_signal_with_context(
                             &signal,
                             Some(&current_mw.market_id),
@@ -274,7 +378,7 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
                         continue;
                     }
                     signal_count += 1;
-                    let _ = execution_engine.submit_single(
+                    let submission = execution_engine.submit_single(
                         &signal,
                         &current_mw,
                         &results_db,
@@ -283,10 +387,18 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
                         &clock,
                         group.fidelity,
                     )?;
+                    portfolio_stats.record_submission(
+                        candidate.family,
+                        observed_regime,
+                        &submission,
+                    );
                 }
-                StrategyResult::Batch(signals) => {
+                StrategyResult::Batch(mut signals) => {
+                    for signal in &mut signals {
+                        annotate_signal(signal, observed_regime, candidate.family);
+                    }
                     signal_count += signals.len() as u64;
-                    let _ = execution_engine.submit_spread(
+                    let submission = execution_engine.submit_spread(
                         &signals,
                         &current_mw,
                         &results_db,
@@ -295,7 +407,13 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
                         &clock,
                         group.fidelity,
                     )?;
+                    portfolio_stats.record_submission(
+                        candidate.family,
+                        observed_regime,
+                        &submission,
+                    );
                 }
+                StrategyResult::None | StrategyResult::Rejected(_) => {}
             }
         }
     }
@@ -339,6 +457,27 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
         avg_slippage: execution_stats.avg_slippage().unwrap_or(0.0),
         raw_event_batches: execution_stats.raw_event_batches,
         legacy_snapshot_batches: execution_stats.legacy_snapshot_batches,
+        dislocation_regime_count: portfolio_stats.regime_count(PortfolioRegime::Dislocation),
+        structural_pair_regime_count: portfolio_stats.regime_count(PortfolioRegime::StructuralPair),
+        calm_regime_count: portfolio_stats.regime_count(PortfolioRegime::Calm),
+        dislocation_queued: portfolio_stats.queued_count(PortfolioRegime::Dislocation),
+        structural_pair_queued: portfolio_stats.queued_count(PortfolioRegime::StructuralPair),
+        calm_queued: portfolio_stats.queued_count(PortfolioRegime::Calm),
+        dislocation_filled: portfolio_stats.filled_count(PortfolioRegime::Dislocation),
+        structural_pair_filled: portfolio_stats.filled_count(PortfolioRegime::StructuralPair),
+        calm_filled: portfolio_stats.filled_count(PortfolioRegime::Calm),
+        dislocation_missed: portfolio_stats.missed_count(PortfolioRegime::Dislocation),
+        structural_pair_missed: portfolio_stats.missed_count(PortfolioRegime::StructuralPair),
+        calm_missed: portfolio_stats.missed_count(PortfolioRegime::Calm),
+        latency_arb_candidates: portfolio_stats.candidate_count(StrategyFamily::LatencyArb),
+        spread_capture_candidates: portfolio_stats.candidate_count(StrategyFamily::SpreadCapture),
+        calm_persistence_candidates: portfolio_stats
+            .candidate_count(StrategyFamily::CalmPersistence),
+        router_blocked_count: portfolio_stats.router_blocked_count,
+        capital_blocked_count: portfolio_stats.capital_blocked_count,
+        latency_spread_overlap_count: portfolio_stats.latency_spread_overlap_count,
+        latency_calm_overlap_count: portfolio_stats.latency_calm_overlap_count,
+        spread_calm_overlap_count: portfolio_stats.spread_calm_overlap_count,
     };
 
     if !options.quiet {

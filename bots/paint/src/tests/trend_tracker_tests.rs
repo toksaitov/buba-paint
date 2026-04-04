@@ -1,4 +1,5 @@
 use super::*;
+use crate::portfolio::StrategyFamily;
 
 /// Verifies that bias zero with fewer than three outcomes.
 #[test]
@@ -144,4 +145,39 @@ fn equal_performance_zero_bias() {
 
     let bias = tracker.get_trend_bias();
     assert!((bias).abs() < f64::EPSILON);
+}
+
+/// Verifies that scoped tracking isolates suppression per strategy family.
+#[test]
+fn scoped_tracker_isolates_bias_by_strategy_family() {
+    let mut tracker = ScopedTrendTracker::new(10, true, 0.3, true);
+
+    for i in 0..5 {
+        tracker.record_outcome(
+            StrategyFamily::LatencyArb,
+            SignalDirection::Up,
+            true,
+            i * 100,
+        );
+    }
+
+    assert!(tracker.should_suppress(StrategyFamily::LatencyArb, SignalDirection::Down));
+    assert!(!tracker.should_suppress(StrategyFamily::CalmPersistence, SignalDirection::Down));
+}
+
+/// Verifies that non-scoped tracking preserves the old shared suppression behavior.
+#[test]
+fn non_scoped_tracker_behaves_like_global_tracker() {
+    let mut tracker = ScopedTrendTracker::new(10, true, 0.3, false);
+
+    for i in 0..5 {
+        tracker.record_outcome(
+            StrategyFamily::LatencyArb,
+            SignalDirection::Up,
+            true,
+            i * 100,
+        );
+    }
+
+    assert!(tracker.should_suppress(StrategyFamily::CalmPersistence, SignalDirection::Down));
 }

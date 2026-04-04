@@ -208,6 +208,26 @@ fn result_with_pnl(pnl: f64) -> BacktestResult {
         avg_slippage: 0.0,
         raw_event_batches: 0,
         legacy_snapshot_batches: 1,
+        dislocation_regime_count: 1,
+        structural_pair_regime_count: 0,
+        calm_regime_count: 0,
+        dislocation_queued: 1,
+        structural_pair_queued: 0,
+        calm_queued: 0,
+        dislocation_filled: 1,
+        structural_pair_filled: 0,
+        calm_filled: 0,
+        dislocation_missed: 0,
+        structural_pair_missed: 0,
+        calm_missed: 0,
+        latency_arb_candidates: 1,
+        spread_capture_candidates: 0,
+        calm_persistence_candidates: 0,
+        router_blocked_count: 0,
+        capital_blocked_count: 0,
+        latency_spread_overlap_count: 0,
+        latency_calm_overlap_count: 0,
+        spread_calm_overlap_count: 0,
     }
 }
 
@@ -222,7 +242,7 @@ fn build_csv_empty_results_just_header() {
     assert_eq!(lines.len(), 1, "empty results should produce only a header");
     assert_eq!(
         lines[0],
-        "MOMENTUM,MAX_ASK,pnl,win_rate,trades,wins,losses,max_dd,hwm,final_balance,signals,fill_rate,partial_fill_rate,no_fill_count,spread_legging_count,residual_position_count,avg_fill_latency_ms,avg_slippage,raw_event_batches,legacy_snapshot_batches,total_fees,gross_pnl,pnl_net,elapsed_s"
+        "MOMENTUM,MAX_ASK,pnl,win_rate,trades,wins,losses,max_dd,hwm,final_balance,signals,fill_rate,partial_fill_rate,no_fill_count,spread_legging_count,residual_position_count,avg_fill_latency_ms,avg_slippage,raw_event_batches,legacy_snapshot_batches,dislocation_regime_count,structural_pair_regime_count,calm_regime_count,dislocation_queued,structural_pair_queued,calm_queued,dislocation_filled,structural_pair_filled,calm_filled,dislocation_missed,structural_pair_missed,calm_missed,latency_arb_candidates,spread_capture_candidates,calm_persistence_candidates,router_blocked_count,capital_blocked_count,latency_spread_overlap_count,latency_calm_overlap_count,spread_calm_overlap_count,total_fees,gross_pnl,pnl_net,elapsed_s"
     );
 }
 
@@ -239,7 +259,7 @@ fn build_csv_single_result_correct_row() {
 
     assert_eq!(
         lines[0],
-        "PARAM_A,pnl,win_rate,trades,wins,losses,max_dd,hwm,final_balance,signals,fill_rate,partial_fill_rate,no_fill_count,spread_legging_count,residual_position_count,avg_fill_latency_ms,avg_slippage,raw_event_batches,legacy_snapshot_batches,total_fees,gross_pnl,pnl_net,elapsed_s"
+        "PARAM_A,pnl,win_rate,trades,wins,losses,max_dd,hwm,final_balance,signals,fill_rate,partial_fill_rate,no_fill_count,spread_legging_count,residual_position_count,avg_fill_latency_ms,avg_slippage,raw_event_batches,legacy_snapshot_batches,dislocation_regime_count,structural_pair_regime_count,calm_regime_count,dislocation_queued,structural_pair_queued,calm_queued,dislocation_filled,structural_pair_filled,calm_filled,dislocation_missed,structural_pair_missed,calm_missed,latency_arb_candidates,spread_capture_candidates,calm_persistence_candidates,router_blocked_count,capital_blocked_count,latency_spread_overlap_count,latency_calm_overlap_count,spread_calm_overlap_count,total_fees,gross_pnl,pnl_net,elapsed_s"
     );
 
     assert!(
@@ -249,7 +269,7 @@ fn build_csv_single_result_correct_row() {
     );
 
     let cols: Vec<&str> = lines[1].split(',').collect();
-    assert_eq!(cols.len(), 23, "should have 1 param + 22 metric columns");
+    assert_eq!(cols.len(), 43, "should have 1 param + 42 metric columns");
     assert_eq!(cols[0], "0.5");
     assert_eq!(cols[1], "42");
     assert_eq!(cols[3], "3");
@@ -267,7 +287,7 @@ fn build_csv_header_matches_expected_columns() {
     let header = csv.lines().next().unwrap();
     let cols: Vec<&str> = header.split(',').collect();
 
-    assert_eq!(cols.len(), 25);
+    assert_eq!(cols.len(), 45);
     assert_eq!(cols[0], "X");
     assert_eq!(cols[1], "Y");
     assert_eq!(cols[2], "Z");
@@ -289,10 +309,30 @@ fn build_csv_header_matches_expected_columns() {
     assert_eq!(cols[18], "avg_slippage");
     assert_eq!(cols[19], "raw_event_batches");
     assert_eq!(cols[20], "legacy_snapshot_batches");
-    assert_eq!(cols[21], "total_fees");
-    assert_eq!(cols[22], "gross_pnl");
-    assert_eq!(cols[23], "pnl_net");
-    assert_eq!(cols[24], "elapsed_s");
+    assert_eq!(cols[21], "dislocation_regime_count");
+    assert_eq!(cols[22], "structural_pair_regime_count");
+    assert_eq!(cols[23], "calm_regime_count");
+    assert_eq!(cols[24], "dislocation_queued");
+    assert_eq!(cols[25], "structural_pair_queued");
+    assert_eq!(cols[26], "calm_queued");
+    assert_eq!(cols[27], "dislocation_filled");
+    assert_eq!(cols[28], "structural_pair_filled");
+    assert_eq!(cols[29], "calm_filled");
+    assert_eq!(cols[30], "dislocation_missed");
+    assert_eq!(cols[31], "structural_pair_missed");
+    assert_eq!(cols[32], "calm_missed");
+    assert_eq!(cols[33], "latency_arb_candidates");
+    assert_eq!(cols[34], "spread_capture_candidates");
+    assert_eq!(cols[35], "calm_persistence_candidates");
+    assert_eq!(cols[36], "router_blocked_count");
+    assert_eq!(cols[37], "capital_blocked_count");
+    assert_eq!(cols[38], "latency_spread_overlap_count");
+    assert_eq!(cols[39], "latency_calm_overlap_count");
+    assert_eq!(cols[40], "spread_calm_overlap_count");
+    assert_eq!(cols[41], "total_fees");
+    assert_eq!(cols[42], "gross_pnl");
+    assert_eq!(cols[43], "pnl_net");
+    assert_eq!(cols[44], "elapsed_s");
 }
 
 /// Verifies that build csv no dims only metrics.
@@ -306,7 +346,7 @@ fn build_csv_no_dims_only_metrics() {
     assert_eq!(lines.len(), 2);
 
     let header_cols: Vec<&str> = lines[0].split(',').collect();
-    assert_eq!(header_cols.len(), 22);
+    assert_eq!(header_cols.len(), 42);
     assert_eq!(header_cols[0], "pnl");
 }
 

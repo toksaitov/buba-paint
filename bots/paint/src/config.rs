@@ -94,6 +94,7 @@ fn resolve_bool(raw: Option<&str>, default: bool) -> bool {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Config {
     pub binance_ws_url: String,
     pub binance_trade_stream: String,
@@ -122,12 +123,28 @@ pub struct Config {
     pub latency_arb_min_ask: f64,
     pub latency_arb_cooldown_ms: u64,
     pub latency_arb_adaptive_window_ms: u64,
+    pub latency_arb_enabled: bool,
+    pub latency_arb_max_position_fraction: Option<f64>,
 
     pub spread_capture_threshold: f64,
     pub spread_capture_min_ask: f64,
     pub spread_capture_max_leg_skew_ms: u64,
     pub spread_capture_max_quote_churn_per_s: f64,
+    pub spread_capture_enabled: bool,
     pub spread_capture_max_position_fraction: Option<f64>,
+
+    pub calm_persistence_enabled: bool,
+    pub calm_persistence_min_window_time_ms: u64,
+    pub calm_persistence_max_window_time_ms: u64,
+    pub calm_persistence_max_ask: f64,
+    pub calm_persistence_min_abs_distance_bps: f64,
+    pub calm_persistence_distance_vol_ratio_threshold: f64,
+    pub calm_persistence_max_realized_vol_15s_bps: f64,
+    pub calm_persistence_max_open_crosses_30s: u32,
+    pub calm_persistence_max_quote_churn_per_s: f64,
+    pub calm_persistence_min_alignment_fraction: f64,
+    pub calm_persistence_max_fair_bias: f64,
+    pub calm_persistence_max_position_fraction: Option<f64>,
 
     pub momentum_window_ms: u64,
 
@@ -157,6 +174,7 @@ pub struct Config {
     pub trend_filter_enabled: bool,
     pub trend_filter_threshold: f64,
     pub trend_filter_window: u64,
+    pub trend_filter_per_strategy: bool,
 
     pub regime_detection_enabled: bool,
 
@@ -194,6 +212,10 @@ impl Config {
             "LATENCY_ARB_MIN_ASK" => self.latency_arb_min_ask = value,
             "LATENCY_ARB_COOLDOWN_MS" => self.latency_arb_cooldown_ms = value as u64,
             "LATENCY_ARB_ADAPTIVE_WINDOW_MS" => self.latency_arb_adaptive_window_ms = value as u64,
+            "LATENCY_ARB_ENABLED" => self.latency_arb_enabled = value != 0.0,
+            "LATENCY_ARB_MAX_POSITION_FRACTION" => {
+                self.latency_arb_max_position_fraction = Some(value);
+            }
             "MAX_POSITION_FRACTION" => self.max_position_fraction = value,
             "MAX_POSITION_USD" => self.max_position_usd = value,
             "SPREAD_CAPTURE_THRESHOLD" => self.spread_capture_threshold = value,
@@ -202,8 +224,41 @@ impl Config {
             "SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S" => {
                 self.spread_capture_max_quote_churn_per_s = value;
             }
+            "SPREAD_CAPTURE_ENABLED" => self.spread_capture_enabled = value != 0.0,
             "SPREAD_CAPTURE_MAX_POSITION_FRACTION" => {
                 self.spread_capture_max_position_fraction = Some(value);
+            }
+            "CALM_PERSISTENCE_ENABLED" => self.calm_persistence_enabled = value != 0.0,
+            "CALM_PERSISTENCE_MIN_WINDOW_TIME_MS" => {
+                self.calm_persistence_min_window_time_ms = value as u64;
+            }
+            "CALM_PERSISTENCE_MAX_WINDOW_TIME_MS" => {
+                self.calm_persistence_max_window_time_ms = value as u64;
+            }
+            "CALM_PERSISTENCE_MAX_ASK" => self.calm_persistence_max_ask = value,
+            "CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS" => {
+                self.calm_persistence_min_abs_distance_bps = value;
+            }
+            "CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD" => {
+                self.calm_persistence_distance_vol_ratio_threshold = value;
+            }
+            "CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS" => {
+                self.calm_persistence_max_realized_vol_15s_bps = value;
+            }
+            "CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S" => {
+                self.calm_persistence_max_open_crosses_30s = value as u32;
+            }
+            "CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S" => {
+                self.calm_persistence_max_quote_churn_per_s = value;
+            }
+            "CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION" => {
+                self.calm_persistence_min_alignment_fraction = value;
+            }
+            "CALM_PERSISTENCE_MAX_FAIR_BIAS" => {
+                self.calm_persistence_max_fair_bias = value;
+            }
+            "CALM_PERSISTENCE_MAX_POSITION_FRACTION" => {
+                self.calm_persistence_max_position_fraction = Some(value);
             }
             "PEAK_DD_PAUSE_PCT" => self.peak_dd_pause_pct = value,
             "PEAK_DD_PAUSE_MS" => self.peak_dd_pause_ms = value as u64,
@@ -228,6 +283,8 @@ impl Config {
             "RECONNECT_PAUSE_MS" => self.reconnect_pause_ms = value as u64,
             "TREND_FILTER_THRESHOLD" => self.trend_filter_threshold = value,
             "TREND_FILTER_WINDOW" => self.trend_filter_window = value as u64,
+            "TREND_FILTER_PER_STRATEGY" => self.trend_filter_per_strategy = value != 0.0,
+            "REGIME_DETECTION_ENABLED" => self.regime_detection_enabled = value != 0.0,
             "RESOLUTION_POLL_RETRIES" => self.resolution_poll_retries = value as u32,
             "RESOLUTION_INITIAL_DELAY_MS" => self.resolution_initial_delay_ms = value as u64,
             "RESOLUTION_POLL_DELAY_MS" => self.resolution_poll_delay_ms = value as u64,
@@ -303,6 +360,10 @@ impl Config {
             latency_arb_min_ask: env_f64("LATENCY_ARB_MIN_ASK", 0.30),
             latency_arb_cooldown_ms: env_u64("LATENCY_ARB_COOLDOWN_MS", 60_000),
             latency_arb_adaptive_window_ms: env_u64("LATENCY_ARB_ADAPTIVE_WINDOW_MS", 1_800_000),
+            latency_arb_enabled: env_bool("LATENCY_ARB_ENABLED", true),
+            latency_arb_max_position_fraction: env::var("LATENCY_ARB_MAX_POSITION_FRACTION")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok()),
 
             spread_capture_threshold: env_f64("SPREAD_CAPTURE_THRESHOLD", 0.998),
             spread_capture_min_ask: env_f64("SPREAD_CAPTURE_MIN_ASK", 0.15),
@@ -311,9 +372,51 @@ impl Config {
                 "SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S",
                 8.0,
             ),
+            spread_capture_enabled: env_bool("SPREAD_CAPTURE_ENABLED", true),
             spread_capture_max_position_fraction: env::var("SPREAD_CAPTURE_MAX_POSITION_FRACTION")
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok()),
+
+            calm_persistence_enabled: env_bool("CALM_PERSISTENCE_ENABLED", false),
+            calm_persistence_min_window_time_ms: env_u64(
+                "CALM_PERSISTENCE_MIN_WINDOW_TIME_MS",
+                30_000,
+            ),
+            calm_persistence_max_window_time_ms: env_u64(
+                "CALM_PERSISTENCE_MAX_WINDOW_TIME_MS",
+                90_000,
+            ),
+            calm_persistence_max_ask: env_f64("CALM_PERSISTENCE_MAX_ASK", 0.65),
+            calm_persistence_min_abs_distance_bps: env_f64(
+                "CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS",
+                5.0,
+            ),
+            calm_persistence_distance_vol_ratio_threshold: env_f64(
+                "CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD",
+                2.0,
+            ),
+            calm_persistence_max_realized_vol_15s_bps: env_f64(
+                "CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS",
+                35.0,
+            ),
+            calm_persistence_max_open_crosses_30s: env_u64(
+                "CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S",
+                1,
+            ) as u32,
+            calm_persistence_max_quote_churn_per_s: env_f64(
+                "CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S",
+                20.0,
+            ),
+            calm_persistence_min_alignment_fraction: env_f64(
+                "CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION",
+                0.60,
+            ),
+            calm_persistence_max_fair_bias: env_f64("CALM_PERSISTENCE_MAX_FAIR_BIAS", 0.18),
+            calm_persistence_max_position_fraction: env::var(
+                "CALM_PERSISTENCE_MAX_POSITION_FRACTION",
+            )
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok()),
 
             momentum_window_ms: env_u64("MOMENTUM_WINDOW_MS", 30_000),
 
@@ -343,6 +446,7 @@ impl Config {
             trend_filter_enabled: env_bool("TREND_FILTER_ENABLED", false),
             trend_filter_threshold: env_f64("TREND_FILTER_THRESHOLD", 0.30),
             trend_filter_window: env_u64("TREND_FILTER_WINDOW", 10),
+            trend_filter_per_strategy: env_bool("TREND_FILTER_PER_STRATEGY", false),
 
             regime_detection_enabled: env_bool("REGIME_DETECTION_ENABLED", false),
 
@@ -417,12 +521,28 @@ impl Default for Config {
             latency_arb_min_ask: 0.30,
             latency_arb_cooldown_ms: 60_000,
             latency_arb_adaptive_window_ms: 1_800_000,
+            latency_arb_enabled: true,
+            latency_arb_max_position_fraction: None,
 
             spread_capture_threshold: 0.998,
             spread_capture_min_ask: 0.15,
             spread_capture_max_leg_skew_ms: 25,
             spread_capture_max_quote_churn_per_s: 8.0,
+            spread_capture_enabled: true,
             spread_capture_max_position_fraction: None,
+
+            calm_persistence_enabled: false,
+            calm_persistence_min_window_time_ms: 30_000,
+            calm_persistence_max_window_time_ms: 90_000,
+            calm_persistence_max_ask: 0.65,
+            calm_persistence_min_abs_distance_bps: 5.0,
+            calm_persistence_distance_vol_ratio_threshold: 2.0,
+            calm_persistence_max_realized_vol_15s_bps: 35.0,
+            calm_persistence_max_open_crosses_30s: 1,
+            calm_persistence_max_quote_churn_per_s: 20.0,
+            calm_persistence_min_alignment_fraction: 0.60,
+            calm_persistence_max_fair_bias: 0.18,
+            calm_persistence_max_position_fraction: None,
 
             momentum_window_ms: 30_000,
 
@@ -452,6 +572,7 @@ impl Default for Config {
             trend_filter_enabled: false,
             trend_filter_threshold: 0.30,
             trend_filter_window: 10,
+            trend_filter_per_strategy: false,
 
             regime_detection_enabled: false,
 

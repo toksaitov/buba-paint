@@ -1,5 +1,6 @@
 use super::*;
 use crate::clock::BacktestClock;
+use crate::portfolio::StrategyFamily;
 use tempfile::NamedTempFile;
 
 /// Helper: default config tweaked for predictable test results.
@@ -164,7 +165,7 @@ fn min_bet_floor_activates() {
     let mut cfg = test_config();
     cfg.starting_balance = 30.0;
     cfg.min_bet_usd = 5.0;
-    cfg.max_position_fraction = 0.10;
+    cfg.max_position_fraction = 0.20;
     cfg.max_position_usd_fraction = 0.50;
 
     let (db, _tmp) = temp_db();
@@ -172,7 +173,7 @@ fn min_bet_floor_activates() {
     clock.set(1_000);
     let mut mgr = BankrollManager::new(cfg.starting_balance, &cfg, &db, &clock);
 
-    let tokens = mgr.reserve_capital(0.45, 0.9, "latency-arb", &cfg, &clock);
+    let tokens = mgr.reserve_capital(0.45, 0.55, "latency-arb", &cfg, &clock);
     assert!(
         (tokens - 12.0).abs() < f64::EPSILON,
         "expected 12 tokens (min bet floor), got {tokens}"
@@ -185,7 +186,7 @@ fn reserve_capital_with_reserve_price_honors_min_bet_at_entry_price() {
     let mut cfg = test_config();
     cfg.starting_balance = 30.0;
     cfg.min_bet_usd = 5.0;
-    cfg.max_position_fraction = 0.10;
+    cfg.max_position_fraction = 0.20;
     cfg.max_position_usd_fraction = 0.50;
 
     let (db, _tmp) = temp_db();
@@ -193,8 +194,15 @@ fn reserve_capital_with_reserve_price_honors_min_bet_at_entry_price() {
     clock.set(1_000);
     let mut mgr = BankrollManager::new(cfg.starting_balance, &cfg, &db, &clock);
 
-    let tokens =
-        mgr.reserve_capital_with_reserve_price(0.56, 0.65, 0.9, "latency-arb", &cfg, &clock);
+    let tokens = mgr.reserve_capital_with_reserve_price(
+        0.56,
+        0.65,
+        0.9,
+        "latency-arb",
+        StrategyFamily::LatencyArb,
+        &cfg,
+        &clock,
+    );
     assert!(
         (tokens - 9.0).abs() < f64::EPSILON,
         "expected 9 tokens (ceil min-bet floor), got {tokens}"
@@ -204,6 +212,81 @@ fn reserve_capital_with_reserve_price_honors_min_bet_at_entry_price() {
         "expected 5.85 reserved at limit price, got {}",
         mgr.reserved_capital
     );
+}
+
+/// Verifies that one calm reservation does not consume the latency-arb sleeve.
+#[test]
+fn strategy_sleeves_isolate_latency_and_calm_reservations() {
+    let mut cfg = test_config();
+    cfg.starting_balance = 200.0;
+    cfg.max_position_fraction = 0.05;
+    cfg.latency_arb_max_position_fraction = Some(0.05);
+    cfg.calm_persistence_max_position_fraction = Some(0.05);
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = BankrollManager::new(cfg.starting_balance, &cfg, &db, &clock);
+
+    let calm_tokens = mgr.reserve_capital_with_reserve_price(
+        0.50,
+        0.50,
+        1.0,
+        "calm-persistence",
+        StrategyFamily::CalmPersistence,
+        &cfg,
+        &clock,
+    );
+    let latency_tokens = mgr.reserve_capital_with_reserve_price(
+        0.50,
+        0.50,
+        1.0,
+        "latency-arb",
+        StrategyFamily::LatencyArb,
+        &cfg,
+        &clock,
+    );
+
+    assert_eq!(calm_tokens, 20.0);
+    assert_eq!(latency_tokens, 20.0);
+    assert!((mgr.reserved_capital - 20.0).abs() < 1e-9);
+}
+
+/// Verifies that a tighter calm sleeve does not affect the latency-arb sleeve size.
+#[test]
+fn calm_sleeve_cap_is_independent_from_latency_sleeve() {
+    let mut cfg = test_config();
+    cfg.starting_balance = 200.0;
+    cfg.max_position_fraction = 0.05;
+    cfg.latency_arb_max_position_fraction = Some(0.05);
+    cfg.calm_persistence_max_position_fraction = Some(0.02);
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = BankrollManager::new(cfg.starting_balance, &cfg, &db, &clock);
+
+    let calm_tokens = mgr.reserve_capital_with_reserve_price(
+        0.50,
+        0.50,
+        1.0,
+        "calm-persistence",
+        StrategyFamily::CalmPersistence,
+        &cfg,
+        &clock,
+    );
+    let latency_tokens = mgr.reserve_capital_with_reserve_price(
+        0.50,
+        0.50,
+        1.0,
+        "latency-arb",
+        StrategyFamily::LatencyArb,
+        &cfg,
+        &clock,
+    );
+
+    assert_eq!(calm_tokens, 8.0);
+    assert_eq!(latency_tokens, 20.0);
 }
 
 /// Verifies that min bet floor does not activate when cost above min.
@@ -851,8 +934,33 @@ fn reserve_capital_depletes_available() {
 
     let t2 = mgr.reserve_capital(0.45, 0.9, "latency-arb", &cfg, &clock);
 
-    assert!(t2 > 0.0);
+    assert!(
+        t2 > 0.0,
+        "legacy global sizing should allow another reservation"
+    );
     assert!(mgr.reserved_capital > reserved_after_first);
+}
+
+/// Verifies that explicit family sleeves clamp repeated reservations for that strategy.
+#[test]
+fn explicit_latency_sleeve_blocks_second_same_family_reservation() {
+    let mut cfg = test_config();
+    cfg.max_position_fraction = 0.05;
+    cfg.latency_arb_max_position_fraction = Some(0.05);
+
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    let t1 = mgr.reserve_capital(0.45, 0.9, "latency-arb", &cfg, &clock);
+    assert!(t1 > 0.0);
+    let reserved_after_first = mgr.reserved_capital;
+
+    let t2 = mgr.reserve_capital(0.45, 0.9, "latency-arb", &cfg, &clock);
+
+    assert!((t2 - 0.0).abs() < f64::EPSILON);
+    assert!((mgr.reserved_capital - reserved_after_first).abs() < f64::EPSILON);
 }
 
 /// Verifies that apply trade result reserved capital clamped to zero.

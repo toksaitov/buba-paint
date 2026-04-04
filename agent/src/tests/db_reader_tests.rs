@@ -160,6 +160,19 @@ async fn get_status_empty_db() {
 async fn get_status_current_window() {
     let conn = fixture_db();
     seed_fixtures(&conn);
+    conn.execute("DELETE FROM tick_data WHERE timestamp = 3500", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO tick_data (timestamp, source, price) VALUES (2500, 'binance', 42050.0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO markets (market_id, question, condition_id, slug, up_token_id, down_token_id, start_time, end_time, status)
+         VALUES ('mkt-3', 'Future BTC window', 'cond-3', 'btc-updown-5m-300', 'tok-up-3', 'tok-down-3', 4000, 5000, 'active')",
+        [],
+    )
+    .unwrap();
     let reader = DbReader::from_connection(conn);
 
     let status = reader.get_status().await.unwrap();

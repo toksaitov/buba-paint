@@ -1,6 +1,6 @@
 # buba
 
-Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy that consumes Binance market data, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, raw feed-event capture for new runs, and a shared signal-feature engine. Historical runs `004` through `009` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream while still merging older legacy data with future richer runs.
+Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy stack that consumes Binance market data, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, raw feed-event capture for new runs, a shared signal-feature engine, and a portfolio router that keeps the strategy families from competing for the same market snapshot. Historical runs `004` through `009` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream while still merging older legacy data with future richer runs.
 
 Settlements are applied only on authoritative Polymarket outcomes. Dynamic taker fees follow the March 30, 2026 crypto schedule by default (`feeRate=0.072`, `exponent=1`) while still supporting historical-by-date fee resolution and explicit overrides for sweeps. A shared agent monitors bot databases and exposes REST + WebSocket APIs. A dashboard (Rust backend + React frontend) provides a unified UI for status, trades, signals, and process control.
 
@@ -27,11 +27,21 @@ Requires Rust 1.85+ (install via [rustup](https://rustup.rs)) and Node 22+ for t
 
 ## How It Works (paint bot)
 
-Every 5 minutes, Polymarket opens a market: "Will BTC go Up or Down?" The paint bot trades two ideas:
+Every 5 minutes, Polymarket opens a market: "Will BTC go Up or Down?" The paint bot now supports three strategy families, but the live portfolio router keeps them from competing on the same snapshot:
 
 Latency arb: Binance spot price moves first, Polymarket sometimes lags. When Binance momentum exceeds the adaptive threshold and the relevant YES token is still cheap enough, the bot queues a taker-style buy with a simulated arrival delay. The fill model then checks the book at arrival time, enforces min size and tick size, and allows partial fills.
 
 Spread capture: when UP ask + DOWN ask is cheap enough after fees, the bot queues two independent taker buys. The pair is not modeled as atomic. If only one leg fills, the residual directional position stays open and settles like any other trade.
+
+Calm persistence: in quiet late-window regimes, the bot can buy the currently winning side if Binance stays on one side of the window open, realized volatility is low, recent open-crosses are rare, and Polymarket still offers positive expected edge after fees and slippage.
+
+The portfolio router chooses one family per evaluation snapshot:
+
+- `dislocation` -> latency-arb
+- `structural_pair` -> spread-capture
+- `calm` -> calm-persistence
+
+Per-strategy capital sleeves and per-strategy trend filtering keep one family from starving another family by shared bankroll or shared suppression state.
 
 For new live paper runs, compact raw feed events are written to `feed_events` and replayed by timestamp. The default storage profile keeps typed replay fields and drops bulky hot-path payload blobs so week-long paper runs remain practical. Signal-generation telemetry is persisted to `signal_metrics`, feed lifecycle events are persisted to `feed_health_events`, and no-signal strategy decisions are summarized into `strategy_rejection_summaries` so live diagnostics can explain why a strategy kept returning `None`. Live quote freshness now uses observed local receipt time when the CLOB source timestamp is missing or zero, while the raw `feed_events.event_at_ms` value is still preserved for replay/debugging truth. For older runs, the simulator falls back to synthetic `legacy_snapshot` events built from 1 Hz `tick_data`. That path is intentionally conservative and should be treated as lower-fidelity than new raw-event runs.
 
@@ -64,11 +74,11 @@ Authentication happens at two layers: the frontend authenticates to the dashboar
 
 Core loop: `cli.rs` (clap CLI parsing, command dispatch), `live.rs` (live trading loop combining feeds + discovery + event-driven strategies + authoritative settlement), `config.rs` (all env-configurable settings, `set_param` for sweeps), `latency_probe.rs` (operator-facing endpoint/feed latency benchmark).
 
-Strategies: `strategies/latency_arb.rs` (feature-scored stale-odds signal, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `signal_features.rs` (shared feature engine used by live paper and backtests).
+Strategies: `strategies/latency_arb.rs` (feature-scored stale-odds signal, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `strategies/calm_persistence.rs` (late-window sign persistence in calm regimes), `signal_features.rs` (shared feature engine used by live paper and backtests).
 
 Feeds: `feeds/binance_feed.rs` (combined Binance trade, top-of-book, and shallow-depth stream), `feeds/clob_feed.rs` (CLOB order book with incremental updates, best-bid-ask support, and dynamic resubscription), `feeds/chainlink_feed.rs` (RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
 
-Data: `bankroll.rs` (per-strategy half-Kelly sizing, caps, confidence curve, DD pause), `position_manager.rs` (trade lifecycle, opposing position guard, authoritative settlement), `circuit_breaker.rs` (pause after consecutive losses), `tick_logger.rs` (1s telemetry sampling for dashboards and coarse inspection), `trend_tracker.rs` (experimental directional trend filter, off by default).
+Data: `bankroll.rs` (per-strategy half-Kelly sizing, sleeves, caps, confidence curve, DD pause), `position_manager.rs` (trade lifecycle, opposing position guard, authoritative settlement), `circuit_breaker.rs` (pause after consecutive losses), `tick_logger.rs` (1s telemetry sampling for dashboards and coarse inspection), `trend_tracker.rs` (strategy-scoped directional trend filter), `portfolio.rs` (regime router, family attribution, and non-competing portfolio helpers).
 
 Execution: `executor.rs` (`ExecutionEngine`, shared by live paper trading and backtests, with simulated order latency, partial fills, no-fills, and execution metrics).
 
@@ -109,7 +119,7 @@ buba-paint/
       src/
         main.rs, lib.rs, cli.rs, live.rs, config.rs, types.rs, ...
         feeds/                     # Binance, CLOB, Chainlink WebSocket feeds
-        strategies/                # latency-arb, spread-capture
+        strategies/                # latency-arb, spread-capture, calm-persistence
         backtest/                  # tick replay, parameter sweep (rayon)
         db/                        # SQLite wrapper, schema, build-data
       tests/                       # integration tests (mock WS, wiremock)
@@ -262,11 +272,15 @@ All settings via environment variables or `--set` CLI flag.
 
 Core: `DB_PATH` (default `./data/paint.db`) is the SQLite database path. `LOG_LEVEL` (default `info`): debug, info, warn, error. `TICK_INTERVAL` (default `1000`): coarse telemetry sampling interval in ms. `GAMMA_POLL_INTERVAL` (default `60000`): Gamma API poll interval in ms. `CHAINLINK_STALE_MS` (default `30000`): force-reconnect after silence. `MAX_SIGNAL_FEED_AGE_MS` and `MAX_QUOTE_AGE_MS` cap stale inputs for signal generation.
 
+Strategy toggles and routing: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, and `CALM_PERSISTENCE_ENABLED` enable the three families. `REGIME_DETECTION_ENABLED` turns on the portfolio router. `TREND_FILTER_PER_STRATEGY` scopes trend suppression to the strategy family instead of one shared global state.
+
 Binance feed: `BINANCE_TRADE_STREAM`, `BINANCE_BOOK_TICKER_STREAM`, and `BINANCE_DEPTH_STREAM` control the combined Binance market-data subscription. `BINANCE_WS_URL` remains as a backward-compatible override for older aggTrade-only setups.
 
-Latency arb: `LATENCY_ARB_MOMENTUM_THRESHOLD` (default `0.0015`) is the base momentum fraction (0.15%). `LATENCY_ARB_ADAPTIVE_WINDOW_MS` (default `1800000`) is the rolling time window used by the adaptive threshold. `LATENCY_ARB_MAX_ASK` (default `0.55`): max ask to consider stale. `LATENCY_ARB_MIN_ASK` (default `0.30`): min ask, rejects cheap tokens. `LATENCY_ARB_COOLDOWN_MS` (default `60000`): cooldown between signals. `MOMENTUM_WINDOW_MS` (default `30000`): momentum rolling window.
+Latency arb: `LATENCY_ARB_MOMENTUM_THRESHOLD` (default `0.0015`) is the base momentum fraction (0.15%). `LATENCY_ARB_ADAPTIVE_WINDOW_MS` (default `1800000`) is the rolling time window used by the adaptive threshold. `LATENCY_ARB_MAX_ASK` (default `0.55`): max ask to consider stale. `LATENCY_ARB_MIN_ASK` (default `0.30`): min ask, rejects cheap tokens. `LATENCY_ARB_COOLDOWN_MS` (default `60000`): cooldown between signals. `MOMENTUM_WINDOW_MS` (default `30000`): momentum rolling window. `LATENCY_ARB_MAX_POSITION_FRACTION` is an optional latency-arb-only sleeve. If it is unset, latency-arb falls back to `MAX_POSITION_FRACTION`.
 
 Spread capture: `SPREAD_CAPTURE_THRESHOLD` (default `0.998`) is the hard outer cap on UP+DOWN ask sum. The strategy also requires positive projected net edge after fees and simulated fills. `SPREAD_CAPTURE_MIN_ASK` (default `0.15`): reject degenerate books. `SPREAD_CAPTURE_MAX_LEG_SKEW_MS` (default `25`): require the UP and DOWN books used for one spread decision to be near-synchronous. Mixed-time books are rejected as `legs_out_of_sync`. `SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S` (default `8`) caps the observed top-of-book churn before the strategy treats the legging risk as too high.
+
+Calm persistence: `CALM_PERSISTENCE_MIN_WINDOW_TIME_MS` and `CALM_PERSISTENCE_MAX_WINDOW_TIME_MS` bound the late-window entry slice. `CALM_PERSISTENCE_MAX_ASK` caps the YES ask. `CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS` and `CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD` require the current sign versus the window open to be large enough relative to realized volatility. `CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS`, `CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S`, and `CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S` keep the strategy in quiet windows. `CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION` requires enough recent microstructure agreement, `CALM_PERSISTENCE_MAX_FAIR_BIAS` caps the internal fair-value adjustment, and `CALM_PERSISTENCE_MAX_POSITION_FRACTION` is the calm-only capital sleeve.
 
 Bankroll: `STARTING_BALANCE` (default `150`) is the initial paper balance in USD. `MAX_POSITION_FRACTION` (default `0.10`): max fraction per trade (10%). `MAX_POSITION_USD_FRACTION` (default `0.20`): hard cap per trade (20%). `MAX_POSITION_USD` (default `500`): absolute hard cap in USD regardless of balance. `MIN_BALANCE_THRESHOLD` (default `20`): stop trading below this. `MAX_DRAWDOWN_PCT` (default `0.50`): stop at 50% drawdown.
 
@@ -276,13 +290,13 @@ Fees: `TAKER_FEE_RATE` (default `0.072`) and `TAKER_FEE_EXPONENT` (default `1`) 
 
 Execution: `EXECUTION_MODE` (default `paper`): paper or live. Live order placement is still not implemented, but paper/live simulation uses the shared execution engine. `SIM_ORDER_LATENCY_MS` (default `250`) controls simulated order-arrival delay. It is a paper-trading heuristic, not a measured venue latency, so later calibration should use the persisted effective-arrival telemetry rather than treating `250` as ground truth. `MAX_BOOK_STALENESS_MS` (default `1500`) rejects fills against stale books. Submit-time sizing now checks both the market minimum size and `MIN_BET_USD` before an order is queued, so obviously too-small orders fail early as `below_market_min_size_on_submit` or `below_min_bet_on_submit` instead of turning into guaranteed misses later.
 
-Spread sizing: `SPREAD_CAPTURE_MAX_POSITION_FRACTION` is an optional spread-only balance cap. If it is unset, spread-capture falls back to `MAX_POSITION_FRACTION`. The shared hard caps `MAX_POSITION_USD_FRACTION` and `MAX_POSITION_USD` still apply.
+Strategy sleeves: `SPREAD_CAPTURE_MAX_POSITION_FRACTION`, `CALM_PERSISTENCE_MAX_POSITION_FRACTION`, and `LATENCY_ARB_MAX_POSITION_FRACTION` are optional strategy-only balance caps. If any of them is unset, that family falls back to `MAX_POSITION_FRACTION`. The shared hard caps `MAX_POSITION_USD_FRACTION` and `MAX_POSITION_USD` still apply.
 
 Position limits and safety: `MAX_OPEN_POSITIONS` (default `5`): max concurrent positions. `MIN_WINDOW_TIME_MS` (default `90000`): don't enter with <90s left. `CIRCUIT_BREAKER_LOSSES` (default `3`): pause after N consecutive losses. `CIRCUIT_BREAKER_PAUSE_MS` (default `900000`): pause duration (15 min). `PEAK_DD_PAUSE_PCT` (default `0.30`): pause at 30% drawdown from peak. `PEAK_DD_PAUSE_MS` (default `3600000`): DD pause duration (1 hour). `DD_PAUSE_RECOVERY_PCT` (default `0.05`): DD must recover by 5% before re-arming. `RECONNECT_MIN_STABLE_MS` (default `5000`): min connection duration to reset backoff. `RECONNECT_MAX_FAILURES` (default `20`): feed circuit breaker threshold. `RECONNECT_PAUSE_MS` (default `300000`): feed circuit breaker pause (5 min).
 
 Resolution polling: `RESOLUTION_POLL_RETRIES` (default `30`): how many times to poll the Gamma API after window close. `RESOLUTION_INITIAL_DELAY_MS` (default `30000`): how long to wait after nominal close before the first authoritative poll. `RESOLUTION_POLL_DELAY_MS` (default `10000`): delay between retries.
 
-Trend filter (experimental, off by default): `TREND_FILTER_ENABLED` (default `false`): enable counter-trend suppression. `TREND_FILTER_THRESHOLD` (default `0.30`): bias threshold to suppress. `TREND_FILTER_WINDOW` (default `10`): recent outcomes to consider.
+Trend filter (experimental, off by default): `TREND_FILTER_ENABLED` (default `false`): enable counter-trend suppression. `TREND_FILTER_THRESHOLD` (default `0.30`): bias threshold to suppress. `TREND_FILTER_WINDOW` (default `10`): recent outcomes to consider. `TREND_FILTER_PER_STRATEGY` scopes the state by strategy family so one family does not suppress another family.
 
 ## Database Schema
 
@@ -385,7 +399,7 @@ cd dashboard/client && npm run build  # produces dist/ for static serving
 AGENT_SECRET=your-secret ./target/release/buba-agent \
   --db-path runs/010/buba-paint.db \
   --port 9090 \
-  --bot-cmd "./target/release/buba-paint live --db-path runs/010/buba-paint.db --balance 200 --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008 --set LATENCY_ARB_MAX_ASK=0.65 --set MAX_POSITION_FRACTION=0.05 --set SPREAD_CAPTURE_THRESHOLD=0.970 --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 --set SIM_ORDER_LATENCY_MS=250"
+  --bot-cmd "./target/release/buba-paint live --db-path runs/010/buba-paint.db --balance 200 --set LATENCY_ARB_ENABLED=1 --set SPREAD_CAPTURE_ENABLED=1 --set CALM_PERSISTENCE_ENABLED=1 --set REGIME_DETECTION_ENABLED=1 --set TREND_FILTER_PER_STRATEGY=1 --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008 --set LATENCY_ARB_MAX_ASK=0.65 --set LATENCY_ARB_MAX_POSITION_FRACTION=0.05 --set MAX_POSITION_FRACTION=0.05 --set SPREAD_CAPTURE_THRESHOLD=0.970 --set SPREAD_CAPTURE_MAX_POSITION_FRACTION=0.05 --set CALM_PERSISTENCE_MIN_WINDOW_TIME_MS=30000 --set CALM_PERSISTENCE_MAX_WINDOW_TIME_MS=90000 --set CALM_PERSISTENCE_MAX_ASK=0.75 --set CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS=6 --set CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD=1.0 --set CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION=0.5 --set CALM_PERSISTENCE_MAX_FAIR_BIAS=0.35 --set CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS=80 --set CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S=1 --set CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S=100 --set CALM_PERSISTENCE_MAX_POSITION_FRACTION=0.05 --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 --set SIM_ORDER_LATENCY_MS=250"
 
 # 3. Start the dashboard (serves frontend + proxies to agent)
 ADMIN_USER=admin ADMIN_PASSWORD=changeme JWT_SECRET=your-jwt-secret \

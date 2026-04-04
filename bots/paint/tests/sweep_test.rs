@@ -243,6 +243,26 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
         "avg_slippage",
         "raw_event_batches",
         "legacy_snapshot_batches",
+        "dislocation_regime_count",
+        "structural_pair_regime_count",
+        "calm_regime_count",
+        "dislocation_queued",
+        "structural_pair_queued",
+        "calm_queued",
+        "dislocation_filled",
+        "structural_pair_filled",
+        "calm_filled",
+        "dislocation_missed",
+        "structural_pair_missed",
+        "calm_missed",
+        "latency_arb_candidates",
+        "spread_capture_candidates",
+        "calm_persistence_candidates",
+        "router_blocked_count",
+        "capital_blocked_count",
+        "latency_spread_overlap_count",
+        "latency_calm_overlap_count",
+        "spread_calm_overlap_count",
         "total_fees",
         "gross_pnl",
         "pnl_net",
@@ -254,14 +274,14 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
     let header_cols: Vec<&str> = header.split(',').collect();
     assert_eq!(
         header_cols.len(),
-        24,
-        "expected 24 columns, got {}",
+        44,
+        "expected 44 columns, got {}",
         header_cols.len()
     );
 
     for (row_idx, line) in lines.iter().skip(1).enumerate() {
         let cols: Vec<&str> = line.split(',').collect();
-        assert_eq!(cols.len(), 24);
+        assert_eq!(cols.len(), header_cols.len());
         for (col_idx, col) in cols.iter().enumerate() {
             col.parse::<f64>().unwrap_or_else(|e| {
                 panic!(

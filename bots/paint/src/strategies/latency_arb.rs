@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::portfolio::StrategyFamily;
 use crate::strategies::{Strategy, StrategyResult};
 use crate::types::{
     Signal, SignalDirection, SignalTelemetry, StrategyContext, StrategyRejection,
@@ -467,6 +468,11 @@ impl Strategy for LatencyArbStrategy {
     /// Returns the persisted name for the latency-arbitrage strategy.
     fn name(&self) -> &'static str {
         STRATEGY_NAME
+    }
+
+    /// Returns the portfolio family used by routing and sleeves.
+    fn family(&self) -> StrategyFamily {
+        StrategyFamily::LatencyArb
     }
 
     /// Evaluates the current book and momentum snapshot for a latency-arb signal.

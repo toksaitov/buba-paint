@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use crate::portfolio::StrategyFamily;
 use crate::types::SignalDirection;
 
 /// A single recorded trade outcome.
@@ -20,6 +23,16 @@ struct Outcome {
 #[derive(Debug)]
 pub struct TrendTracker {
     recent_outcomes: Vec<Outcome>,
+    window_size: usize,
+    filter_enabled: bool,
+    filter_threshold: f64,
+}
+
+#[derive(Debug)]
+pub struct ScopedTrendTracker {
+    global: TrendTracker,
+    per_strategy: HashMap<StrategyFamily, TrendTracker>,
+    scoped: bool,
     window_size: usize,
     filter_enabled: bool,
     filter_threshold: f64,
@@ -113,6 +126,60 @@ impl TrendTracker {
             SignalDirection::Up => bias < -self.filter_threshold,
             SignalDirection::Down => bias > self.filter_threshold,
         }
+    }
+}
+
+impl ScopedTrendTracker {
+    /// Create one trend-tracker wrapper that can run either globally or per strategy.
+    pub fn new(
+        window_size: usize,
+        filter_enabled: bool,
+        filter_threshold: f64,
+        scoped: bool,
+    ) -> Self {
+        Self {
+            global: TrendTracker::new(window_size, filter_enabled, filter_threshold),
+            per_strategy: HashMap::new(),
+            scoped,
+            window_size,
+            filter_enabled,
+            filter_threshold,
+        }
+    }
+
+    /// Record one trade outcome either globally or for the provided family sleeve.
+    pub fn record_outcome(
+        &mut self,
+        family: StrategyFamily,
+        direction: SignalDirection,
+        won: bool,
+        now: u64,
+    ) {
+        if self.scoped {
+            self.per_strategy
+                .entry(family)
+                .or_insert_with(|| {
+                    TrendTracker::new(self.window_size, self.filter_enabled, self.filter_threshold)
+                })
+                .record_outcome(direction, won, now);
+        } else {
+            self.global.record_outcome(direction, won, now);
+        }
+    }
+
+    /// Return whether a signal should be suppressed under the active scope mode.
+    pub fn should_suppress(&mut self, family: StrategyFamily, direction: SignalDirection) -> bool {
+        if self.scoped {
+            return self
+                .per_strategy
+                .entry(family)
+                .or_insert_with(|| {
+                    TrendTracker::new(self.window_size, self.filter_enabled, self.filter_threshold)
+                })
+                .should_suppress(direction);
+        }
+
+        self.global.should_suppress(direction)
     }
 }
 

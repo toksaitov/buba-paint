@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::fees::{resolve_fee_params, spread_net_edge};
+use crate::portfolio::StrategyFamily;
 use crate::strategies::{Strategy, StrategyResult};
 use crate::types::{
     Signal, SignalDirection, SignalTelemetry, StrategyContext, StrategyRejection,
@@ -246,6 +247,11 @@ impl Strategy for SpreadCaptureStrategy {
     /// Returns the persisted name for the spread-capture strategy.
     fn name(&self) -> &'static str {
         STRATEGY_NAME
+    }
+
+    /// Returns the portfolio family used by routing and sleeves.
+    fn family(&self) -> StrategyFamily {
+        StrategyFamily::SpreadCapture
     }
 
     /// Evaluates the current book snapshot for a two-leg spread-capture setup.

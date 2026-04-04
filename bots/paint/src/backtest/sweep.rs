@@ -145,6 +145,26 @@ pub fn run_sweep(
                             avg_slippage: 0.0,
                             raw_event_batches: 0,
                             legacy_snapshot_batches: 0,
+                            dislocation_regime_count: 0,
+                            structural_pair_regime_count: 0,
+                            calm_regime_count: 0,
+                            dislocation_queued: 0,
+                            structural_pair_queued: 0,
+                            calm_queued: 0,
+                            dislocation_filled: 0,
+                            structural_pair_filled: 0,
+                            calm_filled: 0,
+                            dislocation_missed: 0,
+                            structural_pair_missed: 0,
+                            calm_missed: 0,
+                            latency_arb_candidates: 0,
+                            spread_capture_candidates: 0,
+                            calm_persistence_candidates: 0,
+                            router_blocked_count: 0,
+                            capital_blocked_count: 0,
+                            latency_spread_overlap_count: 0,
+                            latency_calm_overlap_count: 0,
+                            spread_calm_overlap_count: 0,
                         },
                     )
                 }
@@ -219,6 +239,26 @@ pub(crate) fn build_csv(
         "avg_slippage".to_string(),
         "raw_event_batches".to_string(),
         "legacy_snapshot_batches".to_string(),
+        "dislocation_regime_count".to_string(),
+        "structural_pair_regime_count".to_string(),
+        "calm_regime_count".to_string(),
+        "dislocation_queued".to_string(),
+        "structural_pair_queued".to_string(),
+        "calm_queued".to_string(),
+        "dislocation_filled".to_string(),
+        "structural_pair_filled".to_string(),
+        "calm_filled".to_string(),
+        "dislocation_missed".to_string(),
+        "structural_pair_missed".to_string(),
+        "calm_missed".to_string(),
+        "latency_arb_candidates".to_string(),
+        "spread_capture_candidates".to_string(),
+        "calm_persistence_candidates".to_string(),
+        "router_blocked_count".to_string(),
+        "capital_blocked_count".to_string(),
+        "latency_spread_overlap_count".to_string(),
+        "latency_calm_overlap_count".to_string(),
+        "spread_calm_overlap_count".to_string(),
         "total_fees".to_string(),
         "gross_pnl".to_string(),
         "pnl_net".to_string(),
@@ -247,6 +287,26 @@ pub(crate) fn build_csv(
         row.push(format!("{}", r.avg_slippage));
         row.push(format!("{}", r.raw_event_batches));
         row.push(format!("{}", r.legacy_snapshot_batches));
+        row.push(format!("{}", r.dislocation_regime_count));
+        row.push(format!("{}", r.structural_pair_regime_count));
+        row.push(format!("{}", r.calm_regime_count));
+        row.push(format!("{}", r.dislocation_queued));
+        row.push(format!("{}", r.structural_pair_queued));
+        row.push(format!("{}", r.calm_queued));
+        row.push(format!("{}", r.dislocation_filled));
+        row.push(format!("{}", r.structural_pair_filled));
+        row.push(format!("{}", r.calm_filled));
+        row.push(format!("{}", r.dislocation_missed));
+        row.push(format!("{}", r.structural_pair_missed));
+        row.push(format!("{}", r.calm_missed));
+        row.push(format!("{}", r.latency_arb_candidates));
+        row.push(format!("{}", r.spread_capture_candidates));
+        row.push(format!("{}", r.calm_persistence_candidates));
+        row.push(format!("{}", r.router_blocked_count));
+        row.push(format!("{}", r.capital_blocked_count));
+        row.push(format!("{}", r.latency_spread_overlap_count));
+        row.push(format!("{}", r.latency_calm_overlap_count));
+        row.push(format!("{}", r.spread_calm_overlap_count));
         row.push(format!("{}", r.total_fees));
         row.push(format!("{}", r.gross_pnl));
         row.push(format!("{}", r.pnl_net));

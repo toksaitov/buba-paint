@@ -170,7 +170,7 @@ fn prune_discards_stale_history() {
     state.update_clob(book_state(106_500), 106_500, Some(106_500_000));
     state.prune(106_500);
 
-    assert_eq!(state.binance_trades.len(), 1);
+    assert_eq!(state.binance_trades.len(), 2);
     assert_eq!(state.clob_quote_churn_per_s(106_500, 1_000), None);
 }
 
@@ -320,4 +320,51 @@ fn compute_records_leg_timestamps_and_skew() {
     assert_eq!(json["upEffectiveBookTsMs"].as_u64(), Some(100_690));
     assert_eq!(json["downEffectiveBookTsMs"].as_u64(), Some(100_640));
     assert_eq!(json["interLegSkewMs"].as_u64(), Some(50));
+}
+
+/// Verify that calm-specific realized-volatility, open-cross, and distance-range
+/// features are populated from the extended 30-second trade history.
+#[test]
+fn compute_records_calm_regime_features() {
+    let config = crate::config::Config::default();
+    let window = market_window();
+    let mut state = SignalState::new();
+
+    for (offset_ms, price) in [
+        (72_000, 69_990.0),
+        (80_000, 70_010.0),
+        (88_000, 69_995.0),
+        (96_000, 70_015.0),
+        (100_000, 70_030.0),
+    ] {
+        state.update_binance_trade(price, 1.0, Some(1.0), offset_ms, Some(offset_ms * 1_000));
+    }
+    state.update_chainlink(70_020.0, 100_050, Some(100_050_000));
+    state.update_clob(book_state(100_100), 100_100, Some(100_100_000));
+
+    let snapshot = SignalFeatureEngine::compute(
+        &mut state,
+        Some(&window),
+        Some(70_000.0),
+        0.0004,
+        100_200,
+        Some(100_200_000),
+        &config,
+    );
+
+    assert!(snapshot.realized_vol_5s_bps.is_some());
+    assert!(snapshot.realized_vol_15s_bps.is_some());
+    assert!(snapshot.realized_vol_30s_bps.is_some());
+    assert_eq!(snapshot.open_crosses_10s, Some(0));
+    assert_eq!(snapshot.open_crosses_30s, Some(3));
+    assert!(snapshot.min_signed_distance_10s_bps.is_some());
+    assert!(snapshot.max_signed_distance_10s_bps.is_some());
+    assert!(snapshot.min_signed_distance_30s_bps.is_some());
+    assert!(snapshot.max_signed_distance_30s_bps.is_some());
+
+    let json = snapshot.to_json();
+    assert_eq!(json["openCrosses10s"].as_u64(), Some(0));
+    assert_eq!(json["openCrosses30s"].as_u64(), Some(3));
+    assert!(json["realizedVol15sBps"].as_f64().is_some());
+    assert!(json["maxSignedDistance30sBps"].as_f64().is_some());
 }

@@ -135,11 +135,17 @@ impl DbReader {
             )
             .unwrap_or(0);
 
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let current_window_ref_ms = last_tick.unwrap_or(now_ms);
         let current_window = conn
             .query_row(
                 "SELECT market_id, question, end_time FROM markets \
-                 WHERE status = 'active' ORDER BY end_time DESC LIMIT 1",
-                [],
+                 WHERE status = 'active' AND start_time <= ?1 AND end_time > ?1 \
+                 ORDER BY start_time DESC LIMIT 1",
+                [current_window_ref_ms],
                 |row| {
                     Ok(WindowInfo {
                         market_id: row.get(0)?,
@@ -149,11 +155,6 @@ impl DbReader {
                 },
             )
             .ok();
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
 
         let max_dd = compute_max_drawdown(&conn);
 

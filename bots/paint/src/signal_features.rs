@@ -5,9 +5,11 @@ use crate::config::Config;
 use crate::fees::{compute_taker_fee, resolve_fee_params};
 use crate::types::{BinanceBookTicker, BinanceDepthSnapshot, BookState, MarketWindow, TopOfBook};
 
-const TRADE_HISTORY_MS: u64 = 5_000;
+const TRADE_HISTORY_MS: u64 = 30_000;
 const QUOTE_HISTORY_MS: u64 = 1_000;
 const RETURN_HORIZONS_MS: [u64; 3] = [250, 500, 1_000];
+const VOL_HORIZONS_MS: [u64; 3] = [5_000, 15_000, 30_000];
+const CROSS_HORIZONS_MS: [u64; 2] = [10_000, 30_000];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureMode {
@@ -268,6 +270,107 @@ impl SignalState {
         Some((up + down) - 1.0)
     }
 
+    /// Return realized volatility in basis points over the requested horizon.
+    #[must_use]
+    pub fn realized_volatility_bps_over_ms(&self, now_ms: u64, horizon_ms: u64) -> Option<f64> {
+        let cutoff = now_ms.saturating_sub(horizon_ms);
+        let observations: Vec<&TradeObservation> = self
+            .binance_trades
+            .iter()
+            .filter(|trade| trade.event_ms >= cutoff)
+            .collect();
+        if observations.len() < 2 {
+            return None;
+        }
+
+        let mut sum_sq = 0.0;
+        let mut count = 0_u64;
+        for pair in observations.windows(2) {
+            let prev = pair[0].price;
+            let next = pair[1].price;
+            if prev <= 0.0 || next <= 0.0 {
+                continue;
+            }
+            let ret = (next - prev) / prev;
+            sum_sq += ret * ret;
+            count += 1;
+        }
+
+        if count == 0 {
+            return None;
+        }
+
+        Some((sum_sq / count as f64).sqrt() * 10_000.0)
+    }
+
+    /// Count sign changes versus the captured window open over the requested horizon.
+    #[must_use]
+    pub fn open_cross_count_over_ms(
+        &self,
+        now_ms: u64,
+        horizon_ms: u64,
+        window_open_price: f64,
+    ) -> Option<u32> {
+        if window_open_price <= 0.0 {
+            return None;
+        }
+
+        let cutoff = now_ms.saturating_sub(horizon_ms);
+        let mut last_sign: Option<i8> = None;
+        let mut crosses = 0_u32;
+
+        for trade in self
+            .binance_trades
+            .iter()
+            .filter(|trade| trade.event_ms >= cutoff)
+        {
+            let sign = signed_price_side(trade.price, window_open_price)?;
+            if let Some(prev_sign) = last_sign
+                && sign != prev_sign
+            {
+                crosses += 1;
+            }
+            last_sign = Some(sign);
+        }
+
+        Some(crosses)
+    }
+
+    /// Return the minimum and maximum signed distance from the window open over one horizon.
+    #[must_use]
+    pub fn signed_distance_range_bps_over_ms(
+        &self,
+        now_ms: u64,
+        horizon_ms: u64,
+        window_open_price: f64,
+    ) -> Option<(f64, f64)> {
+        if window_open_price <= 0.0 {
+            return None;
+        }
+
+        let cutoff = now_ms.saturating_sub(horizon_ms);
+        let mut min_distance = f64::INFINITY;
+        let mut max_distance = f64::NEG_INFINITY;
+        let mut count = 0_u64;
+
+        for trade in self
+            .binance_trades
+            .iter()
+            .filter(|trade| trade.event_ms >= cutoff)
+        {
+            let distance = ((trade.price - window_open_price) / window_open_price) * 10_000.0;
+            min_distance = min_distance.min(distance);
+            max_distance = max_distance.max(distance);
+            count += 1;
+        }
+
+        if count == 0 {
+            return None;
+        }
+
+        Some((min_distance, max_distance))
+    }
+
     /// Prune short-horizon trade and quote history.
     pub fn prune(&mut self, now_ms: u64) {
         let trade_cutoff = now_ms.saturating_sub(TRADE_HISTORY_MS);
@@ -299,6 +402,15 @@ pub struct SignalFeatureSnapshot {
     pub return_500ms: Option<f64>,
     pub return_1000ms: Option<f64>,
     pub chainlink_basis_bps: Option<f64>,
+    pub realized_vol_5s_bps: Option<f64>,
+    pub realized_vol_15s_bps: Option<f64>,
+    pub realized_vol_30s_bps: Option<f64>,
+    pub open_crosses_10s: Option<u32>,
+    pub open_crosses_30s: Option<u32>,
+    pub min_signed_distance_10s_bps: Option<f64>,
+    pub max_signed_distance_10s_bps: Option<f64>,
+    pub min_signed_distance_30s_bps: Option<f64>,
+    pub max_signed_distance_30s_bps: Option<f64>,
     pub summed_ask_edge: Option<f64>,
     pub summed_mid_edge: Option<f64>,
     pub up_ask: Option<f64>,
@@ -335,6 +447,15 @@ impl Default for SignalFeatureSnapshot {
             return_500ms: None,
             return_1000ms: None,
             chainlink_basis_bps: None,
+            realized_vol_5s_bps: None,
+            realized_vol_15s_bps: None,
+            realized_vol_30s_bps: None,
+            open_crosses_10s: None,
+            open_crosses_30s: None,
+            min_signed_distance_10s_bps: None,
+            max_signed_distance_10s_bps: None,
+            min_signed_distance_30s_bps: None,
+            max_signed_distance_30s_bps: None,
             summed_ask_edge: None,
             summed_mid_edge: None,
             up_ask: None,
@@ -372,6 +493,15 @@ impl SignalFeatureSnapshot {
             self.return_500ms.map(|_| 1),
             self.return_1000ms.map(|_| 1),
             self.chainlink_basis_bps.map(|_| 1),
+            self.realized_vol_5s_bps.map(|_| 1),
+            self.realized_vol_15s_bps.map(|_| 1),
+            self.realized_vol_30s_bps.map(|_| 1),
+            self.open_crosses_10s.map(|_| 1),
+            self.open_crosses_30s.map(|_| 1),
+            self.min_signed_distance_10s_bps.map(|_| 1),
+            self.max_signed_distance_10s_bps.map(|_| 1),
+            self.min_signed_distance_30s_bps.map(|_| 1),
+            self.max_signed_distance_30s_bps.map(|_| 1),
             self.summed_ask_edge.map(|_| 1),
             self.summed_mid_edge.map(|_| 1),
             self.up_ask.map(|_| 1),
@@ -410,6 +540,15 @@ impl SignalFeatureSnapshot {
             "return500ms": self.return_500ms,
             "return1000ms": self.return_1000ms,
             "chainlinkBasisBps": self.chainlink_basis_bps,
+            "realizedVol5sBps": self.realized_vol_5s_bps,
+            "realizedVol15sBps": self.realized_vol_15s_bps,
+            "realizedVol30sBps": self.realized_vol_30s_bps,
+            "openCrosses10s": self.open_crosses_10s,
+            "openCrosses30s": self.open_crosses_30s,
+            "minSignedDistance10sBps": self.min_signed_distance_10s_bps,
+            "maxSignedDistance10sBps": self.max_signed_distance_10s_bps,
+            "minSignedDistance30sBps": self.min_signed_distance_30s_bps,
+            "maxSignedDistance30sBps": self.max_signed_distance_30s_bps,
             "summedAskEdge": self.summed_ask_edge,
             "summedMidEdge": self.summed_mid_edge,
             "upAsk": self.up_ask,
@@ -465,6 +604,16 @@ impl SignalFeatureEngine {
         let (return_250ms, return_500ms, return_1000ms) = compute_short_returns(state, now_ms);
         let chainlink_basis_bps =
             compute_chainlink_basis_bps(state.binance_price, state.chainlink_price);
+        let (vol_short_bps, vol_medium_bps, vol_long_bps) =
+            compute_realized_volatility(state, now_ms);
+        let (open_crosses_10s, open_crosses_30s) =
+            compute_open_cross_counts(state, now_ms, window_open_price);
+        let (
+            min_signed_distance_10s_bps,
+            max_signed_distance_10s_bps,
+            min_signed_distance_30s_bps,
+            max_signed_distance_30s_bps,
+        ) = compute_signed_distance_ranges(state, now_ms, window_open_price);
         let summed_ask_edge = current_summed_ask_edge(&state.book_state);
         let summed_mid_edge = current_summed_mid_edge(&state.book_state);
         let up_ask = state.book_state.up.as_ref().map(|book| book.best_ask);
@@ -517,6 +666,15 @@ impl SignalFeatureEngine {
             return_500ms,
             return_1000ms,
             chainlink_basis_bps,
+            realized_vol_5s_bps: vol_short_bps,
+            realized_vol_15s_bps: vol_medium_bps,
+            realized_vol_30s_bps: vol_long_bps,
+            open_crosses_10s,
+            open_crosses_30s,
+            min_signed_distance_10s_bps,
+            max_signed_distance_10s_bps,
+            min_signed_distance_30s_bps,
+            max_signed_distance_30s_bps,
             summed_ask_edge,
             summed_mid_edge,
             up_ask,
@@ -578,6 +736,57 @@ fn compute_chainlink_basis_bps(
         }
         _ => None,
     }
+}
+
+/// Compute realized-volatility features over the configured calm horizons.
+fn compute_realized_volatility(
+    state: &SignalState,
+    now_ms: u64,
+) -> (Option<f64>, Option<f64>, Option<f64>) {
+    (
+        state.realized_volatility_bps_over_ms(now_ms, VOL_HORIZONS_MS[0]),
+        state.realized_volatility_bps_over_ms(now_ms, VOL_HORIZONS_MS[1]),
+        state.realized_volatility_bps_over_ms(now_ms, VOL_HORIZONS_MS[2]),
+    )
+}
+
+/// Compute sign-cross counts around the captured window open.
+fn compute_open_cross_counts(
+    state: &SignalState,
+    now_ms: u64,
+    window_open_price: Option<f64>,
+) -> (Option<u32>, Option<u32>) {
+    let Some(open_price) = window_open_price else {
+        return (None, None);
+    };
+
+    (
+        state.open_cross_count_over_ms(now_ms, CROSS_HORIZONS_MS[0], open_price),
+        state.open_cross_count_over_ms(now_ms, CROSS_HORIZONS_MS[1], open_price),
+    )
+}
+
+/// Compute rolling signed-distance ranges versus the captured window open.
+fn compute_signed_distance_ranges(
+    state: &SignalState,
+    now_ms: u64,
+    window_open_price: Option<f64>,
+) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
+    let Some(open_price) = window_open_price else {
+        return (None, None, None, None);
+    };
+
+    let range_10s =
+        state.signed_distance_range_bps_over_ms(now_ms, CROSS_HORIZONS_MS[0], open_price);
+    let range_30s =
+        state.signed_distance_range_bps_over_ms(now_ms, CROSS_HORIZONS_MS[1], open_price);
+
+    (
+        range_10s.map(|(min_distance, _)| min_distance),
+        range_10s.map(|(_, max_distance)| max_distance),
+        range_30s.map(|(min_distance, _)| min_distance),
+        range_30s.map(|(_, max_distance)| max_distance),
+    )
 }
 
 /// Convert an optional event timestamp into current age in milliseconds.
@@ -680,6 +889,22 @@ fn quote_age_ms(book_state: &BookState, now_ms: u64) -> Option<u64> {
 /// Return the best available freshness timestamp for one top-of-book snapshot.
 pub(crate) fn effective_book_timestamp(book: &TopOfBook) -> u64 {
     book.observed_at_ms.max(book.timestamp)
+}
+
+/// Convert one price into an UP/DOWN sign relative to the captured window open.
+fn signed_price_side(price: f64, open_price: f64) -> Option<i8> {
+    if price <= 0.0 || open_price <= 0.0 {
+        return None;
+    }
+
+    let delta = price - open_price;
+    if delta > 0.0 {
+        Some(1)
+    } else if delta < 0.0 {
+        Some(-1)
+    } else {
+        None
+    }
 }
 
 /// Fill observed freshness from the raw source timestamp when tests or replay

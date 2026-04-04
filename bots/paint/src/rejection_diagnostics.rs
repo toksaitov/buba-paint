@@ -43,6 +43,11 @@ struct StrategyRejectionAccumulator {
     up_ask: NumericAggregate,
     down_ask: NumericAggregate,
     total_ask: NumericAggregate,
+    distance_from_open_bps: NumericAggregate,
+    realized_vol_15s_bps: NumericAggregate,
+    distance_vol_ratio: NumericAggregate,
+    open_crosses_30s: NumericAggregate,
+    alignment_fraction: NumericAggregate,
     external_bias: NumericAggregate,
     up_edge: NumericAggregate,
     down_edge: NumericAggregate,
@@ -68,6 +73,14 @@ impl StrategyRejectionAccumulator {
         self.up_ask.record(sample.up_ask);
         self.down_ask.record(sample.down_ask);
         self.total_ask.record(sample.total_ask);
+        self.distance_from_open_bps
+            .record(sample.distance_from_open_bps);
+        self.realized_vol_15s_bps
+            .record(sample.realized_vol_15s_bps);
+        self.distance_vol_ratio.record(sample.distance_vol_ratio);
+        self.open_crosses_30s
+            .record(sample.open_crosses_30s.map(f64::from));
+        self.alignment_fraction.record(sample.alignment_fraction);
         self.external_bias.record(sample.external_bias);
         self.up_edge.record(sample.up_edge);
         self.down_edge.record(sample.down_edge);
@@ -97,6 +110,14 @@ impl StrategyRejectionAccumulator {
             up_ask: self.up_ask.mean(),
             down_ask: self.down_ask.mean(),
             total_ask: self.total_ask.mean(),
+            distance_from_open_bps: self.distance_from_open_bps.mean(),
+            realized_vol_15s_bps: self.realized_vol_15s_bps.mean(),
+            distance_vol_ratio: self.distance_vol_ratio.mean(),
+            open_crosses_30s: self
+                .open_crosses_30s
+                .mean()
+                .map(|value| value.round() as u32),
+            alignment_fraction: self.alignment_fraction.mean(),
             external_bias: self.external_bias.mean(),
             up_edge: self.up_edge.mean(),
             down_edge: self.down_edge.mean(),
@@ -222,6 +243,8 @@ mod tests {
                 StrategyRejectionReason::DirectionNotSelected,
                 StrategyRejectionSample {
                     up_ask: Some(0.40),
+                    distance_from_open_bps: Some(8.0),
+                    open_crosses_30s: Some(1),
                     external_bias: Some(1.2),
                     ..StrategyRejectionSample::default()
                 },
@@ -234,6 +257,8 @@ mod tests {
                 StrategyRejectionReason::DirectionNotSelected,
                 StrategyRejectionSample {
                     up_ask: Some(0.60),
+                    distance_from_open_bps: Some(12.0),
+                    open_crosses_30s: Some(3),
                     external_bias: Some(1.4),
                     ..StrategyRejectionSample::default()
                 },
@@ -246,6 +271,9 @@ mod tests {
         let details: serde_json::Value = serde_json::from_str(&rows[0].details_json).unwrap();
         assert_eq!(details["last"]["upAsk"], 0.6);
         assert_eq!(details["mean"]["upAsk"], 0.5);
+        assert_eq!(details["last"]["distanceFromOpenBps"], 12.0);
+        assert_eq!(details["mean"]["distanceFromOpenBps"], 10.0);
+        assert_eq!(details["mean"]["openCrosses30s"], 2);
         let mean_external_bias = details["mean"]["externalBias"].as_f64().unwrap();
         assert!((mean_external_bias - 1.3).abs() < 1e-9);
     }

@@ -15,14 +15,18 @@ use crate::feeds::FeedMessage;
 use crate::feeds::util::now_us;
 use crate::live_storage::FeedEventStorageState;
 use crate::market_discovery::{self, MarketDiscoveryEvent};
+use crate::portfolio::{
+    PortfolioRegime, StrategyFamily, detect_regime, select_family_for_candidates,
+};
 use crate::position_manager::PositionManager;
 use crate::rejection_diagnostics::StrategyRejectionTracker;
 use crate::signal_features::{SignalFeatureEngine, SignalState};
+use crate::strategies::calm_persistence::CalmPersistenceStrategy;
 use crate::strategies::latency_arb::LatencyArbStrategy;
 use crate::strategies::spread_capture::SpreadCaptureStrategy;
 use crate::strategies::{Strategy, StrategyResult};
 use crate::tick_logger::{self, TickLoggerState};
-use crate::trend_tracker::TrendTracker;
+use crate::trend_tracker::ScopedTrendTracker;
 use crate::types::{
     FeedEvent, FeedHealthEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection,
     StrategyContext, StrategyRejection, StrategyRejectionReason, StrategyRejectionSample,
@@ -39,6 +43,44 @@ struct LiveState {
     current_window: Option<MarketWindow>,
     window_open_prices: std::collections::HashMap<String, f64>,
     known_windows: std::collections::HashMap<String, MarketWindow>,
+}
+
+/// Live strategy result annotated with the portfolio family selected for routing.
+struct EvaluatedCandidate {
+    family: StrategyFamily,
+    result: StrategyResult,
+}
+
+/// Build the enabled live strategy list for the current configuration.
+fn build_strategies(config: &Config) -> Vec<Box<dyn Strategy>> {
+    let mut strategies: Vec<Box<dyn Strategy>> = Vec::new();
+    if config.latency_arb_enabled {
+        strategies.push(Box::new(LatencyArbStrategy::new(
+            config.latency_arb_momentum_threshold,
+        )));
+    }
+    if config.spread_capture_enabled {
+        strategies.push(Box::new(SpreadCaptureStrategy::new()));
+    }
+    if config.calm_persistence_enabled {
+        strategies.push(Box::new(CalmPersistenceStrategy::new()));
+    }
+    strategies
+}
+
+/// Infer the portfolio family from one persisted strategy name.
+fn family_for_strategy(strategy: &str) -> StrategyFamily {
+    StrategyFamily::from_strategy_name(strategy).unwrap_or(StrategyFamily::LatencyArb)
+}
+
+/// Attach portfolio-routing metadata to one emitted live signal.
+fn annotate_signal(signal: &mut Signal, regime: PortfolioRegime, family: StrategyFamily) {
+    let metadata = signal.metadata.take();
+    signal.metadata = serde_json::json!({
+        "portfolioRegime": regime.as_str(),
+        "strategyFamily": family.as_str(),
+        "strategyMetadata": metadata,
+    });
 }
 
 /// Local receive-time pair captured when a feed message enters the live loop.
@@ -169,18 +211,14 @@ pub async fn run_live(
         config.circuit_breaker_losses as u32,
         config.circuit_breaker_pause_ms,
     );
-    let mut trend_tracker = TrendTracker::new(
+    let mut trend_tracker = ScopedTrendTracker::new(
         config.trend_filter_window as usize,
         config.trend_filter_enabled,
         config.trend_filter_threshold,
+        config.trend_filter_per_strategy,
     );
 
-    let mut strategies: Vec<Box<dyn Strategy>> = vec![
-        Box::new(LatencyArbStrategy::new(
-            config.latency_arb_momentum_threshold,
-        )),
-        Box::new(SpreadCaptureStrategy::new()),
-    ];
+    let mut strategies = build_strategies(&config);
 
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
 
@@ -1188,6 +1226,11 @@ struct RejectionRollup {
     up_ask: WeightedMetric,
     down_ask: WeightedMetric,
     total_ask: WeightedMetric,
+    distance_from_open_bps: WeightedMetric,
+    realized_vol_15s_bps: WeightedMetric,
+    distance_vol_ratio: WeightedMetric,
+    open_crosses_30s: WeightedMetric,
+    alignment_fraction: WeightedMetric,
     quote_churn_per_s: WeightedMetric,
     move_velocity: WeightedMetric,
 }
@@ -1203,6 +1246,7 @@ struct FormattedRejectionRollup {
 }
 
 /// Build concise operator-facing rejection rollups from persisted summaries.
+#[allow(clippy::too_many_lines)]
 fn build_rejection_rollups(
     rows: &[crate::types::StrategyRejectionSummaryRecord],
 ) -> Vec<FormattedRejectionRollup> {
@@ -1249,6 +1293,21 @@ fn build_rejection_rollups(
             .total_ask
             .record(json_f64(mean.get("totalAsk")), row.count);
         entry
+            .distance_from_open_bps
+            .record(json_f64(mean.get("distanceFromOpenBps")), row.count);
+        entry
+            .realized_vol_15s_bps
+            .record(json_f64(mean.get("realizedVol15sBps")), row.count);
+        entry
+            .distance_vol_ratio
+            .record(json_f64(mean.get("distanceVolRatio")), row.count);
+        entry
+            .open_crosses_30s
+            .record(json_u64_as_f64(mean.get("openCrosses30s")), row.count);
+        entry
+            .alignment_fraction
+            .record(json_f64(mean.get("alignmentFraction")), row.count);
+        entry
             .quote_churn_per_s
             .record(json_f64(mean.get("quoteChurnPerS")), row.count);
         entry
@@ -1266,34 +1325,73 @@ fn build_rejection_rollups(
     rollups
         .into_iter()
         .map(|rollup| {
-        let mut reasons = rollup.reasons.into_iter().collect::<Vec<_>>();
-        reasons.sort_by(|left, right| {
-            right
-                .1
-                .cmp(&left.1)
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        let reason_summary = reasons
-            .into_iter()
-            .take(3)
-            .map(|(reason, count)| {
+            let mut reasons = rollup.reasons.into_iter().collect::<Vec<_>>();
+            reasons.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+            let reason_summary = reasons
+                .into_iter()
+                .take(3)
+                .map(|(reason, count)| {
+                    format!(
+                        "{reason}={:.1}%",
+                        (count as f64 / rollup.total_count.max(1) as f64) * 100.0
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut metrics = vec![
                 format!(
-                    "{reason}={:.1}%",
-                    (count as f64 / rollup.total_count.max(1) as f64) * 100.0
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let metrics_summary = format!(
-            "quoteAgeMs={} bookStalenessMs={} upAsk={} downAsk={} totalAsk={} quoteChurnPerS={} moveVelocity={}",
-            format_optional_u64(rollup.quote_age_ms.mean()),
-            format_optional_u64(rollup.book_staleness_ms.mean()),
-            format_optional_f64(rollup.up_ask.mean(), 3),
-            format_optional_f64(rollup.down_ask.mean(), 3),
-            format_optional_f64(rollup.total_ask.mean(), 3),
-            format_optional_f64(rollup.quote_churn_per_s.mean(), 1),
-            format_optional_f64(rollup.move_velocity.mean(), 6),
-        );
+                    "quoteAgeMs={}",
+                    format_optional_u64(rollup.quote_age_ms.mean())
+                ),
+                format!(
+                    "bookStalenessMs={}",
+                    format_optional_u64(rollup.book_staleness_ms.mean())
+                ),
+                format!("upAsk={}", format_optional_f64(rollup.up_ask.mean(), 3)),
+                format!("downAsk={}", format_optional_f64(rollup.down_ask.mean(), 3)),
+                format!(
+                    "totalAsk={}",
+                    format_optional_f64(rollup.total_ask.mean(), 3)
+                ),
+            ];
+            append_metric(
+                &mut metrics,
+                "distanceFromOpenBps",
+                rollup.distance_from_open_bps.mean(),
+                2,
+            );
+            append_metric(
+                &mut metrics,
+                "realizedVol15sBps",
+                rollup.realized_vol_15s_bps.mean(),
+                2,
+            );
+            append_metric(
+                &mut metrics,
+                "distanceVolRatio",
+                rollup.distance_vol_ratio.mean(),
+                2,
+            );
+            append_integer_metric(
+                &mut metrics,
+                "openCrosses30s",
+                rollup.open_crosses_30s.mean(),
+            );
+            append_metric(
+                &mut metrics,
+                "alignmentFraction",
+                rollup.alignment_fraction.mean(),
+                2,
+            );
+            metrics.push(format!(
+                "quoteChurnPerS={}",
+                format_optional_f64(rollup.quote_churn_per_s.mean(), 1)
+            ));
+            metrics.push(format!(
+                "moveVelocity={}",
+                format_optional_f64(rollup.move_velocity.mean(), 6)
+            ));
+            let metrics_summary = metrics.join(" ");
             FormattedRejectionRollup {
                 market_id: rollup.market_id,
                 strategy: rollup.strategy,
@@ -1449,6 +1547,20 @@ fn format_optional_u64(value: Option<f64>) -> String {
         || "na".to_string(),
         |value| format!("{}", value.round() as u64),
     )
+}
+
+/// Append one optional floating-point metric to a concise rollup string.
+fn append_metric(metrics: &mut Vec<String>, label: &str, value: Option<f64>, precision: usize) {
+    if let Some(value) = value {
+        metrics.push(format!("{label}={value:.precision$}"));
+    }
+}
+
+/// Append one optional integer-like metric to a concise rollup string.
+fn append_integer_metric(metrics: &mut Vec<String>, label: &str, value: Option<f64>) {
+    if let Some(value) = value {
+        metrics.push(format!("{label}={}", value.round() as u64));
+    }
 }
 
 /// Insert one persisted feed row and update storage counters on success.
@@ -1648,7 +1760,7 @@ fn handle_deferred_resolution(
     db: &Database,
     position_manager: &mut PositionManager,
     bankroll: &mut BankrollManager,
-    trend_tracker: &mut TrendTracker,
+    trend_tracker: &mut ScopedTrendTracker,
     circuit_breaker: &mut CircuitBreaker,
     config: &Config,
     clock: &dyn Clock,
@@ -1667,7 +1779,7 @@ fn handle_deferred_resolution(
 
     for (trade, result) in &resolved {
         let won = result.pnl_net > 0.0;
-        trend_tracker.record_outcome(trade.side, won, now);
+        trend_tracker.record_outcome(family_for_strategy(&trade.strategy), trade.side, won, now);
         circuit_breaker.record_result(won, now);
         if let Some(trade_id) = trade.id {
             let prediction = trade.side.to_string();
@@ -1818,6 +1930,56 @@ mod tests {
         assert!(rollups[0].metrics_summary.contains("bookStalenessMs=165"));
         assert!(!rollups[0].metrics_summary.contains('{'));
     }
+
+    /// Verify that calm-specific rejection metrics are included only when present.
+    #[test]
+    fn build_rejection_rollups_includes_calm_specific_metrics() {
+        let rows = vec![crate::types::StrategyRejectionSummaryRecord {
+            timestamp_ms: 1_000,
+            market_id: "mkt-2".to_string(),
+            strategy: "calm-persistence".to_string(),
+            reason: "distance_below_threshold".to_string(),
+            count: 10,
+            details_json: serde_json::json!({
+                "last": {"distanceFromOpenBps": 4.5},
+                "mean": {
+                    "quoteAgeMs": 5,
+                    "bookStalenessMs": 7,
+                    "upAsk": 0.61,
+                    "downAsk": 0.71,
+                    "totalAsk": 1.32,
+                    "distanceFromOpenBps": 4.75,
+                    "realizedVol15sBps": 6.5,
+                    "distanceVolRatio": 0.73,
+                    "openCrosses30s": 1,
+                    "alignmentFraction": 0.50,
+                    "quoteChurnPerS": 12.0,
+                    "moveVelocity": 0.00003
+                }
+            })
+            .to_string(),
+        }];
+
+        let rollups = build_rejection_rollups(&rows);
+        assert_eq!(rollups.len(), 1);
+        assert!(
+            rollups[0]
+                .metrics_summary
+                .contains("distanceFromOpenBps=4.75")
+        );
+        assert!(
+            rollups[0]
+                .metrics_summary
+                .contains("realizedVol15sBps=6.50")
+        );
+        assert!(rollups[0].metrics_summary.contains("distanceVolRatio=0.73"));
+        assert!(rollups[0].metrics_summary.contains("openCrosses30s=1"));
+        assert!(
+            rollups[0]
+                .metrics_summary
+                .contains("alignmentFraction=0.50")
+        );
+    }
 }
 
 /// Evaluate strategies.
@@ -1832,7 +1994,7 @@ fn evaluate_strategies(
     execution_engine: &mut ExecutionEngine,
     bankroll: &mut BankrollManager,
     circuit_breaker: &mut CircuitBreaker,
-    trend_tracker: &mut TrendTracker,
+    trend_tracker: &mut ScopedTrendTracker,
     rejection_tracker: &mut StrategyRejectionTracker,
     now: u64,
 ) {
@@ -1871,16 +2033,52 @@ fn evaluate_strategies(
         features,
     };
 
+    let observed_regime = detect_regime(&ctx, config);
+    let mut candidates: Vec<EvaluatedCandidate> = Vec::new();
+
     for strategy in strategies.iter_mut() {
         let result = strategy.evaluate(&ctx, config, now);
-
         match result {
             StrategyResult::None => {}
             StrategyResult::Rejected(rejection) => {
                 rejection_tracker.record(&window.market_id, &rejection);
             }
-            StrategyResult::Single(signal) => {
-                if trend_tracker.should_suppress(signal.direction) {
+            StrategyResult::Single(_) | StrategyResult::Batch(_) => {
+                candidates.push(EvaluatedCandidate {
+                    family: strategy.family(),
+                    result,
+                });
+            }
+        }
+    }
+
+    let candidate_families: Vec<StrategyFamily> = candidates
+        .iter()
+        .map(|candidate| candidate.family)
+        .collect();
+    let selected_family = if config.regime_detection_enabled {
+        select_family_for_candidates(&ctx, config, &candidate_families).selected_family
+    } else {
+        None
+    };
+
+    for candidate in candidates {
+        if config.regime_detection_enabled && Some(candidate.family) != selected_family {
+            rejection_tracker.record(
+                &window.market_id,
+                &StrategyRejection::new(
+                    candidate.family.as_str(),
+                    StrategyRejectionReason::BlockedByRouter,
+                    StrategyRejectionSample::from_ctx(&ctx),
+                ),
+            );
+            continue;
+        }
+
+        match candidate.result {
+            StrategyResult::Single(mut signal) => {
+                annotate_signal(&mut signal, observed_regime, candidate.family);
+                if trend_tracker.should_suppress(candidate.family, signal.direction) {
                     if let Ok(signal_id) = db.log_signal_with_context(
                         &signal,
                         Some(&window.market_id),
@@ -1902,6 +2100,7 @@ fn evaluate_strategies(
                     info!(
                         strategy = %signal.strategy,
                         direction = %signal.direction,
+                        regime = observed_regime.as_str(),
                         "signal suppressed by trend filter"
                     );
                     continue;
@@ -1922,6 +2121,7 @@ fn evaluate_strategies(
                             strategy = %signal.strategy,
                             direction = %signal.direction,
                             confidence = signal.confidence,
+                            regime = observed_regime.as_str(),
                             "signal queued"
                         );
                     }
@@ -1931,6 +2131,7 @@ fn evaluate_strategies(
                             strategy = %signal.strategy,
                             direction = %signal.direction,
                             reason = %reason,
+                            regime = observed_regime.as_str(),
                             "signal rejected before queue"
                         );
                     }
@@ -1943,7 +2144,10 @@ fn evaluate_strategies(
                     }
                 }
             }
-            StrategyResult::Batch(signals) => {
+            StrategyResult::Batch(mut signals) => {
+                for signal in &mut signals {
+                    annotate_signal(signal, observed_regime, candidate.family);
+                }
                 let strategy_name = signals.first().map_or("?", |s| &s.strategy);
                 if let Some(affordability) =
                     assess_spread_batch_affordability(&signals, window, bankroll, config)
@@ -1964,6 +2168,7 @@ fn evaluate_strategies(
                             strategy = strategy_name,
                             count = signals.len(),
                             reason = failure_reason,
+                            regime = observed_regime.as_str(),
                             available_spread_budget = affordability.available_spread_budget,
                             required_pair_notional = affordability.required_pair_notional,
                             required_pair_units = affordability.required_pair_units,
@@ -1985,6 +2190,7 @@ fn evaluate_strategies(
                         info!(
                             strategy = strategy_name,
                             count = signal_ids.len(),
+                            regime = observed_regime.as_str(),
                             "batch queued"
                         );
                     }
@@ -1993,6 +2199,7 @@ fn evaluate_strategies(
                             strategy = strategy_name,
                             count = signal_ids.len(),
                             reason = %reason,
+                            regime = observed_regime.as_str(),
                             "batch rejected before queue"
                         );
                     }
@@ -2004,6 +2211,7 @@ fn evaluate_strategies(
                     }
                 }
             }
+            StrategyResult::None | StrategyResult::Rejected(_) => {}
         }
     }
 }
