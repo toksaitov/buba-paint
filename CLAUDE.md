@@ -127,6 +127,79 @@ Do not edit files in `runs/` manually. The only supported in-place mutation is t
 
 `data/` contains derived data (sweeps, experiments, merged DB, backfill cache), all reproducible from `runs/` data. Safe to regenerate, but valuable to keep.
 
+## Preferred `buba-paint` Deployment Workflow
+
+When working against the real server `buba-paint`, do not improvise the deployment shape. Use the same layout and restart discipline every time.
+
+Remote layout:
+
+- releases: `~/buba-paint-live/releases/<timestamp>`
+- active symlink: `~/buba-paint-live/current`
+- live runtime: `~/buba-paint-live/runtime/run-0NN`
+- disposable backups: `~/buba-paint-live/runtime/backups`
+- archived runs: `~/buba-paint-live/runtime/archive`
+
+Preferred staging:
+
+1. Finish code, docs, and tests locally first.
+2. Run the local gates before touching the server: `make lint`, `make test-all`, `make coverage-gate`, `cargo build --release`.
+3. Build the frontend locally with `cd dashboard/client && npm run build`.
+4. Stage source to a fresh remote release dir with `rsync`. Exclude `.git`, `target`, `data`, `runs`, `dashboard/client/node_modules`, and the old `dashboard/client/dist`.
+5. Copy the already-built local `dashboard/client/dist` into the fresh release dir.
+6. Build the Rust binaries on the server from that fresh release dir.
+
+The `buba-paint` host still has a Node 18 toolchain. Do not rely on building the frontend there. The correct deploy artifact is the locally-built `dashboard/client/dist`.
+
+Preferred process model on `buba-paint`:
+
+- start the bot directly, typically via `script -qefa`, so the run log captures ANSI output cleanly
+- run `buba-agent` in `--monitor-only` mode against the bot DB
+- run `buba-dashboard` against the monitor-only agent and serve static files from `~/buba-paint-live/current/dashboard/client/dist`
+
+Fresh run vs partial update:
+
+- Fresh run: use for strategy changes, parameter changes, or any experiment where continuity would poison comparability.
+- Partial update over the same run: use for diagnostics, logging, dashboard/agent fixes, or bot fixes where the current run should continue on the same DB and log.
+
+Preferred partial update steps:
+
+1. Back up the current run DB and log into `runtime/backups`.
+2. Stop bot, agent, and dashboard.
+3. Verify no stale processes remain before switching releases. Check both wrapper and child processes:
+
+```bash
+ssh buba-paint 'ps -eo pid=,args= | awk "/script -qefa|buba-paint live|buba-agent|buba-dashboard/ && !/awk/ && !/bash -c/ {print}"'
+```
+
+4. Verify no process from the old release path remains.
+5. Repoint `current` to the new release.
+6. Restart over the same runtime dir, DB, and log.
+7. Re-check health endpoints, DB integrity, and that the bot recovered the active window correctly.
+
+Preferred fresh-run steps:
+
+1. Stop bot, agent, and dashboard.
+2. Verify no stale processes remain.
+3. Archive or discard the old runtime according to the experiment plan.
+4. Create a fresh `runtime/run-0NN` with a fresh DB and log.
+5. Repoint `current` to the new release.
+6. Start bot, agent, and dashboard in that order.
+
+Minimum remote acceptance after any deploy:
+
+- `readlink -f ~/buba-paint-live/current` matches the intended release
+- `curl http://127.0.0.1:9090/health` is healthy
+- `curl http://127.0.0.1:3000/health` is healthy
+- `sqlite3 ... "pragma quick_check;"` returns `ok`
+- `ps -eo pid=,args=` shows only the new release path for live processes
+- bot logs show sane startup and expected strategy rollups
+
+Cleanup policy:
+
+- if remote disk gets tight, delete old releases, archived runs, and disposable backups on `buba-paint`
+- do not delete local `runs/` or local `data/`
+- local historical data is the canonical research asset and is never part of server cleanup
+
 ## Testing Practices
 
 Test inventory changes frequently. Use `cargo test`, `make test-all`, and the frontend test commands as the current source of truth instead of relying on hard-coded counts.

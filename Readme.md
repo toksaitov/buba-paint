@@ -424,6 +424,75 @@ If the bot is redeployed mid-window, it now recovers the earliest persisted Bina
 
 When the live CLOB feed omits a usable source timestamp, the bot now treats the local observed receipt time as the freshness clock for trading decisions. Freshness for a binary market now reflects the older of the two book sides, so one fresh side cannot mask one stale side while the raw source timestamps remain preserved in `feed_events`.
 
+### Preferred `buba-paint` workflow
+
+The production host is `buba-paint`. Treat it as a simple release directory plus runtime directory layout, not as a place to edit code ad hoc.
+
+Remote layout:
+
+- releases live under `~/buba-paint-live/releases/<timestamp>`
+- `~/buba-paint-live/current` is a symlink to the active release
+- active runtime state lives under `~/buba-paint-live/runtime/run-0NN`
+- disposable backups live under `~/buba-paint-live/runtime/backups`
+- archived old runs live under `~/buba-paint-live/runtime/archive`
+
+Preferred staging flow:
+
+1. Finish code, docs, and tests locally first.
+2. Run the local gates you actually trust: `make lint`, `make test-all`, `make coverage-gate`, `cargo build --release`.
+3. Build the frontend locally with `cd dashboard/client && npm run build`.
+4. Stage to a fresh remote release directory with `rsync`. Exclude `.git`, `target`, `data`, `runs`, `dashboard/client/node_modules`, and the old `dashboard/client/dist`.
+5. Copy the already-built local `dashboard/client/dist` into the fresh release directory.
+6. Build the Rust binaries on the server from that fresh release directory.
+
+The server still runs a Node 18 toolchain. Do not rely on building the frontend there. Treat the locally-built `dashboard/client/dist` bundle as the deployable artifact until the server toolchain is upgraded.
+
+`buba-paint` process model:
+
+- the bot is started directly, usually through `script -qefa` so its ANSI log stream lands in the run log cleanly
+- the agent runs in `--monitor-only` mode and reads the bot DB
+- the dashboard serves the static frontend bundle from `~/buba-paint-live/current/dashboard/client/dist` and proxies to the monitor-only agent
+
+Preferred fresh-run deploy:
+
+1. Stop bot, agent, and dashboard.
+2. Verify there are no stale processes left before switching releases. Check both the wrapper and the child processes:
+
+```bash
+ssh buba-paint 'ps -eo pid=,args= | awk "/script -qefa|buba-paint live|buba-agent|buba-dashboard/ && !/awk/ && !/bash -c/ {print}"'
+```
+
+3. Archive or discard the old runtime according to the experiment plan.
+4. Create a fresh `runtime/run-0NN` directory with a fresh DB and log.
+5. Point `current` at the new release.
+6. Start bot, then agent, then dashboard.
+
+Preferred partial update over an existing run:
+
+Use this only for code-only fixes where the run should remain comparable, for example diagnostics, logging, dashboard/agent fixes, or restart-safe bot fixes. Do not use it for strategy or parameter changes that should start a fresh experiment.
+
+1. Back up the current run DB and log into `runtime/backups`.
+2. Stop bot, agent, and dashboard.
+3. Verify no stale processes remain from the old release path and no old `buba-paint live` child is still attached to the run DB.
+4. Point `current` at the new release.
+5. Restart over the same runtime directory, DB, and log.
+6. Verify that the bot recovered the same active window correctly and continued the run.
+
+Minimum remote acceptance checks:
+
+- `readlink -f ~/buba-paint-live/current` points to the intended release
+- `curl http://127.0.0.1:9090/health` returns `{"ok":true}`
+- `curl http://127.0.0.1:3000/health` returns `{"ok":true}`
+- `sqlite3 ~/buba-paint-live/runtime/run-0NN/paint.db "pragma quick_check;"` returns `ok`
+- `ps -eo pid=,args=` shows only the new release path
+- the bot log shows sane startup and expected strategy rollups
+
+Disk cleanup policy:
+
+- if space gets tight, prune old releases, archived runs, and disposable backups on `buba-paint`
+- do not mass-delete remote history by default if space is still comfortable
+- never delete local `runs/` or local `data/` as part of server cleanup. Local historical data is the canonical research asset
+
 ## Analysis Scripts
 
 ```bash
