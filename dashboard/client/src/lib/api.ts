@@ -61,7 +61,13 @@ export async function login(
   username: string,
   password: string,
 ): Promise<{ token: string; user: User }> {
-  return post("/api/auth/login", { username, password });
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<{ token: string; user: User }>;
 }
 
 export async function getMe(): Promise<User> {
