@@ -1,0 +1,9 @@
+[server]
+port = 3001
+jwt_secret = "dev-jwt-secret-change-in-production"
+
+[[agents]]
+id = "paint"
+name = "BTC Paint (Dev)"
+url = "http://agent:9090"
+secret = "dev-agent-secret"

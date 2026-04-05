@@ -1,4 +1,4 @@
-FROM rust:1.85-slim AS builder
+FROM rust:1.94-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
@@ -10,7 +10,7 @@ COPY agent/Cargo.toml agent/Cargo.toml
 COPY dashboard/server/Cargo.toml dashboard/server/Cargo.toml
 RUN cargo build --release -p buba-paint && rm -rf agent/ dashboard/
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/buba-paint /usr/local/bin/buba-paint
 ENTRYPOINT ["buba-paint"]

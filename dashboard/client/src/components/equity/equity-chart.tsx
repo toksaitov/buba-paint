@@ -1,47 +1,54 @@
 import { useRef, useEffect } from "react";
 import { createChart, AreaSeries, type IChartApi } from "lightweight-charts";
+import { useMediaQuery } from "../../hooks/use-media-query";
+import { useTheme } from "../../hooks/use-theme";
+import { getChartColors } from "../../lib/chart-colors";
 import type { BalanceEntry } from "../../lib/types";
 
 export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const isDesktop = useMediaQuery("(min-width: 768px)");
+  const { isDark } = useTheme();
+  const chartHeight = isDesktop ? 480 : 320;
 
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const c = getChartColors(isDark);
     const chart = createChart(containerRef.current, {
-      height: 480,
+      height: chartHeight,
       layout: {
-        background: { color: "#ffffff" },
-        textColor: "#656d76",
+        background: { color: c.background },
+        textColor: c.textColor,
         fontFamily:
           'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
         fontSize: 11,
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: "#f6f8fa" },
-        horzLines: { color: "#f6f8fa" },
+        vertLines: { color: c.gridColor },
+        horzLines: { color: c.gridColor },
       },
       rightPriceScale: {
-        borderColor: "#1f2328",
+        borderColor: c.borderColor,
       },
       timeScale: {
-        borderColor: "#1f2328",
+        borderColor: c.borderColor,
         timeVisible: true,
         secondsVisible: false,
       },
       crosshair: {
-        vertLine: { color: "#1f2328", width: 1, style: 2 },
-        horzLine: { color: "#1f2328", width: 1, style: 2 },
+        vertLine: { color: c.crosshairColor, width: 1, style: 2 },
+        horzLine: { color: c.crosshairColor, width: 1, style: 2 },
       },
     });
 
     const series = chart.addSeries(AreaSeries, {
-      lineColor: "#1f2328",
+      lineColor: c.lineColor,
       lineWidth: 2,
-      topColor: "rgba(31, 35, 40, 0.15)",
-      bottomColor: "rgba(31, 35, 40, 0.02)",
+      topColor: c.areaTopColor,
+      bottomColor: c.areaBottomColor,
     });
 
     const byTime = new Map<number, number>();
@@ -72,8 +79,7 @@ export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
       ro.disconnect();
       chart.remove();
     };
-  }, [entries]);
+  }, [entries, chartHeight, isDark]);
 
   return <div ref={containerRef} className="w-full" />;
 }
-

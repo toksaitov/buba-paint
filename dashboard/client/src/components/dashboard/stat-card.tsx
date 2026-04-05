@@ -9,11 +9,11 @@ interface StatCardProps {
 
 export function StatCard({ label, value, sub, color }: StatCardProps) {
   return (
-    <div className="border border-border px-3 py-2.5 bg-bg">
+    <div className="border border-border px-3 py-2.5 bg-bg min-w-0">
       <div className="text-[10px] uppercase tracking-wide text-muted mb-1">
         {label}
       </div>
-      <div className={cn("text-xl font-bold tabular-nums", color)}>
+      <div className={cn("text-xl font-bold tabular-nums truncate", color)}>
         {value}
       </div>
       {sub && (

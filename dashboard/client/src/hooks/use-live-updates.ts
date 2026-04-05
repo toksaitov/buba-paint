@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { connectWs } from "../lib/ws";
+import { showTradeNotification } from "../lib/notifications";
 
 export function useLiveUpdates(botId: string) {
   const qc = useQueryClient();
@@ -12,10 +13,11 @@ export function useLiveUpdates(botId: string) {
     const cleanup = connectWs(
       botId,
       (msg: unknown) => {
-        const m = msg as { type?: string };
+        const m = msg as { type?: string; side?: string; strategy?: string; pnl?: number | null };
         if (m.type === "trade") {
           void qc.invalidateQueries({ queryKey: ["trades", botId] });
           void qc.invalidateQueries({ queryKey: ["bot-status", botId] });
+          showTradeNotification(m);
         } else if (m.type === "balance") {
           void qc.invalidateQueries({ queryKey: ["balance", botId] });
           void qc.invalidateQueries({ queryKey: ["bot-status", botId] });
@@ -29,7 +31,6 @@ export function useLiveUpdates(botId: string) {
         }
       },
       () => {
-
         disabled.current = true;
       },
     );
@@ -37,4 +38,3 @@ export function useLiveUpdates(botId: string) {
     return cleanup;
   }, [botId, qc]);
 }
-

@@ -39,6 +39,10 @@ export function LoginPage() {
               </label>
               <input
                 type="text"
+                name="username"
+                autoComplete="username"
+                autoCapitalize="none"
+                autoCorrect="off"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full px-2.5 py-1.5 text-[13px] border border-border rounded bg-surface"
@@ -52,6 +56,8 @@ export function LoginPage() {
               </label>
               <input
                 type="password"
+                name="password"
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-2.5 py-1.5 text-[13px] border border-border rounded bg-surface"

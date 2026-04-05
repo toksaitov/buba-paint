@@ -1,4 +1,4 @@
-FROM rust:1.85-slim AS builder
+FROM rust:1.94-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
@@ -10,9 +10,9 @@ COPY bots/paint/Cargo.toml bots/paint/Cargo.toml
 COPY dashboard/server/Cargo.toml dashboard/server/Cargo.toml
 RUN cargo build --release -p buba-agent && rm -rf bots/ dashboard/
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/buba-agent /usr/local/bin/buba-agent
 EXPOSE 9090
 ENTRYPOINT ["buba-agent"]
-CMD ["--db-path", "/data/paint.db", "--port", "9090"]
+CMD ["--db-path", "/data/paint.db", "--port", "9090", "--monitor-only"]

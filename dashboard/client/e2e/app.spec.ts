@@ -14,6 +14,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("login, navigate, and persist the active session", async ({ page }) => {
+  test.skip((page.viewportSize()?.width ?? 1024) < 768, "desktop sidebar navigation");
+
   await stubApi(page);
 
   await page.goto("/login");

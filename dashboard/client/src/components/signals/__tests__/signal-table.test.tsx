@@ -20,12 +20,13 @@ function makeSignal(overrides: Partial<SignalRow> = {}): SignalRow {
 test("renders signal rows", () => {
   const signals = [makeSignal(), makeSignal({ id: 2, strategy: "spread-capture" })];
   render(<SignalTable signals={signals} />);
-  expect(screen.getByText("latency-arb")).toBeDefined();
-  expect(screen.getByText("spread-capture")).toBeDefined();
+  expect(screen.getAllByText("latency-arb").length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText("spread-capture").length).toBeGreaterThanOrEqual(1);
 });
 
 test("displays strategy and direction", () => {
   render(<SignalTable signals={[makeSignal({ direction: "DOWN" })]} />);
-  expect(screen.getByText("DOWN")).toBeDefined();
-  expect(screen.getByText("DOWN").className).toContain("text-accent-red");
+  const downs = screen.getAllByText("DOWN");
+  expect(downs.length).toBeGreaterThanOrEqual(1);
+  expect(downs[0].className).toContain("text-accent-red");
 });

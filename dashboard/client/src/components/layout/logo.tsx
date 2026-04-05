@@ -9,7 +9,7 @@ export function Logo({ size = 18 }: { size?: number }) {
     >
       <polyline
         points="2,18 8,14 12,16 22,4"
-        stroke="#1a7f37"
+        stroke="var(--color-accent-green)"
         strokeWidth="2.5"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -17,7 +17,7 @@ export function Logo({ size = 18 }: { size?: number }) {
       />
       <polyline
         points="16,4 22,4 22,10"
-        stroke="#1a7f37"
+        stroke="var(--color-accent-green)"
         strokeWidth="2.5"
         strokeLinecap="round"
         strokeLinejoin="round"

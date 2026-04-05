@@ -1,19 +1,23 @@
 import { useRef, useEffect } from "react";
 import { createChart, AreaSeries, type IChartApi } from "lightweight-charts";
+import { useTheme } from "../../hooks/use-theme";
+import { getChartColors } from "../../lib/chart-colors";
 import type { BalanceEntry } from "../../lib/types";
 
 export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const { isDark } = useTheme();
 
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const c = getChartColors(isDark);
     const chart = createChart(containerRef.current, {
       height: 120,
       layout: {
-        background: { color: "#ffffff" },
-        textColor: "#656d76",
+        background: { color: c.background },
+        textColor: c.textColor,
         fontFamily:
           'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
         fontSize: 10,
@@ -21,7 +25,7 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
       },
       grid: {
         vertLines: { visible: false },
-        horzLines: { color: "#f6f8fa" },
+        horzLines: { color: c.gridColor },
       },
       rightPriceScale: {
         borderVisible: false,
@@ -39,10 +43,10 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
     });
 
     const series = chart.addSeries(AreaSeries, {
-      lineColor: "#1f2328",
+      lineColor: c.lineColor,
       lineWidth: 2,
-      topColor: "rgba(31, 35, 40, 0.12)",
-      bottomColor: "rgba(31, 35, 40, 0.02)",
+      topColor: c.areaTopColor,
+      bottomColor: c.areaBottomColor,
       crosshairMarkerVisible: false,
     });
 
@@ -74,7 +78,7 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
       ro.disconnect();
       chart.remove();
     };
-  }, [entries]);
+  }, [entries, isDark]);
 
   return (
     <div className="border border-border px-3 py-2.5 bg-bg">
@@ -85,4 +89,3 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
     </div>
   );
 }
-

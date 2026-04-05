@@ -23,7 +23,7 @@ cd dashboard/client && npm run dev               # dev server on :3000 (proxies 
 docker compose up -d
 ```
 
-Requires Rust 1.85+ (install via [rustup](https://rustup.rs)) and Node 22+ for the dashboard frontend.
+Requires Rust 1.94+ (install via [rustup](https://rustup.rs)) and Node 22+ for the dashboard frontend. Or just Docker: `docker compose up` builds and runs everything.
 
 ## How It Works (paint bot)
 
@@ -62,7 +62,7 @@ The workspace contains three Rust crates and a React frontend:
 - `bots/paint` (`buba-paint`): the BTC Up/Down trading bot. Runs live trading, backtests, parameter sweeps, settlement verification (`verify-settlements`), and the `build-data` merge tool.
 - `agent` (`buba-agent`): monitoring agent that sits alongside a bot, reads its SQLite database (WAL mode, read-only), and exposes status, trades, balance, signals, stats, logs, and bot process control over REST. Polls the DB every 2 seconds and broadcasts changes over WebSocket.
 - `dashboard/server` (`buba-dashboard`): dashboard backend. Manages users (Argon2 password hashing, JWT auth), proxies REST and WebSocket requests to one or more agents. Can serve the built React frontend as static files.
-- `dashboard/client`: React/Vite frontend. Displays bot status, equity curves, trades, signals, and logs. Uses TanStack React Query for server state with WebSocket-driven cache invalidation.
+- `dashboard/client`: React/Vite frontend. Displays bot status, equity curves, trades, signals, and logs. Uses TanStack React Query for server state with WebSocket-driven cache invalidation. Installable as a PWA on iPhone, iPad, and Android with safe-area handling, responsive mobile layout (compact icon sidebar + drawer), dark mode (system/dark/light toggle, persisted), and trade notifications.
 
 ### Data flow
 
@@ -110,7 +110,7 @@ buba-paint/
   CLAUDE.md                        # AI development guidelines
   Readme.md                        # this file
   docker-compose.yml               # full stack (paint + agent + dashboard)
-  dashboard.toml.example           # dashboard config template
+  dashboard.toml                   # dashboard config (dev defaults for Docker)
   .env.example                     # bot environment variables template
   bots/
     paint/                         # paint bot, BTC Up/Down 5m
@@ -414,9 +414,9 @@ curl -X POST -H "Authorization: Bearer your-secret" http://localhost:9090/api/bo
 
 `AGENT_SECRET` is mandatory in production-style startup. The agent now exits nonzero if it is missing or blank instead of silently accepting an empty secret.
 
-The dashboard frontend currently builds with a Node 20+ toolchain. If the production host remains on Node 18, build `dashboard/client/dist` on a Node 20+ machine first and deploy the static bundle instead of building it on the server.
+The dashboard frontend builds with a Node 22+ toolchain. If the production host has an older Node version, build `dashboard/client/dist` locally and deploy the static bundle.
 
-For Docker deployment: `cp dashboard.toml.example dashboard.toml`, edit secrets, then `docker compose up -d`.
+For Docker local testing: `docker compose up` starts all three services (paint bot, agent, dashboard). The bot creates its own DB on first run; no seeding step needed. The dashboard is at `http://localhost:3001` (admin/changeme). For frontend hot reload during development, run `cd dashboard/client && npm run dev` against the Docker backend on port 3001. The `dashboard.toml` at the project root has dev defaults that match the compose env vars. Override secrets via `.env` (see `.env.example`).
 
 The paint bot runs indefinitely, rolling through 5-minute windows. Ctrl+C for graceful shutdown (final stats printed, feeds disconnect, DB closes).
 

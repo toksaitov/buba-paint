@@ -1,4 +1,13 @@
 services:
+  paint-init:
+    build:
+      context: .
+      dockerfile: bots/paint/Dockerfile
+    volumes:
+      - paint-data:/data
+    command: ["init-db", "--db-path", "/data/paint.db", "--balance", "200"]
+    profiles: ["init"]
+
   paint:
     build:
       context: .
@@ -9,6 +18,9 @@ services:
       DB_PATH: /data/paint.db
       STARTING_BALANCE: "200"
       LOG_LEVEL: info
+    command: >-
+      sh -c 'buba-paint live --db-path /data/paint.db --balance 200 2>&1 | tee /data/bot.log'
+    entrypoint: []
     restart: unless-stopped
 
   agent:
@@ -18,14 +30,24 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - paint-data:/data:ro
+      - paint-data:/data
     environment:
       DB_PATH: /data/paint.db
       PORT: "9090"
       POLL_INTERVAL: "2000"
-      AGENT_SECRET: ${AGENT_SECRET:-change-me-agent-secret}
+      AGENT_SECRET: ${AGENT_SECRET:-dev-agent-secret}
+    entrypoint: []
+    command: >-
+      sh -c 'while [ ! -f /data/paint.db ]; do sleep 1; done; touch /data/bot.log; buba-agent --db-path /data/paint.db --port 9090 --monitor-only --log-path /data/bot.log'
     depends_on:
-      - paint
+      paint:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9090/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   dashboard:
@@ -40,10 +62,17 @@ services:
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
-      JWT_SECRET: ${JWT_SECRET:-change-me-jwt-secret}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production}
       DASHBOARD_DB_PATH: /data/dashboard.db
     depends_on:
-      - agent
+      agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
 volumes:

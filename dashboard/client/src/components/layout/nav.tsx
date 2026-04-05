@@ -25,11 +25,12 @@ interface NavProps {
   bots: Bot[];
   activeBotId: string;
   onSelectBot: (id: string) => void;
+  onNavigate?: () => void;
 }
 
-export function Nav({ collapsed, bots, activeBotId, onSelectBot }: NavProps) {
+export function Nav({ collapsed, bots, activeBotId, onSelectBot, onNavigate }: NavProps) {
   return (
-    <nav className="flex flex-col flex-1 overflow-y-auto">
+    <nav className="flex flex-col flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
       {bots.length > 0 && (
         <div className="pt-2 pb-0.5">
           {!collapsed && (
@@ -57,7 +58,7 @@ export function Nav({ collapsed, bots, activeBotId, onSelectBot }: NavProps) {
                 key={b.id}
                 onClick={() => onSelectBot(b.id)}
                 className={cn(
-                  "w-full text-left px-3 py-1 text-[12px] transition-colors truncate",
+                  "w-full text-left px-3 py-2 md:py-1 text-[13px] md:text-[12px] transition-colors truncate",
                   b.id === activeBotId
                     ? "bg-text text-bg font-semibold"
                     : "text-muted hover:bg-surface",
@@ -80,9 +81,10 @@ export function Nav({ collapsed, bots, activeBotId, onSelectBot }: NavProps) {
             key={to}
             to={to}
             end={to === "/"}
+            onClick={onNavigate}
             className={({ isActive }) =>
               cn(
-                "flex items-center gap-2 px-3 py-1 text-[12px] transition-colors",
+                "flex items-center gap-2 px-3 py-2.5 md:py-1 text-[14px] md:text-[12px] transition-colors",
                 isActive
                   ? "bg-text text-bg font-semibold"
                   : "text-text hover:bg-surface",

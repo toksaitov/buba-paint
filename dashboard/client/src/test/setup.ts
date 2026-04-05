@@ -23,5 +23,26 @@ if (typeof globalThis.localStorage === "undefined" || typeof globalThis.localSto
   });
 }
 
+if (typeof window.matchMedia !== "function") {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    configurable: true,
+    value: (query: string) => ({
+      matches: query === "(min-width: 768px)",
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+      addListener: () => {},
+      removeListener: () => {},
+    }),
+  });
+}
+
+beforeEach(() => {
+  document.documentElement.classList.remove("dark");
+});
+
 import "@testing-library/jest-dom/vitest";
 

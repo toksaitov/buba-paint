@@ -26,8 +26,8 @@ test("renders trade rows", () => {
   render(
     <TradeTable trades={trades} page={1} total={2} perPage={50} onPageChange={vi.fn()} />,
   );
-  expect(screen.getByText("latency-arb")).toBeDefined();
-  expect(screen.getByText("spread-capture")).toBeDefined();
+  expect(screen.getAllByText("latency-arb").length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText("spread-capture").length).toBeGreaterThanOrEqual(1);
 });
 
 test("shows dash for unsettled trades", () => {

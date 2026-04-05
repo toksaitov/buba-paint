@@ -9,6 +9,42 @@ interface TradeTableProps {
   onPageChange: (p: number) => void;
 }
 
+function TradeCard({ trade: t }: { trade: TradeRow }) {
+  return (
+    <div className="flex flex-col gap-0.5 py-2 border-b border-surface last:border-0 px-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              "font-semibold text-[12px]",
+              t.side === "UP" ? "text-accent-green" : "text-accent-red",
+            )}
+          >
+            {t.side}
+          </span>
+          <span className="text-[12px] text-muted">{t.strategy}</span>
+        </div>
+        <span className="text-[11px] text-muted tabular-nums">
+          {formatDateTime(t.timestamp)}
+        </span>
+      </div>
+      <div className="flex items-center justify-between text-[12px]">
+        <div className="flex items-center gap-3 tabular-nums">
+          <span>{formatUsd(t.size)}</span>
+          <span className="text-muted">@ {t.entry_price.toFixed(4)}</span>
+        </div>
+        <span
+          className={cn("tabular-nums font-medium", pnlColor(t.pnl ?? 0))}
+        >
+          {t.pnl !== null
+            ? `${t.pnl >= 0 ? "+" : ""}${formatUsd(t.pnl)}`
+            : "--"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function TradeTable({
   trades,
   page,
@@ -20,7 +56,7 @@ export function TradeTable({
 
   return (
     <div className="border border-border bg-bg overflow-hidden">
-      <div className="overflow-x-auto">
+      <div className="hidden md:block overflow-x-auto">
         <table className="w-full text-[12px]">
           <thead>
             <tr className="border-b border-border bg-surface">
@@ -77,6 +113,11 @@ export function TradeTable({
             ))}
           </tbody>
         </table>
+      </div>
+      <div className="md:hidden">
+        {trades.map((t) => (
+          <TradeCard key={t.id} trade={t} />
+        ))}
       </div>
       {totalPages > 1 && (
         <div className="flex items-center justify-between px-3 py-2 border-t border-border text-[11px]">

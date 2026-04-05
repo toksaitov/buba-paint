@@ -30,7 +30,7 @@ export function LogsPage() {
 
   return (
     <div className="space-y-3 flex flex-col h-full">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <h2 className="text-[14px] font-bold">Bot Log</h2>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-1.5 text-[11px] text-muted">
@@ -54,7 +54,7 @@ export function LogsPage() {
           </select>
         </div>
       </div>
-      <div className="border border-border bg-[#1f2328] flex-1 min-h-0 overflow-y-auto overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden p-3">
+      <div className="border border-border bg-[#0a0a0a] flex-1 min-h-0 overflow-y-auto overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden p-3">
         <pre className="text-[11px] leading-[1.6] text-[#e6edf3] whitespace-pre">
           {logLines.length > 0 ? (
             <Ansi>{logLines.join("\n")}</Ansi>
