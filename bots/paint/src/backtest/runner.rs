@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -5,22 +6,21 @@ use anyhow::Context;
 
 use crate::bankroll::BankrollManager;
 use crate::circuit_breaker::CircuitBreaker;
-use crate::clock::BacktestClock;
-use crate::config::Config;
+use crate::clock::{BacktestClock, Clock};
+use crate::config::{BacktestSettlementMode, Config};
 use crate::db::database::Database;
 use crate::executor::ExecutionEngine;
-use crate::portfolio::{
-    PortfolioAttributionStats, PortfolioRegime, StrategyFamily, detect_regime,
-    select_family_for_candidates,
-};
+use crate::portfolio::{PortfolioAttributionStats, PortfolioRegime, StrategyFamily};
 use crate::position_manager::PositionManager;
+use crate::rejection_diagnostics::StrategyRejectionTracker;
 use crate::signal_features::SignalFeatureEngine;
+use crate::strategies::Strategy;
 use crate::strategies::calm_persistence::CalmPersistenceStrategy;
 use crate::strategies::latency_arb::LatencyArbStrategy;
 use crate::strategies::spread_capture::SpreadCaptureStrategy;
-use crate::strategies::{Strategy, StrategyResult};
+use crate::strategy_cycle::{family_for_strategy, run_strategy_cycle};
 use crate::trend_tracker::ScopedTrendTracker;
-use crate::types::{Signal, StrategyContext};
+use crate::types::{MarketWindow, SignalDirection, StrategyContext};
 
 use super::feed_state::FeedState;
 use super::momentum::MomentumCalculator;
@@ -102,12 +102,6 @@ pub struct BacktestOptions {
     pub config: Config,
 }
 
-/// One evaluated strategy candidate together with its portfolio family label.
-struct EvaluatedCandidate {
-    family: StrategyFamily,
-    result: StrategyResult,
-}
-
 /// Build the enabled strategy list for one backtest configuration.
 fn build_strategies(config: &Config) -> Vec<Box<dyn Strategy>> {
     let mut strategies: Vec<Box<dyn Strategy>> = Vec::new();
@@ -125,25 +119,158 @@ fn build_strategies(config: &Config) -> Vec<Box<dyn Strategy>> {
     strategies
 }
 
-/// Infer the portfolio family from one persisted strategy name.
-fn family_for_strategy(strategy: &str) -> StrategyFamily {
-    StrategyFamily::from_strategy_name(strategy).unwrap_or(StrategyFamily::LatencyArb)
+struct PendingBacktestSettlement {
+    window: MarketWindow,
+    outcome: SignalDirection,
 }
 
-/// Attach regime and family metadata to one emitted signal.
-fn annotate_signal(signal: &mut Signal, regime: PortfolioRegime, family: StrategyFamily) {
-    let metadata = signal.metadata.take();
-    signal.metadata = serde_json::json!({
-        "portfolioRegime": regime.as_str(),
-        "strategyFamily": family.as_str(),
-        "strategyMetadata": metadata,
-    });
+struct ObservedResolutionSchedule {
+    market_resolution_at_ms: HashMap<String, u64>,
+    default_delay_ms: u64,
+}
+
+/// Load observed market-resolution timestamps from the exact pulled live run.
+fn load_observed_resolution_schedule(
+    conn: &rusqlite::Connection,
+    config: &Config,
+) -> anyhow::Result<ObservedResolutionSchedule> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT st.market_id, m.end_time, MIN(tr.resolved_at) AS resolved_at
+         FROM simulated_trades st
+         JOIN markets m
+           ON m.market_id = st.market_id
+         JOIN trade_results tr
+           ON tr.trade_id = st.id
+         GROUP BY st.market_id, m.end_time",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, u64>(1)?,
+            row.get::<_, u64>(2)?,
+        ))
+    })?;
+
+    let mut market_resolution_at_ms = HashMap::new();
+    let mut delays = Vec::new();
+    for row in rows {
+        let (market_id, end_time, resolved_at) = row?;
+        market_resolution_at_ms.insert(market_id, resolved_at);
+        delays.push(resolved_at.saturating_sub(end_time));
+    }
+    delays.sort_unstable();
+    let default_delay_ms = delays
+        .get(delays.len() / 2)
+        .copied()
+        .unwrap_or(config.resolution_initial_delay_ms);
+
+    Ok(ObservedResolutionSchedule {
+        market_resolution_at_ms,
+        default_delay_ms,
+    })
+}
+
+/// Persist one market-close lifecycle update and reclassify open trades into pending settlement.
+fn close_market_and_reclassify_reserve(
+    db: &Database,
+    bankroll: &mut BankrollManager,
+    window: &MarketWindow,
+) -> anyhow::Result<()> {
+    db.resolve_market(&window.market_id, "closed")?;
+    for trade in db.get_open_trades_for_market(&window.market_id)? {
+        bankroll.transition_trade_to_pending_settlement(
+            trade.entry_price * trade.size,
+            &trade.strategy,
+        );
+    }
+    Ok(())
+}
+
+/// Persist one batch of drained rejection summaries into the results database.
+fn persist_rejection_summaries(
+    db: &Database,
+    tracker: &mut StrategyRejectionTracker,
+    market_id: Option<&str>,
+    timestamp_ms: u64,
+) -> anyhow::Result<()> {
+    let rows = if let Some(market_id) = market_id {
+        tracker.drain_market(market_id, timestamp_ms)
+    } else {
+        tracker.drain_all(timestamp_ms)
+    };
+    for row in rows {
+        let _ = db.log_strategy_rejection_summary(&row)?;
+    }
+    Ok(())
+}
+
+/// Move one market into the pending-settlement queue for later authoritative settlement.
+fn schedule_pending_market_settlement(
+    pending_settlements: &mut BTreeMap<u64, Vec<PendingBacktestSettlement>>,
+    settle_at_ms: u64,
+    window: &MarketWindow,
+    outcome: SignalDirection,
+) {
+    pending_settlements
+        .entry(settle_at_ms)
+        .or_default()
+        .push(PendingBacktestSettlement {
+            window: window.clone(),
+            outcome,
+        });
+}
+
+/// Settle every pending market whose observed settlement time is now due.
+#[allow(clippy::too_many_arguments)]
+fn process_due_market_settlements(
+    pending_settlements: &mut BTreeMap<u64, Vec<PendingBacktestSettlement>>,
+    now_ms: u64,
+    clock: &BacktestClock,
+    results_db: &Database,
+    position_manager: &mut PositionManager,
+    bankroll: &mut BankrollManager,
+    trend_tracker: &mut ScopedTrendTracker,
+    circuit_breaker: &mut CircuitBreaker,
+    config: &Config,
+) {
+    let due_times = pending_settlements
+        .keys()
+        .copied()
+        .take_while(|timestamp| *timestamp <= now_ms)
+        .collect::<Vec<_>>();
+
+    for due_time in due_times {
+        clock.set(due_time);
+        if let Some(settlements) = pending_settlements.remove(&due_time) {
+            for settlement in settlements {
+                let resolved = position_manager.resolve_window_with_outcome(
+                    &settlement.window,
+                    settlement.outcome,
+                    results_db,
+                    bankroll,
+                    config,
+                    clock,
+                );
+                for (trade, result) in &resolved {
+                    let won = result.pnl_net > 0.0;
+                    trend_tracker.record_outcome(
+                        family_for_strategy(&trade.strategy),
+                        trade.side,
+                        won,
+                        due_time,
+                    );
+                    circuit_breaker.record_result(won, due_time);
+                }
+            }
+        }
+    }
 }
 
 /// Run one backtest over the provided historical interval and return summary metrics.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> {
     let t0 = Instant::now();
+    options.config.validate()?;
 
     let mut tick_replay = match &options.tick_source {
         TickSource::FromDb(path) => {
@@ -167,6 +294,7 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
     let clock = BacktestClock::new();
 
     let config = &options.config;
+    let pending_policy = config.pending_settlement_policy_unchecked();
     let mut bankroll = BankrollManager::new(options.starting_balance, config, &results_db, &clock);
     let mut position_manager = PositionManager::new();
     let mut execution_engine = ExecutionEngine::new();
@@ -182,6 +310,8 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
     );
 
     let mut strategies = build_strategies(config);
+    let mut rejection_tracker = StrategyRejectionTracker::new();
+    let mut pending_settlements = BTreeMap::new();
 
     let mut feed_state = FeedState::new();
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
@@ -192,6 +322,12 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
     )
     .with_context(|| format!("opening data DB for windows: {}", options.data_db_path))?;
     let mut window_manager = WindowManager::new(&data_conn, options.start_time, options.end_time)?;
+    let observed_resolution_schedule = match config.backtest_settlement_mode {
+        BacktestSettlementMode::Immediate => None,
+        BacktestSettlementMode::ObservedMarketResolution => {
+            Some(load_observed_resolution_schedule(&data_conn, config)?)
+        }
+    };
 
     let total_ticks = tick_replay.total_ticks();
     let total_windows = window_manager.total_windows();
@@ -199,8 +335,13 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
     if !options.quiet {
         let duration_h = (options.end_time - options.start_time) as f64 / 3_600_000.0;
         println!(
-            "Backtesting {duration_h:.1}h | {total_ticks} ticks | {total_windows} windows | balance=${}",
+            "Backtesting {duration_h:.1}h | {total_ticks} ticks | {total_windows} windows | balance=${} | settlement_mode={} | pending_mode={} ({:.2}/{:.2}/{})",
             options.starting_balance,
+            config.backtest_settlement_mode.as_str(),
+            pending_policy.mode.as_str(),
+            pending_policy.family_reserve_fraction,
+            pending_policy.global_reserve_fraction,
+            pending_policy.counts_as_open_position,
         );
     }
 
@@ -209,6 +350,18 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
 
     while let Some(group) = tick_replay.next_group() {
         let replay_ts = group.timestamp;
+        clock.set(replay_ts);
+        process_due_market_settlements(
+            &mut pending_settlements,
+            replay_ts,
+            &clock,
+            &results_db,
+            &mut position_manager,
+            &mut bankroll,
+            &mut trend_tracker,
+            &mut circuit_breaker,
+            config,
+        );
         clock.set(replay_ts);
         execution_engine.note_replay_fidelity(group.fidelity);
 
@@ -256,25 +409,65 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             let mw = WindowManager::to_market_window(closed);
 
             let _ = results_db.upsert_market(&mw);
-
-            let resolved = position_manager.resolve_window_with_outcome(
-                &mw,
-                closed.outcome,
+            close_market_and_reclassify_reserve(&results_db, &mut bankroll, &mw)?;
+            persist_rejection_summaries(
                 &results_db,
-                &mut bankroll,
-                config,
-                &clock,
-            );
+                &mut rejection_tracker,
+                Some(&mw.market_id),
+                replay_ts,
+            )?;
+            match config.backtest_settlement_mode {
+                BacktestSettlementMode::Immediate => {
+                    let resolved = position_manager.resolve_window_with_outcome(
+                        &mw,
+                        closed.outcome,
+                        &results_db,
+                        &mut bankroll,
+                        config,
+                        &clock,
+                    );
 
-            for (trade, result) in &resolved {
-                let won = result.pnl_0pct > 0.0;
-                trend_tracker.record_outcome(
-                    family_for_strategy(&trade.strategy),
-                    trade.side,
-                    won,
-                    replay_ts,
-                );
-                circuit_breaker.record_result(won, replay_ts);
+                    for (trade, result) in &resolved {
+                        let won = result.pnl_net > 0.0;
+                        trend_tracker.record_outcome(
+                            family_for_strategy(&trade.strategy),
+                            trade.side,
+                            won,
+                            replay_ts,
+                        );
+                        circuit_breaker.record_result(won, replay_ts);
+                    }
+                }
+                BacktestSettlementMode::ObservedMarketResolution => {
+                    let settle_at_ms = observed_resolution_schedule
+                        .as_ref()
+                        .and_then(|schedule| {
+                            schedule
+                                .market_resolution_at_ms
+                                .get(&mw.market_id)
+                                .copied()
+                                .or_else(|| {
+                                    Some(
+                                        mw.end_time.saturating_add(
+                                            schedule
+                                                .default_delay_ms
+                                                .max(config.resolution_initial_delay_ms),
+                                        ),
+                                    )
+                                })
+                        })
+                        .unwrap_or_else(|| {
+                            mw.end_time
+                                .saturating_add(config.resolution_initial_delay_ms)
+                        })
+                        .max(replay_ts);
+                    schedule_pending_market_settlement(
+                        &mut pending_settlements,
+                        settle_at_ms,
+                        &mw,
+                        closed.outcome,
+                    );
+                }
             }
         }
 
@@ -317,106 +510,50 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
             continue;
         }
 
-        let observed_regime = detect_regime(&ctx, config);
-        portfolio_stats.record_observed_regime(observed_regime);
-
-        let mut candidates: Vec<EvaluatedCandidate> = Vec::new();
-        for strategy in &mut strategies {
-            let result = strategy.evaluate(&ctx, config, replay_ts);
-            match result {
-                StrategyResult::None | StrategyResult::Rejected(_) => {}
-                StrategyResult::Single(_) | StrategyResult::Batch(_) => {
-                    candidates.push(EvaluatedCandidate {
-                        family: strategy.family(),
-                        result,
-                    });
-                }
-            }
+        let cycle = run_strategy_cycle(
+            &ctx,
+            &current_mw,
+            config,
+            &clock,
+            &results_db,
+            &mut strategies,
+            &mut execution_engine,
+            &mut bankroll,
+            &mut trend_tracker,
+            &mut rejection_tracker,
+            group.fidelity,
+            replay_ts,
+        )?;
+        portfolio_stats.record_observed_regime(cycle.observed_regime);
+        portfolio_stats.record_candidates(&cycle.candidate_families);
+        for _ in 0..cycle.router_blocked_count {
+            portfolio_stats.record_router_block();
         }
-
-        let candidate_families: Vec<StrategyFamily> = candidates
-            .iter()
-            .map(|candidate| candidate.family)
-            .collect();
-        portfolio_stats.record_candidates(&candidate_families);
-
-        let selected_family = if config.regime_detection_enabled {
-            select_family_for_candidates(&ctx, config, &candidate_families).selected_family
-        } else {
-            None
-        };
-
-        for candidate in candidates {
-            if config.regime_detection_enabled && Some(candidate.family) != selected_family {
-                portfolio_stats.record_router_block();
-                continue;
-            }
-
-            match candidate.result {
-                StrategyResult::Single(mut signal) => {
-                    annotate_signal(&mut signal, observed_regime, candidate.family);
-                    if trend_tracker.should_suppress(candidate.family, signal.direction) {
-                        if let Ok(signal_id) = results_db.log_signal_with_context(
-                            &signal,
-                            Some(&current_mw.market_id),
-                            Some(group.fidelity),
-                            None,
-                            None,
-                        ) {
-                            if let Some(telemetry) = signal.telemetry.as_ref() {
-                                let _ = results_db.upsert_signal_telemetry(
-                                    signal_id,
-                                    telemetry,
-                                    None,
-                                    None,
-                                    Some("suppressed"),
-                                    Some("trend_filter"),
-                                );
-                            }
-                        }
-                        signal_count += 1;
-                        continue;
-                    }
-                    signal_count += 1;
-                    let submission = execution_engine.submit_single(
-                        &signal,
-                        &current_mw,
-                        &results_db,
-                        &mut bankroll,
-                        config,
-                        &clock,
-                        group.fidelity,
-                    )?;
-                    portfolio_stats.record_submission(
-                        candidate.family,
-                        observed_regime,
-                        &submission,
-                    );
-                }
-                StrategyResult::Batch(mut signals) => {
-                    for signal in &mut signals {
-                        annotate_signal(signal, observed_regime, candidate.family);
-                    }
-                    signal_count += signals.len() as u64;
-                    let submission = execution_engine.submit_spread(
-                        &signals,
-                        &current_mw,
-                        &results_db,
-                        &mut bankroll,
-                        config,
-                        &clock,
-                        group.fidelity,
-                    )?;
-                    portfolio_stats.record_submission(
-                        candidate.family,
-                        observed_regime,
-                        &submission,
-                    );
-                }
-                StrategyResult::None | StrategyResult::Rejected(_) => {}
-            }
+        signal_count += cycle.signal_count_delta;
+        for submission in &cycle.submissions {
+            portfolio_stats.record_submission(
+                submission.family,
+                submission.regime,
+                &submission.outcome,
+            );
         }
     }
+
+    let pending_times = pending_settlements.keys().copied().collect::<Vec<_>>();
+    for pending_time in pending_times {
+        process_due_market_settlements(
+            &mut pending_settlements,
+            pending_time,
+            &clock,
+            &results_db,
+            &mut position_manager,
+            &mut bankroll,
+            &mut trend_tracker,
+            &mut circuit_breaker,
+            config,
+        );
+    }
+    persist_rejection_summaries(&results_db, &mut rejection_tracker, None, clock.now())?;
 
     let stats = bankroll.get_stats();
     let execution_stats = execution_engine.stats().clone();

@@ -24,6 +24,7 @@ pub fn run_sweep(
     starting_balance: f64,
     dimensions: &[SweepDimension],
     fixed_overrides: &[(String, String)],
+    base_config: &Config,
 ) -> anyhow::Result<()> {
     let t0 = Instant::now();
 
@@ -57,11 +58,9 @@ pub fn run_sweep(
         .par_iter()
         .enumerate()
         .map(|(i, combo)| {
-            let mut config = Config {
-                starting_balance,
-                log_level: "error".to_string(),
-                ..Config::default()
-            };
+            let mut config = base_config.clone();
+            config.starting_balance = starting_balance;
+            config.log_level = "error".to_string();
 
             for (param, value) in combo {
                 config.set_param(param, *value);

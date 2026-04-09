@@ -48,6 +48,22 @@ pub struct ExecutionStatusRollup {
     pub queue_rejection_reasons: Vec<(String, u64)>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingResolutionMarket {
+    pub window: MarketWindow,
+    pub open_trade_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnresolvedTradeExposure {
+    pub trade_id: i64,
+    pub market_id: String,
+    pub strategy: String,
+    pub entry_price: f64,
+    pub size: f64,
+    pub market_end_time: u64,
+}
+
 impl Database {
     /// Open (or create) the database at `db_path`, enable WAL mode + NORMAL
     /// synchronous, and run all schema migrations.
@@ -194,6 +210,129 @@ impl Database {
             window.rewards_max_spread,
         ])?;
         Ok(())
+    }
+
+    /// Return ended markets that still have unresolved open trades.
+    pub fn unresolved_open_trade_markets(
+        &self,
+        now_ms: u64,
+    ) -> anyhow::Result<Vec<PendingResolutionMarket>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT
+                m.market_id,
+                m.question,
+                m.condition_id,
+                m.slug,
+                m.up_token_id,
+                m.down_token_id,
+                m.start_time,
+                m.end_time,
+                m.outcome,
+                m.resolution_source,
+                m.fee_profile,
+                m.order_min_size,
+                m.order_price_min_tick_size,
+                m.maker_base_fee,
+                m.taker_base_fee,
+                m.rewards_min_size,
+                m.rewards_max_spread,
+                COUNT(st.id) AS open_trade_count
+             FROM markets m
+             JOIN simulated_trades st
+               ON st.market_id = m.market_id
+              AND st.status = 'open'
+             LEFT JOIN trade_results tr
+               ON tr.trade_id = st.id
+             WHERE tr.trade_id IS NULL
+               AND m.end_time <= ?1
+               AND m.status != 'resolved'
+             GROUP BY
+                m.market_id,
+                m.question,
+                m.condition_id,
+                m.slug,
+                m.up_token_id,
+                m.down_token_id,
+                m.start_time,
+                m.end_time,
+                m.outcome,
+                m.resolution_source,
+                m.fee_profile,
+                m.order_min_size,
+                m.order_price_min_tick_size,
+                m.maker_base_fee,
+                m.taker_base_fee,
+                m.rewards_min_size,
+                m.rewards_max_spread
+             ORDER BY m.end_time ASC, m.market_id ASC",
+        )?;
+        let rows = stmt.query_map(params![now_ms], |row| {
+            Ok(PendingResolutionMarket {
+                window: MarketWindow {
+                    market_id: row.get(0)?,
+                    question: row.get(1)?,
+                    condition_id: row.get(2)?,
+                    slug: row.get(3)?,
+                    up_token_id: row.get(4)?,
+                    down_token_id: row.get(5)?,
+                    start_time: row.get(6)?,
+                    end_time: row.get(7)?,
+                    outcome: row.get(8)?,
+                    resolution_source: row.get(9)?,
+                    fee_profile: row.get(10)?,
+                    order_min_size: row.get(11)?,
+                    order_price_min_tick_size: row.get(12)?,
+                    maker_base_fee: row.get(13)?,
+                    taker_base_fee: row.get(14)?,
+                    rewards_min_size: row.get(15)?,
+                    rewards_max_spread: row.get(16)?,
+                },
+                open_trade_count: row.get(17)?,
+            })
+        })?;
+
+        let mut markets = Vec::new();
+        for row in rows {
+            markets.push(row?);
+        }
+        Ok(markets)
+    }
+
+    /// Return every unresolved open trade together with its market end time.
+    pub fn unresolved_trade_exposures(&self) -> anyhow::Result<Vec<UnresolvedTradeExposure>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT
+                st.id,
+                st.market_id,
+                st.strategy,
+                st.entry_price,
+                st.size,
+                m.end_time
+             FROM simulated_trades st
+             JOIN markets m
+               ON m.market_id = st.market_id
+             LEFT JOIN trade_results tr
+               ON tr.trade_id = st.id
+             WHERE st.status = 'open'
+               AND tr.trade_id IS NULL
+             ORDER BY m.end_time ASC, st.id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(UnresolvedTradeExposure {
+                trade_id: row.get(0)?,
+                market_id: row.get(1)?,
+                strategy: row.get(2)?,
+                entry_price: row.get(3)?,
+                size: row.get(4)?,
+                market_end_time: row.get(5)?,
+            })
+        })?;
+
+        let mut exposures = Vec::new();
+        for row in rows {
+            exposures.push(row?);
+        }
+        Ok(exposures)
     }
 
     /// Logs signal.
@@ -692,6 +831,40 @@ impl Database {
             .conn
             .prepare_cached("SELECT COUNT(*) FROM simulated_trades WHERE status = 'open'")?;
         let count = stmt.query_row([], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Count open trades whose market has not closed yet.
+    pub fn count_active_open_trades(&self, now_ms: u64) -> anyhow::Result<u64> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT COUNT(*)
+             FROM simulated_trades st
+             JOIN markets m
+               ON m.market_id = st.market_id
+             LEFT JOIN trade_results tr
+               ON tr.trade_id = st.id
+             WHERE st.status = 'open'
+               AND tr.trade_id IS NULL
+               AND m.end_time > ?1",
+        )?;
+        let count = stmt.query_row(params![now_ms], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Count open trades whose market has already closed but not settled yet.
+    pub fn count_pending_settlement_open_trades(&self, now_ms: u64) -> anyhow::Result<u64> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT COUNT(*)
+             FROM simulated_trades st
+             JOIN markets m
+               ON m.market_id = st.market_id
+             LEFT JOIN trade_results tr
+               ON tr.trade_id = st.id
+             WHERE st.status = 'open'
+               AND tr.trade_id IS NULL
+               AND m.end_time <= ?1",
+        )?;
+        let count = stmt.query_row(params![now_ms], |row| row.get(0))?;
         Ok(count)
     }
 

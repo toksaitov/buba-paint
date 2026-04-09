@@ -77,6 +77,13 @@ pub enum QueueRejectionReason {
     DuplicatePendingOrder,
 }
 
+/// Read-only inputs needed to decide whether a new order can be queued.
+struct QueueCheckContext<'a> {
+    db: &'a Database,
+    config: &'a Config,
+    now_ms: u64,
+}
+
 impl QueueRejectionReason {
     #[must_use]
     /// Return the stable persisted label for one queue-rejection reason.
@@ -198,7 +205,12 @@ impl ExecutionEngine {
             Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
         )?;
 
-        if let Some(reason) = self.can_queue_order(signal, window, false, 1, db, config)? {
+        let queue_ctx = QueueCheckContext {
+            db,
+            config,
+            now_ms: clock.now(),
+        };
+        if let Some(reason) = self.can_queue_order(signal, window, false, 1, &queue_ctx)? {
             return Ok(reject_single_submission(
                 db,
                 signal,
@@ -265,7 +277,12 @@ impl ExecutionEngine {
     ) -> anyhow::Result<SubmissionOutcome> {
         let arrival_ts = spread_arrival_ts(signals, config, clock);
         let signal_ids = log_spread_signals(signals, window, db, arrival_ts, execution_fidelity)?;
-        if let Some(reason) = self.can_queue_spread(signals, window, db, config)? {
+        let queue_ctx = QueueCheckContext {
+            db,
+            config,
+            now_ms: clock.now(),
+        };
+        if let Some(reason) = self.can_queue_spread(signals, window, &queue_ctx)? {
             return Ok(reject_spread_submission(
                 db,
                 signals,
@@ -426,16 +443,16 @@ impl ExecutionEngine {
         &self,
         signals: &[Signal],
         window: &MarketWindow,
-        db: &Database,
-        config: &Config,
+        queue_ctx: &QueueCheckContext<'_>,
     ) -> anyhow::Result<Option<QueueRejectionReason>> {
-        let open_count = db.count_open_trades()?;
+        let open_count =
+            count_queue_relevant_open_trades(queue_ctx.db, queue_ctx.config, queue_ctx.now_ms)?;
         let pending_count = self.pending_orders.len() as u64;
-        if open_count + pending_count + 2 > config.max_open_positions {
+        if open_count + pending_count + 2 > queue_ctx.config.max_open_positions {
             return Ok(Some(QueueRejectionReason::MaxOpenPositions));
         }
 
-        let existing = db.get_open_trades_for_market(&window.market_id)?;
+        let existing = queue_ctx.db.get_open_trades_for_market(&window.market_id)?;
         if signals.iter().any(|signal| {
             existing
                 .iter()
@@ -688,16 +705,16 @@ impl ExecutionEngine {
         window: &MarketWindow,
         is_batch: bool,
         required_slots: u64,
-        db: &Database,
-        config: &Config,
+        queue_ctx: &QueueCheckContext<'_>,
     ) -> anyhow::Result<Option<QueueRejectionReason>> {
-        let open_count = db.count_open_trades()?;
+        let open_count =
+            count_queue_relevant_open_trades(queue_ctx.db, queue_ctx.config, queue_ctx.now_ms)?;
         let pending_count = self.pending_orders.len() as u64;
-        if open_count + pending_count + required_slots > config.max_open_positions {
+        if open_count + pending_count + required_slots > queue_ctx.config.max_open_positions {
             return Ok(Some(QueueRejectionReason::MaxOpenPositions));
         }
 
-        let existing = db.get_open_trades_for_market(&window.market_id)?;
+        let existing = queue_ctx.db.get_open_trades_for_market(&window.market_id)?;
         let duplicate_open = if is_batch {
             existing
                 .iter()
@@ -772,6 +789,22 @@ impl ExecutionEngine {
         SubmissionOutcome::Queued {
             signal_ids: vec![signal_id],
         }
+    }
+}
+
+/// Count the open trades that still consume one queue slot under the current config.
+fn count_queue_relevant_open_trades(
+    db: &Database,
+    config: &Config,
+    now_ms: u64,
+) -> anyhow::Result<u64> {
+    if config
+        .pending_settlement_policy_unchecked()
+        .counts_as_open_position
+    {
+        db.count_open_trades()
+    } else {
+        db.count_active_open_trades(now_ms)
     }
 }
 
@@ -1898,6 +1931,69 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(rejected_reason, "max_open_positions");
+    }
+
+    #[test]
+    /// Verify that closed-but-unsettled trades stop consuming queue slots when configured.
+    fn submit_single_ignores_pending_settlement_trades_for_open_position_cap() {
+        let (_dir, db) = temp_db();
+        let mut config = test_config();
+        config.max_open_positions = 1;
+        config.pending_settlement_counts_as_open_position = false;
+        let clock = BacktestClock::new();
+        clock.set(400_000);
+
+        let mut pending_window = test_window();
+        pending_window.market_id = "mkt-old".to_string();
+        pending_window.up_token_id = "tok-old-up".to_string();
+        pending_window.down_token_id = "tok-old-down".to_string();
+        pending_window.end_time = 300_000;
+        db.upsert_market(&pending_window).unwrap();
+        db.open_trade(&SimulatedTrade {
+            id: None,
+            timestamp: 10_000,
+            market_id: pending_window.market_id.clone(),
+            strategy: "other".to_string(),
+            side: SignalDirection::Up,
+            token_id: pending_window.up_token_id.clone(),
+            entry_price: 0.55,
+            size: 10.0,
+            status: TradeStatus::Open,
+            signal_id: None,
+            requested_price: None,
+            requested_size: None,
+            filled_size: None,
+            avg_fill_price: None,
+            fill_status: None,
+            fill_reason: None,
+            fill_latency_ms: None,
+            execution_group_id: None,
+            execution_fidelity: None,
+            execution_mode: None,
+            order_id: None,
+            fill_price: None,
+        })
+        .unwrap();
+
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        let mut bankroll = BankrollManager::new(1_000.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signal = latency_signal_with_telemetry(82_000, SignalDirection::Up);
+
+        let submission = engine
+            .submit_single(
+                &signal,
+                &window,
+                &db,
+                &mut bankroll,
+                &config,
+                &clock,
+                ReplayFidelity::LegacySnapshot,
+            )
+            .unwrap();
+        assert!(matches!(submission, SubmissionOutcome::Queued { .. }));
     }
 
     #[test]

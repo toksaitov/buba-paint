@@ -261,6 +261,48 @@ fn log_strategy_rejection_summary_persists_row() {
     assert_eq!(details["mean"]["upAsk"], 0.51);
 }
 
+/// Verifies that unresolved-trade exposures include market timing for reserve recovery.
+#[test]
+fn unresolved_trade_exposures_include_market_end_times() {
+    let (db, _tmp) = temp_db();
+    let window = sample_market_window();
+    db.upsert_market(&window).unwrap();
+
+    let trade_id = db.open_trade(&sample_trade()).unwrap();
+
+    let exposures = db.unresolved_trade_exposures().unwrap();
+    assert_eq!(exposures.len(), 1);
+    assert_eq!(exposures[0].trade_id, trade_id);
+    assert_eq!(exposures[0].market_id, window.market_id);
+    assert_eq!(exposures[0].strategy, "latency-arb");
+    assert_eq!(exposures[0].market_end_time, window.end_time);
+}
+
+/// Verifies that active and pending open-trade counts split around market close.
+#[test]
+fn count_active_and_pending_open_trades_split_by_market_end() {
+    let (db, _tmp) = temp_db();
+
+    let active_window = sample_market_window();
+    db.upsert_market(&active_window).unwrap();
+    db.open_trade(&sample_trade()).unwrap();
+
+    let mut pending_window = sample_market_window();
+    pending_window.market_id = "mkt-2".into();
+    pending_window.up_token_id = "tok-up-2".into();
+    pending_window.down_token_id = "tok-down-2".into();
+    pending_window.end_time = active_window.end_time - 1_000;
+    db.upsert_market(&pending_window).unwrap();
+    let mut pending_trade = sample_trade();
+    pending_trade.market_id = pending_window.market_id.clone();
+    pending_trade.token_id = pending_window.up_token_id.clone();
+    db.open_trade(&pending_trade).unwrap();
+
+    let now_ms = active_window.end_time - 500;
+    assert_eq!(db.count_active_open_trades(now_ms).unwrap(), 1);
+    assert_eq!(db.count_pending_settlement_open_trades(now_ms).unwrap(), 1);
+}
+
 /// Verifies that earliest Binance price lookup returns the first tick inside the window.
 #[test]
 fn earliest_binance_price_in_window_returns_first_tick() {
@@ -761,4 +803,62 @@ fn get_open_trades_returns_correct_fields() {
     assert!((open[0].entry_price - 0.45).abs() < f64::EPSILON);
     assert!((open[0].size - 25.0).abs() < f64::EPSILON);
     assert_eq!(open[0].status, TradeStatus::Open);
+}
+
+/// Verifies that unresolved open-trade market recovery returns only ended unresolved markets.
+#[test]
+fn unresolved_open_trade_markets_returns_only_ended_unresolved_rows() {
+    let (db, _tmp) = temp_db();
+
+    let ended = sample_market_window();
+    db.upsert_market(&ended).unwrap();
+    db.open_trade(&sample_trade()).unwrap();
+
+    let mut future = sample_market_window();
+    future.market_id = "mkt-future".into();
+    future.condition_id = "cond-future".into();
+    future.slug = "btc-up-down-future".into();
+    future.up_token_id = "tok-up-future".into();
+    future.down_token_id = "tok-down-future".into();
+    future.start_time = 1_700_000_600_000;
+    future.end_time = 1_700_000_900_000;
+    db.upsert_market(&future).unwrap();
+    let mut future_trade = sample_trade();
+    future_trade.market_id = future.market_id.clone();
+    future_trade.token_id = future.up_token_id.clone();
+    db.open_trade(&future_trade).unwrap();
+
+    let mut settled = sample_market_window();
+    settled.market_id = "mkt-settled".into();
+    settled.condition_id = "cond-settled".into();
+    settled.slug = "btc-up-down-settled".into();
+    settled.up_token_id = "tok-up-settled".into();
+    settled.down_token_id = "tok-down-settled".into();
+    db.upsert_market(&settled).unwrap();
+    let mut settled_trade = sample_trade();
+    settled_trade.market_id = settled.market_id.clone();
+    settled_trade.token_id = settled.up_token_id.clone();
+    let settled_trade_id = db.open_trade(&settled_trade).unwrap();
+    db.close_trade(
+        settled_trade_id,
+        &TradeResult {
+            trade_id: settled_trade_id,
+            exit_price: 1.0,
+            settlement_price: 1.0,
+            pnl_0pct: 5.0,
+            pnl_1pct: 4.0,
+            pnl_2pct: 3.0,
+            pnl_3pct: 2.0,
+            fee_amount: 0.1,
+            pnl_net: 4.9,
+            settlement_status: "confirmed".to_string(),
+            provisional_pnl: None,
+        },
+    )
+    .unwrap();
+
+    let rows = db.unresolved_open_trade_markets(1_700_000_500_000).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].window.market_id, "mkt-1");
+    assert_eq!(rows[0].open_trade_count, 1);
 }

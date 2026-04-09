@@ -584,6 +584,55 @@ fn create_multi_window_fixture_db(
     (tmp, path)
 }
 
+/// Create a two-window fixture DB with one observed late settlement on window A.
+fn create_observed_resolution_fixture_db() -> (NamedTempFile, String) {
+    let windows = [
+        WindowDef {
+            market_id: "mkt-observed-a",
+            start_time: 1_000_000,
+            end_time: 1_300_000,
+            open_price: 42_000.0,
+            close_price: 42_200.0,
+            outcome: "UP",
+            momentum_up: true,
+        },
+        WindowDef {
+            market_id: "mkt-observed-b",
+            start_time: 1_300_000,
+            end_time: 1_600_000,
+            open_price: 42_200.0,
+            close_price: 42_350.0,
+            outcome: "UP",
+            momentum_up: true,
+        },
+    ];
+    let (tmp, path) = create_multi_window_fixture_db(&windows, 42_000.0, 1_000);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE simulated_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market_id TEXT NOT NULL
+        );
+        CREATE TABLE trade_results (
+            trade_id INTEGER NOT NULL,
+            resolved_at INTEGER NOT NULL
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO simulated_trades (id, market_id) VALUES (?1, ?2)",
+        params![1_i64, "mkt-observed-a"],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO trade_results (trade_id, resolved_at) VALUES (?1, ?2)",
+        params![1_i64, 1_700_000_i64],
+    )
+    .unwrap();
+    drop(conn);
+    (tmp, path)
+}
+
 /// Verifies that backtest runs without error.
 #[test]
 fn backtest_runs_without_error() {
@@ -647,6 +696,73 @@ fn backtest_with_strong_momentum_produces_trades() {
         result.total_pnl > 0.0,
         "PnL should be positive when outcome matches direction; got {}",
         result.total_pnl
+    );
+}
+
+/// Verifies that observed settlement replay keeps positions open longer than immediate mode.
+#[test]
+fn observed_market_resolution_mode_replays_delayed_settlement() {
+    let (_data_tmp, data_path) = create_observed_resolution_fixture_db();
+
+    let mut immediate_config = test_config();
+    immediate_config.calm_persistence_enabled = false;
+    immediate_config.spread_capture_enabled = false;
+    immediate_config.min_window_time_ms = 0;
+    immediate_config.max_open_positions = 1;
+    immediate_config.pending_settlement_counts_as_open_position = true;
+    immediate_config.latency_arb_cooldown_ms = 1;
+    immediate_config.backtest_settlement_mode =
+        buba_paint::config::BacktestSettlementMode::Immediate;
+
+    let immediate_results = NamedTempFile::new().unwrap();
+    let immediate = run_backtest(BacktestOptions {
+        tick_source: TickSource::FromDb(data_path.clone()),
+        data_db_path: data_path.clone(),
+        results_db_path: immediate_results.path().to_str().unwrap().to_string(),
+        start_time: 970_000,
+        end_time: 1_630_000,
+        starting_balance: 200.0,
+        quiet: true,
+        config: immediate_config,
+    })
+    .unwrap();
+
+    let mut observed_config = test_config();
+    observed_config.calm_persistence_enabled = false;
+    observed_config.spread_capture_enabled = false;
+    observed_config.min_window_time_ms = 0;
+    observed_config.max_open_positions = 1;
+    observed_config.pending_settlement_counts_as_open_position = true;
+    observed_config.latency_arb_cooldown_ms = 1;
+    observed_config.backtest_settlement_mode =
+        buba_paint::config::BacktestSettlementMode::ObservedMarketResolution;
+
+    let observed_results = NamedTempFile::new().unwrap();
+    let observed = run_backtest(BacktestOptions {
+        tick_source: TickSource::FromDb(data_path.clone()),
+        data_db_path: data_path,
+        results_db_path: observed_results.path().to_str().unwrap().to_string(),
+        start_time: 970_000,
+        end_time: 1_630_000,
+        starting_balance: 200.0,
+        quiet: true,
+        config: observed_config,
+    })
+    .unwrap();
+
+    assert!(
+        immediate.trades >= 2,
+        "expected both windows to trade under immediate settlement, got {}",
+        immediate.trades
+    );
+    assert_eq!(
+        observed.trades, 1,
+        "expected delayed settlement to block the second window, got {} trades",
+        observed.trades
+    );
+    assert!(
+        observed.trades < immediate.trades,
+        "observed settlement replay should reduce trade count versus immediate settlement"
     );
 }
 

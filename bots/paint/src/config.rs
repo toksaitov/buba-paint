@@ -1,5 +1,7 @@
 use std::env;
 
+use anyhow::bail;
+
 /// Env str.
 fn env_str(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
@@ -50,6 +52,154 @@ impl FeedEventStorageProfile {
             _ => Self::Compact,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BacktestSettlementMode {
+    Immediate,
+    ObservedMarketResolution,
+}
+
+impl BacktestSettlementMode {
+    /// Return the persisted environment label for this settlement mode.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Immediate => "immediate",
+            Self::ObservedMarketResolution => "observed_market_resolution",
+        }
+    }
+
+    /// Parse one environment override into a supported settlement mode.
+    #[must_use]
+    pub fn from_env_value(raw: Option<&str>) -> Self {
+        match raw {
+            Some("observed_market_resolution") => Self::ObservedMarketResolution,
+            _ => Self::Immediate,
+        }
+    }
+}
+
+/// Named pending-settlement reserve modes used by live trading and exact-run parity replays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingSettlementReserveMode {
+    Compatibility,
+    Conservative,
+    Risky,
+    Custom,
+}
+
+impl PendingSettlementReserveMode {
+    /// Return the stable label for this reserve mode.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compatibility => "compatibility",
+            Self::Conservative => "conservative",
+            Self::Risky => "risky",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+/// One resolved pending-settlement reserve policy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PendingSettlementPolicy {
+    pub mode: PendingSettlementReserveMode,
+    pub family_reserve_fraction: f64,
+    pub global_reserve_fraction: f64,
+    pub counts_as_open_position: bool,
+}
+
+impl PendingSettlementPolicy {
+    /// Build the compatibility policy.
+    #[must_use]
+    pub const fn compatibility() -> Self {
+        Self {
+            mode: PendingSettlementReserveMode::Compatibility,
+            family_reserve_fraction: 1.0,
+            global_reserve_fraction: 1.0,
+            counts_as_open_position: true,
+        }
+    }
+
+    /// Build the conservative policy.
+    #[must_use]
+    pub const fn conservative() -> Self {
+        Self {
+            mode: PendingSettlementReserveMode::Conservative,
+            family_reserve_fraction: 0.0,
+            global_reserve_fraction: 1.0,
+            counts_as_open_position: false,
+        }
+    }
+
+    /// Build the risky policy.
+    #[must_use]
+    pub const fn risky() -> Self {
+        Self {
+            mode: PendingSettlementReserveMode::Risky,
+            family_reserve_fraction: 0.0,
+            global_reserve_fraction: 0.25,
+            counts_as_open_position: false,
+        }
+    }
+
+    /// Classify one raw triple into a named or custom policy.
+    #[must_use]
+    pub fn classify(
+        family_reserve_fraction: f64,
+        global_reserve_fraction: f64,
+        counts_as_open_position: bool,
+    ) -> Self {
+        let mode = if approx_f64(family_reserve_fraction, 1.0)
+            && approx_f64(global_reserve_fraction, 1.0)
+            && counts_as_open_position
+        {
+            PendingSettlementReserveMode::Compatibility
+        } else if approx_f64(family_reserve_fraction, 0.0)
+            && approx_f64(global_reserve_fraction, 1.0)
+            && !counts_as_open_position
+        {
+            PendingSettlementReserveMode::Conservative
+        } else if approx_f64(family_reserve_fraction, 0.0)
+            && approx_f64(global_reserve_fraction, 0.25)
+            && !counts_as_open_position
+        {
+            PendingSettlementReserveMode::Risky
+        } else {
+            PendingSettlementReserveMode::Custom
+        };
+
+        Self {
+            mode,
+            family_reserve_fraction,
+            global_reserve_fraction,
+            counts_as_open_position,
+        }
+    }
+
+    /// Validate that the configured reserve fractions are sane.
+    pub fn validate(self) -> anyhow::Result<Self> {
+        if !(0.0..=1.0).contains(&self.family_reserve_fraction) {
+            bail!(
+                "PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION must be within [0.0, 1.0], got {}",
+                self.family_reserve_fraction
+            );
+        }
+        if !(0.0..=1.0).contains(&self.global_reserve_fraction) {
+            bail!(
+                "PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION must be within [0.0, 1.0], got {}",
+                self.global_reserve_fraction
+            );
+        }
+        Ok(self)
+    }
+}
+
+/// Compare two floating-point config values with a tiny tolerance.
+fn approx_f64(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 1e-9
 }
 
 /// Build the default Binance stream URL from the configured stream names.
@@ -198,13 +348,44 @@ pub struct Config {
     pub resolution_poll_retries: u32,
     pub resolution_initial_delay_ms: u64,
     pub resolution_poll_delay_ms: u64,
+    pub pending_settlement_family_reserve_fraction: f64,
+    pub pending_settlement_global_reserve_fraction: f64,
+    pub pending_settlement_counts_as_open_position: bool,
+    pub backtest_settlement_mode: BacktestSettlementMode,
 }
 
 impl Config {
+    /// Return the resolved pending-settlement policy after validation.
+    pub fn pending_settlement_policy(&self) -> anyhow::Result<PendingSettlementPolicy> {
+        PendingSettlementPolicy::classify(
+            self.pending_settlement_family_reserve_fraction,
+            self.pending_settlement_global_reserve_fraction,
+            self.pending_settlement_counts_as_open_position,
+        )
+        .validate()
+    }
+
+    /// Return the resolved pending-settlement policy without re-validating it.
+    #[must_use]
+    pub fn pending_settlement_policy_unchecked(&self) -> PendingSettlementPolicy {
+        PendingSettlementPolicy::classify(
+            self.pending_settlement_family_reserve_fraction,
+            self.pending_settlement_global_reserve_fraction,
+            self.pending_settlement_counts_as_open_position,
+        )
+    }
+
+    /// Validate config invariants that should fail fast at startup.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let _ = self.pending_settlement_policy()?;
+        Ok(())
+    }
+
     /// Set a config parameter by name (used by the sweep engine).
     ///
     /// Returns `true` if the parameter was recognised, `false` otherwise.
     #[allow(clippy::cast_possible_wrap)]
+    #[allow(clippy::too_many_lines)]
     pub fn set_param(&mut self, name: &str, value: f64) -> bool {
         match name {
             "LATENCY_ARB_MOMENTUM_THRESHOLD" => self.latency_arb_momentum_threshold = value,
@@ -288,6 +469,15 @@ impl Config {
             "RESOLUTION_POLL_RETRIES" => self.resolution_poll_retries = value as u32,
             "RESOLUTION_INITIAL_DELAY_MS" => self.resolution_initial_delay_ms = value as u64,
             "RESOLUTION_POLL_DELAY_MS" => self.resolution_poll_delay_ms = value as u64,
+            "PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION" => {
+                self.pending_settlement_family_reserve_fraction = value;
+            }
+            "PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION" => {
+                self.pending_settlement_global_reserve_fraction = value;
+            }
+            "PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION" => {
+                self.pending_settlement_counts_as_open_position = value != 0.0;
+            }
             "TAKER_FEE_RATE" => {
                 self.taker_fee_rate = value;
                 self.taker_fee_override_explicit = true;
@@ -478,6 +668,21 @@ impl Config {
             resolution_poll_retries: 30,
             resolution_initial_delay_ms: env_u64("RESOLUTION_INITIAL_DELAY_MS", 30_000),
             resolution_poll_delay_ms: 10_000,
+            pending_settlement_family_reserve_fraction: env_f64(
+                "PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION",
+                PendingSettlementPolicy::conservative().family_reserve_fraction,
+            ),
+            pending_settlement_global_reserve_fraction: env_f64(
+                "PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION",
+                PendingSettlementPolicy::conservative().global_reserve_fraction,
+            ),
+            pending_settlement_counts_as_open_position: env_bool(
+                "PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION",
+                PendingSettlementPolicy::conservative().counts_as_open_position,
+            ),
+            backtest_settlement_mode: BacktestSettlementMode::from_env_value(
+                env::var("BACKTEST_SETTLEMENT_MODE").ok().as_deref(),
+            ),
         }
     }
 }
@@ -596,6 +801,13 @@ impl Default for Config {
             resolution_poll_retries: 30,
             resolution_initial_delay_ms: 30_000,
             resolution_poll_delay_ms: 10_000,
+            pending_settlement_family_reserve_fraction: PendingSettlementPolicy::conservative()
+                .family_reserve_fraction,
+            pending_settlement_global_reserve_fraction: PendingSettlementPolicy::conservative()
+                .global_reserve_fraction,
+            pending_settlement_counts_as_open_position: PendingSettlementPolicy::conservative()
+                .counts_as_open_position,
+            backtest_settlement_mode: BacktestSettlementMode::Immediate,
         }
     }
 }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::clock::BacktestClock;
 use crate::portfolio::StrategyFamily;
+use crate::types::{MarketWindow, SignalDirection, SimulatedTrade, TradeStatus};
 use tempfile::NamedTempFile;
 
 /// Helper: default config tweaked for predictable test results.
@@ -1615,5 +1616,156 @@ fn kelly_with_entry_price_near_one() {
         (frac - cfg.min_kelly_floor).abs() < f64::EPSILON,
         "expected floor {}, got {frac} (b is very small so full_kelly is negative)",
         cfg.min_kelly_floor
+    );
+}
+
+/// Verifies that closed unresolved trades release the family sleeve in conservative mode.
+#[test]
+fn pending_settlement_releases_family_sleeve_in_conservative_mode() {
+    let mut cfg = test_config();
+    cfg.latency_arb_max_position_fraction = Some(0.05);
+    cfg.pending_settlement_family_reserve_fraction = 0.0;
+    cfg.pending_settlement_global_reserve_fraction = 1.0;
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    let first_tokens = mgr.reserve_capital(0.51, 1.0, "latency-arb", &cfg, &clock);
+    assert!(first_tokens > 0.0);
+    let reserved = first_tokens * 0.51;
+    mgr.transition_trade_to_pending_settlement(reserved, "latency-arb");
+
+    assert!(mgr.active_reserved_capital.abs() < 1e-9);
+    assert!(mgr.pending_settlement_reserved_capital > 0.0);
+    assert!(mgr.effective_reserved_for_family(StrategyFamily::LatencyArb, &cfg) < 1e-9);
+    assert!((mgr.effective_reserved_capital(&cfg) - reserved).abs() < 1e-9);
+
+    let second_tokens = mgr.reserve_capital(0.51, 1.0, "latency-arb", &cfg, &clock);
+    assert!(
+        second_tokens > 0.0,
+        "family sleeve should be reusable once the trade is pending settlement"
+    );
+}
+
+/// Verifies that the risky pending-settlement mode only keeps a haircut reserve globally.
+#[test]
+fn pending_settlement_global_haircut_reduces_effective_reserved_capital() {
+    let mut cfg = test_config();
+    cfg.pending_settlement_family_reserve_fraction = 0.0;
+    cfg.pending_settlement_global_reserve_fraction = 0.25;
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    mgr.add_reserved(StrategyFamily::LatencyArb, 20.0);
+    mgr.transition_trade_to_pending_settlement(20.0, "latency-arb");
+
+    assert!((mgr.reserved_capital - 20.0).abs() < 1e-9);
+    assert!((mgr.effective_reserved_capital(&cfg) - 5.0).abs() < 1e-9);
+    assert!(
+        (mgr.effective_reserved_for_family(StrategyFamily::LatencyArb, &cfg) - 0.0).abs() < 1e-9
+    );
+}
+
+/// Verifies that reserve hydration classifies unresolved trades into active and pending buckets.
+#[test]
+fn constructor_hydrates_active_and_pending_trade_reserves() {
+    let mut cfg = test_config();
+    cfg.pending_settlement_family_reserve_fraction = 0.0;
+    cfg.pending_settlement_global_reserve_fraction = 1.0;
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(2_000);
+
+    let active_market = MarketWindow {
+        market_id: "mkt-active".to_string(),
+        question: "Active".to_string(),
+        up_token_id: "tok-up-active".to_string(),
+        down_token_id: "tok-down-active".to_string(),
+        condition_id: "cond-active".to_string(),
+        start_time: 1_000,
+        end_time: 3_000,
+        slug: "active".to_string(),
+        outcome: None,
+        resolution_source: Some("gamma".to_string()),
+        fee_profile: Some("crypto".to_string()),
+        order_min_size: Some(1.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: None,
+        taker_base_fee: None,
+        rewards_min_size: None,
+        rewards_max_spread: None,
+    };
+    let mut pending_market = active_market.clone();
+    pending_market.market_id = "mkt-pending".to_string();
+    pending_market.up_token_id = "tok-up-pending".to_string();
+    pending_market.down_token_id = "tok-down-pending".to_string();
+    pending_market.condition_id = "cond-pending".to_string();
+    pending_market.slug = "pending".to_string();
+    pending_market.end_time = 1_500;
+
+    db.upsert_market(&active_market).unwrap();
+    db.upsert_market(&pending_market).unwrap();
+    db.open_trade(&SimulatedTrade {
+        id: None,
+        timestamp: 1_200,
+        market_id: active_market.market_id.clone(),
+        strategy: "latency-arb".to_string(),
+        side: SignalDirection::Up,
+        token_id: active_market.up_token_id.clone(),
+        entry_price: 0.50,
+        size: 10.0,
+        status: TradeStatus::Open,
+        signal_id: None,
+        requested_price: None,
+        requested_size: None,
+        filled_size: None,
+        avg_fill_price: None,
+        fill_status: None,
+        fill_reason: None,
+        fill_latency_ms: None,
+        execution_group_id: None,
+        execution_fidelity: None,
+        execution_mode: None,
+        order_id: None,
+        fill_price: None,
+    })
+    .unwrap();
+    db.open_trade(&SimulatedTrade {
+        id: None,
+        timestamp: 1_200,
+        market_id: pending_market.market_id.clone(),
+        strategy: "calm-persistence".to_string(),
+        side: SignalDirection::Down,
+        token_id: pending_market.down_token_id.clone(),
+        entry_price: 0.40,
+        size: 10.0,
+        status: TradeStatus::Open,
+        signal_id: None,
+        requested_price: None,
+        requested_size: None,
+        filled_size: None,
+        avg_fill_price: None,
+        fill_status: None,
+        fill_reason: None,
+        fill_latency_ms: None,
+        execution_group_id: None,
+        execution_fidelity: None,
+        execution_mode: None,
+        order_id: None,
+        fill_price: None,
+    })
+    .unwrap();
+
+    let mgr = make_manager(&cfg, &db, &clock);
+    assert!((mgr.active_reserved_capital - 5.0).abs() < 1e-9);
+    assert!((mgr.pending_settlement_reserved_capital - 4.0).abs() < 1e-9);
+    assert!((mgr.reserved_capital - 9.0).abs() < 1e-9);
+    assert!(
+        (mgr.effective_reserved_for_family(StrategyFamily::LatencyArb, &cfg) - 5.0).abs() < 1e-9
+    );
+    assert!(
+        (mgr.effective_reserved_for_family(StrategyFamily::CalmPersistence, &cfg) - 0.0).abs()
+            < 1e-9
     );
 }

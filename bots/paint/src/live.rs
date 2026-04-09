@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::backtest::momentum::MomentumCalculator;
-use crate::bankroll::{BankrollManager, SpreadAffordabilityCheck};
+use crate::bankroll::BankrollManager;
 use crate::circuit_breaker::CircuitBreaker;
 use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
@@ -15,27 +15,25 @@ use crate::feeds::FeedMessage;
 use crate::feeds::util::now_us;
 use crate::live_storage::FeedEventStorageState;
 use crate::market_discovery::{self, MarketDiscoveryEvent};
-use crate::portfolio::{
-    PortfolioRegime, StrategyFamily, detect_regime, select_family_for_candidates,
-};
 use crate::position_manager::PositionManager;
 use crate::rejection_diagnostics::StrategyRejectionTracker;
 use crate::signal_features::{SignalFeatureEngine, SignalState};
+use crate::strategies::Strategy;
 use crate::strategies::calm_persistence::CalmPersistenceStrategy;
 use crate::strategies::latency_arb::LatencyArbStrategy;
 use crate::strategies::spread_capture::SpreadCaptureStrategy;
-use crate::strategies::{Strategy, StrategyResult};
+use crate::strategy_cycle::{StrategyCycleEvent, family_for_strategy, run_strategy_cycle};
 use crate::tick_logger::{self, TickLoggerState};
 use crate::trend_tracker::ScopedTrendTracker;
 use crate::types::{
-    FeedEvent, FeedHealthEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection,
-    StrategyContext, StrategyRejection, StrategyRejectionReason, StrategyRejectionSample,
+    FeedEvent, FeedHealthEvent, MarketWindow, ReplayFidelity, SignalDirection, StrategyContext,
 };
 
-struct DeferredResolution {
+struct PendingResolution {
     market_id: String,
     window: MarketWindow,
-    authoritative_outcome: SignalDirection,
+    next_attempt_at_ms: u64,
+    seeded_from_startup: bool,
 }
 
 struct LiveState {
@@ -43,12 +41,6 @@ struct LiveState {
     current_window: Option<MarketWindow>,
     window_open_prices: std::collections::HashMap<String, f64>,
     known_windows: std::collections::HashMap<String, MarketWindow>,
-}
-
-/// Live strategy result annotated with the portfolio family selected for routing.
-struct EvaluatedCandidate {
-    family: StrategyFamily,
-    result: StrategyResult,
 }
 
 /// Build the enabled live strategy list for the current configuration.
@@ -66,21 +58,6 @@ fn build_strategies(config: &Config) -> Vec<Box<dyn Strategy>> {
         strategies.push(Box::new(CalmPersistenceStrategy::new()));
     }
     strategies
-}
-
-/// Infer the portfolio family from one persisted strategy name.
-fn family_for_strategy(strategy: &str) -> StrategyFamily {
-    StrategyFamily::from_strategy_name(strategy).unwrap_or(StrategyFamily::LatencyArb)
-}
-
-/// Attach portfolio-routing metadata to one emitted live signal.
-fn annotate_signal(signal: &mut Signal, regime: PortfolioRegime, family: StrategyFamily) {
-    let metadata = signal.metadata.take();
-    signal.metadata = serde_json::json!({
-        "portfolioRegime": regime.as_str(),
-        "strategyFamily": family.as_str(),
-        "strategyMetadata": metadata,
-    });
 }
 
 /// Local receive-time pair captured when a feed message enters the live loop.
@@ -136,51 +113,6 @@ fn capture_receive_times(clock: &dyn Clock) -> ReceiveTimes {
     }
 }
 
-/// Return the up/down leg pair from one spread batch when both sides are present.
-fn spread_signal_pair(signals: &[Signal]) -> Option<(&Signal, &Signal)> {
-    let up_signal = signals
-        .iter()
-        .find(|signal| signal.direction == SignalDirection::Up)?;
-    let down_signal = signals
-        .iter()
-        .find(|signal| signal.direction == SignalDirection::Down)?;
-    Some((up_signal, down_signal))
-}
-
-/// Build the current non-mutating affordability assessment for one spread batch.
-fn assess_spread_batch_affordability(
-    signals: &[Signal],
-    window: &MarketWindow,
-    bankroll: &BankrollManager,
-    config: &Config,
-) -> Option<SpreadAffordabilityCheck> {
-    let (up_signal, down_signal) = spread_signal_pair(signals)?;
-    Some(bankroll.assess_spread_affordability(
-        up_signal.up_ask,
-        down_signal.down_ask,
-        window.order_min_size.unwrap_or(0.0),
-        config,
-    ))
-}
-
-/// Build the structured rejection sample persisted for an impossible spread batch.
-fn spread_budget_rejection_sample(
-    ctx: &StrategyContext,
-    signals: &[Signal],
-    affordability: SpreadAffordabilityCheck,
-) -> StrategyRejectionSample {
-    let mut sample = StrategyRejectionSample::from_ctx(ctx);
-    if let Some((up_signal, down_signal)) = spread_signal_pair(signals) {
-        sample.up_ask = Some(up_signal.up_ask);
-        sample.down_ask = Some(down_signal.down_ask);
-        sample.total_ask = Some(up_signal.up_ask + down_signal.down_ask);
-    }
-    sample.available_spread_budget = Some(affordability.available_spread_budget);
-    sample.required_pair_notional = Some(affordability.required_pair_notional);
-    sample.required_pair_units = Some(affordability.required_pair_units);
-    sample
-}
-
 /// Run the live paper trading bot.
 ///
 /// The bot runs until `shutdown_rx` fires, at which point it performs a
@@ -195,9 +127,15 @@ pub async fn run_live(
     balance: f64,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
+    config.validate()?;
+    let pending_policy = config.pending_settlement_policy_unchecked();
     info!(
         balance = balance,
         db = %db_path,
+        pending_settlement_mode = pending_policy.mode.as_str(),
+        pending_settlement_family_reserve_fraction = pending_policy.family_reserve_fraction,
+        pending_settlement_global_reserve_fraction = pending_policy.global_reserve_fraction,
+        pending_settlement_counts_as_open_position = pending_policy.counts_as_open_position,
         "starting live paper trading bot"
     );
 
@@ -263,13 +201,14 @@ pub async fn run_live(
     let mut state = LiveState::new();
     let mut storage_state = FeedEventStorageState::new(config.feed_event_storage_profile);
     let mut rejection_tracker = StrategyRejectionTracker::new();
-
-    let (resolution_tx, mut resolution_rx) = tokio::sync::mpsc::channel::<DeferredResolution>(32);
+    let mut pending_resolutions = seed_pending_resolutions(&db, &config, &clock);
 
     let (activate_tx, mut activate_rx) = tokio::sync::mpsc::channel::<MarketWindow>(32);
     let mut storage_report_timer = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
     storage_report_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let _ = storage_report_timer.tick().await;
+    let mut resolution_retry_timer = tokio::time::interval(std::time::Duration::from_secs(1));
+    resolution_retry_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     info!("all tasks spawned, entering main loop");
 
@@ -962,6 +901,9 @@ pub async fn run_live(
 
                         let closed_id = closed_window.market_id.clone();
                         if let Some(window) = state.known_windows.remove(&closed_id) {
+                            if let Err(e) = db.resolve_market(&closed_id, "closed") {
+                                warn!(market_id = %closed_id, "failed to mark market closed: {e}");
+                            }
                             let open = state.window_open_prices.remove(&closed_id).unwrap_or_else(|| {
                                 warn!(market_id = %closed_id, "no cached open price captured, recovering from persisted ticks");
                                 recover_window_open_price(&db, &state, &window).unwrap_or(0.0)
@@ -980,33 +922,32 @@ pub async fn run_live(
                                 "window closed; awaiting authoritative resolution before settlement"
                             );
 
-                            if db
-                                .get_open_trades_for_market(&closed_id)
-                                .is_ok_and(|trades| !trades.is_empty())
-                            {
-                                let tx = resolution_tx.clone();
-                                let gamma_url = config.gamma_api_url.clone();
-                                let slug = window.slug.clone();
-                                let mid = window.market_id.clone();
-                                let win = window.clone();
-                                let retries = config.resolution_poll_retries;
-                                let initial_delay_ms = config.resolution_initial_delay_ms;
-                                let delay_ms = config.resolution_poll_delay_ms;
-                                tokio::spawn(async move {
-                                    tokio::time::sleep(std::time::Duration::from_millis(
-                                        initial_delay_ms,
-                                    ))
-                                    .await;
-                                    if let Some(outcome) = crate::market_discovery::poll_resolution(
-                                        &gamma_url, &slug, retries, delay_ms,
-                                    ).await {
-                                        let _ = tx.send(DeferredResolution {
-                                            market_id: mid,
-                                            window: win,
-                                            authoritative_outcome: outcome,
-                                        }).await;
+                            match db.get_open_trades_for_market(&closed_id) {
+                                Ok(trades) if !trades.is_empty() => {
+                                    for trade in &trades {
+                                        bankroll.transition_trade_to_pending_settlement(
+                                            trade.entry_price * trade.size,
+                                            &trade.strategy,
+                                        );
                                     }
-                                });
+                                    let first_attempt_at_ms = window
+                                        .end_time
+                                        .saturating_add(config.resolution_initial_delay_ms)
+                                        .max(clock.now());
+                                    schedule_pending_resolution(
+                                        &mut pending_resolutions,
+                                        &window,
+                                        first_attempt_at_ms,
+                                        false,
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    warn!(
+                                        market_id = %closed_id,
+                                        "failed to load open trades for pending-settlement reclassification: {e}"
+                                    );
+                                }
                             }
 
                             if state.current_window.as_ref().is_some_and(|w| w.market_id == closed_id) {
@@ -1051,18 +992,67 @@ pub async fn run_live(
                 }
             }
 
-            resolution = resolution_rx.recv() => {
-                if let Some(res) = resolution {
-                    handle_deferred_resolution(
-                        &res,
-                        &db,
-                        &mut position_manager,
-                        &mut bankroll,
-                        &mut trend_tracker,
-                        &mut circuit_breaker,
-                        &config,
-                        &clock,
-                    );
+            _ = resolution_retry_timer.tick() => {
+                let ready_pending = take_ready_pending_resolutions(&mut pending_resolutions, clock.now());
+                for mut pending in ready_pending {
+                    match db.get_open_trades_for_market(&pending.market_id) {
+                        Ok(trades) if trades.is_empty() => {
+                            tracing::debug!(
+                                market_id = %pending.market_id,
+                                "dropping pending authoritative settlement for market with no open trades"
+                            );
+                            continue;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(
+                                market_id = %pending.market_id,
+                                "failed to inspect open trades before authoritative settlement retry: {e}"
+                            );
+                            pending.next_attempt_at_ms = clock.now().saturating_add(config.resolution_poll_delay_ms);
+                            pending_resolutions.insert(pending.market_id.clone(), pending);
+                            continue;
+                        }
+                    }
+
+                    let slug = pending.window.slug.clone();
+                    let gamma_api_url = config.gamma_api_url.clone();
+                    match crate::market_discovery::fetch_resolution_once(&gamma_api_url, &slug).await {
+                        Ok(Some(outcome)) => {
+                            handle_authoritative_resolution(
+                                &pending.window,
+                                outcome,
+                                pending.seeded_from_startup,
+                                &db,
+                                &mut position_manager,
+                                &mut bankroll,
+                                &mut trend_tracker,
+                                &mut circuit_breaker,
+                                &config,
+                                &clock,
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                market_id = %pending.market_id,
+                                slug = %pending.window.slug,
+                                "authoritative settlement still unresolved, will retry"
+                            );
+                            pending.next_attempt_at_ms =
+                                clock.now().saturating_add(config.resolution_poll_delay_ms);
+                            pending_resolutions.insert(pending.market_id.clone(), pending);
+                        }
+                        Err(e) => {
+                            warn!(
+                                market_id = %pending.market_id,
+                                slug = %pending.window.slug,
+                                "authoritative settlement fetch failed: {e}"
+                            );
+                            pending.next_attempt_at_ms =
+                                clock.now().saturating_add(config.resolution_poll_delay_ms);
+                            pending_resolutions.insert(pending.market_id.clone(), pending);
+                        }
+                    }
                 }
             }
 
@@ -1752,11 +1742,104 @@ fn log_feed_health_event(db: &Database, event: &FeedHealthLogEvent<'_>) -> anyho
     Ok(())
 }
 
-/// Process a deferred resolution from the background Gamma polling task.
-/// Applies authoritative settlement exactly once for the closed window.
+/// Register or update one market that still needs authoritative settlement.
+fn schedule_pending_resolution(
+    pending_resolutions: &mut std::collections::HashMap<String, PendingResolution>,
+    window: &MarketWindow,
+    next_attempt_at_ms: u64,
+    seeded_from_startup: bool,
+) {
+    use std::collections::hash_map::Entry;
+
+    match pending_resolutions.entry(window.market_id.clone()) {
+        Entry::Occupied(mut entry) => {
+            let pending = entry.get_mut();
+            pending.next_attempt_at_ms = pending.next_attempt_at_ms.min(next_attempt_at_ms);
+            pending.seeded_from_startup &= seeded_from_startup;
+        }
+        Entry::Vacant(entry) => {
+            entry.insert(PendingResolution {
+                market_id: window.market_id.clone(),
+                window: window.clone(),
+                next_attempt_at_ms,
+                seeded_from_startup,
+            });
+        }
+    }
+}
+
+/// Seed the durable authoritative-settlement registry from unresolved open trades.
+fn seed_pending_resolutions(
+    db: &Database,
+    config: &Config,
+    clock: &dyn Clock,
+) -> std::collections::HashMap<String, PendingResolution> {
+    let now = clock.now();
+    let unresolved = match db.unresolved_open_trade_markets(now) {
+        Ok(markets) => markets,
+        Err(e) => {
+            warn!("failed to load unresolved open-trade markets for reconciliation: {e}");
+            return std::collections::HashMap::new();
+        }
+    };
+
+    let mut pending_resolutions = std::collections::HashMap::new();
+    for market in unresolved {
+        if let Err(e) = db.resolve_market(&market.window.market_id, "closed") {
+            warn!(
+                market_id = %market.window.market_id,
+                "failed to normalize unresolved market to closed on startup: {e}"
+            );
+        }
+        let next_attempt_at_ms = market
+            .window
+            .end_time
+            .saturating_add(config.resolution_initial_delay_ms)
+            .max(now);
+        schedule_pending_resolution(
+            &mut pending_resolutions,
+            &market.window,
+            next_attempt_at_ms,
+            true,
+        );
+    }
+
+    if !pending_resolutions.is_empty() {
+        info!(
+            pending_resolution_markets = pending_resolutions.len(),
+            "seeded authoritative settlement reconciliation from unresolved open trades"
+        );
+    }
+
+    pending_resolutions
+}
+
+/// Remove and return pending authoritative settlements whose next attempt is due.
+fn take_ready_pending_resolutions(
+    pending_resolutions: &mut std::collections::HashMap<String, PendingResolution>,
+    now: u64,
+) -> Vec<PendingResolution> {
+    let ready_market_ids = pending_resolutions
+        .iter()
+        .filter(|(_, pending)| pending.next_attempt_at_ms <= now)
+        .map(|(market_id, _)| market_id.clone())
+        .collect::<Vec<_>>();
+
+    let mut ready = Vec::with_capacity(ready_market_ids.len());
+    for market_id in ready_market_ids {
+        if let Some(pending) = pending_resolutions.remove(&market_id) {
+            ready.push(pending);
+        }
+    }
+    ready
+}
+
+/// Apply one authoritative resolution exactly once for the closed window.
 #[allow(clippy::too_many_arguments)]
-fn handle_deferred_resolution(
-    res: &DeferredResolution,
+fn handle_authoritative_resolution(
+    window: &MarketWindow,
+    authoritative_outcome: SignalDirection,
+    seeded_from_startup: bool,
     db: &Database,
     position_manager: &mut PositionManager,
     bankroll: &mut BankrollManager,
@@ -1766,16 +1849,24 @@ fn handle_deferred_resolution(
     clock: &dyn Clock,
 ) {
     let now = clock.now();
-    let auth_str = res.authoritative_outcome.to_string();
+    let auth_str = authoritative_outcome.to_string();
 
     let resolved = position_manager.resolve_window_with_outcome(
-        &res.window,
-        res.authoritative_outcome,
+        window,
+        authoritative_outcome,
         db,
         bankroll,
         config,
         clock,
     );
+
+    if seeded_from_startup && !resolved.is_empty() {
+        info!(
+            market_id = %window.market_id,
+            settled_trades = resolved.len(),
+            "startup reconciliation backfilled unresolved trade settlements"
+        );
+    }
 
     for (trade, result) in &resolved {
         let won = result.pnl_net > 0.0;
@@ -1783,7 +1874,8 @@ fn handle_deferred_resolution(
         circuit_breaker.record_result(won, now);
         if let Some(trade_id) = trade.id {
             let prediction = trade.side.to_string();
-            let _ = db.log_settlement_audit(trade_id, &res.market_id, &prediction, &auth_str, now);
+            let _ =
+                db.log_settlement_audit(trade_id, &window.market_id, &prediction, &auth_str, now);
             info!(
                 trade_id,
                 strategy = %trade.strategy,
@@ -2033,185 +2125,90 @@ fn evaluate_strategies(
         features,
     };
 
-    let observed_regime = detect_regime(&ctx, config);
-    let mut candidates: Vec<EvaluatedCandidate> = Vec::new();
-
-    for strategy in strategies.iter_mut() {
-        let result = strategy.evaluate(&ctx, config, now);
-        match result {
-            StrategyResult::None => {}
-            StrategyResult::Rejected(rejection) => {
-                rejection_tracker.record(&window.market_id, &rejection);
-            }
-            StrategyResult::Single(_) | StrategyResult::Batch(_) => {
-                candidates.push(EvaluatedCandidate {
-                    family: strategy.family(),
-                    result,
-                });
-            }
-        }
-    }
-
-    let candidate_families: Vec<StrategyFamily> = candidates
-        .iter()
-        .map(|candidate| candidate.family)
-        .collect();
-    let selected_family = if config.regime_detection_enabled {
-        select_family_for_candidates(&ctx, config, &candidate_families).selected_family
-    } else {
-        None
-    };
-
-    for candidate in candidates {
-        if config.regime_detection_enabled && Some(candidate.family) != selected_family {
-            rejection_tracker.record(
-                &window.market_id,
-                &StrategyRejection::new(
-                    candidate.family.as_str(),
-                    StrategyRejectionReason::BlockedByRouter,
-                    StrategyRejectionSample::from_ctx(&ctx),
-                ),
-            );
-            continue;
-        }
-
-        match candidate.result {
-            StrategyResult::Single(mut signal) => {
-                annotate_signal(&mut signal, observed_regime, candidate.family);
-                if trend_tracker.should_suppress(candidate.family, signal.direction) {
-                    if let Ok(signal_id) = db.log_signal_with_context(
-                        &signal,
-                        Some(&window.market_id),
-                        Some(ReplayFidelity::RawEvent),
-                        None,
-                        None,
-                    ) {
-                        if let Some(telemetry) = signal.telemetry.as_ref() {
-                            let _ = db.upsert_signal_telemetry(
-                                signal_id,
-                                telemetry,
-                                None,
-                                None,
-                                Some("suppressed"),
-                                Some("trend_filter"),
+    match run_strategy_cycle(
+        &ctx,
+        window,
+        config,
+        clock,
+        db,
+        strategies,
+        execution_engine,
+        bankroll,
+        trend_tracker,
+        rejection_tracker,
+        ReplayFidelity::RawEvent,
+        now,
+    ) {
+        Ok(outcome) => {
+            for event in outcome.events {
+                match event {
+                    StrategyCycleEvent::Suppressed {
+                        strategy,
+                        direction,
+                        regime,
+                    } => {
+                        info!(
+                            strategy = %strategy,
+                            direction = %direction,
+                            regime = regime.as_str(),
+                            "signal suppressed by trend filter"
+                        );
+                    }
+                    StrategyCycleEvent::SingleSubmitted {
+                        strategy,
+                        direction,
+                        regime,
+                        outcome,
+                    } => match outcome {
+                        SubmissionOutcome::Queued { signal_ids } => {
+                            info!(
+                                signal_id = signal_ids.first().copied().unwrap_or_default(),
+                                strategy = %strategy,
+                                direction = %direction,
+                                regime = regime.as_str(),
+                                "signal queued"
                             );
                         }
-                    }
-                    info!(
-                        strategy = %signal.strategy,
-                        direction = %signal.direction,
-                        regime = observed_regime.as_str(),
-                        "signal suppressed by trend filter"
-                    );
-                    continue;
-                }
-
-                match execution_engine.submit_single(
-                    &signal,
-                    window,
-                    db,
-                    bankroll,
-                    config,
-                    clock,
-                    ReplayFidelity::RawEvent,
-                ) {
-                    Ok(SubmissionOutcome::Queued { signal_ids }) => {
-                        info!(
-                            signal_id = signal_ids.first().copied().unwrap_or_default(),
-                            strategy = %signal.strategy,
-                            direction = %signal.direction,
-                            confidence = signal.confidence,
-                            regime = observed_regime.as_str(),
-                            "signal queued"
-                        );
-                    }
-                    Ok(SubmissionOutcome::Rejected { signal_ids, reason }) => {
-                        info!(
-                            signal_id = signal_ids.first().copied().unwrap_or_default(),
-                            strategy = %signal.strategy,
-                            direction = %signal.direction,
-                            reason = %reason,
-                            regime = observed_regime.as_str(),
-                            "signal rejected before queue"
-                        );
-                    }
-                    Err(error) => {
-                        error!(
-                            strategy = %signal.strategy,
-                            direction = %signal.direction,
-                            "failed to submit signal: {error}"
-                        );
-                    }
+                        SubmissionOutcome::Rejected { signal_ids, reason } => {
+                            info!(
+                                signal_id = signal_ids.first().copied().unwrap_or_default(),
+                                strategy = %strategy,
+                                direction = %direction,
+                                reason = %reason,
+                                regime = regime.as_str(),
+                                "signal rejected before queue"
+                            );
+                        }
+                    },
+                    StrategyCycleEvent::BatchSubmitted {
+                        strategy,
+                        count,
+                        regime,
+                        outcome,
+                    } => match outcome {
+                        SubmissionOutcome::Queued { signal_ids } => {
+                            info!(
+                                strategy = %strategy,
+                                count = signal_ids.len().max(count),
+                                regime = regime.as_str(),
+                                "batch queued"
+                            );
+                        }
+                        SubmissionOutcome::Rejected { signal_ids, reason } => {
+                            info!(
+                                strategy = %strategy,
+                                count = signal_ids.len().max(count),
+                                reason = %reason,
+                                regime = regime.as_str(),
+                                "batch rejected before queue"
+                            );
+                        }
+                    },
                 }
             }
-            StrategyResult::Batch(mut signals) => {
-                for signal in &mut signals {
-                    annotate_signal(signal, observed_regime, candidate.family);
-                }
-                let strategy_name = signals.first().map_or("?", |s| &s.strategy);
-                if let Some(affordability) =
-                    assess_spread_batch_affordability(&signals, window, bankroll, config)
-                {
-                    if !affordability.queueable {
-                        let failure_reason = affordability
-                            .failure_reason
-                            .map_or("spread_budget_too_small", |reason| reason.as_str());
-                        rejection_tracker.record(
-                            &window.market_id,
-                            &StrategyRejection::new(
-                                strategy_name,
-                                StrategyRejectionReason::SpreadBudgetTooSmall,
-                                spread_budget_rejection_sample(&ctx, &signals, affordability),
-                            ),
-                        );
-                        info!(
-                            strategy = strategy_name,
-                            count = signals.len(),
-                            reason = failure_reason,
-                            regime = observed_regime.as_str(),
-                            available_spread_budget = affordability.available_spread_budget,
-                            required_pair_notional = affordability.required_pair_notional,
-                            required_pair_units = affordability.required_pair_units,
-                            "batch rejected before signal persistence"
-                        );
-                        continue;
-                    }
-                }
-                match execution_engine.submit_spread(
-                    &signals,
-                    window,
-                    db,
-                    bankroll,
-                    config,
-                    clock,
-                    ReplayFidelity::RawEvent,
-                ) {
-                    Ok(SubmissionOutcome::Queued { signal_ids }) => {
-                        info!(
-                            strategy = strategy_name,
-                            count = signal_ids.len(),
-                            regime = observed_regime.as_str(),
-                            "batch queued"
-                        );
-                    }
-                    Ok(SubmissionOutcome::Rejected { signal_ids, reason }) => {
-                        info!(
-                            strategy = strategy_name,
-                            count = signal_ids.len(),
-                            reason = %reason,
-                            regime = observed_regime.as_str(),
-                            "batch rejected before queue"
-                        );
-                    }
-                    Err(error) => {
-                        error!(
-                            strategy = strategy_name,
-                            "failed to submit batch signal: {error}"
-                        );
-                    }
-                }
-            }
-            StrategyResult::None | StrategyResult::Rejected(_) => {}
+        }
+        Err(error) => {
+            error!("failed to evaluate strategies: {error}");
         }
     }
 }

@@ -1,29 +1,38 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot } from "../../../lib/types";
+import { useMobileNavStore } from "../../../stores/mobile-nav-store";
 
 const getBotsMock = vi.fn<() => Promise<{ bots: Bot[] }>>();
 const liveUpdatesMock = vi.fn<(botId: string) => void>();
+const useMediaQueryMock = vi.fn<(query: string) => boolean>();
 
 vi.mock("../nav", () => ({
   Nav: ({
     bots,
     activeBotId,
     onSelectBot,
+    collapsed,
+    onNavigate,
   }: {
     bots: Bot[];
     activeBotId: string;
     onSelectBot: (id: string) => void;
+    collapsed: boolean;
+    onNavigate?: () => void;
   }) => (
     <div data-testid="nav">
       <div data-testid="active-bot">{activeBotId}</div>
+      <div data-testid="nav-collapsed">{String(collapsed)}</div>
       {bots.map((bot) => (
         <button key={bot.id} onClick={() => onSelectBot(bot.id)}>
           {bot.name}
         </button>
       ))}
+      {onNavigate && <button onClick={onNavigate}>navigate</button>}
     </div>
   ),
 }));
@@ -34,16 +43,19 @@ vi.mock("../header", () => ({
     botId,
     collapsed,
     onToggle,
+    isDesktop,
   }: {
     bot: Bot | null;
     botId: string;
     collapsed: boolean;
     onToggle: () => void;
+    isDesktop: boolean;
   }) => (
     <div data-testid="header">
       <span data-testid="header-bot-id">{botId}</span>
       <span data-testid="header-bot-name">{bot?.name ?? "none"}</span>
       <span data-testid="header-collapsed">{String(collapsed)}</span>
+      <span data-testid="header-desktop">{String(isDesktop)}</span>
       <button onClick={onToggle}>toggle</button>
     </div>
   ),
@@ -59,6 +71,10 @@ vi.mock("../../../lib/api", () => ({
 
 vi.mock("../../../hooks/use-live-updates", () => ({
   useLiveUpdates: (botId: string) => liveUpdatesMock(botId),
+}));
+
+vi.mock("../../../hooks/use-media-query", () => ({
+  useMediaQuery: (query: string) => useMediaQueryMock(query),
 }));
 
 import { AppShell } from "../app-shell";
@@ -90,9 +106,12 @@ const bots: Bot[] = [
 
 beforeEach(() => {
   sessionStorage.clear();
+  useMobileNavStore.setState({ isOpen: false });
   getBotsMock.mockReset();
   liveUpdatesMock.mockReset();
+  useMediaQueryMock.mockReset();
   getBotsMock.mockResolvedValue({ bots });
+  useMediaQueryMock.mockReturnValue(true);
 });
 
 it("auto-selects the first bot and persists it", async () => {
@@ -154,4 +173,81 @@ it("links the logotype back to the main page", async () => {
     "href",
     "/",
   );
+});
+
+it("toggles desktop sidebar collapse from the header", async () => {
+  const user = userEvent.setup();
+
+  renderShell();
+
+  await waitFor(() => {
+    expect(screen.getByTestId("header-collapsed")).toHaveTextContent("false");
+  });
+
+  await user.click(screen.getByText("toggle"));
+
+  expect(screen.getByTestId("header-collapsed")).toHaveTextContent("true");
+  expect(screen.getByTestId("nav-collapsed")).toHaveTextContent("true");
+});
+
+it("opens the mobile drawer from the header toggle and closes it on navigation", async () => {
+  const user = userEvent.setup();
+  useMediaQueryMock.mockReturnValue(false);
+
+  renderShell();
+
+  await waitFor(() => {
+    expect(screen.getByTestId("header-desktop")).toHaveTextContent("false");
+  });
+
+  expect(screen.queryByText("navigate")).not.toBeInTheDocument();
+
+  await user.click(screen.getByText("toggle"));
+  expect(screen.getByText("navigate")).toBeInTheDocument();
+
+  await user.click(screen.getByText("navigate"));
+  await waitFor(() => {
+    expect(screen.queryByText("navigate")).not.toBeInTheDocument();
+  });
+});
+
+it("closes the mobile drawer after selecting a bot from the drawer", async () => {
+  const user = userEvent.setup();
+  useMediaQueryMock.mockReturnValue(false);
+
+  renderShell();
+
+  await waitFor(() => {
+    expect(screen.getByTestId("header-bot-id")).toHaveTextContent("bot-1");
+  });
+
+  await user.click(screen.getByText("toggle"));
+  await user.click(screen.getAllByText("Paint Two").at(-1)!);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("header-bot-id")).toHaveTextContent("bot-2");
+  });
+  expect(screen.queryByText("navigate")).not.toBeInTheDocument();
+});
+
+it("closes a stale mobile drawer when desktop mode becomes active", async () => {
+  useMobileNavStore.setState({ isOpen: true });
+  renderShell();
+
+  await waitFor(() => {
+    expect(screen.queryByText("navigate")).not.toBeInTheDocument();
+  });
+  expect(useMobileNavStore.getState().isOpen).toBe(false);
+});
+
+it("handles an empty bot list without selecting a phantom bot", async () => {
+  getBotsMock.mockResolvedValue({ bots: [] });
+
+  renderShell();
+
+  await waitFor(() => {
+    expect(screen.getByTestId("header-bot-id")).toHaveTextContent("");
+  });
+  expect(screen.getByTestId("header-bot-name")).toHaveTextContent("none");
+  expect(liveUpdatesMock).toHaveBeenLastCalledWith("");
 });

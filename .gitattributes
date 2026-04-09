@@ -1,5 +1,8 @@
-runs/*/buba-paint.db filter=lfs diff=lfs merge=lfs -text
-runs/*/bot.log filter=lfs diff=lfs merge=lfs -text
+runs/*/*.db filter=lfs diff=lfs merge=lfs -text
+runs/*/*.log filter=lfs diff=lfs merge=lfs -text
+runs/*/*.zst filter=lfs diff=lfs merge=lfs -text
+runs/*/*.zst.part-* filter=lfs diff=lfs merge=lfs -text
 runs/*/*.png filter=lfs diff=lfs merge=lfs -text
 data/*.db filter=lfs diff=lfs merge=lfs -text
 data/experiments/**/*.db filter=lfs diff=lfs merge=lfs -text
+data/experiments/**/*.log filter=lfs diff=lfs merge=lfs -text

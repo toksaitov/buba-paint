@@ -1,8 +1,10 @@
 # buba
 
-Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy stack that consumes Binance market data, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, raw feed-event capture for new runs, a shared signal-feature engine, and a portfolio router that keeps the strategy families from competing for the same market snapshot. Historical runs `004` through `009` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream while still merging older legacy data with future richer runs.
+Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy stack that consumes Binance market data, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, raw feed-event capture for new runs, a shared signal-feature engine, a shared evaluation/submission path, and a portfolio router that keeps the strategy families from competing for the same market snapshot. Historical runs `004` through `009` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream while still merging older legacy data with future richer runs.
 
-Settlements are applied only on authoritative Polymarket outcomes. Dynamic taker fees follow the March 30, 2026 crypto schedule by default (`feeRate=0.072`, `exponent=1`) while still supporting historical-by-date fee resolution and explicit overrides for sweeps. A shared agent monitors bot databases and exposes REST + WebSocket APIs. A dashboard (Rust backend + React frontend) provides a unified UI for status, trades, signals, and process control.
+Settlements are applied only on authoritative Polymarket outcomes. Dynamic taker fees follow the March 30, 2026 crypto schedule by default (`feeRate=0.072`, `exponent=1`) while still supporting historical-by-date fee resolution and explicit overrides for sweeps. Reserve accounting is phase-aware: once a market closes, unresolved trades can move from active-market risk into pending-settlement reserve so the live bot can stop charging the strategy sleeve for closed risk while still keeping global capital locked until Gamma resolves the market. A shared agent monitors bot databases and exposes REST + WebSocket APIs. A dashboard (Rust backend + React frontend) provides a unified UI for status, trades, signals, and process control.
+
+The reserve model and exact-run parity workflow are documented in [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md). Conservative pending-settlement handling is now the real default for new runs. Compatibility mode is still available, but only as a legacy/diagnostic preset.
 
 No real orders, no wallet, no private keys. This is still a data-collection and strategy-validation tool. The code is structured to reduce the paper/live gap, not to place live money trades.
 
@@ -45,7 +47,9 @@ Per-strategy capital sleeves and per-strategy trend filtering keep one family fr
 
 For new live paper runs, compact raw feed events are written to `feed_events` and replayed by timestamp. The default storage profile keeps typed replay fields and drops bulky hot-path payload blobs so week-long paper runs remain practical. Signal-generation telemetry is persisted to `signal_metrics`, feed lifecycle events are persisted to `feed_health_events`, and no-signal strategy decisions are summarized into `strategy_rejection_summaries` so live diagnostics can explain why a strategy kept returning `None`. Live quote freshness now uses observed local receipt time when the CLOB source timestamp is missing or zero, while the raw `feed_events.event_at_ms` value is still preserved for replay/debugging truth. For older runs, the simulator falls back to synthetic `legacy_snapshot` events built from 1 Hz `tick_data`. That path is intentionally conservative and should be treated as lower-fidelity than new raw-event runs.
 
-At window close, the bot records a provisional estimate for observability but waits for the authoritative Polymarket resolution before applying settlement to bankroll, Kelly state, trend tracking, or the circuit breaker. Fees use Polymarket's dynamic formula: `fee = shares * price * feeRate * (price * (1 - price))^exponent`. The default live crypto params are `feeRate=0.072` and `exponent=1` as of March 30, 2026.
+At window close, the bot records a provisional estimate for observability but waits for the authoritative Polymarket resolution before applying settlement to bankroll, Kelly state, trend tracking, or the circuit breaker. Closed trades can be reclassified from active-market risk into pending-settlement reserve immediately at window close. In conservative mode, that releases the strategy sleeve while keeping the full global reserve locked. In riskier mode, both the sleeve release and a configurable global-reserve haircut are available behind explicit config. Fees use Polymarket's dynamic formula: `fee = shares * price * feeRate * (price * (1 - price))^exponent`. The default live crypto params are `feeRate=0.072` and `exponent=1` as of March 30, 2026.
+
+For operator defaults and exact env triples, do not rely on memory. Use [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md) and [.env.example](./.env.example).
 
 ### Three Feeds
 
@@ -72,21 +76,23 @@ Authentication happens at two layers: the frontend authenticates to the dashboar
 
 ### paint bot modules
 
-Core loop: `cli.rs` (clap CLI parsing, command dispatch), `live.rs` (live trading loop combining feeds + discovery + event-driven strategies + authoritative settlement), `config.rs` (all env-configurable settings, `set_param` for sweeps), `latency_probe.rs` (operator-facing endpoint/feed latency benchmark).
+Core loop: `cli.rs` (clap CLI parsing, command dispatch), `live.rs` (live trading loop combining feeds + discovery + event-driven strategies + authoritative settlement), `config.rs` (all env-configurable settings, `set_param` for sweeps, pending-settlement reserve knobs, and backtest settlement mode), `latency_probe.rs` (operator-facing endpoint/feed latency benchmark).
 
 Strategies: `strategies/latency_arb.rs` (feature-scored stale-odds signal, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `strategies/calm_persistence.rs` (late-window sign persistence in calm regimes), `signal_features.rs` (shared feature engine used by live paper and backtests).
 
 Feeds: `feeds/binance_feed.rs` (combined Binance trade, top-of-book, and shallow-depth stream), `feeds/clob_feed.rs` (CLOB order book with incremental updates, best-bid-ask support, and dynamic resubscription), `feeds/chainlink_feed.rs` (RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
 
-Data: `bankroll.rs` (per-strategy half-Kelly sizing, sleeves, caps, confidence curve, DD pause), `position_manager.rs` (trade lifecycle, opposing position guard, authoritative settlement), `circuit_breaker.rs` (pause after consecutive losses), `tick_logger.rs` (1s telemetry sampling for dashboards and coarse inspection), `trend_tracker.rs` (strategy-scoped directional trend filter), `portfolio.rs` (regime router, family attribution, and non-competing portfolio helpers).
+Data: `bankroll.rs` (per-strategy half-Kelly sizing, sleeves, caps, confidence curve, DD pause, and phase-aware active-vs-pending settlement reserve accounting), `position_manager.rs` (trade lifecycle, opposing position guard, authoritative settlement), `circuit_breaker.rs` (pause after consecutive losses), `tick_logger.rs` (1s telemetry sampling for dashboards and coarse inspection), `trend_tracker.rs` (strategy-scoped directional trend filter), `portfolio.rs` (regime router, family attribution, and non-competing portfolio helpers).
 
 Execution: `executor.rs` (`ExecutionEngine`, shared by live paper trading and backtests, with simulated order latency, partial fills, no-fills, and execution metrics).
+
+Shared orchestration: `strategy_cycle.rs` (shared live/backtest strategy evaluation, router blocking, trend suppression, spread affordability precheck, signal persistence decisions, and execution submission).
 
 Fees and verification: `fees.rs` (historical fee schedule resolution plus Polymarket dynamic taker fee formula), `verify.rs` (backfill Polymarket resolutions from Gamma API, `verify-settlements` CLI command).
 
 SDK integration: `polymarket.rs` (read-only wrapper around the official `polymarket-client-sdk` crate, queries CLOB API for market resolution status).
 
-Backtesting: `backtest/runner.rs` (core replay loop), `backtest/sweep.rs` (parallel parameter sweep via rayon, PID-based temp DBs), `backtest/tick_replay.rs` (loads `feed_events` when available and falls back to `tick_data`), `backtest/window_manager.rs` (replays market windows from DB), `backtest/feed_state.rs` (simulated feed state), `backtest/momentum.rs` (rolling window momentum calculator).
+Backtesting: `backtest/runner.rs` (core replay loop, including exact-run observed-resolution replay), `backtest/sweep.rs` (parallel parameter sweep via rayon, PID-based temp DBs, inherits env-backed config), `backtest/tick_replay.rs` (loads `feed_events` when available and falls back to `tick_data`), `backtest/window_manager.rs` (replays market windows from DB), `backtest/feed_state.rs` (simulated feed state), `backtest/momentum.rs` (rolling window momentum calculator).
 
 Database: `db/database.rs` (rusqlite wrapper, prepared statements, WAL mode, bounded WAL settings, footprint reporting), `db/schema.rs` (additive schema migrations), `db/build_data.rs` (merges enriched run DBs into `market-data.db`, including signals and optional telemetry tables when present), `db/upgrade_history.rs` (in-place historical upgrade and metadata backfill for runs `004` through `009`).
 
@@ -112,6 +118,7 @@ buba-paint/
   docker-compose.yml               # full stack (paint + agent + dashboard)
   dashboard.toml                   # dashboard config (dev defaults for Docker)
   .env.example                     # bot environment variables template
+  docs/                            # operator and parity docs
   bots/
     paint/                         # paint bot, BTC Up/Down 5m
       Cargo.toml
@@ -153,6 +160,18 @@ buba-paint/
 ```bash
 cargo run -p buba-paint --release -- live --db-path runs/009/buba-paint.db --balance 200
 cargo run -p buba-paint --release -- live --set LATENCY_ARB_MAX_ASK=0.55
+
+# Recommended conservative live baseline for the next release candidate:
+PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0 \
+PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0 \
+PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false \
+cargo run -p buba-paint --release -- live \
+  --db-path runs/018/buba-paint.db \
+  --balance 200 \
+  --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008 \
+  --set LATENCY_ARB_MAX_ASK=0.60 \
+  --set LATENCY_ARB_MAX_POSITION_FRACTION=0.075 \
+  --set SPREAD_CAPTURE_THRESHOLD=0.970
 ```
 
 ### Single backtest (paint)
@@ -162,6 +181,16 @@ cargo run -p buba-paint --release -- backtest \
   --data data/market-data.db \
   --start 2026-02-20T03:13 --end 2026-02-28T00:00 \
   --balance 200 --set PEAK_DD_PAUSE_PCT=1.0
+
+BACKTEST_SETTLEMENT_MODE=observed_market_resolution \
+PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0 \
+PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0 \
+PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=0 \
+cargo run -p buba-paint --release -- backtest \
+  --data /tmp/run-018-replay-data.db \
+  --start 2026-04-04T20:15 --end 2026-04-08T17:25 \
+  --balance 200 \
+  --set LATENCY_ARB_ENABLED=1 --set SPREAD_CAPTURE_ENABLED=1 --set CALM_PERSISTENCE_ENABLED=1
 ```
 
 ### Parameter sweep (paint)
@@ -177,9 +206,29 @@ cargo run -p buba-paint --release -- sweep \
   --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 \
   --set SIM_ORDER_LATENCY_MS=250 \
   --output data/sweeps/example/sweep.csv
+
+BACKTEST_SETTLEMENT_MODE=observed_market_resolution \
+PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0 \
+PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0 \
+PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=0 \
+cargo run -p buba-paint --release -- sweep \
+  --data /tmp/run-018-replay-data.db \
+  --start 2026-04-04T20:15 --end 2026-04-08T17:25 \
+  --balance 200 \
+  --sweep LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008,0.0010,0.0012,0.0014,0.0016,0.0018 \
+  --sweep LATENCY_ARB_MAX_ASK=0.50,0.55,0.60,0.65,0.70 \
+  --sweep LATENCY_ARB_MAX_POSITION_FRACTION=0.03,0.05,0.075,0.10,0.125 \
+  --set SPREAD_CAPTURE_THRESHOLD=0.970 \
+  --output data/sweeps/run-018-002/sweep.csv
 ```
 
-`--sweep PARAM=start:end:step` generates a range; `--sweep PARAM=a,b,c` enumerates. `--set PARAM=value` fixes a parameter without sweeping.
+`--sweep PARAM=start:end:step` generates a range; `--sweep PARAM=a,b,c` enumerates. `--set PARAM=value` fixes a parameter without sweeping. Backtests and sweeps now start from `Config::from_env()`, so env-backed knobs such as `BACKTEST_SETTLEMENT_MODE` and the pending-settlement reserve settings apply to both commands unless a CLI `--set` overrides them.
+
+The recommended exact-run workflow is:
+
+- keep `BACKTEST_SETTLEMENT_MODE=observed_market_resolution`
+- keep pending-settlement reserve handling at the default conservative mode
+- override the reserve knobs only if you are intentionally comparing against compatibility or risky mode
 
 ### Verify settlements (paint)
 
@@ -294,7 +343,7 @@ Strategy sleeves: `SPREAD_CAPTURE_MAX_POSITION_FRACTION`, `CALM_PERSISTENCE_MAX_
 
 Position limits and safety: `MAX_OPEN_POSITIONS` (default `5`): max concurrent positions. `MIN_WINDOW_TIME_MS` (default `90000`): don't enter with <90s left. `CIRCUIT_BREAKER_LOSSES` (default `3`): pause after N consecutive losses. `CIRCUIT_BREAKER_PAUSE_MS` (default `900000`): pause duration (15 min). `PEAK_DD_PAUSE_PCT` (default `0.30`): pause at 30% drawdown from peak. `PEAK_DD_PAUSE_MS` (default `3600000`): DD pause duration (1 hour). `DD_PAUSE_RECOVERY_PCT` (default `0.05`): DD must recover by 5% before re-arming. `RECONNECT_MIN_STABLE_MS` (default `5000`): min connection duration to reset backoff. `RECONNECT_MAX_FAILURES` (default `20`): feed circuit breaker threshold. `RECONNECT_PAUSE_MS` (default `300000`): feed circuit breaker pause (5 min).
 
-Resolution polling: `RESOLUTION_POLL_RETRIES` (default `30`): how many times to poll the Gamma API after window close. `RESOLUTION_INITIAL_DELAY_MS` (default `30000`): how long to wait after nominal close before the first authoritative poll. `RESOLUTION_POLL_DELAY_MS` (default `10000`): delay between retries.
+Resolution polling: `RESOLUTION_INITIAL_DELAY_MS` (default `30000`): how long to wait after nominal close before the first authoritative Gamma poll. `RESOLUTION_POLL_DELAY_MS` (default `10000`): delay between later reconciliation attempts for any market that still has open trades and is not yet resolved. `RESOLUTION_POLL_RETRIES` is retained for helper/test code, but the live bot now keeps retrying unresolved open-trade markets until Gamma resolves them, including after a restart over the same DB.
 
 Trend filter (experimental, off by default): `TREND_FILTER_ENABLED` (default `false`): enable counter-trend suppression. `TREND_FILTER_THRESHOLD` (default `0.30`): bias threshold to suppress. `TREND_FILTER_WINDOW` (default `10`): recent outcomes to consider. `TREND_FILTER_PER_STRATEGY` scopes the state by strategy family so one family does not suppress another family.
 
@@ -318,7 +367,9 @@ See `bots/paint/src/db/schema.rs` for full DDL. New columns are added via `add_c
 
 ## Backtesting
 
-The backtester replays historical data through the real strategy code and the shared execution engine. When `feed_events` exist, raw events replay at their recorded timestamps. When they do not, the backtester synthesizes `legacy_snapshot` replay from 1 Hz `tick_data` and uses the first snapshot at or after simulated order arrival as a conservative proxy. Dynamic fees are applied, order-arrival latency is modeled, and spread trades can leg into residual positions.
+The backtester replays historical data through the real strategy code, the shared strategy-cycle orchestration, and the shared execution engine. When `feed_events` exist, raw events replay at their recorded timestamps. When they do not, the backtester synthesizes `legacy_snapshot` replay from 1 Hz `tick_data` and uses the first snapshot at or after simulated order arrival as a conservative proxy. Dynamic fees are applied, order-arrival latency is modeled, and spread trades can leg into residual positions.
+
+For exact pulled-run calibration, the preferred mode is `BACKTEST_SETTLEMENT_MODE=observed_market_resolution`. In that mode, replay keeps trades in pending settlement after market close until the observed authoritative resolution timestamp recorded in the pulled live run, then applies the same phase-aware reserve release rules as live. That is the closest available simulation when judging whether a candidate parameter set would have survived real sleeve pressure on a specific live run.
 
 Old runs are still limited by the 1 Hz archive. The new simulator improves execution realism materially, but it cannot recreate queue position, quote lifetime, or sub-second book changes that were never recorded.
 

@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+use tracing::warn;
+
 use crate::clock::Clock;
 use crate::config::Config;
-use crate::db::database::Database;
+use crate::db::database::{Database, UnresolvedTradeExposure};
 use crate::portfolio::StrategyFamily;
 
 /// Structured reasons why a spread bundle is not queueable before submission.
@@ -75,7 +77,11 @@ pub struct BankrollManager {
     total_wins: u64,
     total_losses: u64,
     total_trades: u64,
+    active_reserved_capital: f64,
+    pending_settlement_reserved_capital: f64,
     reserved_capital: f64,
+    active_reserved_capital_by_family: HashMap<StrategyFamily, f64>,
+    pending_settlement_reserved_capital_by_family: HashMap<StrategyFamily, f64>,
     reserved_capital_by_family: HashMap<StrategyFamily, f64>,
     peak_dd_pause_until: u64,
     dd_pause_armed: bool,
@@ -102,7 +108,7 @@ impl BankrollManager {
             (starting_balance, starting_balance)
         };
 
-        Self {
+        let mut manager = Self {
             starting_balance,
             current_balance: current,
             high_water_mark: hwm,
@@ -110,7 +116,11 @@ impl BankrollManager {
             total_wins: 0,
             total_losses: 0,
             total_trades: 0,
+            active_reserved_capital: 0.0,
+            pending_settlement_reserved_capital: 0.0,
             reserved_capital: 0.0,
+            active_reserved_capital_by_family: HashMap::new(),
+            pending_settlement_reserved_capital_by_family: HashMap::new(),
             reserved_capital_by_family: HashMap::new(),
             peak_dd_pause_until: 0,
             dd_pause_armed: true,
@@ -119,7 +129,10 @@ impl BankrollManager {
             recent_results: Vec::new(),
             kelly_rolling_window: config.kelly_rolling_window as usize,
             last_blocked_log_ms: 0,
-        }
+        };
+
+        manager.hydrate_unresolved_reserves(db, config, clock.now());
+        manager
     }
 
     /// Reserve capital for a single-side (latency-arb) trade.
@@ -171,7 +184,7 @@ impl BankrollManager {
 
         let available = self
             .available_single_budget(family, config)
-            .min(self.current_balance - self.reserved_capital);
+            .min(self.current_balance - self.effective_reserved_capital(config));
         if available <= 0.0 {
             return 0.0;
         }
@@ -252,7 +265,7 @@ impl BankrollManager {
 
         let available = self
             .available_spread_budget_for_family(family, config)
-            .min(self.current_balance - self.reserved_capital);
+            .min(self.current_balance - self.effective_reserved_capital(config));
         if available <= 0.0 {
             return zero;
         }
@@ -519,7 +532,7 @@ impl BankrollManager {
     /// Release previously reserved capital (used when liquidity clamping
     /// reduces a trade size below what was originally reserved).
     pub fn release_reserved(&mut self, amount: f64) {
-        self.reserved_capital = (self.reserved_capital - amount).max(0.0);
+        self.release_from_global_buckets(amount);
     }
 
     /// Release previously reserved capital for one strategy family.
@@ -529,10 +542,12 @@ impl BankrollManager {
 
     /// Release previously reserved capital for one explicit family sleeve.
     pub fn release_reserved_for_family(&mut self, amount: f64, family: StrategyFamily) {
-        self.reserved_capital = (self.reserved_capital - amount).max(0.0);
-        if let Some(entry) = self.reserved_capital_by_family.get_mut(&family) {
-            *entry = (*entry - amount).max(0.0);
-        }
+        self.release_from_family_buckets(amount, family);
+    }
+
+    /// Move one unresolved trade's reserve from active-market risk to pending settlement.
+    pub fn transition_trade_to_pending_settlement(&mut self, amount: f64, strategy: &str) {
+        self.transition_family_reserve_to_pending(amount, family_for_strategy(strategy));
     }
 
     /// Current balance.
@@ -656,7 +671,7 @@ impl BankrollManager {
     /// bundle in one family sleeve.
     #[must_use]
     fn available_spread_budget_for_family(&self, family: StrategyFamily, config: &Config) -> f64 {
-        let available = (self.current_balance - self.reserved_capital).max(0.0);
+        let available = (self.current_balance - self.effective_reserved_capital(config)).max(0.0);
         let max_position_usd = self.current_balance * config.max_position_usd_fraction;
         let per_trade_cap = self.current_balance * position_fraction_target(family, config);
         let mut budget = available
@@ -665,11 +680,7 @@ impl BankrollManager {
             .min(per_trade_cap);
 
         if let Some(family_position_fraction) = explicit_family_sleeve_fraction(family, config) {
-            let family_reserved = self
-                .reserved_capital_by_family
-                .get(&family)
-                .copied()
-                .unwrap_or(0.0);
+            let family_reserved = self.effective_reserved_for_family(family, config);
             let family_budget =
                 (self.current_balance * family_position_fraction - family_reserved).max(0.0);
             budget = budget.min(family_budget);
@@ -687,8 +698,255 @@ impl BankrollManager {
 
     /// Add newly reserved notional to the global and family-scoped counters.
     fn add_reserved(&mut self, family: StrategyFamily, amount: f64) {
-        self.reserved_capital += amount;
-        *self.reserved_capital_by_family.entry(family).or_insert(0.0) += amount;
+        self.active_reserved_capital += amount;
+        *self
+            .active_reserved_capital_by_family
+            .entry(family)
+            .or_insert(0.0) += amount;
+        self.sync_raw_reserved_totals();
+    }
+
+    /// Recover unresolved-trade reserve state from the existing run database.
+    fn hydrate_unresolved_reserves(&mut self, db: &Database, config: &Config, now_ms: u64) {
+        let unresolved = match db.unresolved_trade_exposures() {
+            Ok(exposures) => exposures,
+            Err(error) => {
+                warn!("failed to hydrate unresolved reserves from DB: {error}");
+                return;
+            }
+        };
+        let unresolved_count = unresolved.len();
+
+        for exposure in unresolved {
+            self.hydrate_trade_reserve(&exposure, now_ms);
+        }
+
+        if unresolved_count > 0 && self.effective_reserved_capital(config) > 0.0 {
+            tracing::info!(
+                unresolved_trades = unresolved_count,
+                active_reserved = self.active_reserved_capital,
+                pending_reserved = self.pending_settlement_reserved_capital,
+                effective_reserved = self.effective_reserved_capital(config),
+                "rehydrated unresolved trade reserve state"
+            );
+        }
+    }
+
+    /// Apply one unresolved trade exposure to the in-memory reserve buckets.
+    fn hydrate_trade_reserve(&mut self, exposure: &UnresolvedTradeExposure, now_ms: u64) {
+        let family = family_for_strategy(&exposure.strategy);
+        let amount = exposure.entry_price * exposure.size;
+        if exposure.market_end_time <= now_ms {
+            self.pending_settlement_reserved_capital += amount;
+            *self
+                .pending_settlement_reserved_capital_by_family
+                .entry(family)
+                .or_insert(0.0) += amount;
+        } else {
+            self.active_reserved_capital += amount;
+            *self
+                .active_reserved_capital_by_family
+                .entry(family)
+                .or_insert(0.0) += amount;
+        }
+        self.sync_raw_reserved_totals();
+    }
+
+    /// Return the config-weighted global reserved amount used for live capital checks.
+    fn effective_reserved_capital(&self, config: &Config) -> f64 {
+        let pending_policy = config.pending_settlement_policy_unchecked();
+        let split_total = self.active_reserved_capital + self.pending_settlement_reserved_capital;
+        if (self.reserved_capital - split_total).abs() > 1e-9 {
+            return self.reserved_capital.max(0.0);
+        }
+        self.active_reserved_capital
+            + self.pending_settlement_reserved_capital * pending_policy.global_reserve_fraction
+    }
+
+    /// Return the config-weighted family reserve used for sleeve checks.
+    fn effective_reserved_for_family(&self, family: StrategyFamily, config: &Config) -> f64 {
+        let pending_policy = config.pending_settlement_policy_unchecked();
+        let active = self
+            .active_reserved_capital_by_family
+            .get(&family)
+            .copied()
+            .unwrap_or(0.0);
+        let pending = self
+            .pending_settlement_reserved_capital_by_family
+            .get(&family)
+            .copied()
+            .unwrap_or(0.0);
+        let split_total = active + pending;
+        let total = self
+            .reserved_capital_by_family
+            .get(&family)
+            .copied()
+            .unwrap_or(0.0);
+        if (total - split_total).abs() > 1e-9 {
+            return total.max(0.0);
+        }
+        active + pending * pending_policy.family_reserve_fraction
+    }
+
+    /// Move one family's raw reserve from active-market risk into pending settlement.
+    fn transition_family_reserve_to_pending(&mut self, amount: f64, family: StrategyFamily) {
+        if self.raw_reserve_state_is_manually_overridden_for_family(family) {
+            return;
+        }
+        let moved = self.consume_family_active_reserve(amount, family);
+        if moved <= 0.0 {
+            return;
+        }
+        self.pending_settlement_reserved_capital += moved;
+        *self
+            .pending_settlement_reserved_capital_by_family
+            .entry(family)
+            .or_insert(0.0) += moved;
+        self.sync_raw_reserved_totals();
+    }
+
+    /// Release reserve from the active bucket first, then pending settlement.
+    fn release_from_global_buckets(&mut self, amount: f64) {
+        if self.raw_reserve_state_is_manually_overridden() {
+            self.reserved_capital = (self.reserved_capital - amount).max(0.0);
+            return;
+        }
+        let remaining = self.consume_across_families(amount, true);
+        if remaining > 0.0 {
+            let _ = self.consume_across_families(remaining, false);
+        }
+        self.sync_raw_reserved_totals();
+    }
+
+    /// Release reserve for one family from active first, then pending settlement.
+    fn release_from_family_buckets(&mut self, amount: f64, family: StrategyFamily) {
+        if self.raw_reserve_state_is_manually_overridden_for_family(family) {
+            self.reserved_capital = (self.reserved_capital - amount).max(0.0);
+            if let Some(entry) = self.reserved_capital_by_family.get_mut(&family) {
+                *entry = (*entry - amount).max(0.0);
+            }
+            return;
+        }
+        let active_released = self.consume_family_active_reserve(amount, family);
+        let remaining = (amount - active_released).max(0.0);
+        if remaining > 0.0 {
+            self.consume_family_pending_reserve(remaining, family);
+        }
+        self.sync_raw_reserved_totals();
+    }
+
+    /// Consume up to `amount` from one family's active-market reserve bucket.
+    fn consume_family_active_reserve(&mut self, amount: f64, family: StrategyFamily) -> f64 {
+        let current = self
+            .active_reserved_capital_by_family
+            .get(&family)
+            .copied()
+            .unwrap_or(0.0);
+        let released = amount.min(current);
+        if released > 0.0 {
+            self.active_reserved_capital = (self.active_reserved_capital - released).max(0.0);
+            if let Some(entry) = self.active_reserved_capital_by_family.get_mut(&family) {
+                *entry = (*entry - released).max(0.0);
+            }
+        }
+        released
+    }
+
+    /// Consume up to `amount` from one family's pending-settlement reserve bucket.
+    fn consume_family_pending_reserve(&mut self, amount: f64, family: StrategyFamily) -> f64 {
+        let current = self
+            .pending_settlement_reserved_capital_by_family
+            .get(&family)
+            .copied()
+            .unwrap_or(0.0);
+        let released = amount.min(current);
+        if released > 0.0 {
+            self.pending_settlement_reserved_capital =
+                (self.pending_settlement_reserved_capital - released).max(0.0);
+            if let Some(entry) = self
+                .pending_settlement_reserved_capital_by_family
+                .get_mut(&family)
+            {
+                *entry = (*entry - released).max(0.0);
+            }
+        }
+        released
+    }
+
+    /// Consume reserve across every family in a stable order for family-less releases.
+    fn consume_across_families(&mut self, amount: f64, active_bucket: bool) -> f64 {
+        let mut remaining = amount.max(0.0);
+        for family in [
+            StrategyFamily::LatencyArb,
+            StrategyFamily::SpreadCapture,
+            StrategyFamily::CalmPersistence,
+        ] {
+            if remaining <= 0.0 {
+                break;
+            }
+            let released = if active_bucket {
+                self.consume_family_active_reserve(remaining, family)
+            } else {
+                self.consume_family_pending_reserve(remaining, family)
+            };
+            remaining = (remaining - released).max(0.0);
+        }
+        remaining
+    }
+
+    /// Return whether legacy callers mutated the raw reserve total without the split buckets.
+    fn raw_reserve_state_is_manually_overridden(&self) -> bool {
+        let split_total = self.active_reserved_capital + self.pending_settlement_reserved_capital;
+        (self.reserved_capital - split_total).abs() > 1e-9
+    }
+
+    /// Return whether one family's legacy raw reserve total no longer matches the split buckets.
+    fn raw_reserve_state_is_manually_overridden_for_family(&self, family: StrategyFamily) -> bool {
+        if self.raw_reserve_state_is_manually_overridden() {
+            return true;
+        }
+        let split_total = self
+            .active_reserved_capital_by_family
+            .get(&family)
+            .copied()
+            .unwrap_or(0.0)
+            + self
+                .pending_settlement_reserved_capital_by_family
+                .get(&family)
+                .copied()
+                .unwrap_or(0.0);
+        let total = self
+            .reserved_capital_by_family
+            .get(&family)
+            .copied()
+            .unwrap_or(0.0);
+        (total - split_total).abs() > 1e-9
+    }
+
+    /// Rebuild the legacy raw reserve totals from the active and pending buckets.
+    fn sync_raw_reserved_totals(&mut self) {
+        self.reserved_capital =
+            self.active_reserved_capital + self.pending_settlement_reserved_capital;
+        self.reserved_capital_by_family = [
+            StrategyFamily::LatencyArb,
+            StrategyFamily::SpreadCapture,
+            StrategyFamily::CalmPersistence,
+        ]
+        .into_iter()
+        .map(|family| {
+            let active = self
+                .active_reserved_capital_by_family
+                .get(&family)
+                .copied()
+                .unwrap_or(0.0);
+            let pending = self
+                .pending_settlement_reserved_capital_by_family
+                .get(&family)
+                .copied()
+                .unwrap_or(0.0);
+            (family, active + pending)
+        })
+        .collect();
     }
 }
 

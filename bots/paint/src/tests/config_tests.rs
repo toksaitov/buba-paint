@@ -98,6 +98,59 @@ fn default_values_match_typescript() {
     assert_eq!(cfg.resolution_poll_retries, 30);
     assert_eq!(cfg.resolution_initial_delay_ms, 30_000);
     assert_eq!(cfg.resolution_poll_delay_ms, 10_000);
+    assert!((cfg.pending_settlement_family_reserve_fraction - 0.0).abs() < f64::EPSILON);
+    assert!((cfg.pending_settlement_global_reserve_fraction - 1.0).abs() < f64::EPSILON);
+    assert!(!cfg.pending_settlement_counts_as_open_position);
+    assert_eq!(
+        cfg.backtest_settlement_mode,
+        BacktestSettlementMode::Immediate
+    );
+}
+
+/// Verifies that the default pending-settlement policy is conservative.
+#[test]
+fn default_pending_settlement_policy_is_conservative() {
+    let cfg = Config::default();
+    let policy = cfg.pending_settlement_policy().unwrap();
+
+    assert_eq!(policy.mode, PendingSettlementReserveMode::Conservative);
+    assert!((policy.family_reserve_fraction - 0.0).abs() < f64::EPSILON);
+    assert!((policy.global_reserve_fraction - 1.0).abs() < f64::EPSILON);
+    assert!(!policy.counts_as_open_position);
+}
+
+/// Verifies that named pending-settlement policies classify correctly.
+#[test]
+fn pending_settlement_policy_classifies_named_modes() {
+    let compatibility = PendingSettlementPolicy::classify(1.0, 1.0, true);
+    assert_eq!(
+        compatibility.mode,
+        PendingSettlementReserveMode::Compatibility
+    );
+
+    let conservative = PendingSettlementPolicy::classify(0.0, 1.0, false);
+    assert_eq!(
+        conservative.mode,
+        PendingSettlementReserveMode::Conservative
+    );
+
+    let risky = PendingSettlementPolicy::classify(0.0, 0.25, false);
+    assert_eq!(risky.mode, PendingSettlementReserveMode::Risky);
+
+    let custom = PendingSettlementPolicy::classify(0.4, 0.8, false);
+    assert_eq!(custom.mode, PendingSettlementReserveMode::Custom);
+}
+
+/// Verifies that pending-settlement validation rejects invalid fractions.
+#[test]
+fn pending_settlement_policy_rejects_invalid_fraction() {
+    let mut cfg = Config::default();
+    cfg.pending_settlement_family_reserve_fraction = 1.25;
+    assert!(cfg.validate().is_err());
+
+    cfg.pending_settlement_family_reserve_fraction = 0.0;
+    cfg.pending_settlement_global_reserve_fraction = -0.1;
+    assert!(cfg.validate().is_err());
 }
 
 /// Verifies that resolve str override.

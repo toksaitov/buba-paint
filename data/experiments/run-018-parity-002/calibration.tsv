@@ -1,0 +1,7 @@
+case	settlement_mode	family_frac	global_frac	counts_open	momentum	max_ask	lat_frac	pnl	trades	lat_trades	lat_pnl	calm_trades	calm_pnl	spread_trades	spread_pnl	lat_sleeve_exhausted	max_dd
+current_immediate_reference	immediate	0.0	1.0	false	0.0008	0.65	0.05	558.11	170	120	216.96	48	324.40	2	16.75	0	21.7
+current_observed_conservative	observed_market_resolution	0.0	1.0	false	0.0008	0.65	0.05	544.42	169	119	163.12	48	361.48	2	19.82	0	24.9
+balanced_observed_conservative	observed_market_resolution	0.0	1.0	false	0.0008	0.60	0.075	1058.09	115	83	660.99	30	365.77	2	31.33	0	19.1
+aggressive_observed_conservative	observed_market_resolution	0.0	1.0	false	0.0008	0.60	0.10	1358.40	115	83	917.33	30	399.00	2	42.07	0	24.9
+balanced_observed_risky	observed_market_resolution	0.0	0.25	false	0.0008	0.60	0.075	1058.09	115	83	660.99	30	365.77	2	31.33	0	19.1
+aggressive_observed_risky	observed_market_resolution	0.0	0.25	false	0.0008	0.60	0.10	1358.40	115	83	917.33	30	399.00	2	42.07	0	24.9

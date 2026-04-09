@@ -3053,4 +3053,278 @@ async fn live_bot_handles_close_with_no_trades_gracefully() {
         (final_balance - 200.0).abs() < f64::EPSILON,
         "Expected balance to remain 200.0 (no trades), got {final_balance}"
     );
+
+    let market_status: String = conn
+        .query_row("SELECT status FROM markets LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(market_status, "closed");
+}
+
+/// WL4: Gamma can resolve later than the old one-shot retry window and trades
+/// must still settle within the same live run.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_retries_authoritative_settlement_until_gamma_resolves() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+    let unresolved = gamma_market_response(
+        format!("btc-updown-5m-{current_slot}"),
+        "mkt-sys-test",
+        "cond-sys",
+        "tok-up-sys",
+        "tok-down-sys",
+        end_date.as_str(),
+        None,
+    );
+    let resolved = gamma_market_response(
+        format!("btc-updown-5m-{current_slot}"),
+        "mkt-sys-test",
+        "cond-sys",
+        "tok-up-sys",
+        "tok-down-sys",
+        end_date.as_str(),
+        Some("UP"),
+    );
+
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{current_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unresolved.clone()))
+        .up_to_n_times(2)
+        .mount(&gamma_mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{current_slot}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(resolved))
+        .mount(&gamma_mock)
+        .await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.gamma_poll_interval = 60_000;
+    config.min_window_time_ms = 0;
+    config.latency_arb_momentum_threshold = 0.001;
+    config.resolution_poll_retries = 0;
+    config.resolution_initial_delay_ms = 0;
+    config.resolution_poll_delay_ms = 1_000;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    send_rising_binance_ticks(&binance_mock, 25).await;
+    send_chainlink_price(&chainlink_mock).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    send_clob_book(&clob_mock).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 25_u32..35 {
+        let price = 42_000.0 + f64::from(i) * 5.0;
+        let msg = format!(
+            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+            price,
+            1_700_000_000_000_u64 + u64::from(i) * 100,
+        );
+        binance_mock.send(&msg).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    tokio::time::sleep(Duration::from_secs(17)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(
+        result.is_ok(),
+        "bot did not shut down within timeout after shutdown signal"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot task panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let closed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-sys-test' AND status = 'closed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        closed >= 1,
+        "expected a closed trade for mkt-sys-test, got {closed}"
+    );
+
+    let results: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM trade_results r \
+             JOIN simulated_trades t ON r.trade_id = t.id \
+             WHERE t.market_id = 'mkt-sys-test'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        results >= 1,
+        "expected a trade_result for mkt-sys-test, got {results}"
+    );
+}
+
+/// WL5: Restarting the bot must backfill already-ended unresolved open trades
+/// from the database without requiring a fresh run.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_bot_backfills_unresolved_open_trade_on_startup() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let ended_slot = ((now_secs / 300) * 300).saturating_sub(300);
+    #[allow(clippy::cast_possible_wrap)]
+    let ended_date = chrono::DateTime::from_timestamp(ended_slot as i64 + 300, 0)
+        .unwrap()
+        .to_rfc3339();
+
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "^/events/slug/btc-updown-5m-{ended_slot}$"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(gamma_market_response(
+                format!("btc-updown-5m-{ended_slot}"),
+                "mkt-wl5",
+                "cond-wl5",
+                "tok-up-wl5",
+                "tok-down-wl5",
+                ended_date.as_str(),
+                Some("UP"),
+            )),
+        )
+        .mount(&gamma_mock)
+        .await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+    {
+        let db = buba_paint::db::database::Database::new(&db_path).unwrap();
+        db.upsert_market(&buba_paint::types::MarketWindow {
+            market_id: "mkt-wl5".to_string(),
+            question: "Will BTC go up? (WL5)".to_string(),
+            up_token_id: "tok-up-wl5".to_string(),
+            down_token_id: "tok-down-wl5".to_string(),
+            condition_id: "cond-wl5".to_string(),
+            start_time: ended_slot.saturating_mul(1000),
+            end_time: ended_slot.saturating_add(300).saturating_mul(1000),
+            slug: format!("btc-updown-5m-{ended_slot}"),
+            outcome: None,
+            resolution_source: Some("chainlink".to_string()),
+            fee_profile: Some("crypto".to_string()),
+            order_min_size: Some(5.0),
+            order_price_min_tick_size: Some(0.01),
+            maker_base_fee: Some(1000.0),
+            taker_base_fee: Some(1000.0),
+            rewards_min_size: Some(50.0),
+            rewards_max_spread: Some(4.5),
+        })
+        .unwrap();
+        db.open_trade(&buba_paint::types::SimulatedTrade {
+            id: None,
+            timestamp: ended_slot
+                .saturating_add(300)
+                .saturating_mul(1000)
+                .saturating_sub(10_000),
+            market_id: "mkt-wl5".to_string(),
+            strategy: "latency-arb".to_string(),
+            side: buba_paint::types::SignalDirection::Down,
+            token_id: "tok-down-wl5".to_string(),
+            entry_price: 0.52,
+            size: 10.0,
+            status: buba_paint::types::TradeStatus::Open,
+            signal_id: None,
+            requested_price: None,
+            requested_size: None,
+            filled_size: None,
+            avg_fill_price: None,
+            fill_status: None,
+            fill_reason: None,
+            fill_latency_ms: None,
+            execution_group_id: None,
+            execution_fidelity: None,
+            execution_mode: None,
+            order_id: None,
+            fill_price: None,
+        })
+        .unwrap();
+        db.close();
+    }
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.resolution_initial_delay_ms = 0;
+    config.resolution_poll_delay_ms = 1_000;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(
+        result.is_ok(),
+        "bot did not shut down within timeout after shutdown signal"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot task panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let open_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM simulated_trades WHERE market_id = 'mkt-wl5' AND status = 'open'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(open_count, 0);
+
+    let result_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM trade_results r \
+             JOIN simulated_trades t ON r.trade_id = t.id \
+             WHERE t.market_id = 'mkt-wl5'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(result_count, 1);
 }

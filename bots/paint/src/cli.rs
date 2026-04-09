@@ -127,15 +127,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let start_time = parse_time(&start)?;
             let end_time = parse_time(&end)?;
 
-            let mut config = Config {
-                starting_balance: balance,
-                log_level: "warn".to_string(),
-                ..Config::default()
-            };
+            let mut config = Config::from_env();
+            config.starting_balance = balance;
+            config.log_level = "warn".to_string();
 
             for set_str in &sets {
                 apply_set_override(&mut config, set_str)?;
             }
+            config.validate()?;
 
             crate::backtest::runner::run_backtest(BacktestOptions {
                 tick_source: TickSource::FromDb(data.clone()),
@@ -170,6 +169,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 .map(|s| parse_key_value(s))
                 .collect::<anyhow::Result<Vec<_>>>()?;
 
+            let mut base_config = Config::from_env();
+            base_config.starting_balance = balance;
+            base_config.log_level = "error".to_string();
+            base_config.validate()?;
+
             sweep::run_sweep(
                 &data,
                 &output,
@@ -178,6 +182,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 balance,
                 &dimensions,
                 &fixed_overrides,
+                &base_config,
             )?;
         }
         Commands::Live {
@@ -191,6 +196,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             for set_str in &sets {
                 apply_set_override(&mut config, set_str)?;
             }
+            config.validate()?;
 
             let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.log_level));

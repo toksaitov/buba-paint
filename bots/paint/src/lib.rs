@@ -19,6 +19,7 @@ pub mod position_manager;
 mod rejection_diagnostics;
 pub mod signal_features;
 pub mod strategies;
+mod strategy_cycle;
 pub mod tick_logger;
 pub mod trend_tracker;
 pub mod types;

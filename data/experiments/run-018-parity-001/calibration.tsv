@@ -1,0 +1,5 @@
+case	mode	family_frac	global_frac	counts_open	pnl	trades	lat_trades	lat_pnl	calm_trades	calm_pnl	spread_trades	spread_pnl	lat_sleeve_exhausted	router_blocked	summary
+current_immediate	immediate	1.0	1.0	1	558.11	170	120	216.96	48	324.40	2	16.75	0	0	PnL=$558.11 | WR=68.8% | Trades=170 (117W/53L) | MaxDD=21.7% | Peak=$947.84 | 93.2h replayed in 74.2s
+current_observed_compat	observed_market_resolution	1.0	1.0	1	352.23	118	72	94.69	44	246.92	2	10.62	1	0	PnL=$352.23 | WR=71.2% | Trades=118 (84W/34L) | MaxDD=23.6% | Peak=$707.47 | 93.2h replayed in 74.6s
+current_observed_conservative	observed_market_resolution	0.0	1.0	0	544.42	169	119	163.12	48	361.48	2	19.82	0	0	PnL=$544.42 | WR=68.6% | Trades=169 (116W/53L) | MaxDD=24.9% | Peak=$969.79 | 93.2h replayed in 71.1s
+current_observed_risky	observed_market_resolution	0.0	0.25	0	544.42	169	119	163.12	48	361.48	2	19.82	0	0	PnL=$544.42 | WR=68.6% | Trades=169 (116W/53L) | MaxDD=24.9% | Peak=$969.79 | 93.2h replayed in 73.2s

@@ -2,6 +2,7 @@ use rusqlite::{Connection, params};
 use tempfile::NamedTempFile;
 
 use buba_paint::backtest::sweep::{SweepDimension, run_sweep};
+use buba_paint::config::Config;
 
 /// Create a fixture data DB with the merged-data schema and a single 5-minute
 /// market window where BTC goes **UP** (close > open).  Ticks simulate strong
@@ -213,6 +214,7 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
         200.0,
         &two_by_two_dimensions(),
         &fixed_overrides(),
+        &Config::default(),
     )
     .unwrap();
 
@@ -305,6 +307,7 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
         200.0,
         &two_by_two_dimensions(),
         &fixed_overrides(),
+        &Config::default(),
     )
     .unwrap();
 

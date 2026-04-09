@@ -25,7 +25,7 @@ test("mobile drawer opens and closes", async ({ page, browserName }) => {
 
   await expect(page.getByText("Balance")).toBeVisible();
 
-  const hamburger = page.getByRole("button", { name: "Open navigation" });
+  const hamburger = page.getByRole("button", { name: "Expand navigation" });
   await expect(hamburger).toBeVisible();
 
   await hamburger.click();
@@ -46,10 +46,12 @@ test("mobile shows trade cards instead of table", async ({ page }) => {
   await page.locator('input[type="password"]').fill("secret");
   await page.getByRole("button", { name: "Sign in" }).click();
 
-  const hamburger = page.getByRole("button", { name: "Open navigation" });
+  const hamburger = page.getByRole("button", { name: "Expand navigation" });
   await hamburger.click();
   await page.getByRole("link", { name: "Trades" }).click();
 
-  await expect(page.getByText("latency-arb")).toBeVisible();
+  await expect(
+    page.locator("span:visible").filter({ hasText: /^latency-arb$/ }).first(),
+  ).toBeVisible();
   await expect(page.locator("table")).not.toBeVisible();
 });

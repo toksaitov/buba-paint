@@ -29,7 +29,9 @@ test("login, navigate, and persist the active session", async ({ page }) => {
 
   await page.getByRole("link", { name: "Trades" }).click();
   await expect(page.getByRole("heading", { name: "Trade History" })).toBeVisible();
-  await expect(page.getByText("latency-arb")).toBeVisible();
+  await expect(
+    page.locator("table").getByRole("cell", { name: "latency-arb" }),
+  ).toBeVisible();
 
   await page.getByRole("link", { name: "Signals" }).click();
   await expect(page.getByRole("heading", { name: "Signal Log" })).toBeVisible();
@@ -40,7 +42,7 @@ test("login, navigate, and persist the active session", async ({ page }) => {
 
   await page.getByRole("link", { name: "Stats" }).click();
   await expect(page.getByRole("heading", { name: "Bot Status" })).toBeVisible();
-  await expect(page.getByText("latency-arb")).toBeVisible();
+  await expect(page.getByText("latency-arb", { exact: true }).first()).toBeVisible();
 
   await page.reload();
   await expect(page).toHaveURL("/stats");

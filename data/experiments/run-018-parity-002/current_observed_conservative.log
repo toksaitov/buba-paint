@@ -1,0 +1,2 @@
+Backtesting 93.2h | 10142000 ticks | 1118 windows | balance=$200 | settlement_mode=observed_market_resolution | pending_mode=conservative (0.00/1.00/false)
+PnL=$544.42 | WR=68.6% | Trades=169 (116W/53L) | MaxDD=24.9% | Peak=$969.79 | 93.2h replayed in 78.3s
