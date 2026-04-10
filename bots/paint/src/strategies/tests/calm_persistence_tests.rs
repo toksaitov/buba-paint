@@ -16,6 +16,7 @@ fn test_config() -> Config {
     config.calm_persistence_max_quote_churn_per_s = 20.0;
     config.calm_persistence_min_alignment_fraction = 0.60;
     config.calm_persistence_max_fair_bias = 0.18;
+    config.calm_persistence_min_expected_edge = 0.0;
     config
 }
 
@@ -236,6 +237,41 @@ fn orderflow_rejection_records_alignment_context() {
                     .sample
                     .alignment_fraction
                     .is_some_and(|value| value < 0.60)
+            );
+        }
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+}
+
+/// Verify that calm can require a stronger positive edge than zero.
+#[test]
+fn rejects_when_expected_edge_is_below_configured_minimum() {
+    let mut config = test_config();
+    config.calm_persistence_min_expected_edge = 0.09;
+    let mut features = calm_features();
+    features.expected_up_fee = Some(0.03);
+    features.expected_up_slippage = Some(0.015);
+    let mut strat = CalmPersistenceStrategy::new();
+    let ctx = ctx_with(100.12, 100.0, book(0.55, 0.52), features);
+
+    let result = strat.evaluate(&ctx, &config, 1_000_000);
+    match result {
+        StrategyResult::Rejected(rejection) => {
+            assert_eq!(
+                rejection.reason,
+                StrategyRejectionReason::ExpectedEdgeBelowMin
+            );
+            assert!(
+                rejection
+                    .sample
+                    .expected_edge
+                    .is_some_and(|edge| edge > 0.0)
+            );
+            assert!(
+                rejection
+                    .sample
+                    .expected_edge
+                    .is_some_and(|edge| edge < 0.09)
             );
         }
         other => panic!("expected Rejected, got {other:?}"),

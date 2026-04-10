@@ -112,6 +112,14 @@ fn family_for_signal(signal: &Signal) -> StrategyFamily {
     StrategyFamily::from_strategy_name(&signal.strategy).unwrap_or(StrategyFamily::LatencyArb)
 }
 
+/// Resolve the per-family single-order limit price used for reserve sizing and fills.
+fn single_order_limit_price(signal: &Signal, config: &Config) -> f64 {
+    match family_for_signal(signal) {
+        StrategyFamily::CalmPersistence => config.calm_persistence_max_ask,
+        StrategyFamily::LatencyArb | StrategyFamily::SpreadCapture => config.latency_arb_max_ask,
+    }
+}
+
 impl ExecutionStats {
     /// Return the share of submitted orders that filled at least partially.
     pub fn fill_rate(&self) -> f64 {
@@ -186,7 +194,7 @@ impl ExecutionEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Queue one latency-arbitrage order for later simulated execution.
+    /// Queue one single-side order for later simulated execution.
     pub fn submit_single(
         &mut self,
         signal: &Signal,
@@ -205,12 +213,7 @@ impl ExecutionEngine {
             Some(signal.timestamp.saturating_add(config.sim_order_latency_ms)),
         )?;
 
-        let queue_ctx = QueueCheckContext {
-            db,
-            config,
-            now_ms: clock.now(),
-        };
-        if let Some(reason) = self.can_queue_order(signal, window, false, 1, &queue_ctx)? {
+        if let Some(reason) = self.precheck_single_submission(signal, window, db, config, clock)? {
             return Ok(reject_single_submission(
                 db,
                 signal,
@@ -223,7 +226,7 @@ impl ExecutionEngine {
             SignalDirection::Up => signal.up_ask,
             SignalDirection::Down => signal.down_ask,
         };
-        let limit_price = config.latency_arb_max_ask;
+        let limit_price = single_order_limit_price(signal, config);
         let requested_size = bankroll.reserve_capital_with_reserve_price(
             requested_price,
             limit_price,
@@ -261,6 +264,23 @@ impl ExecutionEngine {
             config,
             execution_fidelity,
         ))
+    }
+
+    /// Return any single-order queue rejection without persisting signals or mutating state.
+    pub fn precheck_single_submission(
+        &self,
+        signal: &Signal,
+        window: &MarketWindow,
+        db: &Database,
+        config: &Config,
+        clock: &dyn Clock,
+    ) -> anyhow::Result<Option<QueueRejectionReason>> {
+        let queue_ctx = QueueCheckContext {
+            db,
+            config,
+            now_ms: clock.now(),
+        };
+        self.can_queue_order(signal, window, false, 1, &queue_ctx)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1242,6 +1262,57 @@ mod tests {
         signal
     }
 
+    /// Build a calm-persistence signal that persists telemetry rows.
+    fn calm_signal_with_telemetry(timestamp: u64, side: SignalDirection, ask: f64) -> Signal {
+        Signal {
+            timestamp,
+            strategy: "calm-persistence".to_string(),
+            strategy_version: "v1".to_string(),
+            feature_mode: "raw_event".to_string(),
+            direction: side,
+            confidence: 1.0,
+            binance_price: 68_000.0,
+            chainlink_price: 68_000.0,
+            up_ask: if side == SignalDirection::Up {
+                ask
+            } else {
+                0.40
+            },
+            down_ask: if side == SignalDirection::Down {
+                ask
+            } else {
+                0.40
+            },
+            up_bid: 0.39,
+            down_bid: 0.39,
+            expected_edge: Some(0.12),
+            metadata: serde_json::json!({ "expectedEdge": 0.12 }),
+            telemetry: Some(crate::types::SignalTelemetry {
+                generated_at_ms: timestamp,
+                generated_at_us: None,
+                order_submitted_at_ms: None,
+                order_submitted_at_us: None,
+                expected_arrival_at_ms: None,
+                expected_arrival_at_us: None,
+                order_processed_at_ms: None,
+                order_processed_at_us: None,
+                effective_arrival_delay_ms: None,
+                binance_age_ms: Some(0),
+                chainlink_age_ms: Some(0),
+                clob_age_ms: Some(0),
+                quote_age_ms: Some(0),
+                book_staleness_ms: Some(0),
+                expected_fee: Some(0.01),
+                expected_slippage: Some(0.01),
+                expected_edge: Some(0.12),
+                available_feature_count: 1,
+                decision_status: "generated".to_string(),
+                rejection_reason: None,
+                features_json: serde_json::json!({"test": true}),
+            }),
+        }
+    }
+
     /// Build the two spread-capture signals for one timestamp.
     fn spread_signals(timestamp: u64, up_ask: f64, down_ask: f64) -> Vec<Signal> {
         vec![
@@ -2030,6 +2101,119 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(rejected_reason, "below_min_bet_on_submit");
+    }
+
+    #[test]
+    /// Verify that calm single-order submissions use the calm-specific max ask.
+    fn submit_single_uses_calm_specific_limit_price() {
+        let (_dir, db) = temp_db();
+        let mut config = test_config();
+        config.calm_persistence_max_ask = 0.75;
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        let mut bankroll = BankrollManager::new(500.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signal = calm_signal_with_telemetry(84_000, SignalDirection::Up, 0.72);
+
+        let signal_id = expect_single_queued(
+            engine
+                .submit_single(
+                    &signal,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::RawEvent,
+                )
+                .unwrap(),
+        );
+
+        let opened = engine
+            .process_due_orders(
+                84_250,
+                Some(84_250_000),
+                Some(&window),
+                &up_book(0.72, 100.0, 84_250),
+                &db,
+                &mut bankroll,
+                &config,
+                &clock,
+            )
+            .unwrap();
+
+        assert_eq!(opened.len(), 1);
+        let metric: (String, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT decision_status, rejection_reason FROM signal_metrics WHERE signal_id = ?1",
+                rusqlite::params![signal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(metric.0, "filled");
+        assert_eq!(metric.1, None);
+    }
+
+    #[test]
+    /// Verify that latency single-order submissions still honor the latency cap.
+    fn submit_single_keeps_latency_limit_price_behavior() {
+        let (_dir, db) = temp_db();
+        let config = test_config();
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        let mut bankroll = BankrollManager::new(500.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signal = latency_signal_with_telemetry(85_000, SignalDirection::Up);
+        let mut signal = signal;
+        signal.up_ask = 0.62;
+        signal.metadata = serde_json::json!({"momentum": 0.0012});
+
+        let signal_id = expect_single_queued(
+            engine
+                .submit_single(
+                    &signal,
+                    &window,
+                    &db,
+                    &mut bankroll,
+                    &config,
+                    &clock,
+                    ReplayFidelity::RawEvent,
+                )
+                .unwrap(),
+        );
+
+        let opened = engine
+            .process_due_orders(
+                85_250,
+                Some(85_250_000),
+                Some(&window),
+                &up_book(0.62, 100.0, 85_250),
+                &db,
+                &mut bankroll,
+                &config,
+                &clock,
+            )
+            .unwrap();
+
+        assert!(opened.is_empty());
+        let metric: (String, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT decision_status, rejection_reason FROM signal_metrics WHERE signal_id = ?1",
+                rusqlite::params![signal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(metric.0, "missed");
+        assert_eq!(
+            metric.1.as_deref(),
+            Some("limit_price_not_crossed_on_arrival")
+        );
     }
 
     #[test]

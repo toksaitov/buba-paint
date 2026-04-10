@@ -371,6 +371,23 @@ impl Strategy for CalmPersistenceStrategy {
             );
             return Self::reject(StrategyRejectionReason::ExpectedEdgeNonPositive, sample);
         }
+        if expected_edge <= config.calm_persistence_min_expected_edge {
+            let mut sample = Self::rejection_sample(
+                ctx,
+                Some(expected_fee),
+                Some(expected_slippage),
+                Some(expected_edge),
+            );
+            Self::enrich_sample(
+                &mut sample,
+                Some(signed_distance_bps),
+                Some(realized_vol_15s_bps),
+                Some(distance_vol_ratio),
+                Some(open_crosses_30s),
+                Some(alignment_fraction),
+            );
+            return Self::reject(StrategyRejectionReason::ExpectedEdgeBelowMin, sample);
+        }
 
         let confidence = Self::confidence(distance_vol_ratio, alignment_fraction, expected_edge);
         let metadata = serde_json::json!({

@@ -33,7 +33,9 @@ impl ClobFeedHandle {
     }
 }
 
-use super::util::{backoff_delay, now_ms, now_us, should_reset_backoff};
+use super::util::{
+    FeedDisconnectCause, FeedDisconnectReport, backoff_delay, now_ms, now_us, should_reset_backoff,
+};
 
 /// Launch the `CLOB` `WebSocket` feed as a background tokio task.
 ///
@@ -53,6 +55,8 @@ pub async fn run_clob_feed(
     let min_stable_ms = config.reconnect_min_stable_ms;
     let max_failures = config.reconnect_max_failures;
     let feed_pause_ms = config.reconnect_pause_ms;
+    let connect_timeout_ms = config.websocket_connect_timeout_ms;
+    let no_message_reconnect_ms = config.clob_no_message_reconnect_ms;
     let retain_payloads = config.feed_event_storage_profile == FeedEventStorageProfile::FullDebug;
 
     let handle = tokio::spawn(async move {
@@ -66,6 +70,8 @@ pub async fn run_clob_feed(
             min_stable_ms,
             max_failures,
             feed_pause_ms,
+            connect_timeout_ms,
+            no_message_reconnect_ms,
             retain_payloads,
         )
         .await;
@@ -94,6 +100,8 @@ async fn clob_feed_loop(
     min_stable_ms: u64,
     max_failures: u32,
     feed_pause_ms: u64,
+    connect_timeout_ms: u64,
+    no_message_reconnect_ms: u64,
     retain_payloads: bool,
 ) {
     let mut up_token: Option<String> = None;
@@ -101,6 +109,7 @@ async fn clob_feed_loop(
     let mut book_state = BookState::default();
     let mut attempt: u32 = 0;
     let mut rapid_disconnect_count: u32 = 0;
+    let mut connect_after_resubscribe = false;
 
     loop {
         if up_token.is_none() || down_token.is_none() {
@@ -115,6 +124,8 @@ async fn clob_feed_loop(
                 }
             }
         }
+        connect_after_resubscribe |=
+            apply_latest_resubscribe(&mut resub_rx, &mut up_token, &mut down_token);
 
         let (up_id, down_id) = match (&up_token, &down_token) {
             (Some(u), Some(d)) => (u.clone(), d.clone()),
@@ -123,8 +134,13 @@ async fn clob_feed_loop(
 
         info!(feed = "clob", "connecting to {url}");
 
-        match tokio_tungstenite::connect_async(&url).await {
-            Ok((ws_stream, _response)) => {
+        let disconnect = match tokio::time::timeout(
+            Duration::from_millis(connect_timeout_ms),
+            tokio_tungstenite::connect_async(&url),
+        )
+        .await
+        {
+            Ok(Ok((ws_stream, _response))) => {
                 let connected_at = now_ms();
                 let connection_id = format!("clob-{}", now_us());
                 let _ = tx
@@ -143,171 +159,250 @@ async fn clob_feed_loop(
                 });
                 if let Err(e) = write.send(Message::Text(sub_msg.to_string().into())).await {
                     error!(feed = "clob", "failed to send subscription: {e}");
-                    let _ = tx
-                        .send(FeedMessage::FeedDisconnected {
-                            name: "clob".to_string(),
-                            connection_id: Some(connection_id.clone()),
-                        })
-                        .await;
-                    if attempt >= max_failures {
-                        error!(
-                            feed = "clob",
-                            attempts = attempt,
-                            pause_ms = feed_pause_ms,
-                            "feed circuit breaker: pausing"
-                        );
-                        tokio::time::sleep(Duration::from_millis(feed_pause_ms)).await;
-                        attempt = 0;
-                    } else {
-                        let delay = backoff_delay(attempt, base_delay, max_delay);
-                        tokio::time::sleep(delay).await;
-                        attempt = attempt.saturating_add(1);
+                    FeedDisconnectReport {
+                        connection_id: Some(connection_id),
+                        cause: FeedDisconnectCause::ConnectionFailed,
+                        connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                        after_resubscribe: connect_after_resubscribe,
+                        error: Some(format!("failed to send subscription: {e}")),
+                        timeout_ms: None,
                     }
-                    continue;
-                }
-
-                let mut ping_timer = tokio::time::interval(Duration::from_millis(ping_interval_ms));
-
-                let mut disconnected = false;
-
-                loop {
-                    tokio::select! {
-                        msg = read.next() => {
-                            match msg {
-                                Some(Ok(Message::Text(text))) => {
-                                    if let Err(e) = process_clob_message(
-                                        &text,
-                                        &up_id,
-                                        &down_id,
-                                        &mut book_state,
-                                        &tx,
-                                        &connection_id,
-                                        retain_payloads,
-                                    ).await {
-                                        warn!(feed = "clob", "failed to process message: {e}");
-                                    }
-                                }
-                                Some(Ok(Message::Ping(data))) => {
-                                    if write.send(Message::Pong(data)).await.is_err() {
-                                        warn!(feed = "clob", "failed to send pong");
-                                        break;
-                                    }
-                                }
-                                Some(Ok(Message::Close(_))) => {
-                                    info!(feed = "clob", "server sent close frame");
-                                    break;
-                                }
-                                Some(Err(e)) => {
-                                    error!(feed = "clob", "websocket error: {e}");
-                                    break;
-                                }
-                                None => {
-                                    info!(feed = "clob", "stream ended");
-                                    break;
-                                }
-                                Some(Ok(_)) => {}
-                            }
-                        }
-                        _ = ping_timer.tick() => {
-
-                            if write.send(Message::Ping(Vec::new().into())).await.is_err() {
-                                warn!(feed = "clob", "failed to send ping");
-                                break;
-                            }
-                        }
-                        resub = resub_rx.recv() => {
-                            match resub {
-                                Some((new_up, new_down)) => {
-                                    info!(feed = "clob", "resubscribing to new tokens");
-                                    up_token = Some(new_up);
-                                    down_token = Some(new_down);
-                                    book_state = BookState::default();
-
-                                    let _ = write.send(Message::Close(None)).await;
-                                    disconnected = true;
-                                    break;
-                                }
-                                None => {
-
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if disconnected {
-                    attempt = 0;
-                    rapid_disconnect_count = 0;
                 } else {
-                    let was_stable = should_reset_backoff(connected_at, now_ms(), min_stable_ms);
-                    if was_stable {
-                        attempt = 0;
-                        rapid_disconnect_count = 0;
-                    } else {
-                        rapid_disconnect_count += 1;
-                        if rapid_disconnect_count >= 3 {
-                            warn!(
-                                feed = "clob",
-                                count = rapid_disconnect_count,
-                                "CLOB disconnecting immediately after subscribe — market tokens may be expired"
-                            );
+                    let mut ping_timer =
+                        tokio::time::interval(Duration::from_millis(ping_interval_ms));
+                    let idle_duration = Duration::from_millis(no_message_reconnect_ms);
+                    let idle_sleep = tokio::time::sleep(idle_duration);
+                    tokio::pin!(idle_sleep);
+
+                    loop {
+                        tokio::select! {
+                            msg = read.next() => {
+                                match msg {
+                                    Some(Ok(Message::Text(text))) => {
+                                        idle_sleep.as_mut().reset(tokio::time::Instant::now() + idle_duration);
+                                        if let Err(e) = process_clob_message(
+                                            &text,
+                                            &up_id,
+                                            &down_id,
+                                            &mut book_state,
+                                            &tx,
+                                            &connection_id,
+                                            retain_payloads,
+                                        ).await {
+                                            warn!(feed = "clob", "failed to process message: {e}");
+                                        }
+                                    }
+                                    Some(Ok(Message::Ping(data))) => {
+                                        if write.send(Message::Pong(data)).await.is_err() {
+                                            warn!(feed = "clob", "failed to send pong");
+                                            break FeedDisconnectReport {
+                                                connection_id: Some(connection_id.clone()),
+                                                cause: FeedDisconnectCause::PingFailure,
+                                                connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                                after_resubscribe: connect_after_resubscribe,
+                                                error: Some("failed to send pong".to_string()),
+                                                timeout_ms: None,
+                                            };
+                                        }
+                                    }
+                                    Some(Ok(Message::Close(_))) => {
+                                        info!(feed = "clob", "server sent close frame");
+                                        break FeedDisconnectReport {
+                                            connection_id: Some(connection_id.clone()),
+                                            cause: FeedDisconnectCause::ConnectionFailed,
+                                            connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                            after_resubscribe: connect_after_resubscribe,
+                                            error: Some("server sent close frame".to_string()),
+                                            timeout_ms: None,
+                                        };
+                                    }
+                                    Some(Err(e)) => {
+                                        error!(feed = "clob", "websocket error: {e}");
+                                        break FeedDisconnectReport {
+                                            connection_id: Some(connection_id.clone()),
+                                            cause: FeedDisconnectCause::WebsocketError,
+                                            connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                            after_resubscribe: connect_after_resubscribe,
+                                            error: Some(e.to_string()),
+                                            timeout_ms: None,
+                                        };
+                                    }
+                                    None => {
+                                        info!(feed = "clob", "stream ended");
+                                        break FeedDisconnectReport {
+                                            connection_id: Some(connection_id.clone()),
+                                            cause: FeedDisconnectCause::ConnectionFailed,
+                                            connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                            after_resubscribe: connect_after_resubscribe,
+                                            error: Some("stream ended".to_string()),
+                                            timeout_ms: None,
+                                        };
+                                    }
+                                    Some(Ok(_)) => {}
+                                }
+                            }
+                            _ = ping_timer.tick() => {
+                                if write.send(Message::Ping(Vec::new().into())).await.is_err() {
+                                    warn!(feed = "clob", "failed to send ping");
+                                    break FeedDisconnectReport {
+                                        connection_id: Some(connection_id.clone()),
+                                        cause: FeedDisconnectCause::PingFailure,
+                                        connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                        after_resubscribe: connect_after_resubscribe,
+                                        error: Some("failed to send ping".to_string()),
+                                        timeout_ms: None,
+                                    };
+                                }
+                            }
+                            () = &mut idle_sleep => {
+                                warn!(
+                                    feed = "clob",
+                                    timeout_ms = no_message_reconnect_ms,
+                                    "no market data in {no_message_reconnect_ms}ms; forcing reconnect"
+                                );
+                                break FeedDisconnectReport {
+                                    connection_id: Some(connection_id.clone()),
+                                    cause: FeedDisconnectCause::IdleTimeout,
+                                    connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                    after_resubscribe: connect_after_resubscribe,
+                                    error: None,
+                                    timeout_ms: Some(no_message_reconnect_ms),
+                                };
+                            }
+                            resub = resub_rx.recv() => {
+                                match resub {
+                                    Some((new_up, new_down)) => {
+                                        info!(feed = "clob", "resubscribing to new tokens");
+                                        up_token = Some(new_up);
+                                        down_token = Some(new_down);
+                                        apply_latest_resubscribe(&mut resub_rx, &mut up_token, &mut down_token);
+                                        book_state = BookState::default();
+                                        connect_after_resubscribe = true;
+                                        let _ = write.send(Message::Close(None)).await;
+                                        break FeedDisconnectReport {
+                                            connection_id: Some(connection_id.clone()),
+                                            cause: FeedDisconnectCause::ConnectionFailed,
+                                            connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                            after_resubscribe: true,
+                                            error: Some("resubscribe_requested".to_string()),
+                                            timeout_ms: None,
+                                        };
+                                    }
+                                    None => return,
+                                }
+                            }
                         }
-                    }
-                    let _ = tx
-                        .send(FeedMessage::FeedDisconnected {
-                            name: "clob".to_string(),
-                            connection_id: Some(connection_id),
-                        })
-                        .await;
-                    if attempt >= max_failures {
-                        error!(
-                            feed = "clob",
-                            attempts = attempt,
-                            pause_ms = feed_pause_ms,
-                            "feed circuit breaker: pausing"
-                        );
-                        tokio::time::sleep(Duration::from_millis(feed_pause_ms)).await;
-                        attempt = 0;
-                        rapid_disconnect_count = 0;
-                    } else {
-                        let delay = backoff_delay(attempt, base_delay, max_delay);
-                        warn!(
-                            feed = "clob",
-                            "reconnecting in {}ms (attempt {})",
-                            delay.as_millis(),
-                            attempt + 1
-                        );
-                        tokio::time::sleep(delay).await;
-                        attempt = attempt.saturating_add(1);
                     }
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 error!(feed = "clob", "connection failed: {e}");
-                let _ = tx
-                    .send(FeedMessage::FeedDisconnected {
-                        name: "clob".to_string(),
-                        connection_id: None,
-                    })
-                    .await;
-                if attempt >= max_failures {
-                    error!(
+                FeedDisconnectReport {
+                    connection_id: None,
+                    cause: FeedDisconnectCause::ConnectionFailed,
+                    connection_lifetime_ms: None,
+                    after_resubscribe: connect_after_resubscribe,
+                    error: Some(e.to_string()),
+                    timeout_ms: None,
+                }
+            }
+            Err(_) => {
+                error!(
+                    feed = "clob",
+                    timeout_ms = connect_timeout_ms,
+                    "websocket connect timed out"
+                );
+                FeedDisconnectReport {
+                    connection_id: None,
+                    cause: FeedDisconnectCause::ConnectTimeout,
+                    connection_lifetime_ms: None,
+                    after_resubscribe: connect_after_resubscribe,
+                    error: Some(format!(
+                        "websocket connect timed out after {connect_timeout_ms}ms"
+                    )),
+                    timeout_ms: Some(connect_timeout_ms),
+                }
+            }
+        };
+
+        if disconnect.error.as_deref() == Some("resubscribe_requested") {
+            attempt = 0;
+            rapid_disconnect_count = 0;
+            continue;
+        }
+
+        if let Some(connection_lifetime_ms) = disconnect.connection_lifetime_ms {
+            if should_reset_backoff(0, connection_lifetime_ms, min_stable_ms) {
+                attempt = 0;
+                rapid_disconnect_count = 0;
+            } else {
+                rapid_disconnect_count += 1;
+                if rapid_disconnect_count >= 3 {
+                    warn!(
                         feed = "clob",
-                        attempts = attempt,
-                        pause_ms = feed_pause_ms,
-                        "feed circuit breaker: pausing"
+                        count = rapid_disconnect_count,
+                        "CLOB disconnecting immediately after subscribe — market tokens may be expired"
                     );
-                    tokio::time::sleep(Duration::from_millis(feed_pause_ms)).await;
-                    attempt = 0;
-                } else {
-                    let delay = backoff_delay(attempt, base_delay, max_delay);
-                    tokio::time::sleep(delay).await;
-                    attempt = attempt.saturating_add(1);
                 }
             }
         }
+
+        let reconnect_delay = if attempt >= max_failures {
+            error!(
+                feed = "clob",
+                attempts = attempt,
+                pause_ms = feed_pause_ms,
+                "feed circuit breaker: pausing"
+            );
+            rapid_disconnect_count = 0;
+            Duration::from_millis(feed_pause_ms)
+        } else {
+            let delay = backoff_delay(attempt, base_delay, max_delay);
+            warn!(
+                feed = "clob",
+                "reconnecting in {}ms (attempt {})",
+                delay.as_millis(),
+                attempt + 1
+            );
+            delay
+        };
+
+        let details_json = disconnect.details_json(
+            attempt.saturating_add(1),
+            Some(reconnect_delay.as_millis() as u64),
+        );
+        let _ = tx
+            .send(FeedMessage::FeedDisconnected {
+                name: "clob".to_string(),
+                connection_id: disconnect.connection_id,
+                cause_class: disconnect.cause.as_str(),
+                details_json,
+            })
+            .await;
+        connect_after_resubscribe = false;
+
+        tokio::time::sleep(reconnect_delay).await;
+        if attempt >= max_failures {
+            attempt = 0;
+        } else {
+            attempt = attempt.saturating_add(1);
+        }
     }
+}
+
+/// Drain queued resubscribe requests so reconnects always use the newest token pair.
+fn apply_latest_resubscribe(
+    resub_rx: &mut mpsc::Receiver<(String, String)>,
+    up_token: &mut Option<String>,
+    down_token: &mut Option<String>,
+) -> bool {
+    let mut updated = false;
+    while let Ok((up, down)) = resub_rx.try_recv() {
+        *up_token = Some(up);
+        *down_token = Some(down);
+        updated = true;
+    }
+    updated
 }
 
 /// A single price-change entry parsed from a `CLOB` `price_change` event.

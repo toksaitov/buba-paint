@@ -94,6 +94,106 @@ struct FeedHealthLogEvent<'a> {
     details_json: Option<&'a str>,
 }
 
+const FEED_HEALTH_ROLLUP_INTERVAL_SECS: u64 = 5 * 60;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FeedHealthWindowStats {
+    disconnect_count: u64,
+    cumulative_downtime_ms: u64,
+    max_downtime_ms: u64,
+    cause_counts: std::collections::HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveFeedDisconnect {
+    started_at_ms: u64,
+    cause_class: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FeedHealthRollupRow {
+    source: String,
+    disconnect_count: u64,
+    cumulative_downtime_ms: u64,
+    max_downtime_ms: u64,
+    active_outage_ms: Option<u64>,
+    active_cause_class: Option<String>,
+    cause_counts: Vec<(String, u64)>,
+}
+
+#[derive(Default)]
+struct FeedHealthTracker {
+    window: std::collections::HashMap<String, FeedHealthWindowStats>,
+    active: std::collections::HashMap<String, ActiveFeedDisconnect>,
+}
+
+impl FeedHealthTracker {
+    /// Mark one feed connection as healthy again and accumulate completed downtime.
+    fn note_connected(&mut self, source: &str, now_ms: u64) {
+        if let Some(active) = self.active.remove(source) {
+            let downtime_ms = now_ms.saturating_sub(active.started_at_ms);
+            let stats = self.window.entry(source.to_string()).or_default();
+            stats.cumulative_downtime_ms = stats.cumulative_downtime_ms.saturating_add(downtime_ms);
+            stats.max_downtime_ms = stats.max_downtime_ms.max(downtime_ms);
+        }
+    }
+
+    /// Record one feed disconnect if the feed is not already marked as down.
+    fn note_disconnected(&mut self, source: &str, cause_class: &str, now_ms: u64) {
+        if self.active.contains_key(source) {
+            return;
+        }
+
+        let stats = self.window.entry(source.to_string()).or_default();
+        stats.disconnect_count = stats.disconnect_count.saturating_add(1);
+        *stats
+            .cause_counts
+            .entry(cause_class.to_string())
+            .or_insert(0) += 1;
+        self.active.insert(
+            source.to_string(),
+            ActiveFeedDisconnect {
+                started_at_ms: now_ms,
+                cause_class: cause_class.to_string(),
+            },
+        );
+    }
+
+    /// Drain the current rollup window into operator-facing rows while preserving active outages.
+    fn take_rollups(&mut self, now_ms: u64) -> Vec<FeedHealthRollupRow> {
+        let window = std::mem::take(&mut self.window);
+        let mut sources = window.keys().cloned().collect::<Vec<_>>();
+        for source in self.active.keys() {
+            if !sources.iter().any(|existing| existing == source) {
+                sources.push(source.clone());
+            }
+        }
+        sources.sort();
+
+        let mut rows = Vec::new();
+        for source in sources {
+            let mut stats = window.get(&source).cloned().unwrap_or_default();
+            let active = self.active.get(&source);
+            if stats.disconnect_count == 0 && active.is_none() {
+                continue;
+            }
+            let mut cause_counts = stats.cause_counts.drain().collect::<Vec<_>>();
+            cause_counts
+                .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+            rows.push(FeedHealthRollupRow {
+                source: source.clone(),
+                disconnect_count: stats.disconnect_count,
+                cumulative_downtime_ms: stats.cumulative_downtime_ms,
+                max_downtime_ms: stats.max_downtime_ms,
+                active_outage_ms: active.map(|entry| now_ms.saturating_sub(entry.started_at_ms)),
+                active_cause_class: active.map(|entry| entry.cause_class.clone()),
+                cause_counts,
+            });
+        }
+        rows
+    }
+}
+
 impl LiveState {
     /// Creates a new `LiveState`.
     fn new() -> Self {
@@ -212,6 +312,7 @@ pub async fn run_live(
 
     let mut state = LiveState::new();
     let mut storage_state = FeedEventStorageState::new(config.feed_event_storage_profile);
+    let mut feed_health_tracker = FeedHealthTracker::default();
     let mut rejection_tracker = StrategyRejectionTracker::new();
     let mut pending_resolutions = seed_pending_resolutions(&db, &config, &clock);
 
@@ -219,6 +320,11 @@ pub async fn run_live(
     let mut storage_report_timer = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
     storage_report_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let _ = storage_report_timer.tick().await;
+    let mut feed_health_report_timer = tokio::time::interval(std::time::Duration::from_secs(
+        FEED_HEALTH_ROLLUP_INTERVAL_SECS,
+    ));
+    feed_health_report_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let _ = feed_health_report_timer.tick().await;
     let mut resolution_retry_timer = tokio::time::interval(std::time::Duration::from_secs(1));
     resolution_retry_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -818,6 +924,7 @@ pub async fn run_live(
 
                     FeedMessage::FeedConnected { name, connection_id } => {
                         info!(feed = %name, "feed connected");
+                        feed_health_tracker.note_connected(&name, clock.now());
                         let _ = log_feed_health_event(
                             &db,
                             &FeedHealthLogEvent {
@@ -832,8 +939,14 @@ pub async fn run_live(
                         );
                     }
 
-                    FeedMessage::FeedDisconnected { name, connection_id } => {
-                        warn!(feed = %name, "feed disconnected");
+                    FeedMessage::FeedDisconnected {
+                        name,
+                        connection_id,
+                        cause_class,
+                        details_json,
+                    } => {
+                        warn!(feed = %name, cause_class, "feed disconnected");
+                        feed_health_tracker.note_disconnected(&name, cause_class, clock.now());
                         let _ = log_feed_health_event(
                             &db,
                             &FeedHealthLogEvent {
@@ -843,12 +956,15 @@ pub async fn run_live(
                                 event_type: "disconnected",
                                 connection_id: connection_id.as_deref(),
                                 market_id: state.current_window.as_ref().map(|w| w.market_id.as_str()),
-                                details_json: None,
+                                details_json: details_json.as_deref(),
                             },
                         );
                     }
 
-                    FeedMessage::ChainlinkStale { connection_id } => {
+                    FeedMessage::ChainlinkStale {
+                        connection_id,
+                        details_json,
+                    } => {
                         warn!("chainlink price is stale");
                         state.signal_state.chainlink_price = None;
                         let _ = log_feed_health_event(
@@ -860,7 +976,7 @@ pub async fn run_live(
                                 event_type: "stale",
                                 connection_id: connection_id.as_deref(),
                                 market_id: state.current_window.as_ref().map(|w| w.market_id.as_str()),
-                                details_json: None,
+                                details_json: details_json.as_deref(),
                             },
                         );
                     }
@@ -1002,6 +1118,10 @@ pub async fn run_live(
                         "live storage footprint"
                     );
                 }
+            }
+
+            _ = feed_health_report_timer.tick() => {
+                log_feed_health_rollups(&feed_health_tracker.take_rollups(clock.now()));
             }
 
             _ = resolution_retry_timer.tick() => {
@@ -1754,6 +1874,37 @@ fn log_feed_health_event(db: &Database, event: &FeedHealthLogEvent<'_>) -> anyho
     Ok(())
 }
 
+/// Emit concise operator-facing feed-health rollups for recent disconnect activity.
+fn log_feed_health_rollups(rows: &[FeedHealthRollupRow]) {
+    for row in rows {
+        let cause_summary = if row.cause_counts.is_empty() {
+            "none".to_string()
+        } else {
+            row.cause_counts
+                .iter()
+                .map(|(cause, count)| format!("{cause}={count}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let active_outage_s = row.active_outage_ms.map_or_else(
+            || "none".to_string(),
+            |ms| format!("{:.1}", ms as f64 / 1000.0),
+        );
+        let active_cause = row.active_cause_class.as_deref().unwrap_or("none");
+
+        info!(
+            feed = %row.source,
+            disconnects = row.disconnect_count,
+            cumulative_downtime_s = format!("{:.1}", row.cumulative_downtime_ms as f64 / 1000.0),
+            max_downtime_s = format!("{:.1}", row.max_downtime_ms as f64 / 1000.0),
+            active_outage_s,
+            active_cause,
+            causes = %cause_summary,
+            "feed health rollup"
+        );
+    }
+}
+
 /// Register or update one market that still needs authoritative settlement.
 fn schedule_pending_resolution(
     pending_resolutions: &mut std::collections::HashMap<String, PendingResolution>,
@@ -2083,6 +2234,44 @@ mod tests {
                 .metrics_summary
                 .contains("alignmentFraction=0.50")
         );
+    }
+
+    /// Verifies that completed feed outages contribute bounded downtime rollups.
+    #[test]
+    fn feed_health_tracker_rolls_up_completed_outage() {
+        let mut tracker = FeedHealthTracker::default();
+        tracker.note_disconnected("clob", "websocket_error", 1_000);
+        tracker.note_connected("clob", 1_450);
+
+        let rows = tracker.take_rollups(2_000);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "clob");
+        assert_eq!(rows[0].disconnect_count, 1);
+        assert_eq!(rows[0].cumulative_downtime_ms, 450);
+        assert_eq!(rows[0].max_downtime_ms, 450);
+        assert_eq!(rows[0].active_outage_ms, None);
+        assert_eq!(rows[0].active_cause_class, None);
+        assert_eq!(
+            rows[0].cause_counts,
+            vec![("websocket_error".to_string(), 1)]
+        );
+    }
+
+    /// Verifies that ongoing outages stay visible in periodic feed-health rollups.
+    #[test]
+    fn feed_health_tracker_reports_active_outage() {
+        let mut tracker = FeedHealthTracker::default();
+        tracker.note_disconnected("binance", "idle_timeout", 2_000);
+
+        let rows = tracker.take_rollups(2_750);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "binance");
+        assert_eq!(rows[0].disconnect_count, 1);
+        assert_eq!(rows[0].cumulative_downtime_ms, 0);
+        assert_eq!(rows[0].max_downtime_ms, 0);
+        assert_eq!(rows[0].active_outage_ms, Some(750));
+        assert_eq!(rows[0].active_cause_class.as_deref(), Some("idle_timeout"));
+        assert_eq!(rows[0].cause_counts, vec![("idle_timeout".to_string(), 1)]);
     }
 }
 

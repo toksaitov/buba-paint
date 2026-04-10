@@ -8,6 +8,8 @@ buba is a paper-trading platform for Polymarket prediction markets. The workspac
 
 Canonical reserve-mode and exact-run parity guidance lives in [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md). If reserve semantics, live capital usage, or exact-run parity are relevant, read that file before touching the knobs.
 
+Live feed transport hardening is part of the current release baseline. The important knobs are `WEBSOCKET_CONNECT_TIMEOUT_MS`, `BINANCE_NO_MESSAGE_RECONNECT_MS`, and `CLOB_NO_MESSAGE_RECONNECT_MS`. They reduce reconnect downtime only. They must not be used to loosen stale-data gates or change trading semantics.
+
 ## Build & Test
 
 ```bash
@@ -83,7 +85,7 @@ Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`, `init-db`
 
 Strategies: `strategies/latency_arb.rs` (feature-scored stale odds, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `strategies/calm_persistence.rs` (late-window sign persistence in calm regimes), `signal_features.rs` (shared feature engine used by live paper and backtests).
 
-Feeds: `feeds/binance_feed.rs` (combined Binance `aggTrade`, `bookTicker`, and `depth@100ms` stream), `feeds/clob_feed.rs` (Polymarket CLOB order book, best-bid-ask handling, dynamic resubscription), `feeds/chainlink_feed.rs` (Polymarket RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
+Feeds: `feeds/binance_feed.rs` (combined Binance `aggTrade`, `bookTicker`, and `depth@100ms` stream, with bounded connect timeout and idle watchdog), `feeds/clob_feed.rs` (Polymarket CLOB order book, best-bid-ask handling, dynamic resubscription, newest-token reconnect coalescing, and idle watchdog), `feeds/chainlink_feed.rs` (Polymarket RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking, structured disconnect causes, reconnect metadata).
 
 Data: `bankroll.rs` (per-strategy half-Kelly sizing, sleeves, caps, confidence curve, DD pause, and phase-aware active-vs-pending settlement reserve accounting), `position_manager.rs` (trade lifecycle: open with debug logging on every rejection path, guard duplicates, authoritative resolve), `circuit_breaker.rs` (pause trading after N consecutive losses), `tick_logger.rs` (1s telemetry sampling to SQLite), `trend_tracker.rs` (strategy-scoped directional trend filter), `market_discovery.rs` (Gamma API polling, slug-based window discovery, single-attempt resolution fetch for durable settlement), `portfolio.rs` (regime router, family attribution, and non-competing portfolio helpers).
 
@@ -181,7 +183,7 @@ ssh buba-paint 'ps -eo pid=,args= | awk "/script -qefa|buba-paint live|buba-agen
 
 4. Verify no process from the old release path remains.
 5. Repoint `current` to the new release.
-6. Restart over the same runtime dir, DB, and log.
+6. Restart over the same runtime dir, DB, and log. For live-feed robustness releases, set the feed timeout/watchdog env knobs explicitly instead of relying on memory.
 7. Re-check health endpoints, DB integrity, and that the bot recovered the active window correctly.
 
 Preferred fresh-run steps:
@@ -274,7 +276,7 @@ Test inventory changes frequently. Use `cargo test`, `make test-all`, and the fr
 - Spread synchronization: spread-capture must not evaluate a binary market from mixed-time `UP` and `DOWN` books. Persist and inspect per-leg effective timestamps plus `inter_leg_skew_ms`, and reject the setup as `legs_out_of_sync` when the skew exceeds `SPREAD_CAPTURE_MAX_LEG_SKEW_MS`.
 - Spread activation: the churn gate is configurable. `SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S` should be treated as a live-regime calibration knob, not a hard-coded invariant.
 - Spread sizing: `SPREAD_CAPTURE_MAX_POSITION_FRACTION` is the spread-only balance cap. If it is unset, spread sizing falls back to `MAX_POSITION_FRACTION`. Keep latency-arb on the global cap unless a future change explicitly separates it further.
-- Calm persistence: `calm-persistence` is the late-window quiet-regime family. It trades only inside its configured window slice, requires the current sign versus the window open to be large enough relative to realized volatility, requires a low recent open-cross count, and requires enough recent microstructure alignment before paying the Polymarket ask.
+- Calm persistence: `calm-persistence` is the late-window quiet-regime family. It trades only inside its configured window slice, requires the current sign versus the window open to be large enough relative to realized volatility, requires a low recent open-cross count, and requires enough recent microstructure alignment before paying the Polymarket ask. `CALM_PERSISTENCE_MAX_ASK` is calm-specific all the way through the shared single-order executor now; do not assume calm still inherits `LATENCY_ARB_MAX_ASK`. `CALM_PERSISTENCE_MIN_EXPECTED_EDGE` is the calm-only post-fee/slippage quality floor. The current point-release candidate calm block is `MAX_ASK=0.65` and `MIN_EXPECTED_EDGE=0.05` with the rest of the calm row unchanged.
 - Pending-settlement reserve modes: compatibility mode is `1.0 / 1.0 / true` and is now legacy/diagnostic only. Conservative mode is `0.0 / 1.0 / false` and is the real default. Riskier live/backtest parity experiments can reduce the pending-settlement global lock fraction too, but only behind explicit config and only after exact-run validation. See [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md).
 - Restart continuity: when a bot restarts over an existing live DB, the active window should recover its open price from the earliest persisted Binance tick inside that window before falling back to the current in-memory price.
 - Live CLOB freshness: trading freshness must use observed local receipt time when `best_bid_ask` / `book` / `price_change` messages omit a usable source timestamp. Preserve the raw source timestamp in `feed_events`, but do not let `event_at_ms=0` poison quote age. For binary markets, combined quote freshness must reflect the older side of the two books, not the freshest side.
@@ -286,6 +288,8 @@ Test inventory changes frequently. Use `cargo test`, `make test-all`, and the fr
 - Simulated order latency: `SIM_ORDER_LATENCY_MS` is a paper-arrival assumption, not a measured Polymarket venue latency. Keep it explicit in docs, notes, and live run reasoning.
 - Agent secret: `AGENT_SECRET` is required for normal agent startup. Missing or blank values must fail fast instead of silently falling back to an empty secret and creating a broken dashboard login loop.
 - Staleness: if no Chainlink data for `CHAINLINK_STALE_MS`, force-reconnect. During staleness, settlement falls back to Binance price.
+- Feed transport hardening: websocket connects are bounded by `WEBSOCKET_CONNECT_TIMEOUT_MS`. Binance and CLOB also force reconnect when the socket stays open but no text market data arrives within `BINANCE_NO_MESSAGE_RECONNECT_MS` or `CLOB_NO_MESSAGE_RECONNECT_MS`. This should only reduce stale downtime. It must never permit trading on stale data.
+- Feed health logging: use the existing `feed_health_events.details_json` field for reconnect metadata such as `causeClass`, `attempt`, `reconnectDelayMs`, `connectionLifetimeMs`, `afterResubscribe`, and timeout/error context. Do not add schema just for richer reconnect diagnostics.
 - Momentum: `(latest - oldest) / oldest` over rolling window. Guarded against division by zero (oldest price <= 0 returns 0).
 - Opposing position guard: single signals block same-strategy same-window. Batch signals (spread-capture) only block exact duplicates. All rejections are logged at debug level with the reason.
 - Deferred resolution: when a window closes, the live loop marks the market `closed` immediately and registers any still-open market for durable Gamma reconciliation. Startup also seeds reconciliation from ended markets that still have open trades. The live loop performs one authoritative fetch per pending market every `RESOLUTION_POLL_DELAY_MS` after `RESOLUTION_INITIAL_DELAY_MS` until Gamma resolves it, then settles exactly once.
@@ -309,6 +313,7 @@ Test inventory changes frequently. Use `cargo test`, `make test-all`, and the fr
 - Legacy replay limitation: old runs only have 1 Hz top-of-book snapshots. Do not describe those replays as true latency-arb reconstruction.
 - Signal generated but no trade: check debug logs for the rejection reason. Every guard in `try_open` logs why it rejected. Common causes: duplicate position in the same market, insufficient balance, below min bet after liquidity clamp.
 - Signal rejected before queue: inspect `signal_metrics.rejection_reason` first. Common causes are explicit queue-state blocks (`duplicate_pending_order`, `duplicate_open_position`, `max_open_positions`) or submit-time sizing failures (`below_min_bet_on_submit`, `below_market_min_size_on_submit`).
+- Calm duplicate spam: this should now be a regression smell. Calm duplicate pending/open-position attempts are supposed to be blocked before signal persistence and summarized through `strategy_rejection_summaries`, not stored as thousands of redundant `signals` / `signal_metrics` rows.
 - Agent instructions alias: `AGENTS.md` should stay as a tiny compatibility alias that points to `CLAUDE.md`. Edit `CLAUDE.md`, not `AGENTS.md`, when the canonical repo instructions change.
 - Signals stay at `submitted` with no trades: inspect `signal_metrics.decision_status`, `rejection_reason`, and the concise `paper order missed` / `paper execution rollup` logs. Common causes: stale book on arrival, zero preserved liquidity, or limit price not crossing when the delayed paper order reaches the book.
 - Trades assigned to wrong market window: fixed in v0.8.1. Previous versions set current_window to next_slot immediately when discovered (3-5 min early). Now windows are only activated at their start_time via delayed tokio task.

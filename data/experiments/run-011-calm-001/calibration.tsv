@@ -1,0 +1,9 @@
+label	source	max_ask	min_expected_edge	pnl_net	trades	avg_pnl_per_trade	fills	misses	rejected	dup_open	dup_pending	other_rejected
+live_reference	live_snapshot	0.75	0.00	-53.28	8	-6.6599	8	194	25440	14508	10932	0
+ask075_edge000	replay	0.75	0.00	-35.61	37	-0.9624	37	5	1810	0	0	1810
+ask065_edge000	replay	0.65	0.00	-24.59	21	-1.1711	21	4	583	0	0	583
+ask060_edge000	replay	0.60	0.00	-8.28	15	-0.5521	15	4	93	0	0	93
+ask060_edge003	replay	0.60	0.03	-8.28	15	-0.5521	15	4	93	0	0	93
+ask060_edge005	replay	0.60	0.05	-8.28	15	-0.5521	15	4	93	0	0	93
+ask060_edge008	replay	0.60	0.08	-8.24	15	-0.5496	15	3	93	0	0	93
+ask065_edge005	replay	0.65	0.05	-3.05	19	-0.1604	19	3	176	0	0	176

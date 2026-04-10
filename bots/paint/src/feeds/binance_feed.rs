@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -7,7 +9,9 @@ use super::FeedMessage;
 use crate::config::{Config, FeedEventStorageProfile};
 use crate::types::OrderLevel;
 
-use super::util::{backoff_delay, now_ms, now_us, should_reset_backoff};
+use super::util::{
+    FeedDisconnectCause, FeedDisconnectReport, backoff_delay, now_ms, now_us, should_reset_backoff,
+};
 
 /// Run the shared Binance market-data feed.
 ///
@@ -15,6 +19,7 @@ use super::util::{backoff_delay, now_ms, now_us, should_reset_backoff};
 /// book-ticker, and shallow-depth messages, and forwards them through `tx`.
 /// On disconnect the feed waits with exponential backoff and reconnects
 /// automatically.
+#[allow(clippy::too_many_lines)]
 pub async fn run_binance_feed(
     config: &Config,
     tx: mpsc::Sender<FeedMessage>,
@@ -26,13 +31,20 @@ pub async fn run_binance_feed(
     let min_stable_ms = config.reconnect_min_stable_ms;
     let max_failures = config.reconnect_max_failures;
     let feed_pause_ms = config.reconnect_pause_ms;
+    let connect_timeout_ms = config.websocket_connect_timeout_ms;
+    let no_message_reconnect_ms = config.binance_no_message_reconnect_ms;
     let mut attempt: u32 = 0;
 
     loop {
         info!(feed = "binance", "connecting to {url}");
 
-        match tokio_tungstenite::connect_async(url).await {
-            Ok((ws_stream, _response)) => {
+        let disconnect = match tokio::time::timeout(
+            Duration::from_millis(connect_timeout_ms),
+            tokio_tungstenite::connect_async(url),
+        )
+        .await
+        {
+            Ok(Ok((ws_stream, _response))) => {
                 let connected_at = now_ms();
                 let connection_id = format!("binance-{}", now_us());
                 if tx
@@ -47,70 +59,134 @@ pub async fn run_binance_feed(
                 }
 
                 let (mut write, mut read) = ws_stream.split();
+                let idle_duration = Duration::from_millis(no_message_reconnect_ms);
+                let idle_sleep = tokio::time::sleep(idle_duration);
+                tokio::pin!(idle_sleep);
 
                 loop {
-                    match read.next().await {
-                        Some(Ok(Message::Text(text))) => {
-                            if let Err(error) =
-                                process_binance_message(&text, &tx, &connection_id, retain_payloads)
-                                    .await
-                            {
-                                warn!(feed = "binance", "failed to process message: {error}");
+                    tokio::select! {
+                        msg = read.next() => {
+                            match msg {
+                                Some(Ok(Message::Text(text))) => {
+                                    idle_sleep.as_mut().reset(tokio::time::Instant::now() + idle_duration);
+                                    if let Err(error) =
+                                        process_binance_message(&text, &tx, &connection_id, retain_payloads)
+                                            .await
+                                    {
+                                        warn!(feed = "binance", "failed to process message: {error}");
+                                    }
+                                }
+                                Some(Ok(Message::Ping(data))) => {
+                                    if write.send(Message::Pong(data)).await.is_err() {
+                                        warn!(feed = "binance", "failed to send pong");
+                                        break FeedDisconnectReport {
+                                            connection_id: Some(connection_id.clone()),
+                                            cause: FeedDisconnectCause::PingFailure,
+                                            connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                            after_resubscribe: false,
+                                            error: Some("failed to send pong".to_string()),
+                                            timeout_ms: None,
+                                        };
+                                    }
+                                }
+                                Some(Ok(Message::Close(_))) => {
+                                    info!(feed = "binance", "server sent close frame");
+                                    break FeedDisconnectReport {
+                                        connection_id: Some(connection_id.clone()),
+                                        cause: FeedDisconnectCause::ConnectionFailed,
+                                        connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                        after_resubscribe: false,
+                                        error: Some("server sent close frame".to_string()),
+                                        timeout_ms: None,
+                                    };
+                                }
+                                Some(Err(error)) => {
+                                    error!(feed = "binance", "websocket error: {error}");
+                                    break FeedDisconnectReport {
+                                        connection_id: Some(connection_id.clone()),
+                                        cause: FeedDisconnectCause::WebsocketError,
+                                        connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                        after_resubscribe: false,
+                                        error: Some(error.to_string()),
+                                        timeout_ms: None,
+                                    };
+                                }
+                                None => {
+                                    info!(feed = "binance", "stream ended");
+                                    break FeedDisconnectReport {
+                                        connection_id: Some(connection_id.clone()),
+                                        cause: FeedDisconnectCause::ConnectionFailed,
+                                        connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                        after_resubscribe: false,
+                                        error: Some("stream ended".to_string()),
+                                        timeout_ms: None,
+                                    };
+                                }
+                                Some(Ok(_)) => {}
                             }
                         }
-                        Some(Ok(Message::Ping(data))) => {
-                            if write.send(Message::Pong(data)).await.is_err() {
-                                warn!(feed = "binance", "failed to send pong");
-                                break;
-                            }
+                        () = &mut idle_sleep => {
+                            warn!(
+                                feed = "binance",
+                                timeout_ms = no_message_reconnect_ms,
+                                "no market data in {no_message_reconnect_ms}ms; forcing reconnect"
+                            );
+                            break FeedDisconnectReport {
+                                connection_id: Some(connection_id.clone()),
+                                cause: FeedDisconnectCause::IdleTimeout,
+                                connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                after_resubscribe: false,
+                                error: None,
+                                timeout_ms: Some(no_message_reconnect_ms),
+                            };
                         }
-                        Some(Ok(Message::Close(_))) => {
-                            info!(feed = "binance", "server sent close frame");
-                            break;
-                        }
-                        Some(Err(error)) => {
-                            error!(feed = "binance", "websocket error: {error}");
-                            break;
-                        }
-                        None => {
-                            info!(feed = "binance", "stream ended");
-                            break;
-                        }
-                        Some(Ok(_)) => {}
                     }
                 }
-
-                if should_reset_backoff(connected_at, now_ms(), min_stable_ms) {
-                    attempt = 0;
-                }
-
-                let _ = tx
-                    .send(FeedMessage::FeedDisconnected {
-                        name: "binance".to_string(),
-                        connection_id: Some(connection_id),
-                    })
-                    .await;
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 error!(feed = "binance", "connection failed: {error}");
-                let _ = tx
-                    .send(FeedMessage::FeedDisconnected {
-                        name: "binance".to_string(),
-                        connection_id: None,
-                    })
-                    .await;
+                FeedDisconnectReport {
+                    connection_id: None,
+                    cause: FeedDisconnectCause::ConnectionFailed,
+                    connection_lifetime_ms: None,
+                    after_resubscribe: false,
+                    error: Some(error.to_string()),
+                    timeout_ms: None,
+                }
+            }
+            Err(_) => {
+                error!(
+                    feed = "binance",
+                    timeout_ms = connect_timeout_ms,
+                    "websocket connect timed out"
+                );
+                FeedDisconnectReport {
+                    connection_id: None,
+                    cause: FeedDisconnectCause::ConnectTimeout,
+                    connection_lifetime_ms: None,
+                    after_resubscribe: false,
+                    error: Some(format!(
+                        "websocket connect timed out after {connect_timeout_ms}ms"
+                    )),
+                    timeout_ms: Some(connect_timeout_ms),
+                }
+            }
+        };
+
+        if let Some(connection_lifetime_ms) = disconnect.connection_lifetime_ms {
+            if should_reset_backoff(0, connection_lifetime_ms, min_stable_ms) {
+                attempt = 0;
             }
         }
 
-        if attempt >= max_failures {
+        let reconnect_delay = if attempt >= max_failures {
             error!(
                 feed = "binance",
                 attempts = attempt,
                 pause_ms = feed_pause_ms,
                 "feed circuit breaker: pausing"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(feed_pause_ms)).await;
-            attempt = 0;
+            Duration::from_millis(feed_pause_ms)
         } else {
             let delay = backoff_delay(attempt, base_delay, max_delay);
             warn!(
@@ -119,7 +195,27 @@ pub async fn run_binance_feed(
                 delay.as_millis(),
                 attempt + 1
             );
-            tokio::time::sleep(delay).await;
+            delay
+        };
+
+        let details_json = disconnect.details_json(
+            attempt.saturating_add(1),
+            Some(reconnect_delay.as_millis() as u64),
+        );
+        let _ = tx
+            .send(FeedMessage::FeedDisconnected {
+                name: "binance".to_string(),
+                connection_id: disconnect.connection_id,
+                cause_class: disconnect.cause.as_str(),
+                details_json,
+            })
+            .await;
+
+        if attempt >= max_failures {
+            tokio::time::sleep(reconnect_delay).await;
+            attempt = 0;
+        } else {
+            tokio::time::sleep(reconnect_delay).await;
             attempt = attempt.saturating_add(1);
         }
     }

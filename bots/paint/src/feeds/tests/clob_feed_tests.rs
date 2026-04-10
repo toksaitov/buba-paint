@@ -680,3 +680,22 @@ async fn process_clob_message_unrelated_asset_id_not_stored() {
     assert!(book_state.up.is_none());
     assert!(book_state.down.is_none());
 }
+
+/// Verifies that queued resubscribe requests collapse to the newest token pair.
+#[test]
+fn apply_latest_resubscribe_keeps_newest_pair() {
+    let (tx, mut rx) = mpsc::channel::<(String, String)>(4);
+    tx.try_send(("tok-up-1".to_string(), "tok-down-1".to_string()))
+        .unwrap();
+    tx.try_send(("tok-up-2".to_string(), "tok-down-2".to_string()))
+        .unwrap();
+    tx.try_send(("tok-up-3".to_string(), "tok-down-3".to_string()))
+        .unwrap();
+
+    let mut up = Some("tok-up-0".to_string());
+    let mut down = Some("tok-down-0".to_string());
+    assert!(apply_latest_resubscribe(&mut rx, &mut up, &mut down));
+    assert_eq!(up.as_deref(), Some("tok-up-3"));
+    assert_eq!(down.as_deref(), Some("tok-down-3"));
+    assert!(!apply_latest_resubscribe(&mut rx, &mut up, &mut down));
+}

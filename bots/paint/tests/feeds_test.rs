@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use buba_paint::config::Config;
 use buba_paint::feeds::FeedMessage;
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -20,6 +21,22 @@ fn test_config() -> Config {
         rtds_ping_interval: 60_000,
         ..Config::default()
     }
+}
+
+/// Start a TCP listener that accepts websocket handshake connections but never responds.
+async fn start_silent_ws_listener() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("ws://127.0.0.1:{port}");
+    let handle = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _stream = stream;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+        }
+    });
+    (url, handle)
 }
 
 /// Verifies that binance feed emits connected on start.
@@ -141,6 +158,109 @@ async fn binance_feed_reconnects_after_disconnect() {
     .expect("timed out waiting for reconnection");
 
     assert!(reconnected, "feed did not reconnect after disconnect");
+}
+
+/// Verifies that a hung websocket handshake becomes a classified connect-timeout disconnect.
+#[tokio::test]
+async fn binance_feed_connect_timeout_emits_disconnect_details() {
+    let (url, listener_handle) = start_silent_ws_listener().await;
+    let mut cfg = test_config();
+    cfg.binance_ws_url = url;
+    cfg.websocket_connect_timeout_ms = 100;
+    cfg.reconnect_base_delay = 50;
+    cfg.reconnect_max_delay = 50;
+
+    let (tx, mut rx) = mpsc::channel::<FeedMessage>(64);
+    let feed_handle = tokio::spawn(async move {
+        let _ = buba_paint::feeds::binance_feed::run_binance_feed(&cfg, tx).await;
+    });
+
+    let (cause_class, details_json) = timeout(Duration::from_secs(3), async {
+        loop {
+            match rx.recv().await {
+                Some(FeedMessage::FeedDisconnected {
+                    name,
+                    cause_class,
+                    details_json,
+                    ..
+                }) if name == "binance" => return (cause_class.to_string(), details_json),
+                Some(_) => {}
+                None => panic!("feed channel closed before timeout disconnect"),
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for connect-timeout disconnect");
+
+    assert_eq!(cause_class, "connect_timeout");
+    let details: serde_json::Value =
+        serde_json::from_str(details_json.as_deref().expect("disconnect details missing")).unwrap();
+    assert_eq!(details["causeClass"], "connect_timeout");
+    assert_eq!(details["timeoutMs"], 100);
+
+    feed_handle.abort();
+    listener_handle.abort();
+}
+
+/// Verifies that Binance reconnects after an idle no-message watchdog timeout.
+#[tokio::test]
+async fn binance_feed_idle_timeout_forces_reconnect() {
+    let server = MockWsServer::start().await;
+    let mut cfg = test_config();
+    cfg.binance_ws_url = server.url.clone();
+    cfg.binance_no_message_reconnect_ms = 200;
+    cfg.reconnect_base_delay = 50;
+    cfg.reconnect_max_delay = 50;
+
+    let (tx, mut rx) = mpsc::channel::<FeedMessage>(64);
+    let feed_handle = tokio::spawn(async move {
+        let _ = buba_paint::feeds::binance_feed::run_binance_feed(&cfg, tx).await;
+    });
+
+    let msg = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out waiting for initial connect")
+        .expect("channel closed");
+    assert!(matches!(msg, FeedMessage::FeedConnected { .. }));
+
+    let reconnected = timeout(Duration::from_secs(5), async {
+        let mut saw_idle_disconnect = false;
+        loop {
+            match rx.recv().await {
+                Some(FeedMessage::FeedDisconnected {
+                    name,
+                    cause_class,
+                    details_json,
+                    ..
+                }) if name == "binance" && cause_class == "idle_timeout" => {
+                    let details: serde_json::Value = serde_json::from_str(
+                        details_json
+                            .as_deref()
+                            .expect("binance idle disconnect details missing"),
+                    )
+                    .unwrap();
+                    assert_eq!(details["causeClass"], "idle_timeout");
+                    assert_eq!(details["timeoutMs"], 200);
+                    saw_idle_disconnect = true;
+                }
+                Some(FeedMessage::FeedConnected { name, .. })
+                    if name == "binance" && saw_idle_disconnect =>
+                {
+                    return true;
+                }
+                Some(_) => {}
+                None => return false,
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for idle-timeout reconnect");
+
+    assert!(
+        reconnected,
+        "binance feed did not reconnect after idle timeout"
+    );
+    feed_handle.abort();
 }
 
 /// Verifies that clob feed sends subscription after resubscribe.
@@ -302,6 +422,128 @@ async fn clob_feed_resubscribes_on_new_tokens() {
     let parsed2: serde_json::Value = serde_json::from_str(&sub2).unwrap();
     assert_eq!(parsed2["assets_ids"][0], "tok-up-2");
     assert_eq!(parsed2["assets_ids"][1], "tok-down-2");
+}
+
+/// Verifies that queued CLOB resubscribe requests coalesce to the newest token pair.
+#[tokio::test]
+async fn clob_feed_resubscribe_coalesces_to_latest_tokens() {
+    let mut server = MockWsServer::start().await;
+    let mut cfg = test_config();
+    cfg.clob_ws_url = server.url.clone();
+    cfg.reconnect_base_delay = 50;
+    cfg.reconnect_max_delay = 50;
+
+    let (tx, mut _rx) = mpsc::channel::<FeedMessage>(64);
+    let (clob_handle, _join) = buba_paint::feeds::clob_feed::run_clob_feed(&cfg, tx).await;
+
+    clob_handle
+        .resubscribe("tok-up-1".to_string(), "tok-down-1".to_string())
+        .await
+        .unwrap();
+
+    let sub1 = timeout(Duration::from_secs(5), server.recv())
+        .await
+        .expect("timed out waiting for first subscription")
+        .expect("no first subscription");
+    let parsed1: serde_json::Value = serde_json::from_str(&sub1).unwrap();
+    assert_eq!(parsed1["assets_ids"][0], "tok-up-1");
+    assert_eq!(parsed1["assets_ids"][1], "tok-down-1");
+
+    clob_handle
+        .resubscribe("tok-up-2".to_string(), "tok-down-2".to_string())
+        .await
+        .unwrap();
+    clob_handle
+        .resubscribe("tok-up-3".to_string(), "tok-down-3".to_string())
+        .await
+        .unwrap();
+
+    let sub2 = timeout(Duration::from_secs(5), server.recv())
+        .await
+        .expect("timed out waiting for coalesced subscription")
+        .expect("no coalesced subscription");
+    let parsed2: serde_json::Value = serde_json::from_str(&sub2).unwrap();
+    assert_eq!(parsed2["assets_ids"][0], "tok-up-3");
+    assert_eq!(parsed2["assets_ids"][1], "tok-down-3");
+}
+
+/// Verifies that the CLOB no-message watchdog reconnects and resubscribes.
+#[tokio::test]
+async fn clob_feed_idle_timeout_forces_reconnect() {
+    let mut server = MockWsServer::start().await;
+    let mut cfg = test_config();
+    cfg.clob_ws_url = server.url.clone();
+    cfg.clob_no_message_reconnect_ms = 200;
+    cfg.reconnect_base_delay = 50;
+    cfg.reconnect_max_delay = 50;
+
+    let (tx, mut rx) = mpsc::channel::<FeedMessage>(64);
+    let (clob_handle, _join) = buba_paint::feeds::clob_feed::run_clob_feed(&cfg, tx).await;
+
+    clob_handle
+        .resubscribe("tok-up".to_string(), "tok-down".to_string())
+        .await
+        .unwrap();
+
+    let first_sub = timeout(Duration::from_secs(5), server.recv())
+        .await
+        .expect("timed out waiting for first CLOB subscription")
+        .expect("no first CLOB subscription");
+    let first_sub_json: serde_json::Value = serde_json::from_str(&first_sub).unwrap();
+    assert_eq!(first_sub_json["assets_ids"][0], "tok-up");
+    assert_eq!(first_sub_json["assets_ids"][1], "tok-down");
+
+    let msg = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out waiting for initial clob connect")
+        .expect("channel closed");
+    assert!(matches!(msg, FeedMessage::FeedConnected { .. }));
+
+    let reconnected = timeout(Duration::from_secs(5), async {
+        let mut saw_idle_disconnect = false;
+        loop {
+            match rx.recv().await {
+                Some(FeedMessage::FeedDisconnected {
+                    name,
+                    cause_class,
+                    details_json,
+                    ..
+                }) if name == "clob" && cause_class == "idle_timeout" => {
+                    let details: serde_json::Value = serde_json::from_str(
+                        details_json
+                            .as_deref()
+                            .expect("clob idle disconnect details missing"),
+                    )
+                    .unwrap();
+                    assert_eq!(details["causeClass"], "idle_timeout");
+                    assert_eq!(details["timeoutMs"], 200);
+                    saw_idle_disconnect = true;
+                }
+                Some(FeedMessage::FeedConnected { name, .. })
+                    if name == "clob" && saw_idle_disconnect =>
+                {
+                    return true;
+                }
+                Some(_) => {}
+                None => return false,
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for CLOB reconnect");
+
+    assert!(
+        reconnected,
+        "clob feed did not reconnect after idle timeout"
+    );
+
+    let second_sub = timeout(Duration::from_secs(5), server.recv())
+        .await
+        .expect("timed out waiting for second CLOB subscription")
+        .expect("no second CLOB subscription");
+    let second_sub_json: serde_json::Value = serde_json::from_str(&second_sub).unwrap();
+    assert_eq!(second_sub_json["assets_ids"][0], "tok-up");
+    assert_eq!(second_sub_json["assets_ids"][1], "tok-down");
 }
 
 /// Verifies that binance feed handles invalid text gracefully.

@@ -27,6 +27,9 @@ fn default_values_match_typescript() {
     assert_eq!(cfg.reconnect_min_stable_ms, 5_000);
     assert_eq!(cfg.reconnect_max_failures, 20);
     assert_eq!(cfg.reconnect_pause_ms, 300_000);
+    assert_eq!(cfg.websocket_connect_timeout_ms, 10_000);
+    assert_eq!(cfg.binance_no_message_reconnect_ms, 5_000);
+    assert_eq!(cfg.clob_no_message_reconnect_ms, 20_000);
 
     assert_eq!(cfg.db_path, "./data/paint.db");
 
@@ -150,6 +153,22 @@ fn pending_settlement_policy_rejects_invalid_fraction() {
 
     cfg.pending_settlement_family_reserve_fraction = 0.0;
     cfg.pending_settlement_global_reserve_fraction = -0.1;
+    assert!(cfg.validate().is_err());
+}
+
+/// Verifies that feed reconnect validation rejects zero timeout/watchdog settings.
+#[test]
+fn feed_reconnect_validation_rejects_zero_thresholds() {
+    let mut cfg = Config::default();
+    cfg.websocket_connect_timeout_ms = 0;
+    assert!(cfg.validate().is_err());
+
+    cfg.websocket_connect_timeout_ms = 10_000;
+    cfg.binance_no_message_reconnect_ms = 0;
+    assert!(cfg.validate().is_err());
+
+    cfg.binance_no_message_reconnect_ms = 5_000;
+    cfg.clob_no_message_reconnect_ms = 0;
     assert!(cfg.validate().is_err());
 }
 
@@ -408,6 +427,9 @@ fn set_param_all_u64_params() {
         "RECONNECT_MIN_STABLE_MS",
         "RECONNECT_MAX_FAILURES",
         "RECONNECT_PAUSE_MS",
+        "WEBSOCKET_CONNECT_TIMEOUT_MS",
+        "BINANCE_NO_MESSAGE_RECONNECT_MS",
+        "CLOB_NO_MESSAGE_RECONNECT_MS",
     ];
     for param in u64_params {
         assert!(
@@ -418,6 +440,9 @@ fn set_param_all_u64_params() {
     assert_eq!(cfg.latency_arb_cooldown_ms, 100);
     assert_eq!(cfg.peak_dd_pause_ms, 100);
     assert_eq!(cfg.circuit_breaker_losses, 100);
+    assert_eq!(cfg.websocket_connect_timeout_ms, 100);
+    assert_eq!(cfg.binance_no_message_reconnect_ms, 100);
+    assert_eq!(cfg.clob_no_message_reconnect_ms, 100);
 }
 
 /// Verifies that from env smoke test.
@@ -485,6 +510,18 @@ fn from_env_smoke_test() {
     assert_eq!(cfg.reconnect_base_delay, default.reconnect_base_delay);
     assert_eq!(cfg.reconnect_max_delay, default.reconnect_max_delay);
     assert_eq!(cfg.reconnect_min_stable_ms, default.reconnect_min_stable_ms);
+    assert_eq!(
+        cfg.websocket_connect_timeout_ms,
+        default.websocket_connect_timeout_ms
+    );
+    assert_eq!(
+        cfg.binance_no_message_reconnect_ms,
+        default.binance_no_message_reconnect_ms
+    );
+    assert_eq!(
+        cfg.clob_no_message_reconnect_ms,
+        default.clob_no_message_reconnect_ms
+    );
     assert_eq!(cfg.gamma_market_limit, default.gamma_market_limit);
     assert_eq!(
         cfg.feed_event_storage_profile,
@@ -683,4 +720,6 @@ fn set_param_supports_calm_and_router_fields() {
     assert_eq!(cfg.calm_persistence_max_window_time_ms, 75_000);
     assert!(cfg.set_param("CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S", 2.0));
     assert_eq!(cfg.calm_persistence_max_open_crosses_30s, 2);
+    assert!(cfg.set_param("CALM_PERSISTENCE_MIN_EXPECTED_EDGE", 0.05));
+    assert!((cfg.calm_persistence_min_expected_edge - 0.05).abs() < f64::EPSILON);
 }

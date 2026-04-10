@@ -102,8 +102,11 @@ pub enum FeedMessage {
     FeedDisconnected {
         name: String,
         connection_id: Option<String>,
+        cause_class: &'static str,
+        details_json: Option<String>,
     },
     ChainlinkStale {
         connection_id: Option<String>,
+        details_json: Option<String>,
     },
 }

@@ -273,6 +273,9 @@ pub struct Config {
     pub clob_ping_interval: u64,
     pub rtds_ping_interval: u64,
     pub chainlink_stale_ms: u64,
+    pub websocket_connect_timeout_ms: u64,
+    pub binance_no_message_reconnect_ms: u64,
+    pub clob_no_message_reconnect_ms: u64,
 
     pub reconnect_base_delay: u64,
     pub reconnect_max_delay: u64,
@@ -308,6 +311,7 @@ pub struct Config {
     pub calm_persistence_max_quote_churn_per_s: f64,
     pub calm_persistence_min_alignment_fraction: f64,
     pub calm_persistence_max_fair_bias: f64,
+    pub calm_persistence_min_expected_edge: f64,
     pub calm_persistence_max_position_fraction: Option<f64>,
 
     pub momentum_window_ms: u64,
@@ -408,6 +412,15 @@ impl Config {
     /// Validate config invariants that should fail fast at startup.
     pub fn validate(&self) -> anyhow::Result<()> {
         let _ = self.pending_settlement_policy()?;
+        if self.websocket_connect_timeout_ms == 0 {
+            bail!("WEBSOCKET_CONNECT_TIMEOUT_MS must be > 0");
+        }
+        if self.binance_no_message_reconnect_ms == 0 {
+            bail!("BINANCE_NO_MESSAGE_RECONNECT_MS must be > 0");
+        }
+        if self.clob_no_message_reconnect_ms == 0 {
+            bail!("CLOB_NO_MESSAGE_RECONNECT_MS must be > 0");
+        }
         Ok(())
     }
 
@@ -468,6 +481,9 @@ impl Config {
             "CALM_PERSISTENCE_MAX_FAIR_BIAS" => {
                 self.calm_persistence_max_fair_bias = value;
             }
+            "CALM_PERSISTENCE_MIN_EXPECTED_EDGE" => {
+                self.calm_persistence_min_expected_edge = value;
+            }
             "CALM_PERSISTENCE_MAX_POSITION_FRACTION" => {
                 self.calm_persistence_max_position_fraction = Some(value);
             }
@@ -492,6 +508,13 @@ impl Config {
             "RECONNECT_MIN_STABLE_MS" => self.reconnect_min_stable_ms = value as u64,
             "RECONNECT_MAX_FAILURES" => self.reconnect_max_failures = value as u32,
             "RECONNECT_PAUSE_MS" => self.reconnect_pause_ms = value as u64,
+            "WEBSOCKET_CONNECT_TIMEOUT_MS" => self.websocket_connect_timeout_ms = value as u64,
+            "BINANCE_NO_MESSAGE_RECONNECT_MS" => {
+                self.binance_no_message_reconnect_ms = value as u64;
+            }
+            "CLOB_NO_MESSAGE_RECONNECT_MS" => {
+                self.clob_no_message_reconnect_ms = value as u64;
+            }
             "TREND_FILTER_THRESHOLD" => self.trend_filter_threshold = value,
             "TREND_FILTER_WINDOW" => self.trend_filter_window = value as u64,
             "TREND_FILTER_PER_STRATEGY" => self.trend_filter_per_strategy = value != 0.0,
@@ -583,6 +606,9 @@ impl Config {
             clob_ping_interval: 10_000,
             rtds_ping_interval: 5_000,
             chainlink_stale_ms: env_u64("CHAINLINK_STALE_MS", 30_000),
+            websocket_connect_timeout_ms: env_u64("WEBSOCKET_CONNECT_TIMEOUT_MS", 10_000),
+            binance_no_message_reconnect_ms: env_u64("BINANCE_NO_MESSAGE_RECONNECT_MS", 5_000),
+            clob_no_message_reconnect_ms: env_u64("CLOB_NO_MESSAGE_RECONNECT_MS", 20_000),
 
             reconnect_base_delay: 1_000,
             reconnect_max_delay: 30_000,
@@ -649,6 +675,7 @@ impl Config {
                 0.60,
             ),
             calm_persistence_max_fair_bias: env_f64("CALM_PERSISTENCE_MAX_FAIR_BIAS", 0.18),
+            calm_persistence_min_expected_edge: env_f64("CALM_PERSISTENCE_MIN_EXPECTED_EDGE", 0.0),
             calm_persistence_max_position_fraction: env::var(
                 "CALM_PERSISTENCE_MAX_POSITION_FRACTION",
             )
@@ -736,6 +763,7 @@ impl Config {
 
 impl Default for Config {
     /// Returns defaults without reading environment variables (useful for tests).
+    #[allow(clippy::too_many_lines)]
     fn default() -> Self {
         let trade_stream = "btcusdt@aggTrade".to_string();
         let book_ticker_stream = "btcusdt@bookTicker".to_string();
@@ -759,6 +787,9 @@ impl Default for Config {
             clob_ping_interval: 10_000,
             rtds_ping_interval: 5_000,
             chainlink_stale_ms: 30_000,
+            websocket_connect_timeout_ms: 10_000,
+            binance_no_message_reconnect_ms: 5_000,
+            clob_no_message_reconnect_ms: 20_000,
 
             reconnect_base_delay: 1_000,
             reconnect_max_delay: 30_000,
@@ -794,6 +825,7 @@ impl Default for Config {
             calm_persistence_max_quote_churn_per_s: 20.0,
             calm_persistence_min_alignment_fraction: 0.60,
             calm_persistence_max_fair_bias: 0.18,
+            calm_persistence_min_expected_edge: 0.0,
             calm_persistence_max_position_fraction: None,
 
             momentum_window_ms: 30_000,

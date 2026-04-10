@@ -2,7 +2,7 @@ use crate::bankroll::{BankrollManager, SpreadAffordabilityCheck};
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::db::database::Database;
-use crate::executor::{ExecutionEngine, SubmissionOutcome};
+use crate::executor::{ExecutionEngine, QueueRejectionReason, SubmissionOutcome};
 use crate::portfolio::{
     PortfolioRegime, StrategyFamily, detect_regime, select_family_for_candidates,
 };
@@ -122,6 +122,7 @@ pub fn run_strategy_cycle(
 
         match candidate.result {
             StrategyResult::Single(signal) => handle_single_candidate(
+                ctx,
                 *signal,
                 candidate.family,
                 observed_regime,
@@ -130,6 +131,7 @@ pub fn run_strategy_cycle(
                 bankroll,
                 trend_tracker,
                 execution_engine,
+                rejection_tracker,
                 config,
                 clock,
                 execution_fidelity,
@@ -186,6 +188,7 @@ fn collect_candidates(
 /// Handle one single-side candidate emitted by a strategy.
 #[allow(clippy::too_many_arguments)]
 fn handle_single_candidate(
+    ctx: &StrategyContext,
     mut signal: Signal,
     family: StrategyFamily,
     regime: PortfolioRegime,
@@ -194,6 +197,7 @@ fn handle_single_candidate(
     bankroll: &mut BankrollManager,
     trend_tracker: &mut ScopedTrendTracker,
     execution_engine: &mut ExecutionEngine,
+    rejection_tracker: &mut StrategyRejectionTracker,
     config: &Config,
     clock: &dyn Clock,
     execution_fidelity: ReplayFidelity,
@@ -208,6 +212,21 @@ fn handle_single_candidate(
             direction: signal.direction,
             regime,
         });
+        return Ok(());
+    }
+    if family == StrategyFamily::CalmPersistence
+        && let Some(reason) =
+            execution_engine.precheck_single_submission(&signal, window, db, config, clock)?
+        && let Some(rejection_reason) = calm_duplicate_rejection_reason(reason)
+    {
+        rejection_tracker.record(
+            &window.market_id,
+            &StrategyRejection::new(
+                signal.strategy.as_str(),
+                rejection_reason,
+                calm_duplicate_rejection_sample(ctx, &signal),
+            ),
+        );
         return Ok(());
     }
 
@@ -228,6 +247,33 @@ fn handle_single_candidate(
         outcome: submission,
     });
     Ok(())
+}
+
+/// Map queue-layer duplicate reasons into strategy-layer calm diagnostics.
+fn calm_duplicate_rejection_reason(
+    reason: QueueRejectionReason,
+) -> Option<StrategyRejectionReason> {
+    match reason {
+        QueueRejectionReason::DuplicateOpenPosition => {
+            Some(StrategyRejectionReason::DuplicateOpenPosition)
+        }
+        QueueRejectionReason::DuplicatePendingOrder => {
+            Some(StrategyRejectionReason::DuplicatePendingOrder)
+        }
+        QueueRejectionReason::MaxOpenPositions => None,
+    }
+}
+
+/// Build one calm duplicate rejection sample without mutating DB state.
+fn calm_duplicate_rejection_sample(
+    ctx: &StrategyContext,
+    signal: &Signal,
+) -> StrategyRejectionSample {
+    let mut sample = StrategyRejectionSample::from_ctx(ctx);
+    sample.up_ask = Some(signal.up_ask);
+    sample.down_ask = Some(signal.down_ask);
+    sample.expected_edge = signal.expected_edge;
+    sample
 }
 
 /// Handle one spread batch emitted by a strategy.
@@ -395,3 +441,7 @@ fn spread_signal_pair(signals: &[Signal]) -> Option<(&Signal, &Signal)> {
         .find(|signal| signal.direction == SignalDirection::Down)?;
     Some((up_signal, down_signal))
 }
+
+#[cfg(test)]
+#[path = "tests/strategy_cycle_tests.rs"]
+mod tests;

@@ -204,6 +204,9 @@ pub enum StrategyRejectionReason {
     SpreadThresholdNotMet,
     LeggingRiskTooHigh,
     ExpectedEdgeNonPositive,
+    ExpectedEdgeBelowMin,
+    DuplicateOpenPosition,
+    DuplicatePendingOrder,
 }
 
 impl StrategyRejectionReason {
@@ -230,6 +233,9 @@ impl StrategyRejectionReason {
             Self::SpreadThresholdNotMet => "spread_threshold_not_met",
             Self::LeggingRiskTooHigh => "legging_risk_too_high",
             Self::ExpectedEdgeNonPositive => "expected_edge_non_positive",
+            Self::ExpectedEdgeBelowMin => "expected_edge_below_min",
+            Self::DuplicateOpenPosition => "duplicate_open_position",
+            Self::DuplicatePendingOrder => "duplicate_pending_order",
         }
     }
 }

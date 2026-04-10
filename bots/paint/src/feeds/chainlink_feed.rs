@@ -8,7 +8,9 @@ use tracing::{error, info, warn};
 use super::FeedMessage;
 use crate::config::{Config, FeedEventStorageProfile};
 
-use super::util::{backoff_delay, now_ms, now_us, should_reset_backoff};
+use super::util::{
+    FeedDisconnectCause, FeedDisconnectReport, backoff_delay, now_ms, now_us, should_reset_backoff,
+};
 
 /// Run the Chainlink (RTDS) price feed.
 ///
@@ -33,13 +35,19 @@ pub async fn run_chainlink_feed(
     let min_stable_ms = config.reconnect_min_stable_ms;
     let max_failures = config.reconnect_max_failures;
     let feed_pause_ms = config.reconnect_pause_ms;
+    let connect_timeout_ms = config.websocket_connect_timeout_ms;
     let mut attempt: u32 = 0;
 
     loop {
         info!(feed = "chainlink", "connecting to {url}");
 
-        match tokio_tungstenite::connect_async(url).await {
-            Ok((ws_stream, _response)) => {
+        let disconnect = match tokio::time::timeout(
+            Duration::from_millis(connect_timeout_ms),
+            tokio_tungstenite::connect_async(url),
+        )
+        .await
+        {
+            Ok(Ok((ws_stream, _response))) => {
                 let connected_at = now_ms();
                 let connection_id = format!("chainlink-{}", now_us());
                 if tx
@@ -65,119 +73,167 @@ pub async fn run_chainlink_feed(
                 });
                 if let Err(e) = write.send(Message::Text(sub_msg.to_string().into())).await {
                     error!(feed = "chainlink", "failed to send subscription: {e}");
-                    let _ = tx
-                        .send(FeedMessage::FeedDisconnected {
-                            name: "chainlink".to_string(),
-                            connection_id: Some(connection_id.clone()),
-                        })
-                        .await;
-                    if attempt >= max_failures {
-                        error!(
-                            feed = "chainlink",
-                            attempts = attempt,
-                            pause_ms = feed_pause_ms,
-                            "feed circuit breaker: pausing"
-                        );
-                        tokio::time::sleep(Duration::from_millis(feed_pause_ms)).await;
-                        attempt = 0;
-                    } else {
-                        let delay = backoff_delay(attempt, base_delay, max_delay);
-                        tokio::time::sleep(delay).await;
-                        attempt = attempt.saturating_add(1);
+                    FeedDisconnectReport {
+                        connection_id: Some(connection_id),
+                        cause: FeedDisconnectCause::ConnectionFailed,
+                        connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                        after_resubscribe: false,
+                        error: Some(format!("failed to send subscription: {e}")),
+                        timeout_ms: None,
                     }
-                    continue;
-                }
+                } else {
+                    let mut ping_timer =
+                        tokio::time::interval(Duration::from_millis(ping_interval_ms));
+                    let stale_duration = Duration::from_millis(stale_ms);
+                    let stale_sleep = tokio::time::sleep(stale_duration);
+                    tokio::pin!(stale_sleep);
 
-                let mut ping_timer = tokio::time::interval(Duration::from_millis(ping_interval_ms));
-                let stale_duration = Duration::from_millis(stale_ms);
-                let stale_sleep = tokio::time::sleep(stale_duration);
-                tokio::pin!(stale_sleep);
-
-                loop {
-                    tokio::select! {
-                        msg = read.next() => {
-                            match msg {
-                                Some(Ok(Message::Text(text))) => {
-                                    match process_chainlink_message(&text, &tx, &connection_id, retain_payloads).await {
-                                        Ok(true) => {
-
-                                            stale_sleep.as_mut().reset(
-                                                tokio::time::Instant::now() + stale_duration
-                                            );
-                                        }
-                                        Ok(false) => {
-
-                                        }
-                                        Err(e) => {
-                                            warn!(feed = "chainlink", "failed to process message: {e}");
+                    loop {
+                        tokio::select! {
+                            msg = read.next() => {
+                                match msg {
+                                    Some(Ok(Message::Text(text))) => {
+                                        match process_chainlink_message(&text, &tx, &connection_id, retain_payloads).await {
+                                            Ok(true) => {
+                                                stale_sleep.as_mut().reset(
+                                                    tokio::time::Instant::now() + stale_duration
+                                                );
+                                            }
+                                            Ok(false) => {}
+                                            Err(e) => {
+                                                warn!(feed = "chainlink", "failed to process message: {e}");
+                                            }
                                         }
                                     }
-                                }
-                                Some(Ok(Message::Ping(data))) => {
-                                    if write.send(Message::Pong(data)).await.is_err() {
-                                        warn!(feed = "chainlink", "failed to send pong");
-                                        break;
+                                    Some(Ok(Message::Ping(data))) => {
+                                        if write.send(Message::Pong(data)).await.is_err() {
+                                            warn!(feed = "chainlink", "failed to send pong");
+                                            break FeedDisconnectReport {
+                                                connection_id: Some(connection_id.clone()),
+                                                cause: FeedDisconnectCause::PingFailure,
+                                                connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                                after_resubscribe: false,
+                                                error: Some("failed to send pong".to_string()),
+                                                timeout_ms: None,
+                                            };
+                                        }
                                     }
+                                    Some(Ok(Message::Close(_))) => {
+                                        info!(feed = "chainlink", "server sent close frame");
+                                        break FeedDisconnectReport {
+                                            connection_id: Some(connection_id.clone()),
+                                            cause: FeedDisconnectCause::ConnectionFailed,
+                                            connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                            after_resubscribe: false,
+                                            error: Some("server sent close frame".to_string()),
+                                            timeout_ms: None,
+                                        };
+                                    }
+                                    Some(Err(e)) => {
+                                        error!(feed = "chainlink", "websocket error: {e}");
+                                        break FeedDisconnectReport {
+                                            connection_id: Some(connection_id.clone()),
+                                            cause: FeedDisconnectCause::WebsocketError,
+                                            connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                            after_resubscribe: false,
+                                            error: Some(e.to_string()),
+                                            timeout_ms: None,
+                                        };
+                                    }
+                                    None => {
+                                        info!(feed = "chainlink", "stream ended");
+                                        break FeedDisconnectReport {
+                                            connection_id: Some(connection_id.clone()),
+                                            cause: FeedDisconnectCause::ConnectionFailed,
+                                            connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                            after_resubscribe: false,
+                                            error: Some("stream ended".to_string()),
+                                            timeout_ms: None,
+                                        };
+                                    }
+                                    Some(Ok(_)) => {}
                                 }
-                                Some(Ok(Message::Close(_))) => {
-                                    info!(feed = "chainlink", "server sent close frame");
-                                    break;
-                                }
-                                Some(Err(e)) => {
-                                    error!(feed = "chainlink", "websocket error: {e}");
-                                    break;
-                                }
-                                None => {
-                                    info!(feed = "chainlink", "stream ended");
-                                    break;
-                                }
-                                Some(Ok(_)) => {}
                             }
-                        }
-                        _ = ping_timer.tick() => {
-                            if write.send(Message::Ping(Vec::new().into())).await.is_err() {
-                                warn!(feed = "chainlink", "failed to send ping");
-                                break;
+                            _ = ping_timer.tick() => {
+                                if write.send(Message::Ping(Vec::new().into())).await.is_err() {
+                                    warn!(feed = "chainlink", "failed to send ping");
+                                    break FeedDisconnectReport {
+                                        connection_id: Some(connection_id.clone()),
+                                        cause: FeedDisconnectCause::PingFailure,
+                                        connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                        after_resubscribe: false,
+                                        error: Some("failed to send ping".to_string()),
+                                        timeout_ms: None,
+                                    };
+                                }
                             }
-                        }
-                        () = &mut stale_sleep => {
-                            warn!(feed = "chainlink", "no update in {stale_ms}ms — stale");
-                            let _ = tx
-                                .send(FeedMessage::ChainlinkStale {
+                            () = &mut stale_sleep => {
+                                warn!(feed = "chainlink", "no update in {stale_ms}ms — stale");
+                                let stale_report = FeedDisconnectReport {
                                     connection_id: Some(connection_id.clone()),
-                                })
-                                .await;
+                                    cause: FeedDisconnectCause::StaleTimeout,
+                                    connection_lifetime_ms: Some(now_ms().saturating_sub(connected_at)),
+                                    after_resubscribe: false,
+                                    error: None,
+                                    timeout_ms: Some(stale_ms),
+                                };
+                                let _ = tx
+                                    .send(FeedMessage::ChainlinkStale {
+                                        connection_id: Some(connection_id.clone()),
+                                        details_json: stale_report.details_json(attempt.saturating_add(1), None),
+                                    })
+                                    .await;
 
-                            break;
+                                break stale_report;
+                            }
                         }
                     }
-                }
-
-                if should_reset_backoff(connected_at, now_ms(), min_stable_ms) {
-                    attempt = 0;
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 error!(feed = "chainlink", "connection failed: {e}");
+                FeedDisconnectReport {
+                    connection_id: None,
+                    cause: FeedDisconnectCause::ConnectionFailed,
+                    connection_lifetime_ms: None,
+                    after_resubscribe: false,
+                    error: Some(e.to_string()),
+                    timeout_ms: None,
+                }
+            }
+            Err(_) => {
+                error!(
+                    feed = "chainlink",
+                    timeout_ms = connect_timeout_ms,
+                    "websocket connect timed out"
+                );
+                FeedDisconnectReport {
+                    connection_id: None,
+                    cause: FeedDisconnectCause::ConnectTimeout,
+                    connection_lifetime_ms: None,
+                    after_resubscribe: false,
+                    error: Some(format!(
+                        "websocket connect timed out after {connect_timeout_ms}ms"
+                    )),
+                    timeout_ms: Some(connect_timeout_ms),
+                }
+            }
+        };
+
+        if let Some(connection_lifetime_ms) = disconnect.connection_lifetime_ms {
+            if should_reset_backoff(0, connection_lifetime_ms, min_stable_ms) {
+                attempt = 0;
             }
         }
 
-        let _ = tx
-            .send(FeedMessage::FeedDisconnected {
-                name: "chainlink".to_string(),
-                connection_id: None,
-            })
-            .await;
-
-        if attempt >= max_failures {
+        let reconnect_delay = if attempt >= max_failures {
             error!(
                 feed = "chainlink",
                 attempts = attempt,
                 pause_ms = feed_pause_ms,
                 "feed circuit breaker: pausing"
             );
-            tokio::time::sleep(Duration::from_millis(feed_pause_ms)).await;
-            attempt = 0;
+            Duration::from_millis(feed_pause_ms)
         } else {
             let delay = backoff_delay(attempt, base_delay, max_delay);
             warn!(
@@ -186,7 +242,27 @@ pub async fn run_chainlink_feed(
                 delay.as_millis(),
                 attempt + 1
             );
-            tokio::time::sleep(delay).await;
+            delay
+        };
+
+        let details_json = disconnect.details_json(
+            attempt.saturating_add(1),
+            Some(reconnect_delay.as_millis() as u64),
+        );
+        let _ = tx
+            .send(FeedMessage::FeedDisconnected {
+                name: "chainlink".to_string(),
+                connection_id: disconnect.connection_id,
+                cause_class: disconnect.cause.as_str(),
+                details_json,
+            })
+            .await;
+
+        if attempt >= max_failures {
+            tokio::time::sleep(reconnect_delay).await;
+            attempt = 0;
+        } else {
+            tokio::time::sleep(reconnect_delay).await;
             attempt = attempt.saturating_add(1);
         }
     }

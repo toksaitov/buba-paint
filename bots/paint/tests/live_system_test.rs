@@ -329,7 +329,22 @@ async fn run_one_window(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    tokio::time::sleep(Duration::from_secs(window_secs + 2)).await;
+    tokio::time::sleep(Duration::from_secs(window_secs + 1)).await;
+
+    let settle_deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    loop {
+        let settled_count = {
+            let conn = rusqlite::Connection::open(db_path).unwrap();
+            conn.query_row("SELECT COUNT(*) FROM trade_results", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0)
+        };
+        if settled_count > 0 || tokio::time::Instant::now() >= settle_deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
@@ -2575,6 +2590,107 @@ async fn live_bot_survives_concurrent_feed_disconnections() {
     assert!(
         run_result.is_ok(),
         "run_live returned an error after feed disconnections: {run_result:?}"
+    );
+}
+
+/// Verifies that idle reconnects still leave stale-data trading safely blocked.
+#[tokio::test]
+async fn live_bot_idle_reconnects_do_not_bypass_freshness_gating() {
+    let binance_mock = MockWsServer::start().await;
+    let clob_mock = MockWsServer::start().await;
+    let chainlink_mock = MockWsServer::start().await;
+    let gamma_mock = MockServer::start().await;
+
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(12);
+    register_gamma_mock(&gamma_mock, current_slot, &end_date).await;
+
+    let tmp_db = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+    let mut config = test_config(
+        &binance_mock.url,
+        &clob_mock.url,
+        &chainlink_mock.url,
+        &gamma_mock.uri(),
+    );
+    config.binance_no_message_reconnect_ms = 300;
+    config.clob_no_message_reconnect_ms = 300;
+    config.reconnect_base_delay = 50;
+    config.reconnect_max_delay = 50;
+    config.chainlink_stale_ms = 5_000;
+    config.min_window_time_ms = 0;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let db_path_clone = db_path.clone();
+    let bot_handle = tokio::spawn(async move {
+        buba_paint::live::run_live(config, &db_path_clone, 200.0, shutdown_rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    send_rising_binance_ticks(&binance_mock, 10).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let _ = shutdown_tx.send(());
+    let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
+    assert!(result.is_ok(), "bot did not shut down within timeout");
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "bot task panicked: {inner:?}");
+    assert!(inner.unwrap().is_ok(), "run_live returned an error");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    let trade_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM simulated_trades", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        trade_count, 0,
+        "Expected no trades while feeds were repeatedly going stale, got {trade_count}"
+    );
+
+    let filled_signal_metrics: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM signal_metrics
+             WHERE decision_status = 'filled'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        filled_signal_metrics, 0,
+        "Expected zero filled signal metrics while feeds were idling and reconnecting"
+    );
+
+    let binance_idle_disconnects: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM feed_health_events
+             WHERE source = 'binance'
+               AND event_type = 'disconnected'
+               AND json_extract(details_json, '$.causeClass') = 'idle_timeout'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        binance_idle_disconnects > 0,
+        "Expected at least one Binance idle-timeout disconnect"
+    );
+
+    let clob_idle_disconnects: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM feed_health_events
+             WHERE source = 'clob'
+               AND event_type = 'disconnected'
+               AND json_extract(details_json, '$.causeClass') = 'idle_timeout'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        clob_idle_disconnects > 0,
+        "Expected at least one CLOB idle-timeout disconnect"
     );
 }
 

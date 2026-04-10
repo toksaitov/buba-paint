@@ -1,0 +1,6 @@
+label	calm_max_ask	calm_min_edge	total_pnl	total_trades	latency_pnl	latency_trades	spread_pnl	spread_trades	calm_pnl	calm_trades	max_dd	calm_fills	calm_misses	calm_rejected
+baseline_current	0.75	0.00	94.44	52	128.05	21	0	0	-33.62	31	0.3252	31	3	1604
+candidate_060_edge000	0.60	0.00	93.32	35	124.88	21	0	0	-31.56	14	0.3126	14	3	1086
+candidate_060_edge005	0.60	0.05	93.32	35	124.88	21	0	0	-31.56	14	0.3126	14	3	1079
+candidate_065_edge000	0.65	0.00	114.84	36	131.79	21	0	0	-16.95	15	0.3015	15	1	1156
+candidate_065_edge005	0.65	0.05	158.61	41	154.64	22	0	0	3.97	19	0.2938	19	3	52

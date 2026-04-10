@@ -96,3 +96,69 @@ fn should_reset_backoff_zero_threshold() {
 fn should_reset_backoff_overflow_protection() {
     assert!(!should_reset_backoff(u64::MAX, 0, 5000));
 }
+
+/// Verifies that disconnect causes expose stable operator labels.
+#[test]
+fn feed_disconnect_cause_labels_are_stable() {
+    assert_eq!(
+        FeedDisconnectCause::WebsocketError.as_str(),
+        "websocket_error"
+    );
+    assert_eq!(
+        FeedDisconnectCause::ConnectTimeout.as_str(),
+        "connect_timeout"
+    );
+    assert_eq!(FeedDisconnectCause::IdleTimeout.as_str(), "idle_timeout");
+    assert_eq!(FeedDisconnectCause::StaleTimeout.as_str(), "stale_timeout");
+    assert_eq!(FeedDisconnectCause::PingFailure.as_str(), "ping_failure");
+    assert_eq!(
+        FeedDisconnectCause::ConnectionFailed.as_str(),
+        "connection_failed"
+    );
+}
+
+/// Verifies that feed-health detail payloads serialize expected reconnect metadata.
+#[test]
+fn feed_health_details_serialize_reconnect_metadata() {
+    let json = FeedHealthDetails::new(
+        FeedDisconnectCause::IdleTimeout,
+        2,
+        Some(1200),
+        Some(4500),
+        true,
+        None,
+        Some(20_000),
+    )
+    .to_json()
+    .expect("details JSON should serialize");
+
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["causeClass"], "idle_timeout");
+    assert_eq!(value["attempt"], 2);
+    assert_eq!(value["reconnectDelayMs"], 1200);
+    assert_eq!(value["connectionLifetimeMs"], 4500);
+    assert_eq!(value["afterResubscribe"], true);
+    assert_eq!(value["timeoutMs"], 20000);
+}
+
+/// Verifies that feed-disconnect reports derive their JSON from the chosen retry delay.
+#[test]
+fn feed_disconnect_report_builds_details_json() {
+    let report = FeedDisconnectReport {
+        connection_id: Some("feed-1".to_string()),
+        cause: FeedDisconnectCause::ConnectTimeout,
+        connection_lifetime_ms: None,
+        after_resubscribe: false,
+        error: Some("connect timed out".to_string()),
+        timeout_ms: Some(10_000),
+    };
+
+    let json = report
+        .details_json(3, Some(2200))
+        .expect("report JSON should serialize");
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["causeClass"], "connect_timeout");
+    assert_eq!(value["attempt"], 3);
+    assert_eq!(value["reconnectDelayMs"], 2200);
+    assert_eq!(value["error"], "connect timed out");
+}

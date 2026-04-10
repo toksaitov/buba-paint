@@ -6,6 +6,8 @@ Settlements are applied only on authoritative Polymarket outcomes. Dynamic taker
 
 The reserve model and exact-run parity workflow are documented in [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md). Conservative pending-settlement handling is now the real default for new runs. Compatibility mode is still available, but only as a legacy/diagnostic preset.
 
+Current release note: the latest point release hardens live websocket transport without changing trading semantics. All three feeds now share a bounded websocket connect timeout, Binance and CLOB reconnect if the socket stays open but no text market data arrives for too long, and CLOB reconnects coalesce stale resubscribe requests down to the newest market-token pair. The stale-data gates are unchanged, so the bot still blocks trading rather than trading blind.
+
 No real orders, no wallet, no private keys. This is still a data-collection and strategy-validation tool. The code is structured to reduce the paper/live gap, not to place live money trades.
 
 Repository agent-instruction alias: [AGENTS.md](./AGENTS.md) points to the canonical [CLAUDE.md](./CLAUDE.md). Keep `CLAUDE.md` as the real source of truth.
@@ -57,7 +59,7 @@ For operator defaults and exact env triples, do not rely on memory. Use [docs/pe
 - Polymarket CLOB (`wss://ws-subscriptions-clob.polymarket.com/ws/market`): order book snapshots + price changes, variable rate.
 - Chainlink RTDS (`wss://ws-live-data.polymarket.com`): oracle BTC/USD price used as settlement reference, ~1 msg/s.
 
-All feeds auto-reconnect with exponential backoff (1s base, 30s max, jitter). Chainlink detects silent staleness and force-reconnects.
+All feeds auto-reconnect with exponential backoff (1s base, 30s max, jitter). Websocket connects are bounded by `WEBSOCKET_CONNECT_TIMEOUT_MS`, Binance and CLOB have no-message watchdog reconnects, and Chainlink still detects silent staleness and force-reconnects. These transport safeguards reduce long stale-data gaps without relaxing the freshness rules that block trading on stale inputs.
 
 ## Architecture
 
@@ -80,7 +82,7 @@ Core loop: `cli.rs` (clap CLI parsing, command dispatch), `live.rs` (live tradin
 
 Strategies: `strategies/latency_arb.rs` (feature-scored stale-odds signal, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `strategies/calm_persistence.rs` (late-window sign persistence in calm regimes), `signal_features.rs` (shared feature engine used by live paper and backtests).
 
-Feeds: `feeds/binance_feed.rs` (combined Binance trade, top-of-book, and shallow-depth stream), `feeds/clob_feed.rs` (CLOB order book with incremental updates, best-bid-ask support, and dynamic resubscription), `feeds/chainlink_feed.rs` (RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking).
+Feeds: `feeds/binance_feed.rs` (combined Binance trade, top-of-book, and shallow-depth stream, with bounded connect timeout and no-message watchdog), `feeds/clob_feed.rs` (CLOB order book with incremental updates, best-bid-ask support, dynamic resubscription, and latest-token reconnect coalescing), `feeds/chainlink_feed.rs` (RTDS Chainlink prices + staleness detection), `feeds/util.rs` (exponential backoff with jitter, stable connection tracking, and structured disconnect metadata).
 
 Data: `bankroll.rs` (per-strategy half-Kelly sizing, sleeves, caps, confidence curve, DD pause, and phase-aware active-vs-pending settlement reserve accounting), `position_manager.rs` (trade lifecycle, opposing position guard, authoritative settlement), `circuit_breaker.rs` (pause after consecutive losses), `tick_logger.rs` (1s telemetry sampling for dashboards and coarse inspection), `trend_tracker.rs` (strategy-scoped directional trend filter), `portfolio.rs` (regime router, family attribution, and non-competing portfolio helpers).
 
@@ -172,6 +174,14 @@ cargo run -p buba-paint --release -- live \
   --set LATENCY_ARB_MAX_ASK=0.60 \
   --set LATENCY_ARB_MAX_POSITION_FRACTION=0.075 \
   --set SPREAD_CAPTURE_THRESHOLD=0.970
+
+# Continue an existing live run after a bot-only robustness update:
+WEBSOCKET_CONNECT_TIMEOUT_MS=10000 \
+BINANCE_NO_MESSAGE_RECONNECT_MS=5000 \
+CLOB_NO_MESSAGE_RECONNECT_MS=20000 \
+cargo run -p buba-paint --release -- live \
+  --db-path runs/011/buba-paint.db \
+  --balance 200
 ```
 
 ### Single backtest (paint)
@@ -229,6 +239,12 @@ The recommended exact-run workflow is:
 - keep `BACKTEST_SETTLEMENT_MODE=observed_market_resolution`
 - keep pending-settlement reserve handling at the default conservative mode
 - override the reserve knobs only if you are intentionally comparing against compatibility or risky mode
+
+The current calm point-release candidate after the `run-011` forensic replay and `calm-004` confirmation is:
+
+- `CALM_PERSISTENCE_MAX_ASK=0.65`
+- `CALM_PERSISTENCE_MIN_EXPECTED_EDGE=0.05`
+- keep the rest of the calm row unchanged (`30-90s`, `6bps`, `distance/vol=1.0`, `alignment=0.5`, `fairBias=0.35`, `realizedVol15s<=80`, `openCrosses30s<=1`, `quoteChurn<=100`, `sleeve=0.05`)
 
 ### Verify settlements (paint)
 
@@ -319,7 +335,7 @@ All settings via environment variables or `--set` CLI flag.
   - `compact` is the production default. It keeps typed replay fields, drops bulky hot-path payload blobs, buckets Binance depth rows, and suppresses high-rate book-ticker persistence.
   - `full_debug` keeps raw payload retention for short local diagnostics and should not be the week-long live-paper default.
 
-Core: `DB_PATH` (default `./data/paint.db`) is the SQLite database path. `LOG_LEVEL` (default `info`): debug, info, warn, error. `TICK_INTERVAL` (default `1000`): coarse telemetry sampling interval in ms. `GAMMA_POLL_INTERVAL` (default `60000`): Gamma API poll interval in ms. `CHAINLINK_STALE_MS` (default `30000`): force-reconnect after silence. `MAX_SIGNAL_FEED_AGE_MS` and `MAX_QUOTE_AGE_MS` cap stale inputs for signal generation.
+Core: `DB_PATH` (default `./data/paint.db`) is the SQLite database path. `LOG_LEVEL` (default `info`): debug, info, warn, error. `TICK_INTERVAL` (default `1000`): coarse telemetry sampling interval in ms. `GAMMA_POLL_INTERVAL` (default `60000`): Gamma API poll interval in ms. `CHAINLINK_STALE_MS` (default `30000`): force-reconnect after silence. `WEBSOCKET_CONNECT_TIMEOUT_MS` (default `10000`): bound websocket handshake/connect hangs before normal reconnect backoff resumes. `BINANCE_NO_MESSAGE_RECONNECT_MS` (default `5000`) and `CLOB_NO_MESSAGE_RECONNECT_MS` (default `20000`): force reconnect when the socket stays open but no text market data arrives. `MAX_SIGNAL_FEED_AGE_MS` and `MAX_QUOTE_AGE_MS` cap stale inputs for signal generation.
 
 Strategy toggles and routing: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, and `CALM_PERSISTENCE_ENABLED` enable the three families. `REGIME_DETECTION_ENABLED` turns on the portfolio router. `TREND_FILTER_PER_STRATEGY` scopes trend suppression to the strategy family instead of one shared global state.
 
@@ -329,7 +345,7 @@ Latency arb: `LATENCY_ARB_MOMENTUM_THRESHOLD` (default `0.0015`) is the base mom
 
 Spread capture: `SPREAD_CAPTURE_THRESHOLD` (default `0.998`) is the hard outer cap on UP+DOWN ask sum. The strategy also requires positive projected net edge after fees and simulated fills. `SPREAD_CAPTURE_MIN_ASK` (default `0.15`): reject degenerate books. `SPREAD_CAPTURE_MAX_LEG_SKEW_MS` (default `25`): require the UP and DOWN books used for one spread decision to be near-synchronous. Mixed-time books are rejected as `legs_out_of_sync`. `SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S` (default `8`) caps the observed top-of-book churn before the strategy treats the legging risk as too high.
 
-Calm persistence: `CALM_PERSISTENCE_MIN_WINDOW_TIME_MS` and `CALM_PERSISTENCE_MAX_WINDOW_TIME_MS` bound the late-window entry slice. `CALM_PERSISTENCE_MAX_ASK` caps the YES ask. `CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS` and `CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD` require the current sign versus the window open to be large enough relative to realized volatility. `CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS`, `CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S`, and `CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S` keep the strategy in quiet windows. `CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION` requires enough recent microstructure agreement, `CALM_PERSISTENCE_MAX_FAIR_BIAS` caps the internal fair-value adjustment, and `CALM_PERSISTENCE_MAX_POSITION_FRACTION` is the calm-only capital sleeve.
+Calm persistence: `CALM_PERSISTENCE_MIN_WINDOW_TIME_MS` and `CALM_PERSISTENCE_MAX_WINDOW_TIME_MS` bound the late-window entry slice. `CALM_PERSISTENCE_MAX_ASK` is the calm-family YES-ask cap and is now used consistently in both signal generation and the shared single-order execution path. `CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS` and `CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD` require the current sign versus the window open to be large enough relative to realized volatility. `CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS`, `CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S`, and `CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S` keep the strategy in quiet windows. `CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION` requires enough recent microstructure agreement, `CALM_PERSISTENCE_MAX_FAIR_BIAS` caps the internal fair-value adjustment, `CALM_PERSISTENCE_MIN_EXPECTED_EDGE` is the calm-only post-fee/slippage quality floor, and `CALM_PERSISTENCE_MAX_POSITION_FRACTION` is the calm-only capital sleeve. Calm duplicate pending/open-position attempts are now rejected before signal persistence and recorded through `strategy_rejection_summaries` instead of bloating `signals` / `signal_metrics`.
 
 Bankroll: `STARTING_BALANCE` (default `150`) is the initial paper balance in USD. `MAX_POSITION_FRACTION` (default `0.10`): max fraction per trade (10%). `MAX_POSITION_USD_FRACTION` (default `0.20`): hard cap per trade (20%). `MAX_POSITION_USD` (default `500`): absolute hard cap in USD regardless of balance. `MIN_BALANCE_THRESHOLD` (default `20`): stop trading below this. `MAX_DRAWDOWN_PCT` (default `0.50`): stop at 50% drawdown.
 
@@ -341,7 +357,7 @@ Execution: `EXECUTION_MODE` (default `paper`): paper or live. Live order placeme
 
 Strategy sleeves: `SPREAD_CAPTURE_MAX_POSITION_FRACTION`, `CALM_PERSISTENCE_MAX_POSITION_FRACTION`, and `LATENCY_ARB_MAX_POSITION_FRACTION` are optional strategy-only balance caps. If any of them is unset, that family falls back to `MAX_POSITION_FRACTION`. The shared hard caps `MAX_POSITION_USD_FRACTION` and `MAX_POSITION_USD` still apply.
 
-Position limits and safety: `MAX_OPEN_POSITIONS` (default `5`): max concurrent positions. `MIN_WINDOW_TIME_MS` (default `90000`): don't enter with <90s left. `CIRCUIT_BREAKER_LOSSES` (default `3`): pause after N consecutive losses. `CIRCUIT_BREAKER_PAUSE_MS` (default `900000`): pause duration (15 min). `PEAK_DD_PAUSE_PCT` (default `0.30`): pause at 30% drawdown from peak. `PEAK_DD_PAUSE_MS` (default `3600000`): DD pause duration (1 hour). `DD_PAUSE_RECOVERY_PCT` (default `0.05`): DD must recover by 5% before re-arming. `RECONNECT_MIN_STABLE_MS` (default `5000`): min connection duration to reset backoff. `RECONNECT_MAX_FAILURES` (default `20`): feed circuit breaker threshold. `RECONNECT_PAUSE_MS` (default `300000`): feed circuit breaker pause (5 min).
+Position limits and safety: `MAX_OPEN_POSITIONS` (default `5`): max concurrent positions. `MIN_WINDOW_TIME_MS` (default `90000`): don't enter with <90s left. `CIRCUIT_BREAKER_LOSSES` (default `3`): pause after N consecutive losses. `CIRCUIT_BREAKER_PAUSE_MS` (default `900000`): pause duration (15 min). `PEAK_DD_PAUSE_PCT` (default `0.30`): pause at 30% drawdown from peak. `PEAK_DD_PAUSE_MS` (default `3600000`): DD pause duration (1 hour). `DD_PAUSE_RECOVERY_PCT` (default `0.05`): DD must recover by 5% before re-arming. `RECONNECT_MIN_STABLE_MS` (default `5000`): min connection duration to reset backoff. `RECONNECT_MAX_FAILURES` (default `20`): feed circuit breaker threshold. `RECONNECT_PAUSE_MS` (default `300000`): feed circuit breaker pause (5 min). Healthy-feed strategy behavior is unchanged by these transport knobs. They only bound reconnect hangs and shorten stale-data downtime.
 
 Resolution polling: `RESOLUTION_INITIAL_DELAY_MS` (default `30000`): how long to wait after nominal close before the first authoritative Gamma poll. `RESOLUTION_POLL_DELAY_MS` (default `10000`): delay between later reconciliation attempts for any market that still has open trades and is not yet resolved. `RESOLUTION_POLL_RETRIES` is retained for helper/test code, but the live bot now keeps retrying unresolved open-trade markets until Gamma resolves them, including after a restart over the same DB.
 
@@ -355,8 +371,8 @@ SQLite (WAL mode). Python scripts can read concurrently while the bot writes.
 - feed_events: canonical replay source for the live-like simulator. Stores raw or synthesized event timing with normalized book fields and a fidelity marker (`raw_event` or `legacy_snapshot`).
 - markets: one row per 5-minute window. Columns: market_id (Gamma API ID), question, condition_id, slug, up_token_id, down_token_id, start_time, end_time, status (active/closed/resolved), outcome (authoritative runtime outcome), polymarket_outcome, resolution_source, fee_profile, min-size and tick-size metadata, and reward metadata.
 - signals: every strategy detection event. Includes the market link, replay fidelity, and execution timing fields when available.
-- signal_metrics: per-signal telemetry. Stores generation, submission, expected-arrival timing, actual order-processing timing, effective arrival delay, per-feed ages, expected fee/slippage/edge, and a JSON feature snapshot. The snapshot now also records the per-leg effective book timestamps, `interLegSkewMs`, and the actual ask pair the strategy saw. `decision_status` progresses through queue and execution outcomes, and `rejection_reason` is reused for both pre-submit queue rejections (`duplicate_pending_order`, `duplicate_open_position`, `max_open_positions`, `below_market_min_size_on_submit`, `below_min_bet_on_submit`) and post-submission miss reasons such as stale books or zero liquidity on arrival.
-- feed_health_events: feed lifecycle telemetry. Stores connect, disconnect, stale, reconnect, and resubscribe events with optional market context.
+- signal_metrics: per-signal telemetry. Stores generation, submission, expected-arrival timing, actual order-processing timing, effective arrival delay, per-feed ages, expected fee/slippage/edge, and a JSON feature snapshot. The snapshot now also records the per-leg effective book timestamps, `interLegSkewMs`, and the actual ask pair the strategy saw. `decision_status` progresses through queue and execution outcomes, and `rejection_reason` is reused for pre-submit queue rejections (`duplicate_pending_order`, `duplicate_open_position`, `max_open_positions`, `below_market_min_size_on_submit`, `below_min_bet_on_submit`) and post-submission miss reasons such as stale books or zero liquidity on arrival. Calm duplicate pending/open-position blocks are handled earlier and appear in `strategy_rejection_summaries` instead of generating redundant signal rows.
+- feed_health_events: feed lifecycle telemetry. Stores connect, disconnect, stale, reconnect, and resubscribe events with optional market context. `details_json` now carries structured reconnect metadata such as `causeClass`, `attempt`, `reconnectDelayMs`, `connectionLifetimeMs`, `afterResubscribe`, and timeout/error context when available.
 - strategy_rejection_summaries: aggregated no-signal diagnostics. Stores the strategy, rejection reason, count, and compact JSON summaries of representative quote, freshness, edge, and spread-leg skew values. The human log mirrors these as concise rollups instead of dumping the full JSON blob.
 - simulated_trades: opened positions. Links to market and signal, tracks requested size/price, filled size/average fill, fill status, execution group id for spread pairs, execution mode, and optional live order ids.
 - trade_results: settlement P&L. Links to trade, records settlement price, gross/net PnL fields, fee_amount, and settlement status.
@@ -450,7 +466,7 @@ cd dashboard/client && npm run build  # produces dist/ for static serving
 AGENT_SECRET=your-secret ./target/release/buba-agent \
   --db-path runs/010/buba-paint.db \
   --port 9090 \
-  --bot-cmd "./target/release/buba-paint live --db-path runs/010/buba-paint.db --balance 200 --set LATENCY_ARB_ENABLED=true --set SPREAD_CAPTURE_ENABLED=true --set CALM_PERSISTENCE_ENABLED=true --set REGIME_DETECTION_ENABLED=true --set TREND_FILTER_PER_STRATEGY=true --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008 --set LATENCY_ARB_MAX_ASK=0.65 --set LATENCY_ARB_MAX_POSITION_FRACTION=0.05 --set MAX_POSITION_FRACTION=0.05 --set SPREAD_CAPTURE_THRESHOLD=0.970 --set SPREAD_CAPTURE_MAX_POSITION_FRACTION=0.05 --set CALM_PERSISTENCE_MIN_WINDOW_TIME_MS=30000 --set CALM_PERSISTENCE_MAX_WINDOW_TIME_MS=90000 --set CALM_PERSISTENCE_MAX_ASK=0.75 --set CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS=6 --set CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD=1.0 --set CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION=0.5 --set CALM_PERSISTENCE_MAX_FAIR_BIAS=0.35 --set CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS=80 --set CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S=1 --set CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S=100 --set CALM_PERSISTENCE_MAX_POSITION_FRACTION=0.05 --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 --set SIM_ORDER_LATENCY_MS=250"
+  --bot-cmd "./target/release/buba-paint live --db-path runs/010/buba-paint.db --balance 200 --set LATENCY_ARB_ENABLED=true --set SPREAD_CAPTURE_ENABLED=true --set CALM_PERSISTENCE_ENABLED=true --set REGIME_DETECTION_ENABLED=true --set TREND_FILTER_PER_STRATEGY=true --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008 --set LATENCY_ARB_MAX_ASK=0.65 --set LATENCY_ARB_MAX_POSITION_FRACTION=0.05 --set MAX_POSITION_FRACTION=0.05 --set SPREAD_CAPTURE_THRESHOLD=0.970 --set SPREAD_CAPTURE_MAX_POSITION_FRACTION=0.05 --set CALM_PERSISTENCE_MIN_WINDOW_TIME_MS=30000 --set CALM_PERSISTENCE_MAX_WINDOW_TIME_MS=90000 --set CALM_PERSISTENCE_MAX_ASK=0.65 --set CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS=6 --set CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD=1.0 --set CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION=0.5 --set CALM_PERSISTENCE_MAX_FAIR_BIAS=0.35 --set CALM_PERSISTENCE_MIN_EXPECTED_EDGE=0.05 --set CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS=80 --set CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S=1 --set CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S=100 --set CALM_PERSISTENCE_MAX_POSITION_FRACTION=0.05 --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 --set SIM_ORDER_LATENCY_MS=250"
 
 # 3. Start the dashboard (serves frontend + proxies to agent)
 ADMIN_USER=admin ADMIN_PASSWORD=changeme JWT_SECRET=your-jwt-secret \
@@ -520,13 +536,13 @@ ssh buba-paint 'ps -eo pid=,args= | awk "/script -qefa|buba-paint live|buba-agen
 
 Preferred partial update over an existing run:
 
-Use this only for code-only fixes where the run should remain comparable, for example diagnostics, logging, dashboard/agent fixes, or restart-safe bot fixes. Do not use it for strategy or parameter changes that should start a fresh experiment.
+Use this only for code-only fixes where the run should remain comparable, for example diagnostics, logging, dashboard/agent fixes, restart-safe bot fixes, or live-feed transport hardening that leaves strategy semantics unchanged. Do not use it for strategy or parameter changes that should start a fresh experiment.
 
 1. Back up the current run DB and log into `runtime/backups`.
 2. Stop bot, agent, and dashboard.
 3. Verify no stale processes remain from the old release path and no old `buba-paint live` child is still attached to the run DB.
 4. Point `current` at the new release.
-5. Restart over the same runtime directory, DB, and log.
+5. Restart over the same runtime directory, DB, and log. If the release added new live robustness knobs such as websocket timeouts or no-message watchdogs, set them explicitly in the bot environment instead of relying on memory.
 6. Verify that the bot recovered the same active window correctly and continued the run.
 
 Minimum remote acceptance checks:
