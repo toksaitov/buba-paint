@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 
 use crate::bankroll::BankrollManager;
 use crate::circuit_breaker::CircuitBreaker;
@@ -310,6 +310,12 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
     );
 
     let mut strategies = build_strategies(config);
+    let enabled_strategies = config.enabled_strategy_names();
+    if strategies.is_empty() {
+        bail!(
+            "no strategies enabled after config parsing; boolean values must be true/false or 1/0"
+        );
+    }
     let mut rejection_tracker = StrategyRejectionTracker::new();
     let mut pending_settlements = BTreeMap::new();
 
@@ -335,8 +341,9 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
     if !options.quiet {
         let duration_h = (options.end_time - options.start_time) as f64 / 3_600_000.0;
         println!(
-            "Backtesting {duration_h:.1}h | {total_ticks} ticks | {total_windows} windows | balance=${} | settlement_mode={} | pending_mode={} ({:.2}/{:.2}/{})",
+            "Backtesting {duration_h:.1}h | {total_ticks} ticks | {total_windows} windows | balance=${} | strategies={} | settlement_mode={} | pending_mode={} ({:.2}/{:.2}/{})",
             options.starting_balance,
+            enabled_strategies.join(","),
             config.backtest_settlement_mode.as_str(),
             pending_policy.mode.as_str(),
             pending_policy.family_reserve_fraction,

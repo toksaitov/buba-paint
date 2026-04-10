@@ -79,6 +79,16 @@ fn apply_set_override_non_numeric_does_not_crash() {
     assert!((config.starting_balance - original_balance).abs() < f64::EPSILON);
 }
 
+/// Verifies that apply set override accepts boolean strings for known flags.
+#[test]
+fn apply_set_override_boolish_flag() {
+    let mut config = Config::default();
+    apply_set_override(&mut config, "CALM_PERSISTENCE_ENABLED=true").unwrap();
+    assert!(config.calm_persistence_enabled);
+    apply_set_override(&mut config, "REGIME_DETECTION_ENABLED=0").unwrap();
+    assert!(!config.regime_detection_enabled);
+}
+
 /// Verifies that apply set override unknown param ok.
 #[test]
 fn apply_set_override_unknown_param_ok() {

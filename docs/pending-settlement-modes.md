@@ -97,12 +97,14 @@ cargo run -p buba-paint --release -- backtest \
   --start 2026-04-04T20:15 \
   --end 2026-04-08T17:25 \
   --balance 200 \
-  --set LATENCY_ARB_ENABLED=1 \
-  --set SPREAD_CAPTURE_ENABLED=1 \
-  --set CALM_PERSISTENCE_ENABLED=1
+  --set LATENCY_ARB_ENABLED=true \
+  --set SPREAD_CAPTURE_ENABLED=true \
+  --set CALM_PERSISTENCE_ENABLED=true
 ```
 
 Because conservative mode is now the default, those three reserve knobs do not need to be repeated unless you are intentionally overriding them.
+
+Boolean env vars and boolean `--set` overrides accept `true/false`, `1/0`, `yes/no`, and `on/off`, but operator examples should prefer `true/false`.
 
 Use `compatibility` only if you are proving a regression:
 

@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::backtest::runner::{BacktestOptions, BacktestResult, TickSource};
 use crate::backtest::tick_replay::TickReplay;
-use crate::config::Config;
+use crate::config::{Config, parse_boolish};
 
 pub struct SweepDimension {
     pub param: String,
@@ -68,8 +68,14 @@ pub fn run_sweep(
             for (param, value_str) in fixed_overrides {
                 if let Ok(num) = value_str.parse::<f64>() {
                     config.set_param(param, num);
+                } else if let Some(value) = parse_boolish(value_str) {
+                    if !config.set_bool_param(param, value) {
+                        eprintln!(
+                            "Boolean --set value ignored for non-boolean param: {param}={value_str}"
+                        );
+                    }
                 } else {
-                    eprintln!("Non-numeric --set value ignored: {param}={value_str}");
+                    eprintln!("Unsupported --set value ignored: {param}={value_str}");
                 }
             }
 

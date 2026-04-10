@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::bail;
 use tracing::{error, info, warn};
 
 use crate::backtest::momentum::MomentumCalculator;
@@ -157,6 +158,17 @@ pub async fn run_live(
     );
 
     let mut strategies = build_strategies(&config);
+    let enabled_strategies = config.enabled_strategy_names();
+    if strategies.is_empty() {
+        bail!(
+            "no strategies enabled after config parsing; boolean env values must be true/false or 1/0"
+        );
+    }
+    info!(
+        enabled_strategies = %enabled_strategies.join(","),
+        strategy_count = enabled_strategies.len(),
+        "live strategy set resolved"
+    );
 
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
 

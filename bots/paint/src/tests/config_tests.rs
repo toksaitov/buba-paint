@@ -219,18 +219,55 @@ fn resolve_bool_false_when_missing() {
     assert!(!resolve_bool(None, false));
 }
 
-/// Verifies that resolve bool non true is false.
+/// Verifies that resolve bool accepts common truthy forms.
 #[test]
-fn resolve_bool_non_true_is_false() {
-    assert!(!resolve_bool(Some("yes"), false));
-    assert!(!resolve_bool(Some("1"), false));
-    assert!(!resolve_bool(Some("TRUE"), false));
+fn resolve_bool_truthy_variants() {
+    assert!(resolve_bool(Some("yes"), false));
+    assert!(resolve_bool(Some("1"), false));
+    assert!(resolve_bool(Some("TRUE"), false));
+    assert!(resolve_bool(Some("on"), false));
 }
 
 /// Verifies that resolve bool default true preserved.
 #[test]
 fn resolve_bool_default_true_preserved() {
     assert!(resolve_bool(None, true));
+}
+
+/// Verifies that invalid bool-like text falls back to the default in test helpers.
+#[test]
+fn resolve_bool_invalid_uses_default() {
+    assert!(resolve_bool(Some("maybe"), true));
+    assert!(!resolve_bool(Some("maybe"), false));
+}
+
+/// Verifies that config reports the currently enabled strategy set.
+#[test]
+fn enabled_strategy_names_match_flags() {
+    let mut cfg = Config::default();
+    assert_eq!(
+        cfg.enabled_strategy_names(),
+        vec!["latency-arb", "spread-capture"]
+    );
+
+    cfg.calm_persistence_enabled = true;
+    assert_eq!(
+        cfg.enabled_strategy_names(),
+        vec!["latency-arb", "spread-capture", "calm-persistence"]
+    );
+}
+
+/// Verifies that boolean overrides can be applied without numeric coercion.
+#[test]
+fn set_bool_param_updates_known_flags() {
+    let mut cfg = Config::default();
+    assert!(cfg.set_bool_param("LATENCY_ARB_ENABLED", false));
+    assert!(!cfg.latency_arb_enabled);
+    assert!(cfg.set_bool_param("REGIME_DETECTION_ENABLED", true));
+    assert!(cfg.regime_detection_enabled);
+    assert!(cfg.set_bool_param("PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION", true));
+    assert!(cfg.pending_settlement_counts_as_open_position);
+    assert!(!cfg.set_bool_param("MAX_POSITION_FRACTION", true));
 }
 
 /// Verifies that config is cloneable.

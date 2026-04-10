@@ -185,12 +185,12 @@ cargo run -p buba-paint --release -- backtest \
 BACKTEST_SETTLEMENT_MODE=observed_market_resolution \
 PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0 \
 PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0 \
-PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=0 \
+PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false \
 cargo run -p buba-paint --release -- backtest \
   --data /tmp/run-018-replay-data.db \
   --start 2026-04-04T20:15 --end 2026-04-08T17:25 \
   --balance 200 \
-  --set LATENCY_ARB_ENABLED=1 --set SPREAD_CAPTURE_ENABLED=1 --set CALM_PERSISTENCE_ENABLED=1
+  --set LATENCY_ARB_ENABLED=true --set SPREAD_CAPTURE_ENABLED=true --set CALM_PERSISTENCE_ENABLED=true
 ```
 
 ### Parameter sweep (paint)
@@ -210,7 +210,7 @@ cargo run -p buba-paint --release -- sweep \
 BACKTEST_SETTLEMENT_MODE=observed_market_resolution \
 PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0 \
 PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0 \
-PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=0 \
+PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false \
 cargo run -p buba-paint --release -- sweep \
   --data /tmp/run-018-replay-data.db \
   --start 2026-04-04T20:15 --end 2026-04-08T17:25 \
@@ -222,7 +222,7 @@ cargo run -p buba-paint --release -- sweep \
   --output data/sweeps/run-018-002/sweep.csv
 ```
 
-`--sweep PARAM=start:end:step` generates a range; `--sweep PARAM=a,b,c` enumerates. `--set PARAM=value` fixes a parameter without sweeping. Backtests and sweeps now start from `Config::from_env()`, so env-backed knobs such as `BACKTEST_SETTLEMENT_MODE` and the pending-settlement reserve settings apply to both commands unless a CLI `--set` overrides them.
+`--sweep PARAM=start:end:step` generates a range; `--sweep PARAM=a,b,c` enumerates. `--set PARAM=value` fixes a parameter without sweeping. Boolean env vars and boolean `--set` overrides accept `true/false`, `1/0`, `yes/no`, and `on/off`; prefer `true/false` in docs and operator commands. Backtests and sweeps now start from `Config::from_env()`, so env-backed knobs such as `BACKTEST_SETTLEMENT_MODE` and the pending-settlement reserve settings apply to both commands unless a CLI `--set` overrides them.
 
 The recommended exact-run workflow is:
 
@@ -450,7 +450,7 @@ cd dashboard/client && npm run build  # produces dist/ for static serving
 AGENT_SECRET=your-secret ./target/release/buba-agent \
   --db-path runs/010/buba-paint.db \
   --port 9090 \
-  --bot-cmd "./target/release/buba-paint live --db-path runs/010/buba-paint.db --balance 200 --set LATENCY_ARB_ENABLED=1 --set SPREAD_CAPTURE_ENABLED=1 --set CALM_PERSISTENCE_ENABLED=1 --set REGIME_DETECTION_ENABLED=1 --set TREND_FILTER_PER_STRATEGY=1 --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008 --set LATENCY_ARB_MAX_ASK=0.65 --set LATENCY_ARB_MAX_POSITION_FRACTION=0.05 --set MAX_POSITION_FRACTION=0.05 --set SPREAD_CAPTURE_THRESHOLD=0.970 --set SPREAD_CAPTURE_MAX_POSITION_FRACTION=0.05 --set CALM_PERSISTENCE_MIN_WINDOW_TIME_MS=30000 --set CALM_PERSISTENCE_MAX_WINDOW_TIME_MS=90000 --set CALM_PERSISTENCE_MAX_ASK=0.75 --set CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS=6 --set CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD=1.0 --set CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION=0.5 --set CALM_PERSISTENCE_MAX_FAIR_BIAS=0.35 --set CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS=80 --set CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S=1 --set CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S=100 --set CALM_PERSISTENCE_MAX_POSITION_FRACTION=0.05 --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 --set SIM_ORDER_LATENCY_MS=250"
+  --bot-cmd "./target/release/buba-paint live --db-path runs/010/buba-paint.db --balance 200 --set LATENCY_ARB_ENABLED=true --set SPREAD_CAPTURE_ENABLED=true --set CALM_PERSISTENCE_ENABLED=true --set REGIME_DETECTION_ENABLED=true --set TREND_FILTER_PER_STRATEGY=true --set LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008 --set LATENCY_ARB_MAX_ASK=0.65 --set LATENCY_ARB_MAX_POSITION_FRACTION=0.05 --set MAX_POSITION_FRACTION=0.05 --set SPREAD_CAPTURE_THRESHOLD=0.970 --set SPREAD_CAPTURE_MAX_POSITION_FRACTION=0.05 --set CALM_PERSISTENCE_MIN_WINDOW_TIME_MS=30000 --set CALM_PERSISTENCE_MAX_WINDOW_TIME_MS=90000 --set CALM_PERSISTENCE_MAX_ASK=0.75 --set CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS=6 --set CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD=1.0 --set CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION=0.5 --set CALM_PERSISTENCE_MAX_FAIR_BIAS=0.35 --set CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS=80 --set CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S=1 --set CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S=100 --set CALM_PERSISTENCE_MAX_POSITION_FRACTION=0.05 --set TAKER_FEE_RATE=0.072 --set TAKER_FEE_EXPONENT=1 --set SIM_ORDER_LATENCY_MS=250"
 
 # 3. Start the dashboard (serves frontend + proxies to agent)
 ADMIN_USER=admin ADMIN_PASSWORD=changeme JWT_SECRET=your-jwt-secret \

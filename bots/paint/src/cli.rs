@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 
 use crate::backtest::runner::{BacktestOptions, TickSource};
 use crate::backtest::sweep::{self, SweepDimension};
-use crate::config::Config;
+use crate::config::{Config, parse_boolish};
 
 #[derive(Parser)]
 #[command(name = "buba-paint", version)]
@@ -310,8 +310,12 @@ pub fn apply_set_override(config: &mut Config, set_str: &str) -> anyhow::Result<
     let value_str = &set_str[eq_idx + 1..];
     if let Ok(num) = value_str.parse::<f64>() {
         config.set_param(key, num);
+    } else if let Some(value) = parse_boolish(value_str) {
+        if !config.set_bool_param(key, value) {
+            eprintln!("Boolean --set value ignored for non-boolean param: {key}={value_str}");
+        }
     } else {
-        eprintln!("Non-numeric --set value: {key}={value_str}");
+        eprintln!("Unsupported --set value: {key}={value_str}");
     }
     Ok(())
 }

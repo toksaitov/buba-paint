@@ -25,7 +25,21 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 /// Env bool.
 fn env_bool(key: &str, default: bool) -> bool {
-    env::var(key).ok().map_or(default, |v| v == "true")
+    match env::var(key) {
+        Ok(raw) => parse_boolish(&raw).unwrap_or_else(|| {
+            panic!("{key} must be one of true/false/1/0/yes/no/on/off, got {raw}")
+        }),
+        Err(_) => default,
+    }
+}
+
+/// Parse one bool-like string accepted by env vars and CLI overrides.
+pub(crate) fn parse_boolish(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +254,7 @@ fn resolve_u64(raw: Option<&str>, default: u64) -> u64 {
 /// Resolves bool.
 #[cfg(test)]
 fn resolve_bool(raw: Option<&str>, default: bool) -> bool {
-    raw.map_or(default, |v| v == "true")
+    raw.and_then(parse_boolish).unwrap_or(default)
 }
 
 #[derive(Debug, Clone)]
@@ -355,6 +369,22 @@ pub struct Config {
 }
 
 impl Config {
+    /// Return the stable names of every enabled strategy family.
+    #[must_use]
+    pub fn enabled_strategy_names(&self) -> Vec<&'static str> {
+        let mut strategies = Vec::new();
+        if self.latency_arb_enabled {
+            strategies.push("latency-arb");
+        }
+        if self.spread_capture_enabled {
+            strategies.push("spread-capture");
+        }
+        if self.calm_persistence_enabled {
+            strategies.push("calm-persistence");
+        }
+        strategies
+    }
+
     /// Return the resolved pending-settlement policy after validation.
     pub fn pending_settlement_policy(&self) -> anyhow::Result<PendingSettlementPolicy> {
         PendingSettlementPolicy::classify(
@@ -494,6 +524,23 @@ impl Config {
                 eprintln!("Unknown sweep param: {name}");
                 return false;
             }
+        }
+        true
+    }
+
+    /// Set one boolean config parameter from a resolved bool value.
+    pub fn set_bool_param(&mut self, name: &str, value: bool) -> bool {
+        match name {
+            "LATENCY_ARB_ENABLED" => self.latency_arb_enabled = value,
+            "SPREAD_CAPTURE_ENABLED" => self.spread_capture_enabled = value,
+            "CALM_PERSISTENCE_ENABLED" => self.calm_persistence_enabled = value,
+            "TREND_FILTER_ENABLED" => self.trend_filter_enabled = value,
+            "TREND_FILTER_PER_STRATEGY" => self.trend_filter_per_strategy = value,
+            "REGIME_DETECTION_ENABLED" => self.regime_detection_enabled = value,
+            "PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION" => {
+                self.pending_settlement_counts_as_open_position = value;
+            }
+            _ => return false,
         }
         true
     }
