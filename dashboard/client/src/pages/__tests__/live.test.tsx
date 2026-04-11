@@ -75,10 +75,12 @@ test("renders empty-state copy when no live session exists", () => {
   render(<LivePage />, { wrapper: createWrapper() });
 
   expect(
-    screen.getByText(/No live session has been recorded yet\. That is expected/i),
+    screen.getByText(/No live_readonly session has been recorded yet\./i),
   ).toBeDefined();
   expect(
-    screen.getByText(/The Rust bot still refuses/i),
+    screen.getByText((content) =>
+      content.includes("now runs against the real authenticated venue boundary"),
+    ),
   ).toBeDefined();
 });
 
@@ -97,7 +99,8 @@ test("renders live status summary", () => {
         enabled_strategies_json: "[\"latency-arb\"]",
         config_fingerprint: "fp",
         cash_cap_usd: 100,
-        details_json: "{\"provider\":\"stub\"}",
+        details_json:
+          "{\"provider\":\"polymarket\",\"user_stream_status\":\"ok\",\"last_user_stream_connected_at_ms\":1200,\"last_user_stream_event_at_ms\":1250}",
       },
       latest_account_snapshot: {
         id: 1,
@@ -110,7 +113,8 @@ test("renders live status summary", () => {
         pending_redeem_value: 0,
         total_equity: 99,
         allowance_available: 96,
-        details_json: "{\"provider\":\"stub\"}",
+        details_json:
+          "{\"provider\":\"polymarket\",\"user_stream_status\":\"ok\",\"last_successful_account_refresh_at_ms\":1300}",
       },
       open_orders: 1,
       pending_redemptions: 1,
@@ -122,7 +126,8 @@ test("renders live status summary", () => {
 
   expect(screen.getByText("Live Readiness")).toBeDefined();
   expect(screen.getAllByText("live_readonly").length).toBeGreaterThan(0);
-  expect(screen.getByText(/Provider status: stub/i)).toBeDefined();
+  expect(screen.getByText(/Provider polymarket/i)).toBeDefined();
+  expect(screen.getByText(/User stream ok/i)).toBeDefined();
   expect(screen.getByText(/Fingerprint fp/i)).toBeDefined();
   expect(screen.getAllByText("$96.00").length).toBeGreaterThan(0);
 });

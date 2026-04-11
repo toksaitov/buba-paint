@@ -1,6 +1,6 @@
 # Live Session Runbook
 
-This runbook describes the intended operator workflow for the first real-money proxy-wallet pilot. It also describes the current local limitation so nobody confuses readiness scaffolding with a production live venue runtime.
+This runbook describes the intended operator workflow for the first real-money proxy-wallet pilot. It also describes the current local limits so nobody confuses readonly venue monitoring with production live trading.
 
 ## Current repository state
 
@@ -9,16 +9,18 @@ What is ready locally:
 - explicit execution modes: `paper`, `live_readonly`, `live_trading`
 - live preflight CLI
 - sidecar package and typed authenticated-venue boundary
+- real `live_readonly` runtime inside `buba-paint live`
 - live session and reconciliation tables
 - agent and dashboard live-readiness surfaces
 - compact live telemetry schema
 
 What is still intentionally gated:
 
-- `buba-paint live` refuses `EXECUTION_MODE=live_readonly` and `EXECUTION_MODE=live_trading`
-- the sidecar uses a stub provider and does not place real orders
-- `live-preflight` is contract-only and is expected to remain unready while the stub provider is in place
-- redemption and user-stream handling are planned but not yet wired to a live venue runtime
+- `EXECUTION_MODE=live_trading` is still rejected by `buba-paint live`
+- sidecar order placement, cancel, and redemption endpoints are still explicit not-implemented stubs
+- the readonly runtime does not place or simulate orders
+- redemption is not wired yet
+- readonly monitoring uses live account reads and user-stream health, but not full event-driven order or fill ingestion yet
 
 Do not deploy real-money trading from this state. Use it to finish implementation and validate readiness safely.
 
@@ -108,7 +110,7 @@ Before the live venue runtime is considered ready:
 - sidecar lint, tests, and build pass
 - docs are updated and internally consistent
 - comments and rustdoc are current
-- agent and dashboard live surfaces are verified against seeded local data
+- agent and dashboard live surfaces are verified against real readonly session data
 - live-readonly soak completes without storage blow-up
 
 Only after that should a real deployment plan be written.

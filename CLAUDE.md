@@ -15,8 +15,8 @@ Real-money readiness documentation is split across:
 - [docs/live-session-runbook.md](./docs/live-session-runbook.md)
 - [docs/live-readiness-review.md](./docs/live-readiness-review.md)
 
-The current local tree has live-readiness scaffolding and a TypeScript Polymarket sidecar, but the Rust bot still intentionally refuses `EXECUTION_MODE=live_readonly` and `EXECUTION_MODE=live_trading` inside the `live` runtime. Do not remove that guard until the dedicated live venue runtime is actually wired.
-The current sidecar provider is still a stub. Treat `live-preflight` as contract validation only until the real provider lands. It must not be described as venue-ready preflight in code or docs.
+The current local tree now supports a real authenticated `live_readonly` runtime inside `buba-paint live`. It creates readonly live sessions, persists live account snapshots, and reconciles remote venue state without placing or simulating orders.
+`EXECUTION_MODE=live_trading` is still intentionally gated. The sidecar now implements real readonly-safe surfaces (`/health`, `/account`, `/preflight`), while `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` remain intentionally not implemented.
 
 Live feed transport hardening is part of the current release baseline. The important knobs are `WEBSOCKET_CONNECT_TIMEOUT_MS`, `BINANCE_NO_MESSAGE_RECONNECT_MS`, and `CLOB_NO_MESSAGE_RECONNECT_MS`. They reduce reconnect downtime only. They must not be used to loosen stale-data gates or change trading semantics.
 
@@ -93,7 +93,7 @@ When writing or editing `.md` files, code comments, or any prose in this project
 
 ### paint bot (`bots/paint/src/`)
 
-Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`, `init-db`, `upgrade-history`, `latency-probe`, `live-preflight`), `live.rs` (live trading loop: feeds + discovery + delayed window activation + event-driven strategy evaluation + durable authoritative settlement reconciliation, plus an explicit guard against accidentally running paper semantics in live execution modes), `config.rs` (all env-configurable settings, `set_param` for sweeps, execution mode, live budget caps, pending-settlement reserve knobs, backtest settlement mode), `latency_probe.rs` (operator-facing Gamma/Binance/RTDS/CLOB probe), `live_sidecar.rs` (typed client for the local Polymarket sidecar).
+Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`, `init-db`, `upgrade-history`, `latency-probe`, `live-preflight`), `live.rs` (runtime dispatch for `paper`, `live_readonly`, and future `live_trading`), `live_readonly.rs` (real authenticated readonly venue runtime: preflight, session lifecycle, account snapshots, reconciliation, no order placement), `config.rs` (all env-configurable settings, `set_param` for sweeps, execution mode, live budget caps, pending-settlement reserve knobs, backtest settlement mode), `latency_probe.rs` (operator-facing Gamma/Binance/RTDS/CLOB probe), `live_sidecar.rs` (typed client for the local Polymarket sidecar).
 
 Strategies: `strategies/latency_arb.rs` (feature-scored stale odds, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `strategies/calm_persistence.rs` (late-window sign persistence in calm regimes), `signal_features.rs` (shared feature engine used by live paper and backtests).
 

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { StubSidecarProvider } from "../provider.js";
+import {
+  PolymarketReadonlyProvider,
+  StubSidecarProvider,
+} from "../provider.js";
 import { loadConfig } from "../config.js";
+import type { LivePreflightRequest } from "../types.js";
 
 describe("StubSidecarProvider", () => {
   it("keeps preflight in contract-only mode even with credentials", async () => {
@@ -38,14 +42,159 @@ describe("StubSidecarProvider", () => {
     expect(response.available_cash_usd).toBeNull();
     expect(response.errors[0]).toContain("Stub sidecar");
   });
+});
 
-  it("returns explicit stub metadata for disabled order flow", async () => {
-    const provider = new StubSidecarProvider(
-      loadConfig({
-        POLYMARKET_PROXY_WALLET: "0xproxy",
+describe("PolymarketReadonlyProvider", () => {
+  const nowMs = 1_700_000_000_000;
+  const request: LivePreflightRequest = {
+    execution_mode: "live_readonly",
+    clob_api_url: "https://clob.polymarket.com",
+    gamma_api_url: "https://gamma-api.polymarket.com",
+    strategy_readiness: [],
+    budget_limits: {
+      cash_cap_usd: 90,
+      max_single_order_usd: 7.5,
+      max_open_notional_usd: 20,
+      max_daily_loss_usd: 10,
+        max_session_drawdown_usd: 12,
+        min_required_cash_usd: 25,
+      },
+    };
+
+  function createProvider(options?: {
+    ensureConnectedError?: string;
+    openOrders?: Array<Record<string, string>>;
+    positions?: Array<Record<string, number | string | boolean>>;
+  }) {
+    const config = loadConfig({
+      POLYMARKET_PRIVATE_KEY:
+        "0x59c6995e998f97a5a0044966f0945382db3e5e8a0a5729b6b6b6f8c0d4b47a6a",
+      POLYMARKET_PROXY_WALLET: "0xproxy",
+      POLYMARKET_FUNDER: "0xfunder",
+    });
+    let connectedMarkets: string[] = [];
+
+    const provider = new PolymarketReadonlyProvider(config, {
+      nowMs: () => nowMs,
+      fetchImpl: async (input: URL | RequestInfo) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url === "https://polymarket.com/api/geoblock") {
+          return new Response(
+            JSON.stringify({ blocked: false, country: "IE", ip: "1.2.3.4" }),
+            { status: 200 },
+          );
+        }
+        if (url.includes("/events/slug/btc-updown-5m-")) {
+          return new Response(
+            JSON.stringify({
+              slug: "btc-updown-5m-1700000100",
+              markets: [
+                {
+                  id: "0xcondition",
+                  conditionId: "0xcondition",
+                  orderMinSize: 5,
+                  orderPriceMinTickSize: 0.01,
+                  acceptingOrders: true,
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.startsWith("https://data-api.polymarket.com/positions")) {
+          return new Response(JSON.stringify(options?.positions ?? []), { status: 200 });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      },
+      createClobClient: () => ({
+        createOrDeriveApiKey: async () => ({
+          key: "key",
+          secret: "secret",
+          passphrase: "passphrase",
+        }),
+        getServerTime: async () => Math.floor(nowMs / 1000),
+        getBalanceAllowance: async () => ({
+          balance: "100",
+          allowance: "80",
+        }),
+        getOpenOrders: async () =>
+          (options?.openOrders as never as []) ??
+          [
+            {
+              id: "0xorder",
+              status: "OPEN",
+              owner: "owner",
+              maker_address: "maker",
+              market: "0xcondition",
+              asset_id: "0xasset",
+              side: "BUY",
+              original_size: "10",
+              size_matched: "0",
+              price: "0.5",
+              associate_trades: [],
+              outcome: "YES",
+              created_at: 1,
+              expiration: "2",
+              order_type: "FOK",
+            },
+          ],
       }),
-    );
+      createUserStreamMonitor: () => ({
+        ensureConnected: async (_auth, markets) => {
+          connectedMarkets = markets;
+          if (options?.ensureConnectedError) {
+            throw new Error(options.ensureConnectedError);
+          }
+        },
+        snapshot: () => ({
+          status: options?.ensureConnectedError ? "failed" : "ok",
+          lastConnectedAtMs: options?.ensureConnectedError ? null : nowMs,
+          lastEventAtMs: null,
+          lastError: options?.ensureConnectedError ?? null,
+          subscribedMarkets: connectedMarkets,
+        }),
+        close: () => undefined,
+      }),
+    });
 
+    return provider;
+  }
+
+  it("runs a successful readonly preflight against the real provider contract", async () => {
+    const provider = createProvider();
+    const response = await provider.preflight(request);
+
+    expect(response.ok).toBe(true);
+    expect(response.wallet_address).toBe("0xfunder");
+    expect(response.proxy_wallet).toBe("0xproxy");
+    expect(response.geoblock_status).toBe("ok");
+    expect(response.auth_status).toBe("ok");
+    expect(response.clock_status).toBe("ok");
+    expect(response.allowance_status).toBe("ok");
+    expect(response.user_stream_status).toBe("ok");
+    expect(response.available_cash_usd).toBe(95);
+    expect(response.legal_order_min_usd).toBe(5);
+    expect(response.details_json).toContain("\"provider\":\"polymarket\"");
+  });
+
+  it("surfaces authenticated user-stream failures without enabling trading", async () => {
+    const provider = createProvider({ ensureConnectedError: "auth rejected" });
+    const response = await provider.preflight(request);
+
+    expect(response.ok).toBe(false);
+    expect(response.user_stream_status).toBe("failed");
+    expect(response.errors.join(" ")).toContain("Authenticated user stream failed");
+  });
+
+  it("returns a real account decomposition while keeping order flow disabled", async () => {
+    const provider = createProvider({
+      positions: [
+        { currentValue: 12, redeemable: false },
+        { currentValue: 7, redeemable: true },
+      ],
+    });
+    await provider.preflight(request);
+    const account = await provider.accountState();
     const order = await provider.submitOrderIntent({
       session_id: 1,
       intent_id: 2,
@@ -58,12 +207,14 @@ describe("StubSidecarProvider", () => {
       client_order_id: "client-1",
       details_json: null,
     });
-    const cancel = await provider.cancelAll();
-    const redeem = await provider.redeemAll();
 
+    expect(account.cash_available).toBe(95);
+    expect(account.cash_reserved_for_orders).toBe(5);
+    expect(account.inventory_mark_value).toBe(12);
+    expect(account.redeemable_value).toBe(7);
+    expect(account.total_equity).toBe(119);
+    expect(account.allowance_available).toBe(75);
+    expect(account.details_json).toContain("\"open_order_count\":1");
     expect(order.status).toBe("not_implemented");
-    expect(order.details_json).toContain("\"provider\":\"stub\"");
-    expect(cancel.details_json).toContain("cancel not implemented");
-    expect(redeem.details_json).toContain("redemption not implemented");
   });
 });

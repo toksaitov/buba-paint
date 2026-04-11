@@ -1,6 +1,6 @@
 # Live Readiness Review
 
-This document records the current quality bar of the live-readiness branch before any pass that removes stubs or enables real venue execution.
+This document records the current quality bar of the live-readiness branch before any pass that removes the remaining write-path stubs or enables real venue execution.
 
 ## What exists now
 
@@ -11,18 +11,19 @@ The local tree already has:
 - live agent endpoints and dashboard pages
 - a local TypeScript sidecar for the authenticated Polymarket boundary
 - `live-preflight` CLI wiring from the Rust bot into the sidecar
+- a real `live_readonly` runtime in `buba-paint live`
 - dynamic fee and venue metadata persistence for live-readiness and parity work
 
 ## What is intentionally stubbed
 
 These boundaries are still intentionally non-live:
 
-- `buba-paint live` refuses `EXECUTION_MODE=live_readonly` and `EXECUTION_MODE=live_trading`
-- the sidecar provider is a stub and does not place orders
-- the sidecar does not yet verify real geoblock, allowance, user-stream, or remote cash state
-- redemption submission and user-stream-driven reconciliation are not yet wired to Polymarket
+- `EXECUTION_MODE=live_trading` is still rejected by `buba-paint live`
+- sidecar order placement, cancel, and redemption endpoints are still explicit not-implemented stubs
+- the readonly runtime does not create `signals` or `simulated_trades`
+- redemption submission and live order or fill ingestion are not yet wired to Polymarket
 
-This means `live-preflight` is currently a contract-validation surface, not a venue-readiness green light.
+This means `live-preflight` and `live_readonly` are real venue-readiness surfaces, but not a green light for live money yet.
 
 ## What was reviewed in this pass
 
@@ -30,10 +31,11 @@ This review pass verified:
 
 - execution-mode semantics are stated consistently across bot, sidecar, agent, dashboard, and docs
 - live-mode config validation rejects malformed URLs and invalid small-bankroll envelopes
-- the sidecar contract fails explicitly and honestly in stub mode instead of implying venue readiness
+- the readonly runtime creates real live sessions, account snapshots, and reconciliation events without placing orders
+- the sidecar health, account, and preflight routes use real readonly-safe venue checks
 - sidecar server request validation rejects malformed JSON and malformed order/preflight bodies with `400`
-- live DB tables, agent endpoints, and dashboard Live page handle both seeded and empty states cleanly
-- docs and `.env.example` describe the `POLY_PROXY` account model and the current stubbed state without stale claims
+- live DB tables, agent endpoints, and dashboard Live page handle readonly and empty states cleanly
+- docs and `.env.example` describe the `POLY_PROXY` account model and the current readonly-only state without stale claims
 
 ## Verified local gates
 
@@ -53,7 +55,7 @@ The next pass may replace stubs with real authenticated venue wiring. It should 
 
 The main remaining work is:
 
-- real sidecar provider implementation
-- real venue preflight checks
 - real order lifecycle and redemption wiring
-- reconciliation against venue truth instead of seeded or stubbed state
+- user-stream-driven order and fill ingestion
+- redemption and relayer integration
+- live-trading runtime implementation and deployment soak

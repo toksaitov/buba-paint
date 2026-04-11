@@ -35,7 +35,7 @@ pub struct LivePreflightRequest {
 }
 
 /// One live preflight result returned by the sidecar.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveCheckStatus {
     Ok,

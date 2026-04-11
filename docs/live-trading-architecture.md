@@ -34,7 +34,7 @@ The venue boundary is intentionally narrow:
 - `LiveReadonlyVenue`: authenticated account and venue state, but no order placement
 - `LiveVenue`: future real order submission, fills, redemption, and reconciliation
 
-In the current local tree, the dedicated live venue runtime is still intentionally gated. `buba-paint live` refuses `EXECUTION_MODE=live_readonly` and `EXECUTION_MODE=live_trading` so the bot cannot accidentally run paper semantics while appearing live-ready. The safe operator entrypoint today is `live-preflight`.
+In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue monitor. It creates readonly live sessions, polls live account state, persists account snapshots, and logs reconciliation events without placing or simulating orders. `EXECUTION_MODE=live_trading` is still intentionally gated so real order flow cannot start by accident.
 
 ## Authenticated sidecar
 
@@ -55,6 +55,14 @@ The sidecar owns:
 - future real order placement
 - future redemption submission
 
+In the current local tree, the sidecar has a real readonly provider for:
+
+- `GET /health`
+- `GET /account`
+- `POST /preflight`
+
+These endpoints use real proxy-wallet auth, host geoblock checks, account-state reads, active-market discovery, and authenticated user-stream connectivity. The write endpoints still return explicit not-implemented responses in this pass.
+
 The Rust bot talks to the sidecar over a private local HTTP contract:
 
 - `GET /health`
@@ -65,7 +73,7 @@ The Rust bot talks to the sidecar over a private local HTTP contract:
 - `POST /cancel-all`
 - `POST /redeem-all`
 
-The sidecar is currently a typed stub provider. It is suitable for contract validation, config validation, and UI/database integration work. It does not place real orders yet, and it does not yet verify live geoblock, allowance, user-stream, or remote cash state.
+The sidecar now implements real readonly-safe venue checks on the health, account, and preflight routes. It does not place real orders yet, and the write-path endpoints still return explicit not-implemented responses.
 
 ## Proxy-wallet account model
 
@@ -130,9 +138,10 @@ The bot now persists market-level fee metadata and per-token fee-rate responses 
 
 Local-only safe workflow:
 
-1. keep `EXECUTION_MODE=paper` for actual bot runs
+1. keep `EXECUTION_MODE=paper` for actual trading decisions
 2. run `live-preflight` with `EXECUTION_MODE=live_readonly` against the sidecar
-3. inspect live readiness in the dashboard Live page and agent live endpoints
-4. do not arm or deploy real trading until the dedicated live venue runtime and redemption path are fully wired
+3. run `buba-paint live` with `EXECUTION_MODE=live_readonly` for an authenticated readonly soak
+4. inspect live readiness in the dashboard Live page and agent live endpoints
+5. do not arm or deploy real trading until the dedicated live venue runtime and redemption path are fully wired
 
-This repository state is intentionally staged for correctness. It does not pretend that live order flow is ready before the venue runtime exists, and `live-preflight` is expected to remain unready while the stub provider is still in place.
+This repository state is intentionally staged for correctness. It exposes a real readonly venue boundary without pretending that live order flow is ready before the live trading runtime exists.

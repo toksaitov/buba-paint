@@ -983,6 +983,33 @@ impl Database {
         Ok(())
     }
 
+    /// Update one live trading session without marking it finished.
+    pub fn update_live_session_metadata(
+        &self,
+        session_id: i64,
+        status: &str,
+        wallet_address: Option<&str>,
+        proxy_wallet: Option<&str>,
+        details_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE live_sessions
+             SET status = ?1,
+                 wallet_address = COALESCE(?2, wallet_address),
+                 proxy_wallet = COALESCE(?3, proxy_wallet),
+                 details_json = ?4
+             WHERE id = ?5",
+        )?;
+        stmt.execute(params![
+            status,
+            wallet_address,
+            proxy_wallet,
+            details_json,
+            session_id,
+        ])?;
+        Ok(())
+    }
+
     /// Insert one live order intent and return its row ID.
     pub fn log_live_order_intent(&self, intent: &LiveOrderIntent) -> anyhow::Result<i64> {
         let mut stmt = self.conn.prepare_cached(

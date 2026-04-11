@@ -2,7 +2,7 @@
 
 Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy stack that consumes Binance market data, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, raw feed-event capture for new runs, a shared signal-feature engine, a shared evaluation/submission path, and a portfolio router that keeps the strategy families from competing for the same market snapshot. Historical runs `004` through `009` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream while still merging older legacy data with future richer runs.
 
-The local tree now also contains real-money readiness scaffolding for a future small-bankroll proxy-wallet pilot. Execution modes are explicit (`paper`, `live_readonly`, `live_trading`), market discovery persists live fee and venue metadata, additive live ledger tables exist, the agent and dashboard expose live-readiness and reconciliation surfaces, and a local TypeScript sidecar provides the authenticated Polymarket boundary for proxy-wallet accounts. Actual live order placement is still intentionally gated in the Rust bot runtime until the dedicated live venue path is finished.
+The local tree now also contains real-money readiness scaffolding for a future small-bankroll proxy-wallet pilot. Execution modes are explicit (`paper`, `live_readonly`, `live_trading`), market discovery persists live fee and venue metadata, additive live ledger tables exist, the agent and dashboard expose live-readiness and reconciliation surfaces, and a local TypeScript sidecar provides the authenticated Polymarket boundary for proxy-wallet accounts. `buba-paint live` now supports a real authenticated `live_readonly` runtime that persists live sessions, account snapshots, and reconciliation state without placing orders. Actual live order placement remains intentionally gated.
 
 Settlements are applied only on authoritative Polymarket outcomes. Dynamic taker fees follow the March 30, 2026 crypto schedule by default (`feeRate=0.072`, `exponent=1`) while still supporting historical-by-date fee resolution and explicit overrides for sweeps. Reserve accounting is phase-aware: once a market closes, unresolved trades can move from active-market risk into pending-settlement reserve so the live bot can stop charging the strategy sleeve for closed risk while still keeping global capital locked until Gamma resolves the market. A shared agent monitors bot databases and exposes REST + WebSocket APIs. A dashboard (Rust backend + React frontend) provides a unified UI for status, trades, signals, and process control.
 
@@ -17,7 +17,7 @@ For live-money readiness details, use:
 - [docs/live-session-runbook.md](./docs/live-session-runbook.md)
 - [docs/live-readiness-review.md](./docs/live-readiness-review.md)
 
-The current local tree is ready for contract validation, seeded live-readiness surfaces, and pre-live review work. It is not ready for real-money deployment. `buba-paint live` still refuses `live_readonly` and `live_trading` so the bot cannot accidentally run paper semantics under a live-looking config.
+The current local tree is ready for authenticated readonly venue verification, compact live-session telemetry, and pre-live review work. It is not ready for real-money deployment. `live_readonly` is real venue monitoring only. `live_trading` is still gated and cannot place orders.
 
 Repository agent-instruction alias: [AGENTS.md](./AGENTS.md) points to the canonical [CLAUDE.md](./CLAUDE.md). Keep `CLAUDE.md` as the real source of truth.
 
@@ -89,7 +89,7 @@ Authentication happens at two layers: the frontend authenticates to the dashboar
 
 ### paint bot modules
 
-Core loop: `cli.rs` (clap CLI parsing, command dispatch, including `live-preflight`), `live.rs` (live trading loop combining feeds + discovery + event-driven strategies + authoritative settlement, and an explicit guard against accidentally running paper semantics in live execution modes), `config.rs` (all env-configurable settings, `set_param` for sweeps, execution mode, live budget caps, pending-settlement reserve knobs, and backtest settlement mode), `latency_probe.rs` (operator-facing endpoint/feed latency benchmark), `live_sidecar.rs` (typed HTTP client for the local Polymarket sidecar).
+Core loop: `cli.rs` (clap CLI parsing, command dispatch, including `live-preflight`), `live.rs` (runtime dispatch for `paper`, `live_readonly`, and future `live_trading`), `live_readonly.rs` (real authenticated readonly venue runtime with preflight, live sessions, account snapshots, and reconciliation), `config.rs` (all env-configurable settings, `set_param` for sweeps, execution mode, live budget caps, pending-settlement reserve knobs, and backtest settlement mode), `latency_probe.rs` (operator-facing endpoint/feed latency benchmark), `live_sidecar.rs` (typed HTTP client for the local Polymarket sidecar).
 
 Strategies: `strategies/latency_arb.rs` (feature-scored stale-odds signal, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `strategies/calm_persistence.rs` (late-window sign persistence in calm regimes), `signal_features.rs` (shared feature engine used by live paper and backtests).
 
@@ -197,9 +197,9 @@ cargo run -p buba-paint --release -- live \
   --db-path runs/011/buba-paint.db \
   --balance 200
 
-# Live-readiness preflight through the local Polymarket sidecar.
-# This validates proxy-wallet credentials, geoblock, and budget assumptions
-# without enabling real order placement.
+# Live-readonly preflight through the local Polymarket sidecar.
+# This validates proxy-wallet credentials, geoblock, user-stream readiness,
+# and budget assumptions without enabling real order placement.
 EXECUTION_MODE=live_readonly \
 LIVE_SESSION_CASH_CAP_USD=100 \
 LIVE_MAX_SINGLE_ORDER_USD=10 \
@@ -208,9 +208,21 @@ LIVE_MAX_DAILY_LOSS_USD=15 \
 LIVE_MAX_SESSION_DRAWDOWN_USD=20 \
 LIVE_MIN_REQUIRED_CASH_USD=25 \
 cargo run -p buba-paint --release -- live-preflight
+
+# Run the real authenticated readonly venue runtime.
+EXECUTION_MODE=live_readonly \
+LIVE_SESSION_CASH_CAP_USD=100 \
+LIVE_MAX_SINGLE_ORDER_USD=10 \
+LIVE_MAX_OPEN_NOTIONAL_USD=25 \
+LIVE_MAX_DAILY_LOSS_USD=15 \
+LIVE_MAX_SESSION_DRAWDOWN_USD=20 \
+LIVE_MIN_REQUIRED_CASH_USD=25 \
+cargo run -p buba-paint --release -- live \
+  --db-path runs/readonly/paint.db \
+  --balance 100
 ```
 
-`live-preflight` is the safe operator entrypoint for the current local tree, but it is still contract-only while the sidecar provider remains stubbed. The `live` subcommand still refuses `EXECUTION_MODE=live_readonly` and `EXECUTION_MODE=live_trading` until the dedicated live venue runtime exists.
+`live-preflight` and `EXECUTION_MODE=live_readonly` now use the real readonly sidecar provider. They validate proxy-wallet credentials, host geoblock, clock drift, active-market metadata, account state, and authenticated user-stream connectivity without placing orders. `EXECUTION_MODE=live_trading` is still rejected until the dedicated live trading runtime exists.
 
 ### Single backtest (paint)
 

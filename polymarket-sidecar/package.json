@@ -9,13 +9,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ethersproject/wallet": "^5.8.0",
     "@polymarket/builder-signing-sdk": "^1.0.0",
     "@polymarket/clob-client": "^5.8.1",
     "@polymarket/order-utils": "^3.0.1",
-    "@polymarket/relayer-client": "^4.1.0"
+    "@polymarket/relayer-client": "^4.1.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",
+    "@types/ws": "^8.18.1",
     "typescript": "~5.9.3",
     "vitest": "^4.1.0"
   }

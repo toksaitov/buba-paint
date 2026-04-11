@@ -214,14 +214,13 @@ fn capture_receive_times(clock: &dyn Clock) -> ReceiveTimes {
     }
 }
 
-/// Run the live paper trading bot.
+/// Run the long-lived runtime for paper or readonly venue execution.
 ///
 /// The bot runs until `shutdown_rx` fires, at which point it performs a
 /// graceful shutdown (logs final stats, closes the database).
 ///
 /// In the CLI binary, `shutdown_rx` is wired to `tokio::signal::ctrl_c()`.
 /// In tests, it is fired by the test harness after a scripted scenario.
-#[allow(clippy::too_many_lines)]
 pub async fn run_live(
     config: Config,
     db_path: &str,
@@ -229,14 +228,31 @@ pub async fn run_live(
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     config.validate()?;
-    if config.is_live_execution() {
-        bail!(
-            "EXECUTION_MODE={} is reserved for the authenticated live venue boundary. \
-             Use `buba-paint live-preflight` and the sidecar-backed live surfaces until the \
-             dedicated live venue runtime is wired in.",
-            config.execution_mode.as_str()
-        );
+    match config.execution_mode {
+        crate::config::ExecutionMode::Paper => {
+            run_live_paper(config, db_path, balance, shutdown_rx).await
+        }
+        crate::config::ExecutionMode::LiveReadonly => {
+            crate::live_readonly::run_live_readonly(config, db_path, shutdown_rx).await
+        }
+        crate::config::ExecutionMode::LiveTrading => {
+            bail!(
+                "EXECUTION_MODE={} is not implemented yet. Use `buba-paint live-preflight` or \
+                 EXECUTION_MODE=live_readonly until the dedicated live trading venue runtime is wired in.",
+                config.execution_mode.as_str()
+            );
+        }
     }
+}
+
+/// Run the paper-trading live runtime.
+#[allow(clippy::too_many_lines)]
+async fn run_live_paper(
+    config: Config,
+    db_path: &str,
+    balance: f64,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
     let pending_policy = config.pending_settlement_policy_unchecked();
     info!(
         balance = balance,
@@ -2296,22 +2312,6 @@ mod tests {
         assert_eq!(rows[0].cause_counts, vec![("idle_timeout".to_string(), 1)]);
     }
 
-    /// Verifies that the paper live runtime refuses live-readonly execution mode.
-    #[tokio::test]
-    async fn run_live_refuses_live_readonly_mode() {
-        let mut config = Config::default();
-        config.execution_mode = ExecutionMode::LiveReadonly;
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-
-        let error = run_live(config, "/tmp/does-not-matter.db", 100.0, shutdown_rx)
-            .await
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("reserved for the authenticated live venue boundary"));
-        assert!(error.contains("live-preflight"));
-    }
-
     /// Verifies that the paper live runtime refuses live-trading execution mode.
     #[tokio::test]
     async fn run_live_refuses_live_trading_mode() {
@@ -2324,7 +2324,7 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("reserved for the authenticated live venue boundary"));
+        assert!(error.contains("not implemented yet"));
         assert!(error.contains("live-preflight"));
     }
 }

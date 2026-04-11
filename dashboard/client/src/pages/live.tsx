@@ -34,6 +34,22 @@ function parseDetails(detailsJson: string | null | undefined): Record<string, un
   }
 }
 
+function detailString(
+  details: Record<string, unknown> | null,
+  key: string,
+): string | null {
+  const value = details?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+function detailNumber(
+  details: Record<string, unknown> | null,
+  key: string,
+): number | null {
+  const value = details?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 export function LivePage() {
   const { botId } = useOutletContext<{ botId: string }>();
   const { data: status, isLoading } = useLiveStatus(botId);
@@ -53,6 +69,18 @@ export function LivePage() {
   const provider =
     (typeof sessionDetails?.provider === "string" ? sessionDetails.provider : null) ??
     (typeof accountDetails?.provider === "string" ? accountDetails.provider : null);
+  const userStreamStatus =
+    detailString(accountDetails, "user_stream_status") ??
+    detailString(sessionDetails, "user_stream_status");
+  const lastUserStreamConnectedAtMs =
+    detailNumber(accountDetails, "last_user_stream_connected_at_ms") ??
+    detailNumber(sessionDetails, "last_user_stream_connected_at_ms");
+  const lastUserStreamEventAtMs =
+    detailNumber(accountDetails, "last_user_stream_event_at_ms") ??
+    detailNumber(sessionDetails, "last_user_stream_event_at_ms");
+  const lastAccountRefreshAtMs =
+    detailNumber(accountDetails, "last_successful_account_refresh_at_ms") ??
+    detailNumber(sessionDetails, "last_successful_account_refresh_at_ms");
 
   return (
     <div className="space-y-3">
@@ -64,9 +92,8 @@ export function LivePage() {
             account-state decomposition, venue activity, and reconciliation health.
           </p>
           <p className="mt-2 text-xs text-muted">
-            The Rust bot still refuses <code>live_readonly</code> and <code>live_trading</code>{" "}
-            in the live runtime. This page is for contract validation and seeded readiness data,
-            not real venue execution.
+            <code>live_readonly</code> now runs against the real authenticated venue boundary.
+            <code> live_trading</code> remains explicitly gated and cannot place orders yet.
           </p>
           {provider === "stub" && (
             <p className="mt-2 text-xs text-muted">
@@ -76,8 +103,9 @@ export function LivePage() {
           )}
           {!latestSession && (
             <p className="mt-2 text-xs text-muted">
-              No live session has been recorded yet. That is expected until the dedicated
-              live-readonly venue runtime is wired.
+              No live_readonly session has been recorded yet. Start <code>buba-paint live</code>{" "}
+              with <code>EXECUTION_MODE=live_readonly</code> to verify the authenticated venue
+              boundary.
             </p>
           )}
         </div>
@@ -127,11 +155,23 @@ export function LivePage() {
                   Strategies {enabledStrategies.length > 0 ? enabledStrategies.join(", ") : "n/a"}
                 </div>
                 {provider && <div>Provider {provider}</div>}
+                <div>User stream {userStreamStatus ?? "n/a"}</div>
+                <div>
+                  Last user stream connect{" "}
+                  {lastUserStreamConnectedAtMs != null
+                    ? formatDateTime(lastUserStreamConnectedAtMs)
+                    : "n/a"}
+                </div>
+                <div>
+                  Last user stream event{" "}
+                  {lastUserStreamEventAtMs != null
+                    ? formatDateTime(lastUserStreamEventAtMs)
+                    : "n/a"}
+                </div>
               </div>
             ) : (
               <div className="mt-2 text-muted">
-                No live session has been recorded yet. The current local tree only exposes
-                live-readiness scaffolding.
+                No live session has been recorded yet.
               </div>
             )}
           </div>
@@ -149,6 +189,12 @@ export function LivePage() {
                   Allowance{" "}
                   {latestAccount.allowance_available != null
                     ? formatUsd(latestAccount.allowance_available)
+                    : "n/a"}
+                </div>
+                <div>
+                  Last account refresh{" "}
+                  {lastAccountRefreshAtMs != null
+                    ? formatDateTime(lastAccountRefreshAtMs)
                     : "n/a"}
                 </div>
               </div>

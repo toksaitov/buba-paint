@@ -1,6 +1,6 @@
 import http from "node:http";
 import { loadConfig, type SidecarConfig } from "./config.js";
-import { StubSidecarProvider, type SidecarProvider } from "./provider.js";
+import { createDefaultProvider, type SidecarProvider } from "./provider.js";
 import type {
   LiveOrderIntentRequest,
   LivePreflightRequest,
@@ -84,7 +84,7 @@ function validateOrderIntent(value: unknown): value is LiveOrderIntentRequest {
 }
 
 export function createServer(
-  provider: SidecarProvider = new StubSidecarProvider(loadConfig()),
+  provider: SidecarProvider = createDefaultProvider(loadConfig()),
   config: SidecarConfig = loadConfig(),
 ): http.Server {
   return http.createServer(async (req, res) => {
@@ -95,12 +95,7 @@ export function createServer(
       }
 
       if (req.method === "GET" && req.url === "/health") {
-        json(res, 200, {
-          ok: true,
-          mode: "local-sidecar",
-          signature_type: config.signatureType,
-          proxy_wallet: config.proxyWallet,
-        });
+        json(res, 200, await provider.health());
         return;
       }
 

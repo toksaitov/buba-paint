@@ -47,7 +47,7 @@ pub enum Commands {
         #[arg(long = "set")]
         sets: Vec<String>,
     },
-    /// Run the live paper trading bot
+    /// Run the long-lived runtime in paper or `live_readonly` mode
     Live {
         #[arg(long, default_value = "./data/paint.db")]
         db_path: String,
