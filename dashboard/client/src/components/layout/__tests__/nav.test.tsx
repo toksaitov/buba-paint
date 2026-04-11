@@ -23,6 +23,7 @@ test("renders all nav links", () => {
   expect(screen.getByText("Signals")).toBeDefined();
   expect(screen.getByText("Logs")).toBeDefined();
   expect(screen.getByText("Stats")).toBeDefined();
+  expect(screen.getByText("Live")).toBeDefined();
 });
 
 test("highlights active route", () => {

@@ -101,6 +101,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/balance", get(api::get_balance))
         .route("/api/signals", get(api::get_signals))
         .route("/api/stats", get(api::get_stats))
+        .route("/api/live/status", get(api::get_live_status))
+        .route("/api/live/sessions", get(api::get_live_sessions))
+        .route("/api/live/orders", get(api::get_live_orders))
+        .route("/api/live/fills", get(api::get_live_fills))
+        .route("/api/live/redemptions", get(api::get_live_redemptions))
+        .route(
+            "/api/live/reconciliation",
+            get(api::get_live_reconciliation),
+        )
         .route("/api/bot/logs", get(api::get_logs))
         .route("/api/bot/start", post(api::bot_start))
         .route("/api/bot/stop", post(api::bot_stop))

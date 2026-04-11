@@ -6,7 +6,7 @@
 ///
 /// Returns the total fee in USD.
 use crate::config::Config;
-use crate::types::MarketWindow;
+use crate::types::{MarketWindow, PolymarketFeeSchedule};
 
 pub const CRYPTO_FEE_CHANGEOVER_MS: u64 = 1_774_828_800_000;
 
@@ -29,6 +29,18 @@ pub fn resolve_fee_params(
         };
     }
 
+    if let Some(market) = market {
+        if market.fees_enabled == Some(false) {
+            return FeeParams {
+                fee_rate: 0.0,
+                exponent: 1,
+            };
+        }
+        if let Some(params) = market_fee_schedule_params(market) {
+            return params;
+        }
+    }
+
     if market
         .and_then(|m| m.fee_profile.as_deref())
         .is_some_and(|profile| profile.eq_ignore_ascii_case("crypto"))
@@ -40,6 +52,17 @@ pub fn resolve_fee_params(
         fee_rate: config.taker_fee_rate,
         exponent: config.taker_fee_exponent,
     }
+}
+
+/// Parse live market fee metadata into normalized fee parameters.
+fn market_fee_schedule_params(market: &MarketWindow) -> Option<FeeParams> {
+    let raw = market.fee_schedule_json.as_deref()?;
+    let schedule = serde_json::from_str::<PolymarketFeeSchedule>(raw).ok()?;
+    let fee_rate = schedule.rate?;
+    Some(FeeParams {
+        fee_rate,
+        exponent: schedule.exponent.unwrap_or(1),
+    })
 }
 
 /// Crypto fee params.

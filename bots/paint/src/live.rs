@@ -229,10 +229,19 @@ pub async fn run_live(
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     config.validate()?;
+    if config.is_live_execution() {
+        bail!(
+            "EXECUTION_MODE={} is reserved for the authenticated live venue boundary. \
+             Use `buba-paint live-preflight` and the sidecar-backed live surfaces until the \
+             dedicated live venue runtime is wired in.",
+            config.execution_mode.as_str()
+        );
+    }
     let pending_policy = config.pending_settlement_policy_unchecked();
     info!(
         balance = balance,
         db = %db_path,
+        execution_mode = config.execution_mode.as_str(),
         pending_settlement_mode = pending_policy.mode.as_str(),
         pending_settlement_family_reserve_fraction = pending_policy.family_reserve_fraction,
         pending_settlement_global_reserve_fraction = pending_policy.global_reserve_fraction,
@@ -2055,6 +2064,7 @@ fn handle_authoritative_resolution(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ExecutionMode;
     use tempfile::NamedTempFile;
 
     /// Verifies that persisted Binance ticks take precedence when recovering a window open.
@@ -2087,6 +2097,12 @@ mod tests {
             taker_base_fee: None,
             rewards_min_size: None,
             rewards_max_spread: None,
+            fees_enabled: None,
+            fee_schedule_json: None,
+            token_fee_rates_json: None,
+            accepting_orders: None,
+            accepting_orders_timestamp: None,
+            clear_book_on_start: None,
         };
 
         let open_price = recover_window_open_price(&db, &state, &window);
@@ -2119,6 +2135,12 @@ mod tests {
             taker_base_fee: None,
             rewards_min_size: None,
             rewards_max_spread: None,
+            fees_enabled: None,
+            fee_schedule_json: None,
+            token_fee_rates_json: None,
+            accepting_orders: None,
+            accepting_orders_timestamp: None,
+            clear_book_on_start: None,
         };
 
         let open_price = recover_window_open_price(&db, &state, &window);
@@ -2272,6 +2294,38 @@ mod tests {
         assert_eq!(rows[0].active_outage_ms, Some(750));
         assert_eq!(rows[0].active_cause_class.as_deref(), Some("idle_timeout"));
         assert_eq!(rows[0].cause_counts, vec![("idle_timeout".to_string(), 1)]);
+    }
+
+    /// Verifies that the paper live runtime refuses live-readonly execution mode.
+    #[tokio::test]
+    async fn run_live_refuses_live_readonly_mode() {
+        let mut config = Config::default();
+        config.execution_mode = ExecutionMode::LiveReadonly;
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        let error = run_live(config, "/tmp/does-not-matter.db", 100.0, shutdown_rx)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("reserved for the authenticated live venue boundary"));
+        assert!(error.contains("live-preflight"));
+    }
+
+    /// Verifies that the paper live runtime refuses live-trading execution mode.
+    #[tokio::test]
+    async fn run_live_refuses_live_trading_mode() {
+        let mut config = Config::default();
+        config.execution_mode = ExecutionMode::LiveTrading;
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        let error = run_live(config, "/tmp/does-not-matter.db", 100.0, shutdown_rx)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("reserved for the authenticated live venue boundary"));
+        assert!(error.contains("live-preflight"));
     }
 }
 

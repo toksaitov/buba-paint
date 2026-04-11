@@ -1,6 +1,7 @@
 use std::env;
 
 use anyhow::bail;
+use reqwest::Url;
 
 /// Env str.
 fn env_str(key: &str, default: &str) -> String {
@@ -40,6 +41,17 @@ pub(crate) fn parse_boolish(raw: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+/// Validate one configured URL that must be absolute in live-readiness modes.
+fn validate_absolute_url(name: &str, raw: &str) -> anyhow::Result<()> {
+    let parsed = Url::parse(raw).map_err(|error| {
+        anyhow::anyhow!("{name} must be a valid absolute URL, got {raw:?}: {error}")
+    })?;
+    if parsed.scheme().is_empty() || parsed.host_str().is_none() {
+        bail!("{name} must be a valid absolute URL, got {raw:?}");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +103,41 @@ impl BacktestSettlementMode {
             Some("observed_market_resolution") => Self::ObservedMarketResolution,
             _ => Self::Immediate,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    Paper,
+    LiveReadonly,
+    LiveTrading,
+}
+
+impl ExecutionMode {
+    /// Return the persisted environment label for this execution mode.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Paper => "paper",
+            Self::LiveReadonly => "live_readonly",
+            Self::LiveTrading => "live_trading",
+        }
+    }
+
+    /// Parse one environment override into a supported execution mode.
+    #[must_use]
+    pub fn from_env_value(raw: Option<&str>) -> Self {
+        match raw {
+            Some("live_readonly") => Self::LiveReadonly,
+            Some("live_trading") => Self::LiveTrading,
+            _ => Self::Paper,
+        }
+    }
+
+    /// Return whether this mode needs the live sidecar boundary.
+    #[must_use]
+    pub fn uses_live_sidecar(self) -> bool {
+        matches!(self, Self::LiveReadonly | Self::LiveTrading)
     }
 }
 
@@ -265,6 +312,7 @@ pub struct Config {
     pub binance_book_ticker_stream: String,
     pub binance_depth_stream: String,
     pub clob_ws_url: String,
+    pub clob_api_url: String,
     pub rtds_ws_url: String,
     pub gamma_api_url: String,
 
@@ -356,7 +404,14 @@ pub struct Config {
     pub taker_fee_exponent: u32,
     pub taker_fee_override_explicit: bool,
 
-    pub execution_mode: String,
+    pub execution_mode: ExecutionMode,
+    pub live_sidecar_url: String,
+    pub live_session_cash_cap_usd: f64,
+    pub live_max_single_order_usd: f64,
+    pub live_max_open_notional_usd: f64,
+    pub live_max_daily_loss_usd: f64,
+    pub live_max_session_drawdown_usd: f64,
+    pub live_min_required_cash_usd: f64,
     pub feed_event_storage_profile: FeedEventStorageProfile,
     pub sim_order_latency_ms: u64,
     pub max_book_staleness_ms: u64,
@@ -409,6 +464,12 @@ impl Config {
         )
     }
 
+    /// Return whether this config targets one live venue mode.
+    #[must_use]
+    pub fn is_live_execution(&self) -> bool {
+        self.execution_mode.uses_live_sidecar()
+    }
+
     /// Validate config invariants that should fail fast at startup.
     pub fn validate(&self) -> anyhow::Result<()> {
         let _ = self.pending_settlement_policy()?;
@@ -420,6 +481,38 @@ impl Config {
         }
         if self.clob_no_message_reconnect_ms == 0 {
             bail!("CLOB_NO_MESSAGE_RECONNECT_MS must be > 0");
+        }
+        if self.is_live_execution() {
+            if self.live_session_cash_cap_usd <= 0.0 {
+                bail!("LIVE_SESSION_CASH_CAP_USD must be > 0 for live execution modes");
+            }
+            if self.live_max_single_order_usd <= 0.0 {
+                bail!("LIVE_MAX_SINGLE_ORDER_USD must be > 0 for live execution modes");
+            }
+            if self.live_max_open_notional_usd <= 0.0 {
+                bail!("LIVE_MAX_OPEN_NOTIONAL_USD must be > 0 for live execution modes");
+            }
+            if self.live_max_daily_loss_usd <= 0.0 {
+                bail!("LIVE_MAX_DAILY_LOSS_USD must be > 0 for live execution modes");
+            }
+            if self.live_max_session_drawdown_usd <= 0.0 {
+                bail!("LIVE_MAX_SESSION_DRAWDOWN_USD must be > 0 for live execution modes");
+            }
+            if self.live_min_required_cash_usd <= 0.0 {
+                bail!("LIVE_MIN_REQUIRED_CASH_USD must be > 0 for live execution modes");
+            }
+            if self.live_min_required_cash_usd > self.live_session_cash_cap_usd {
+                bail!("LIVE_MIN_REQUIRED_CASH_USD cannot exceed LIVE_SESSION_CASH_CAP_USD");
+            }
+            if self.live_max_single_order_usd > self.live_max_open_notional_usd {
+                bail!("LIVE_MAX_SINGLE_ORDER_USD cannot exceed LIVE_MAX_OPEN_NOTIONAL_USD");
+            }
+            if self.live_sidecar_url.trim().is_empty() {
+                bail!("LIVE_SIDECAR_URL must be set for live execution modes");
+            }
+            validate_absolute_url("LIVE_SIDECAR_URL", &self.live_sidecar_url)?;
+            validate_absolute_url("CLOB_API_URL", &self.clob_api_url)?;
+            validate_absolute_url("GAMMA_API_URL", &self.gamma_api_url)?;
         }
         Ok(())
     }
@@ -568,6 +661,22 @@ impl Config {
         true
     }
 
+    /// Set one string-like config parameter used by CLI overrides.
+    pub fn set_string_param(&mut self, name: &str, value: &str) -> bool {
+        match name {
+            "EXECUTION_MODE" => {
+                self.execution_mode = ExecutionMode::from_env_value(Some(value));
+            }
+            "LIVE_SIDECAR_URL" => self.live_sidecar_url = value.to_string(),
+            "CLOB_API_URL" => self.clob_api_url = value.to_string(),
+            "GAMMA_API_URL" => self.gamma_api_url = value.to_string(),
+            "DB_PATH" => self.db_path = value.to_string(),
+            "LOG_LEVEL" => self.log_level = value.to_string(),
+            _ => return false,
+        }
+        true
+    }
+
     /// Build config by reading environment variables (with `.env` file support).
     #[allow(clippy::too_many_lines)]
     pub fn from_env() -> Self {
@@ -598,6 +707,7 @@ impl Config {
                 "CLOB_WS_URL",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/market",
             ),
+            clob_api_url: env_str("CLOB_API_URL", "https://clob.polymarket.com"),
             rtds_ws_url: env_str("RTDS_WS_URL", "wss://ws-live-data.polymarket.com"),
             gamma_api_url: env_str("GAMMA_API_URL", "https://gamma-api.polymarket.com"),
 
@@ -730,7 +840,16 @@ impl Config {
                 .map_or(1, |v| v as u32),
             taker_fee_override_explicit,
 
-            execution_mode: env_str("EXECUTION_MODE", "paper"),
+            execution_mode: ExecutionMode::from_env_value(
+                env::var("EXECUTION_MODE").ok().as_deref(),
+            ),
+            live_sidecar_url: env_str("LIVE_SIDECAR_URL", "http://127.0.0.1:3210"),
+            live_session_cash_cap_usd: env_f64("LIVE_SESSION_CASH_CAP_USD", 100.0),
+            live_max_single_order_usd: env_f64("LIVE_MAX_SINGLE_ORDER_USD", 10.0),
+            live_max_open_notional_usd: env_f64("LIVE_MAX_OPEN_NOTIONAL_USD", 25.0),
+            live_max_daily_loss_usd: env_f64("LIVE_MAX_DAILY_LOSS_USD", 15.0),
+            live_max_session_drawdown_usd: env_f64("LIVE_MAX_SESSION_DRAWDOWN_USD", 20.0),
+            live_min_required_cash_usd: env_f64("LIVE_MIN_REQUIRED_CASH_USD", 25.0),
             feed_event_storage_profile: FeedEventStorageProfile::from_env_value(
                 env::var("FEED_EVENT_STORAGE_PROFILE").ok().as_deref(),
             ),
@@ -779,6 +898,7 @@ impl Default for Config {
             binance_book_ticker_stream: book_ticker_stream,
             binance_depth_stream: depth_stream,
             clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market".to_string(),
+            clob_api_url: "https://clob.polymarket.com".to_string(),
             rtds_ws_url: "wss://ws-live-data.polymarket.com".to_string(),
             gamma_api_url: "https://gamma-api.polymarket.com".to_string(),
 
@@ -870,7 +990,14 @@ impl Default for Config {
             taker_fee_exponent: 1,
             taker_fee_override_explicit: false,
 
-            execution_mode: "paper".to_string(),
+            execution_mode: ExecutionMode::Paper,
+            live_sidecar_url: "http://127.0.0.1:3210".to_string(),
+            live_session_cash_cap_usd: 100.0,
+            live_max_single_order_usd: 10.0,
+            live_max_open_notional_usd: 25.0,
+            live_max_daily_loss_usd: 15.0,
+            live_max_session_drawdown_usd: 20.0,
+            live_min_required_cash_usd: 25.0,
             feed_event_storage_profile: FeedEventStorageProfile::Compact,
             sim_order_latency_ms: 250,
             max_book_staleness_ms: 1_000,

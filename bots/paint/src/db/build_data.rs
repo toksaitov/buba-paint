@@ -89,6 +89,12 @@ const CREATE_SCHEMA: &str = "
         taker_base_fee REAL,
         rewards_min_size REAL,
         rewards_max_spread REAL,
+        fees_enabled INTEGER,
+        fee_schedule_json TEXT,
+        token_fee_rates_json TEXT,
+        accepting_orders INTEGER,
+        accepting_orders_timestamp TEXT,
+        clear_book_on_start INTEGER,
         run_id        INTEGER NOT NULL,
         FOREIGN KEY (run_id) REFERENCES runs(id)
     );
@@ -380,6 +386,24 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
     let has_rewards_max_spread = conn
         .prepare("SELECT rewards_max_spread FROM src.markets LIMIT 0")
         .is_ok();
+    let has_fees_enabled = conn
+        .prepare("SELECT fees_enabled FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_fee_schedule_json = conn
+        .prepare("SELECT fee_schedule_json FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_token_fee_rates_json = conn
+        .prepare("SELECT token_fee_rates_json FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_accepting_orders = conn
+        .prepare("SELECT accepting_orders FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_accepting_orders_timestamp = conn
+        .prepare("SELECT accepting_orders_timestamp FROM src.markets LIMIT 0")
+        .is_ok();
+    let has_clear_book_on_start = conn
+        .prepare("SELECT clear_book_on_start FROM src.markets LIMIT 0")
+        .is_ok();
 
     log("  Copying markets...");
     conn.execute(
@@ -388,7 +412,9 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
                 market_id, question, condition_id, slug, up_token_id, down_token_id,
                 start_time, end_time, status, outcome, polymarket_outcome, resolution_source,
                 fee_profile, order_min_size, order_price_min_tick_size, maker_base_fee,
-                taker_base_fee, rewards_min_size, rewards_max_spread, run_id
+                taker_base_fee, rewards_min_size, rewards_max_spread, fees_enabled,
+                fee_schedule_json, token_fee_rates_json, accepting_orders,
+                accepting_orders_timestamp, clear_book_on_start, run_id
              )
              SELECT
                 market_id, question, condition_id, slug, up_token_id, down_token_id,
@@ -403,6 +429,12 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
                 {taker_base_fee},
                 {rewards_min_size},
                 {rewards_max_spread},
+                {fees_enabled},
+                {fee_schedule_json},
+                {token_fee_rates_json},
+                {accepting_orders},
+                {accepting_orders_timestamp},
+                {clear_book_on_start},
                 {run_id}
              FROM src.markets",
             outcome = if has_outcome { "outcome" } else { "NULL" },
@@ -448,6 +480,36 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
             },
             rewards_max_spread = if has_rewards_max_spread {
                 "rewards_max_spread"
+            } else {
+                "NULL"
+            },
+            fees_enabled = if has_fees_enabled {
+                "fees_enabled"
+            } else {
+                "NULL"
+            },
+            fee_schedule_json = if has_fee_schedule_json {
+                "fee_schedule_json"
+            } else {
+                "NULL"
+            },
+            token_fee_rates_json = if has_token_fee_rates_json {
+                "token_fee_rates_json"
+            } else {
+                "NULL"
+            },
+            accepting_orders = if has_accepting_orders {
+                "accepting_orders"
+            } else {
+                "NULL"
+            },
+            accepting_orders_timestamp = if has_accepting_orders_timestamp {
+                "accepting_orders_timestamp"
+            } else {
+                "NULL"
+            },
+            clear_book_on_start = if has_clear_book_on_start {
+                "clear_book_on_start"
             } else {
                 "NULL"
             },

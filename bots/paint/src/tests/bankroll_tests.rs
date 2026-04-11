@@ -1695,6 +1695,12 @@ fn constructor_hydrates_active_and_pending_trade_reserves() {
         taker_base_fee: None,
         rewards_min_size: None,
         rewards_max_spread: None,
+        fees_enabled: None,
+        fee_schedule_json: None,
+        token_fee_rates_json: None,
+        accepting_orders: None,
+        accepting_orders_timestamp: None,
+        clear_book_on_start: None,
     };
     let mut pending_market = active_market.clone();
     pending_market.market_id = "mkt-pending".to_string();

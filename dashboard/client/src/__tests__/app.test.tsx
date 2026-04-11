@@ -46,6 +46,10 @@ vi.mock("../pages/stats", () => ({
   StatsPage: () => <div data-testid="stats-page">stats</div>,
 }));
 
+vi.mock("../pages/live", () => ({
+  LivePage: () => <div data-testid="live-page">live</div>,
+}));
+
 import App from "../App";
 
 it("renders the login route directly", () => {
@@ -73,4 +77,3 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
 });
-

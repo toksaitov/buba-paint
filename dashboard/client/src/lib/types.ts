@@ -107,3 +107,123 @@ export interface BotProcessStatus {
   uptime_secs: number | null;
   control_available?: boolean;
 }
+
+export interface LiveSessionRow {
+  id: number;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  status: string;
+  execution_mode: string;
+  wallet_address: string | null;
+  proxy_wallet: string | null;
+  enabled_strategies_json: string;
+  config_fingerprint: string;
+  cash_cap_usd: number;
+  details_json: string | null;
+}
+
+export interface LiveAccountSnapshotRow {
+  id: number;
+  session_id: number;
+  timestamp_ms: number;
+  cash_available: number;
+  cash_reserved_for_orders: number;
+  inventory_mark_value: number;
+  redeemable_value: number;
+  pending_redeem_value: number;
+  total_equity: number;
+  allowance_available: number | null;
+  details_json: string | null;
+}
+
+export interface LiveOrderRow {
+  id: number;
+  session_id: number;
+  intent_id: number;
+  venue_order_id: string | null;
+  client_order_id: string | null;
+  market_id: string;
+  token_id: string | null;
+  side: string;
+  order_type: string;
+  status: string;
+  status_reason: string | null;
+  created_at_ms: number;
+  acknowledged_at_ms: number | null;
+  updated_at_ms: number;
+  requested_price: number | null;
+  limit_price: number | null;
+  requested_size: number | null;
+  accepted_size: number | null;
+  details_json: string | null;
+}
+
+export interface LiveFillRow {
+  id: number;
+  session_id: number;
+  intent_id: number | null;
+  live_order_id: number | null;
+  venue_trade_id: string | null;
+  filled_at_ms: number;
+  price: number;
+  size: number;
+  fee_amount: number | null;
+  fee_rate: number | null;
+  liquidity_side: string | null;
+  tx_hash: string | null;
+  status: string;
+  details_json: string | null;
+}
+
+export interface LiveRedemptionRow {
+  id: number;
+  session_id: number;
+  market_id: string;
+  detected_redeemable_at_ms: number;
+  submitted_at_ms: number | null;
+  confirmed_at_ms: number | null;
+  cash_credit_observed_at_ms: number | null;
+  status: string;
+  redeemable_value: number;
+  tx_hash: string | null;
+  details_json: string | null;
+}
+
+export interface LiveReconciliationRow {
+  id: number;
+  session_id: number;
+  timestamp_ms: number;
+  severity: string;
+  event_type: string;
+  local_value: number | null;
+  remote_value: number | null;
+  details_json: string | null;
+}
+
+export interface LiveStatusResponse {
+  latest_session: LiveSessionRow | null;
+  latest_account_snapshot: LiveAccountSnapshotRow | null;
+  open_orders: number;
+  pending_redemptions: number;
+  critical_reconciliation_events: number;
+}
+
+export interface LiveSessionsResponse {
+  sessions: LiveSessionRow[];
+}
+
+export interface LiveOrdersResponse {
+  orders: LiveOrderRow[];
+}
+
+export interface LiveFillsResponse {
+  fills: LiveFillRow[];
+}
+
+export interface LiveRedemptionsResponse {
+  redemptions: LiveRedemptionRow[];
+}
+
+export interface LiveReconciliationResponse {
+  events: LiveReconciliationRow[];
+}

@@ -108,10 +108,23 @@ pub struct GammaMarket {
     pub taker_base_fee: Option<f64>,
     pub rewards_min_size: Option<f64>,
     pub rewards_max_spread: Option<f64>,
+    pub fees_enabled: Option<bool>,
+    pub fee_schedule: Option<serde_json::Value>,
+    pub accepting_orders_timestamp: Option<String>,
+    pub clear_book_on_start: Option<bool>,
     pub end_date: String,
     pub neg_risk: bool,
     #[serde(rename = "negRiskMarketID")]
     pub neg_risk_market_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PolymarketFeeSchedule {
+    pub exponent: Option<u32>,
+    pub rate: Option<f64>,
+    pub taker_only: Option<bool>,
+    pub rebate_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +146,12 @@ pub struct MarketWindow {
     pub taker_base_fee: Option<f64>,
     pub rewards_min_size: Option<f64>,
     pub rewards_max_spread: Option<f64>,
+    pub fees_enabled: Option<bool>,
+    pub fee_schedule_json: Option<String>,
+    pub token_fee_rates_json: Option<String>,
+    pub accepting_orders: Option<bool>,
+    pub accepting_orders_timestamp: Option<String>,
+    pub clear_book_on_start: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -597,6 +616,153 @@ pub struct FeedHealthEvent {
     pub event_type: String,
     pub connection_id: Option<String>,
     pub market_id: Option<String>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveStrategyReadiness {
+    LiveReadyV1,
+    LiveSupportedButDisabled,
+    NotLiveV1,
+}
+
+impl LiveStrategyReadiness {
+    /// Return the stable label used in logs, docs, and JSON payloads.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LiveReadyV1 => "live_ready_v1",
+            Self::LiveSupportedButDisabled => "live_supported_but_disabled",
+            Self::NotLiveV1 => "not_live_v1",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveSession {
+    pub id: Option<i64>,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub status: String,
+    pub execution_mode: String,
+    pub wallet_address: Option<String>,
+    pub proxy_wallet: Option<String>,
+    pub enabled_strategies_json: String,
+    pub config_fingerprint: String,
+    pub cash_cap_usd: f64,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveOrderIntent {
+    pub id: Option<i64>,
+    pub session_id: i64,
+    pub signal_id: Option<i64>,
+    pub market_id: String,
+    pub strategy: String,
+    pub side: String,
+    pub order_type: String,
+    pub status: String,
+    pub created_at_ms: u64,
+    pub requested_price: Option<f64>,
+    pub requested_size: Option<f64>,
+    pub limit_price: Option<f64>,
+    pub fee_schedule_json: Option<String>,
+    pub token_fee_rates_json: Option<String>,
+    pub execution_group_id: Option<String>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveOrder {
+    pub id: Option<i64>,
+    pub session_id: i64,
+    pub intent_id: i64,
+    pub venue_order_id: Option<String>,
+    pub client_order_id: Option<String>,
+    pub market_id: String,
+    pub token_id: Option<String>,
+    pub side: String,
+    pub order_type: String,
+    pub status: String,
+    pub status_reason: Option<String>,
+    pub created_at_ms: u64,
+    pub acknowledged_at_ms: Option<u64>,
+    pub updated_at_ms: u64,
+    pub requested_price: Option<f64>,
+    pub limit_price: Option<f64>,
+    pub requested_size: Option<f64>,
+    pub accepted_size: Option<f64>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveFill {
+    pub id: Option<i64>,
+    pub session_id: i64,
+    pub intent_id: Option<i64>,
+    pub live_order_id: Option<i64>,
+    pub venue_trade_id: Option<String>,
+    pub filled_at_ms: u64,
+    pub price: f64,
+    pub size: f64,
+    pub fee_amount: Option<f64>,
+    pub fee_rate: Option<f64>,
+    pub liquidity_side: Option<String>,
+    pub tx_hash: Option<String>,
+    pub status: String,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveAccountSnapshot {
+    pub id: Option<i64>,
+    pub session_id: i64,
+    pub timestamp_ms: u64,
+    pub cash_available: f64,
+    pub cash_reserved_for_orders: f64,
+    pub inventory_mark_value: f64,
+    pub redeemable_value: f64,
+    pub pending_redeem_value: f64,
+    pub total_equity: f64,
+    pub allowance_available: Option<f64>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveRedemption {
+    pub id: Option<i64>,
+    pub session_id: i64,
+    pub market_id: String,
+    pub detected_redeemable_at_ms: u64,
+    pub submitted_at_ms: Option<u64>,
+    pub confirmed_at_ms: Option<u64>,
+    pub cash_credit_observed_at_ms: Option<u64>,
+    pub status: String,
+    pub redeemable_value: f64,
+    pub tx_hash: Option<String>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveReconciliationEvent {
+    pub id: Option<i64>,
+    pub session_id: i64,
+    pub timestamp_ms: u64,
+    pub severity: String,
+    pub event_type: String,
+    pub local_value: Option<f64>,
+    pub remote_value: Option<f64>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ControlAuditEntry {
+    pub id: Option<i64>,
+    pub timestamp_ms: u64,
+    pub actor: String,
+    pub action: String,
+    pub target: Option<String>,
     pub details_json: Option<String>,
 }
 

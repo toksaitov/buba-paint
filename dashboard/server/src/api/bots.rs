@@ -98,6 +98,81 @@ pub async fn bot_stats(
     Ok(Json(data))
 }
 
+/// `GET /api/bots/:id/live/status`
+pub async fn bot_live_status(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let data = proxy::proxy_get(agent, "/api/live/status", None).await?;
+    Ok(Json(data))
+}
+
+/// `GET /api/bots/:id/live/sessions`
+#[allow(clippy::implicit_hasher)]
+pub async fn bot_live_sessions(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let qs = build_query(&params);
+    let data = proxy::proxy_get(agent, "/api/live/sessions", qs.as_deref()).await?;
+    Ok(Json(data))
+}
+
+/// `GET /api/bots/:id/live/orders`
+#[allow(clippy::implicit_hasher)]
+pub async fn bot_live_orders(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let qs = build_query(&params);
+    let data = proxy::proxy_get(agent, "/api/live/orders", qs.as_deref()).await?;
+    Ok(Json(data))
+}
+
+/// `GET /api/bots/:id/live/fills`
+#[allow(clippy::implicit_hasher)]
+pub async fn bot_live_fills(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let qs = build_query(&params);
+    let data = proxy::proxy_get(agent, "/api/live/fills", qs.as_deref()).await?;
+    Ok(Json(data))
+}
+
+/// `GET /api/bots/:id/live/redemptions`
+#[allow(clippy::implicit_hasher)]
+pub async fn bot_live_redemptions(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let qs = build_query(&params);
+    let data = proxy::proxy_get(agent, "/api/live/redemptions", qs.as_deref()).await?;
+    Ok(Json(data))
+}
+
+/// `GET /api/bots/:id/live/reconciliation`
+#[allow(clippy::implicit_hasher)]
+pub async fn bot_live_reconciliation(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let qs = build_query(&params);
+    let data = proxy::proxy_get(agent, "/api/live/reconciliation", qs.as_deref()).await?;
+    Ok(Json(data))
+}
+
 /// `GET /api/bots/:id/logs`
 #[allow(clippy::implicit_hasher)]
 pub async fn bot_logs(

@@ -24,7 +24,13 @@ fn fixture_db() -> Connection {
          CREATE TABLE signals (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, strategy TEXT NOT NULL, direction TEXT NOT NULL, binance_price REAL, chainlink_price REAL, up_ask REAL, down_ask REAL, up_bid REAL, down_bid REAL, metadata TEXT);
          CREATE TABLE simulated_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, market_id TEXT NOT NULL, strategy TEXT NOT NULL, side TEXT NOT NULL, token_id TEXT NOT NULL, entry_price REAL NOT NULL, size REAL NOT NULL, status TEXT NOT NULL DEFAULT 'open');
          CREATE TABLE trade_results (id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER NOT NULL UNIQUE, exit_price REAL, settlement_price REAL NOT NULL, pnl_0pct REAL NOT NULL, pnl_1pct REAL NOT NULL, pnl_2pct REAL NOT NULL, pnl_3pct REAL NOT NULL, resolved_at INTEGER NOT NULL);
-         CREATE TABLE balance_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, event TEXT NOT NULL, trade_id INTEGER, amount REAL NOT NULL, balance REAL NOT NULL);",
+         CREATE TABLE balance_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, event TEXT NOT NULL, trade_id INTEGER, amount REAL NOT NULL, balance REAL NOT NULL);
+         CREATE TABLE live_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER, status TEXT NOT NULL, execution_mode TEXT NOT NULL, wallet_address TEXT, proxy_wallet TEXT, enabled_strategies_json TEXT NOT NULL, config_fingerprint TEXT NOT NULL, cash_cap_usd REAL NOT NULL, details_json TEXT);
+         CREATE TABLE live_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, intent_id INTEGER NOT NULL, venue_order_id TEXT, client_order_id TEXT, market_id TEXT NOT NULL, token_id TEXT, side TEXT NOT NULL, order_type TEXT NOT NULL, status TEXT NOT NULL, status_reason TEXT, created_at_ms INTEGER NOT NULL, acknowledged_at_ms INTEGER, updated_at_ms INTEGER NOT NULL, requested_price REAL, limit_price REAL, requested_size REAL, accepted_size REAL, details_json TEXT);
+         CREATE TABLE live_fills (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, intent_id INTEGER, live_order_id INTEGER, venue_trade_id TEXT, filled_at_ms INTEGER NOT NULL, price REAL NOT NULL, size REAL NOT NULL, fee_amount REAL, fee_rate REAL, liquidity_side TEXT, tx_hash TEXT, status TEXT NOT NULL, details_json TEXT);
+         CREATE TABLE live_account_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, timestamp_ms INTEGER NOT NULL, cash_available REAL NOT NULL, cash_reserved_for_orders REAL NOT NULL, inventory_mark_value REAL NOT NULL, redeemable_value REAL NOT NULL, pending_redeem_value REAL NOT NULL, total_equity REAL NOT NULL, allowance_available REAL, details_json TEXT);
+         CREATE TABLE live_redemptions (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, market_id TEXT NOT NULL, detected_redeemable_at_ms INTEGER NOT NULL, submitted_at_ms INTEGER, confirmed_at_ms INTEGER, cash_credit_observed_at_ms INTEGER, status TEXT NOT NULL, redeemable_value REAL NOT NULL, tx_hash TEXT, details_json TEXT);
+         CREATE TABLE live_reconciliation_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, timestamp_ms INTEGER NOT NULL, severity TEXT NOT NULL, event_type TEXT NOT NULL, local_value REAL, remote_value REAL, details_json TEXT);",
     ).unwrap();
 
     conn.execute_batch(
@@ -34,7 +40,13 @@ fn fixture_db() -> Connection {
          INSERT INTO trade_results (trade_id, exit_price, settlement_price, pnl_0pct, pnl_1pct, pnl_2pct, pnl_3pct, resolved_at) VALUES (1, 1.0, 1.0, 55.0, 54.0, 53.0, 52.0, 1500);
          INSERT INTO signals (timestamp, strategy, direction, binance_price, chainlink_price, up_ask, down_ask, metadata) VALUES (1050, 'latency-arb', 'UP', 42000.0, 42001.0, 0.45, 0.55, '{}');
          INSERT INTO tick_data (timestamp, source, price) VALUES (500, 'binance', 42000.0);
-         INSERT INTO tick_data (timestamp, source, price) VALUES (3000, 'binance', 42100.0);",
+         INSERT INTO tick_data (timestamp, source, price) VALUES (3000, 'binance', 42100.0);
+         INSERT INTO live_sessions (started_at_ms, ended_at_ms, status, execution_mode, wallet_address, proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd, details_json) VALUES (4000, NULL, 'readonly_ready', 'live_readonly', '0xwallet', '0xproxy', '[\"latency-arb\"]', 'fingerprint-1', 100.0, '{}');
+         INSERT INTO live_account_snapshots (session_id, timestamp_ms, cash_available, cash_reserved_for_orders, inventory_mark_value, redeemable_value, pending_redeem_value, total_equity, allowance_available, details_json) VALUES (1, 4100, 96.0, 0.0, 2.0, 1.0, 0.0, 99.0, 96.0, '{}');
+         INSERT INTO live_orders (session_id, intent_id, venue_order_id, client_order_id, market_id, token_id, side, order_type, status, status_reason, created_at_ms, acknowledged_at_ms, updated_at_ms, requested_price, limit_price, requested_size, accepted_size, details_json) VALUES (1, 11, 'venue-1', 'client-1', 'mkt-1', 'tok-up', 'BUY', 'FOK', 'open', NULL, 4200, 4201, 4201, 0.51, 0.51, 5.0, 5.0, '{}');
+         INSERT INTO live_fills (session_id, intent_id, live_order_id, venue_trade_id, filled_at_ms, price, size, fee_amount, fee_rate, liquidity_side, tx_hash, status, details_json) VALUES (1, 11, 1, 'trade-1', 4300, 0.51, 5.0, 0.04, 0.072, 'taker', '0xfill', 'confirmed', '{}');
+         INSERT INTO live_redemptions (session_id, market_id, detected_redeemable_at_ms, submitted_at_ms, confirmed_at_ms, cash_credit_observed_at_ms, status, redeemable_value, tx_hash, details_json) VALUES (1, 'mkt-1', 4400, 4500, NULL, NULL, 'submitted', 3.5, '0xredeem', '{}');
+         INSERT INTO live_reconciliation_events (session_id, timestamp_ms, severity, event_type, local_value, remote_value, details_json) VALUES (1, 4600, 'critical', 'cash_drift', 96.0, 94.0, '{}');",
     ).unwrap();
 
     conn
@@ -68,6 +80,15 @@ fn test_app_with_bot(conn: Connection, log_path: Option<&str>) -> Router {
         .route("/api/balance", get(api::get_balance))
         .route("/api/signals", get(api::get_signals))
         .route("/api/stats", get(api::get_stats))
+        .route("/api/live/status", get(api::get_live_status))
+        .route("/api/live/sessions", get(api::get_live_sessions))
+        .route("/api/live/orders", get(api::get_live_orders))
+        .route("/api/live/fills", get(api::get_live_fills))
+        .route("/api/live/redemptions", get(api::get_live_redemptions))
+        .route(
+            "/api/live/reconciliation",
+            get(api::get_live_reconciliation),
+        )
         .route("/api/bot/logs", get(api::get_logs))
         .route("/api/bot/status", get(api::bot_status))
         .route("/api/bot/start", post(api::bot_start))
@@ -84,6 +105,12 @@ fn authed_get(path: &str) -> Request<Body> {
         .header("authorization", "Bearer test-secret")
         .body(Body::empty())
         .unwrap()
+}
+
+/// Decode one JSON response body into a `serde_json::Value`.
+async fn json_body(resp: axum::response::Response) -> serde_json::Value {
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    serde_json::from_slice(&body).unwrap()
 }
 
 /// Verifies that health returns ok.
@@ -222,6 +249,85 @@ async fn stats_returns_by_strategy() {
     let la = &json["by_strategy"]["latency-arb"];
     assert_eq!(la["trades"], 1);
     assert_eq!(la["wins"], 1);
+}
+
+/// Verifies that live status returns the current live summary.
+#[tokio::test]
+async fn live_status_returns_summary() {
+    let app = test_app(fixture_db());
+    let resp = app.oneshot(authed_get("/api/live/status")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["open_orders"], 1);
+    assert_eq!(json["pending_redemptions"], 1);
+    assert_eq!(json["critical_reconciliation_events"], 1);
+}
+
+/// Verifies that live table endpoints return seeded rows and honor the query limit.
+#[tokio::test]
+async fn live_table_endpoints_return_rows() {
+    let app = test_app(fixture_db());
+
+    for path in [
+        "/api/live/sessions",
+        "/api/live/orders?limit=1",
+        "/api/live/fills?limit=1",
+        "/api/live/redemptions?limit=1",
+        "/api/live/reconciliation?limit=1",
+    ] {
+        let resp = app.clone().oneshot(authed_get(path)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "unexpected status for {path}"
+        );
+    }
+
+    let sessions = json_body(
+        app.clone()
+            .oneshot(authed_get("/api/live/sessions"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(sessions["sessions"].as_array().unwrap().len(), 1);
+
+    let orders = json_body(
+        app.clone()
+            .oneshot(authed_get("/api/live/orders?limit=1"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(orders["orders"].as_array().unwrap().len(), 1);
+
+    let fills = json_body(
+        app.clone()
+            .oneshot(authed_get("/api/live/fills?limit=1"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(fills["fills"].as_array().unwrap().len(), 1);
+
+    let redemptions = json_body(
+        app.clone()
+            .oneshot(authed_get("/api/live/redemptions?limit=1"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(redemptions["redemptions"].as_array().unwrap().len(), 1);
+
+    let reconciliation = json_body(
+        app.oneshot(authed_get("/api/live/reconciliation?limit=1"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(reconciliation["events"].as_array().unwrap().len(), 1);
 }
 
 /// Verifies that empty db returns defaults.

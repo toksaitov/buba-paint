@@ -64,6 +64,92 @@ fn fixture_db() -> Connection {
             trade_id INTEGER,
             amount REAL NOT NULL,
             balance REAL NOT NULL
+        );
+        CREATE TABLE live_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at_ms INTEGER NOT NULL,
+            ended_at_ms INTEGER,
+            status TEXT NOT NULL,
+            execution_mode TEXT NOT NULL,
+            wallet_address TEXT,
+            proxy_wallet TEXT,
+            enabled_strategies_json TEXT NOT NULL,
+            config_fingerprint TEXT NOT NULL,
+            cash_cap_usd REAL NOT NULL,
+            details_json TEXT
+        );
+        CREATE TABLE live_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            intent_id INTEGER NOT NULL,
+            venue_order_id TEXT,
+            client_order_id TEXT,
+            market_id TEXT NOT NULL,
+            token_id TEXT,
+            side TEXT NOT NULL,
+            order_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            status_reason TEXT,
+            created_at_ms INTEGER NOT NULL,
+            acknowledged_at_ms INTEGER,
+            updated_at_ms INTEGER NOT NULL,
+            requested_price REAL,
+            limit_price REAL,
+            requested_size REAL,
+            accepted_size REAL,
+            details_json TEXT
+        );
+        CREATE TABLE live_fills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            intent_id INTEGER,
+            live_order_id INTEGER,
+            venue_trade_id TEXT,
+            filled_at_ms INTEGER NOT NULL,
+            price REAL NOT NULL,
+            size REAL NOT NULL,
+            fee_amount REAL,
+            fee_rate REAL,
+            liquidity_side TEXT,
+            tx_hash TEXT,
+            status TEXT NOT NULL,
+            details_json TEXT
+        );
+        CREATE TABLE live_account_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            timestamp_ms INTEGER NOT NULL,
+            cash_available REAL NOT NULL,
+            cash_reserved_for_orders REAL NOT NULL,
+            inventory_mark_value REAL NOT NULL,
+            redeemable_value REAL NOT NULL,
+            pending_redeem_value REAL NOT NULL,
+            total_equity REAL NOT NULL,
+            allowance_available REAL,
+            details_json TEXT
+        );
+        CREATE TABLE live_redemptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            market_id TEXT NOT NULL,
+            detected_redeemable_at_ms INTEGER NOT NULL,
+            submitted_at_ms INTEGER,
+            confirmed_at_ms INTEGER,
+            cash_credit_observed_at_ms INTEGER,
+            status TEXT NOT NULL,
+            redeemable_value REAL NOT NULL,
+            tx_hash TEXT,
+            details_json TEXT
+        );
+        CREATE TABLE live_reconciliation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            timestamp_ms INTEGER NOT NULL,
+            severity TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            local_value REAL,
+            remote_value REAL,
+            details_json TEXT
         );",
     )
     .unwrap();
@@ -119,6 +205,22 @@ fn seed_fixtures(conn: &Connection) {
     conn.execute_batch(
         "INSERT INTO tick_data (timestamp, source, price) VALUES (500, 'binance', 42000.0);
          INSERT INTO tick_data (timestamp, source, price) VALUES (3500, 'binance', 42100.0);",
+    )
+    .unwrap();
+
+    conn.execute_batch(
+        "INSERT INTO live_sessions (started_at_ms, ended_at_ms, status, execution_mode, wallet_address, proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd, details_json)
+         VALUES (4000, NULL, 'readonly_ready', 'live_readonly', '0xwallet', '0xproxy', '[\"latency-arb\"]', 'fingerprint-1', 100.0, '{}');
+         INSERT INTO live_account_snapshots (session_id, timestamp_ms, cash_available, cash_reserved_for_orders, inventory_mark_value, redeemable_value, pending_redeem_value, total_equity, allowance_available, details_json)
+         VALUES (1, 4100, 96.0, 0.0, 2.0, 1.0, 0.0, 99.0, 96.0, '{}');
+         INSERT INTO live_orders (session_id, intent_id, venue_order_id, client_order_id, market_id, token_id, side, order_type, status, status_reason, created_at_ms, acknowledged_at_ms, updated_at_ms, requested_price, limit_price, requested_size, accepted_size, details_json)
+         VALUES (1, 11, 'venue-1', 'client-1', 'mkt-1', 'tok-up', 'BUY', 'FOK', 'open', NULL, 4200, 4201, 4201, 0.51, 0.51, 5.0, 5.0, '{}');
+         INSERT INTO live_fills (session_id, intent_id, live_order_id, venue_trade_id, filled_at_ms, price, size, fee_amount, fee_rate, liquidity_side, tx_hash, status, details_json)
+         VALUES (1, 11, 1, 'trade-1', 4300, 0.51, 5.0, 0.09, 0.072, 'taker', '0xtx', 'confirmed', '{}');
+         INSERT INTO live_redemptions (session_id, market_id, detected_redeemable_at_ms, submitted_at_ms, confirmed_at_ms, cash_credit_observed_at_ms, status, redeemable_value, tx_hash, details_json)
+         VALUES (1, 'mkt-1', 4400, 4500, NULL, NULL, 'submitted', 3.5, '0xredeem', '{}');
+         INSERT INTO live_reconciliation_events (session_id, timestamp_ms, severity, event_type, local_value, remote_value, details_json)
+         VALUES (1, 4600, 'critical', 'cash_drift', 96.0, 94.0, '{}');",
     )
     .unwrap();
 }
@@ -494,6 +596,66 @@ async fn get_signals_since() {
     let signals = reader.get_signals_since(1).await.unwrap();
     assert_eq!(signals.len(), 1);
     assert_eq!(signals[0].strategy, "spread-capture");
+}
+
+/// Verifies that live status summarizes the additive live tables.
+#[tokio::test]
+async fn get_live_status_with_fixture_data() {
+    let conn = fixture_db();
+    seed_fixtures(&conn);
+    let reader = DbReader::from_connection(conn);
+
+    let status = reader.get_live_status().await.unwrap();
+    assert_eq!(status.open_orders, 1);
+    assert_eq!(status.pending_redemptions, 1);
+    assert_eq!(status.critical_reconciliation_events, 1);
+    assert_eq!(
+        status
+            .latest_session
+            .as_ref()
+            .map(|session| session.execution_mode.as_str()),
+        Some("live_readonly")
+    );
+    assert_eq!(
+        status
+            .latest_account_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.cash_available),
+        Some(96.0)
+    );
+}
+
+/// Verifies that live table readers return recent rows.
+#[tokio::test]
+async fn live_table_queries_return_rows() {
+    let conn = fixture_db();
+    seed_fixtures(&conn);
+    let reader = DbReader::from_connection(conn);
+
+    assert_eq!(
+        reader.get_live_sessions(10).await.unwrap().sessions.len(),
+        1
+    );
+    assert_eq!(reader.get_live_orders(10).await.unwrap().orders.len(), 1);
+    assert_eq!(reader.get_live_fills(10).await.unwrap().fills.len(), 1);
+    assert_eq!(
+        reader
+            .get_live_redemptions(10)
+            .await
+            .unwrap()
+            .redemptions
+            .len(),
+        1
+    );
+    assert_eq!(
+        reader
+            .get_live_reconciliation(10)
+            .await
+            .unwrap()
+            .events
+            .len(),
+        1
+    );
 }
 
 /// Verifies that new opens existing db file.

@@ -51,6 +51,18 @@ fn test_app_with_agent(agent_url: &str) -> (Router, Arc<DashboardDb>) {
         .route("/api/bots/{id}/balance", get(bots::bot_balance))
         .route("/api/bots/{id}/signals", get(bots::bot_signals))
         .route("/api/bots/{id}/stats", get(bots::bot_stats))
+        .route("/api/bots/{id}/live/status", get(bots::bot_live_status))
+        .route("/api/bots/{id}/live/sessions", get(bots::bot_live_sessions))
+        .route("/api/bots/{id}/live/orders", get(bots::bot_live_orders))
+        .route("/api/bots/{id}/live/fills", get(bots::bot_live_fills))
+        .route(
+            "/api/bots/{id}/live/redemptions",
+            get(bots::bot_live_redemptions),
+        )
+        .route(
+            "/api/bots/{id}/live/reconciliation",
+            get(bots::bot_live_reconciliation),
+        )
         .route("/api/bots/{id}/logs", get(bots::bot_logs))
         .route("/api/bots/{id}/process", get(bots::bot_process_status))
         .route("/api/bots/{id}/start", post(bots::bot_start))
@@ -280,6 +292,72 @@ async fn bot_stats_proxies_to_agent() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Verifies that live status proxies to the agent.
+#[tokio::test]
+async fn bot_live_status_proxies_to_agent() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/live/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_session": { "id": 1 },
+            "open_orders": 2,
+            "pending_redemptions": 1,
+            "critical_reconciliation_events": 1,
+        })))
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get("/api/bots/paint/live/status", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = json_body(resp).await;
+    assert_eq!(body["open_orders"], 2);
+}
+
+/// Verifies that live list proxies forward the limit query parameter.
+#[tokio::test]
+async fn bot_live_list_proxies_forward_limit() {
+    let server = MockServer::start().await;
+    for live_path in [
+        "/api/live/sessions",
+        "/api/live/orders",
+        "/api/live/fills",
+        "/api/live/redemptions",
+        "/api/live/reconciliation",
+    ] {
+        Mock::given(method("GET"))
+            .and(path(live_path))
+            .and(query_param("limit", "10"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+    }
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    for path in [
+        "/api/bots/paint/live/sessions?limit=10",
+        "/api/bots/paint/live/orders?limit=10",
+        "/api/bots/paint/live/fills?limit=10",
+        "/api/bots/paint/live/redemptions?limit=10",
+        "/api/bots/paint/live/reconciliation?limit=10",
+    ] {
+        let resp = app.clone().oneshot(auth_get(path, &token)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "unexpected status for {path}"
+        );
+    }
 }
 
 /// Verifies that bot logs forwards lines param.

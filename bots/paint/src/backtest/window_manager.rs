@@ -60,6 +60,12 @@ pub struct MarketSettlement {
     pub taker_base_fee: Option<f64>,
     pub rewards_min_size: Option<f64>,
     pub rewards_max_spread: Option<f64>,
+    pub fees_enabled: Option<bool>,
+    pub fee_schedule_json: Option<String>,
+    pub token_fee_rates_json: Option<String>,
+    pub accepting_orders: Option<bool>,
+    pub accepting_orders_timestamp: Option<String>,
+    pub clear_book_on_start: Option<bool>,
 }
 
 /// Events returned by `advance()` indicating what changed at a given
@@ -160,6 +166,12 @@ impl WindowManager {
             taker_base_fee: settlement.taker_base_fee,
             rewards_min_size: settlement.rewards_min_size,
             rewards_max_spread: settlement.rewards_max_spread,
+            fees_enabled: settlement.fees_enabled,
+            fee_schedule_json: settlement.fee_schedule_json.clone(),
+            token_fee_rates_json: settlement.token_fee_rates_json.clone(),
+            accepting_orders: settlement.accepting_orders,
+            accepting_orders_timestamp: settlement.accepting_orders_timestamp.clone(),
+            clear_book_on_start: settlement.clear_book_on_start,
         }
     }
 
@@ -179,7 +191,7 @@ fn load_settlements(
     let sql = format!(
         "SELECT market_id, question, up_token_id, down_token_id, \
                 condition_id, slug, start_time, end_time, \
-                open_price, close_price, outcome, {}, {}, {}, {}, {}, {}, {}, {} \
+                open_price, close_price, outcome, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} \
          FROM markets \
          WHERE end_time >= ?1 AND start_time <= ?2 \
            AND outcome IS NOT NULL \
@@ -192,6 +204,12 @@ fn load_settlements(
         optional_market_column(conn, "taker_base_fee"),
         optional_market_column(conn, "rewards_min_size"),
         optional_market_column(conn, "rewards_max_spread"),
+        optional_market_column(conn, "fees_enabled"),
+        optional_market_column(conn, "fee_schedule_json"),
+        optional_market_column(conn, "token_fee_rates_json"),
+        optional_market_column(conn, "accepting_orders"),
+        optional_market_column(conn, "accepting_orders_timestamp"),
+        optional_market_column(conn, "clear_book_on_start"),
     );
     let mut stmt = conn.prepare(&sql).context("preparing markets query")?;
     let start_ms = timestamp_param(start_time, "start_time")?;
@@ -241,6 +259,12 @@ fn read_market_settlement_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Marke
         taker_base_fee: row.get(16)?,
         rewards_min_size: row.get(17)?,
         rewards_max_spread: row.get(18)?,
+        fees_enabled: row.get(19)?,
+        fee_schedule_json: row.get(20)?,
+        token_fee_rates_json: row.get(21)?,
+        accepting_orders: row.get(22)?,
+        accepting_orders_timestamp: row.get(23)?,
+        clear_book_on_start: row.get(24)?,
     })
 }
 

@@ -1,0 +1,22 @@
+{
+  "name": "buba-polymarket-sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@polymarket/builder-signing-sdk": "^1.0.0",
+    "@polymarket/clob-client": "^5.8.1",
+    "@polymarket/order-utils": "^3.0.1",
+    "@polymarket/relayer-client": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use crate::backtest::runner::{BacktestOptions, TickSource};
 use crate::backtest::sweep::{self, SweepDimension};
 use crate::config::{Config, parse_boolish};
+use crate::live_sidecar::LiveSidecarClient;
 
 #[derive(Parser)]
 #[command(name = "buba-paint", version)]
@@ -52,6 +53,11 @@ pub enum Commands {
         db_path: String,
         #[arg(long, default_value = "150")]
         balance: f64,
+        #[arg(long = "set")]
+        sets: Vec<String>,
+    },
+    /// Run live sidecar preflight for readonly or trading execution modes
+    LivePreflight {
         #[arg(long = "set")]
         sets: Vec<String>,
     },
@@ -216,6 +222,20 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
             crate::live::run_live(config, &db_path, balance, shutdown_rx).await?;
         }
+        Commands::LivePreflight { sets } => {
+            let mut config = Config::from_env();
+            for set_str in &sets {
+                apply_set_override(&mut config, set_str)?;
+            }
+            config.validate()?;
+            if !config.is_live_execution() {
+                bail!("live-preflight requires EXECUTION_MODE=live_readonly or live_trading");
+            }
+
+            let client = LiveSidecarClient::new(&config.live_sidecar_url);
+            let payload = client.preflight(&config).await?;
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
         Commands::BuildData { runs_dir, output } => {
             crate::db::build_data::build_market_data(&runs_dir, &output)?;
         }
@@ -314,7 +334,7 @@ pub fn apply_set_override(config: &mut Config, set_str: &str) -> anyhow::Result<
         if !config.set_bool_param(key, value) {
             eprintln!("Boolean --set value ignored for non-boolean param: {key}={value_str}");
         }
-    } else {
+    } else if !config.set_string_param(key, value_str) {
         eprintln!("Unsupported --set value: {key}={value_str}");
     }
     Ok(())

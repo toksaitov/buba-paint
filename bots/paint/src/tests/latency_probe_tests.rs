@@ -160,6 +160,12 @@ fn clob_subscription_message_requests_custom_features() {
         taker_base_fee: None,
         rewards_min_size: None,
         rewards_max_spread: None,
+        fees_enabled: None,
+        fee_schedule_json: None,
+        token_fee_rates_json: None,
+        accepting_orders: None,
+        accepting_orders_timestamp: None,
+        clear_book_on_start: None,
     };
     let payload =
         serde_json::from_str::<serde_json::Value>(&clob_subscription_message(&window)).unwrap();

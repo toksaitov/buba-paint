@@ -9,6 +9,7 @@ import { EquityPage } from "./pages/equity";
 import { SignalsPage } from "./pages/signals";
 import { LogsPage } from "./pages/logs";
 import { StatsPage } from "./pages/stats";
+import { LivePage } from "./pages/live";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,6 +39,7 @@ export default function App() {
             <Route path="/signals" element={<SignalsPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/stats" element={<StatsPage />} />
+            <Route path="/live" element={<LivePage />} />
           </Route>
         </Routes>
       </BrowserRouter>

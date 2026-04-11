@@ -98,6 +98,70 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<impl IntoRespons
     Ok(Json(stats))
 }
 
+/// Returns the current live-trading readiness/status summary from the additive live tables.
+pub async fn get_live_status(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AgentError> {
+    let status = state.db.get_live_status().await?;
+    Ok(Json(status))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LiveLimitQuery {
+    #[serde(default = "default_live_limit")]
+    pub limit: u64,
+}
+
+/// Returns the default row limit for live-table queries.
+fn default_live_limit() -> u64 {
+    50
+}
+
+/// Returns recent live sessions.
+pub async fn get_live_sessions(
+    State(state): State<AppState>,
+    Query(q): Query<LiveLimitQuery>,
+) -> Result<impl IntoResponse, AgentError> {
+    let sessions = state.db.get_live_sessions(q.limit).await?;
+    Ok(Json(sessions))
+}
+
+/// Returns recent live orders.
+pub async fn get_live_orders(
+    State(state): State<AppState>,
+    Query(q): Query<LiveLimitQuery>,
+) -> Result<impl IntoResponse, AgentError> {
+    let orders = state.db.get_live_orders(q.limit).await?;
+    Ok(Json(orders))
+}
+
+/// Returns recent live fills.
+pub async fn get_live_fills(
+    State(state): State<AppState>,
+    Query(q): Query<LiveLimitQuery>,
+) -> Result<impl IntoResponse, AgentError> {
+    let fills = state.db.get_live_fills(q.limit).await?;
+    Ok(Json(fills))
+}
+
+/// Returns recent live redemptions.
+pub async fn get_live_redemptions(
+    State(state): State<AppState>,
+    Query(q): Query<LiveLimitQuery>,
+) -> Result<impl IntoResponse, AgentError> {
+    let redemptions = state.db.get_live_redemptions(q.limit).await?;
+    Ok(Json(redemptions))
+}
+
+/// Returns recent live reconciliation events.
+pub async fn get_live_reconciliation(
+    State(state): State<AppState>,
+    Query(q): Query<LiveLimitQuery>,
+) -> Result<impl IntoResponse, AgentError> {
+    let events = state.db.get_live_reconciliation(q.limit).await?;
+    Ok(Json(events))
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct LogsQuery {
     #[serde(default = "default_log_lines")]

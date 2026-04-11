@@ -10,6 +10,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn discovery_config(mock_url: &str) -> Config {
     Config {
         gamma_api_url: mock_url.to_string(),
+        clob_api_url: mock_url.to_string(),
         gamma_poll_interval: 200,
         ..Config::default()
     }
@@ -33,6 +34,17 @@ fn gamma_response(end_date: &str) -> serde_json::Value {
     })
 }
 
+/// Mock the token fee-rate endpoint used during market discovery enrichment.
+async fn mock_fee_rates(mock_server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/fee-rate\?token_id=.*$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "base_fee": 1000
+        })))
+        .mount(mock_server)
+        .await;
+}
+
 /// Verifies that discovery finds active market.
 #[tokio::test]
 async fn discovery_finds_active_market() {
@@ -47,6 +59,7 @@ async fn discovery_finds_active_market() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
         .await;
+    mock_fee_rates(&mock_server).await;
 
     let cfg = discovery_config(&mock_server.uri());
     let mut handle = buba_paint::market_discovery::run_market_discovery(&cfg).await;
@@ -103,6 +116,7 @@ async fn discovery_emits_window_closed() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
         .await;
+    mock_fee_rates(&mock_server).await;
 
     let cfg = discovery_config(&mock_server.uri());
     let mut handle = buba_paint::market_discovery::run_market_discovery(&cfg).await;
@@ -152,6 +166,7 @@ async fn discovery_recovers_from_404_to_200() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
         .await;
+    mock_fee_rates(&mock_server).await;
 
     let cfg = discovery_config(&mock_server.uri());
     let mut handle = buba_paint::market_discovery::run_market_discovery(&cfg).await;

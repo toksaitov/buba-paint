@@ -7,6 +7,7 @@ import {
   ScrollText,
   BarChart3,
   Bot as BotIcon,
+  ShieldAlert,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { Bot } from "../../lib/types";
@@ -18,6 +19,7 @@ const pages = [
   { to: "/signals", icon: Radio, label: "Signals" },
   { to: "/logs", icon: ScrollText, label: "Logs" },
   { to: "/stats", icon: BarChart3, label: "Stats" },
+  { to: "/live", icon: ShieldAlert, label: "Live" },
 ];
 
 interface NavProps {

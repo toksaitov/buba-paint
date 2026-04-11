@@ -11,6 +11,7 @@ pub mod feeds;
 pub mod fees;
 pub mod latency_probe;
 pub mod live;
+pub mod live_sidecar;
 mod live_storage;
 pub mod market_discovery;
 pub mod polymarket;

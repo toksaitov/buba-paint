@@ -172,6 +172,41 @@ fn feed_reconnect_validation_rejects_zero_thresholds() {
     assert!(cfg.validate().is_err());
 }
 
+/// Verifies that live-execution validation accepts a small bankroll envelope.
+#[test]
+fn live_execution_validation_allows_small_bankroll_caps() {
+    let mut cfg = Config::default();
+    cfg.execution_mode = ExecutionMode::LiveReadonly;
+    cfg.live_session_cash_cap_usd = 90.0;
+    cfg.live_max_single_order_usd = 7.5;
+    cfg.live_max_open_notional_usd = 20.0;
+    cfg.live_max_daily_loss_usd = 10.0;
+    cfg.live_max_session_drawdown_usd = 12.0;
+    cfg.live_min_required_cash_usd = 25.0;
+    cfg.live_sidecar_url = "http://127.0.0.1:3210".to_string();
+    cfg.clob_api_url = "https://clob.polymarket.com".to_string();
+    cfg.gamma_api_url = "https://gamma-api.polymarket.com".to_string();
+
+    assert!(cfg.validate().is_ok());
+}
+
+/// Verifies that live-execution validation rejects malformed venue URLs.
+#[test]
+fn live_execution_validation_rejects_invalid_urls() {
+    let mut cfg = Config::default();
+    cfg.execution_mode = ExecutionMode::LiveReadonly;
+    cfg.live_sidecar_url = "not-a-url".to_string();
+    assert!(cfg.validate().is_err());
+
+    cfg.live_sidecar_url = "http://127.0.0.1:3210".to_string();
+    cfg.clob_api_url = "/relative".to_string();
+    assert!(cfg.validate().is_err());
+
+    cfg.clob_api_url = "https://clob.polymarket.com".to_string();
+    cfg.gamma_api_url = "gamma".to_string();
+    assert!(cfg.validate().is_err());
+}
+
 /// Verifies that resolve str override.
 #[test]
 fn resolve_str_override() {
@@ -287,6 +322,32 @@ fn set_bool_param_updates_known_flags() {
     assert!(cfg.set_bool_param("PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION", true));
     assert!(cfg.pending_settlement_counts_as_open_position);
     assert!(!cfg.set_bool_param("MAX_POSITION_FRACTION", true));
+}
+
+/// Verifies that live execution mode defaults to paper but parses explicit live strings.
+#[test]
+fn execution_mode_parses_known_labels() {
+    assert_eq!(ExecutionMode::from_env_value(None), ExecutionMode::Paper);
+    assert_eq!(
+        ExecutionMode::from_env_value(Some("live_readonly")),
+        ExecutionMode::LiveReadonly
+    );
+    assert_eq!(
+        ExecutionMode::from_env_value(Some("live_trading")),
+        ExecutionMode::LiveTrading
+    );
+}
+
+/// Verifies that string config overrides can update live-mode surfaces.
+#[test]
+fn set_string_param_updates_live_fields() {
+    let mut cfg = Config::default();
+    assert!(cfg.set_string_param("EXECUTION_MODE", "live_readonly"));
+    assert_eq!(cfg.execution_mode, ExecutionMode::LiveReadonly);
+    assert!(cfg.set_string_param("LIVE_SIDECAR_URL", "http://127.0.0.1:4000"));
+    assert_eq!(cfg.live_sidecar_url, "http://127.0.0.1:4000");
+    assert!(cfg.set_string_param("CLOB_API_URL", "https://clob.example.test"));
+    assert_eq!(cfg.clob_api_url, "https://clob.example.test");
 }
 
 /// Verifies that config is cloneable.

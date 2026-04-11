@@ -115,6 +115,12 @@ fn ensure_legacy_columns(conn: &rusqlite::Connection) {
     add_column_if_missing(conn, "markets", "taker_base_fee", "REAL");
     add_column_if_missing(conn, "markets", "rewards_min_size", "REAL");
     add_column_if_missing(conn, "markets", "rewards_max_spread", "REAL");
+    add_column_if_missing(conn, "markets", "fees_enabled", "INTEGER");
+    add_column_if_missing(conn, "markets", "fee_schedule_json", "TEXT");
+    add_column_if_missing(conn, "markets", "token_fee_rates_json", "TEXT");
+    add_column_if_missing(conn, "markets", "accepting_orders", "INTEGER");
+    add_column_if_missing(conn, "markets", "accepting_orders_timestamp", "TEXT");
+    add_column_if_missing(conn, "markets", "clear_book_on_start", "INTEGER");
     add_column_if_missing(conn, "signals", "market_id", "TEXT");
     add_column_if_missing(conn, "signals", "execution_fidelity", "TEXT");
     add_column_if_missing(conn, "signals", "strategy_version", "TEXT DEFAULT 'v1'");
@@ -260,6 +266,137 @@ fn ensure_additive_tables(conn: &rusqlite::Connection) {
         CREATE TABLE IF NOT EXISTS history_upgrades (
             key TEXT PRIMARY KEY,
             completed_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS live_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at_ms INTEGER NOT NULL,
+            ended_at_ms INTEGER,
+            status TEXT NOT NULL,
+            execution_mode TEXT NOT NULL,
+            wallet_address TEXT,
+            proxy_wallet TEXT,
+            enabled_strategies_json TEXT NOT NULL,
+            config_fingerprint TEXT NOT NULL,
+            cash_cap_usd REAL NOT NULL,
+            details_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_sessions_started ON live_sessions(started_at_ms);
+        CREATE TABLE IF NOT EXISTS live_order_intents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            signal_id INTEGER,
+            market_id TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            side TEXT NOT NULL,
+            order_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            requested_price REAL,
+            requested_size REAL,
+            limit_price REAL,
+            fee_schedule_json TEXT,
+            token_fee_rates_json TEXT,
+            execution_group_id TEXT,
+            details_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES live_sessions(id),
+            FOREIGN KEY (signal_id) REFERENCES signals(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_order_intents_session_ts ON live_order_intents(session_id, created_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_live_order_intents_market_ts ON live_order_intents(market_id, created_at_ms);
+        CREATE TABLE IF NOT EXISTS live_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            intent_id INTEGER NOT NULL,
+            venue_order_id TEXT,
+            client_order_id TEXT,
+            market_id TEXT NOT NULL,
+            token_id TEXT,
+            side TEXT NOT NULL,
+            order_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            status_reason TEXT,
+            created_at_ms INTEGER NOT NULL,
+            acknowledged_at_ms INTEGER,
+            updated_at_ms INTEGER NOT NULL,
+            requested_price REAL,
+            limit_price REAL,
+            requested_size REAL,
+            accepted_size REAL,
+            details_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES live_sessions(id),
+            FOREIGN KEY (intent_id) REFERENCES live_order_intents(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_orders_session_ts ON live_orders(session_id, updated_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_live_orders_status_ts ON live_orders(status, updated_at_ms);
+        CREATE TABLE IF NOT EXISTS live_fills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            intent_id INTEGER,
+            live_order_id INTEGER,
+            venue_trade_id TEXT,
+            filled_at_ms INTEGER NOT NULL,
+            price REAL NOT NULL,
+            size REAL NOT NULL,
+            fee_amount REAL,
+            fee_rate REAL,
+            liquidity_side TEXT,
+            tx_hash TEXT,
+            status TEXT NOT NULL,
+            details_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES live_sessions(id),
+            FOREIGN KEY (intent_id) REFERENCES live_order_intents(id),
+            FOREIGN KEY (live_order_id) REFERENCES live_orders(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_fills_session_ts ON live_fills(session_id, filled_at_ms);
+        CREATE TABLE IF NOT EXISTS live_account_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            timestamp_ms INTEGER NOT NULL,
+            cash_available REAL NOT NULL,
+            cash_reserved_for_orders REAL NOT NULL,
+            inventory_mark_value REAL NOT NULL,
+            redeemable_value REAL NOT NULL,
+            pending_redeem_value REAL NOT NULL,
+            total_equity REAL NOT NULL,
+            allowance_available REAL,
+            details_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES live_sessions(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_account_snapshots_session_ts ON live_account_snapshots(session_id, timestamp_ms);
+        CREATE TABLE IF NOT EXISTS live_redemptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            market_id TEXT NOT NULL,
+            detected_redeemable_at_ms INTEGER NOT NULL,
+            submitted_at_ms INTEGER,
+            confirmed_at_ms INTEGER,
+            cash_credit_observed_at_ms INTEGER,
+            status TEXT NOT NULL,
+            redeemable_value REAL NOT NULL,
+            tx_hash TEXT,
+            details_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES live_sessions(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_redemptions_session_ts ON live_redemptions(session_id, detected_redeemable_at_ms);
+        CREATE TABLE IF NOT EXISTS live_reconciliation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            timestamp_ms INTEGER NOT NULL,
+            severity TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            local_value REAL,
+            remote_value REAL,
+            details_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES live_sessions(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_reconciliation_session_ts ON live_reconciliation_events(session_id, timestamp_ms);
+        CREATE TABLE IF NOT EXISTS control_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_ms INTEGER NOT NULL,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target TEXT,
+            details_json TEXT
         );",
     );
 }

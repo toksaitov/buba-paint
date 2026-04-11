@@ -7,9 +7,10 @@ use rusqlite::params;
 
 use super::schema;
 use crate::types::{
-    FeedEvent, FeedHealthEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection,
-    SignalMetricRecord, SignalTelemetry, SimulatedTrade, StrategyRejectionSummaryRecord,
-    TradeResult, TradeStatus,
+    ControlAuditEntry, FeedEvent, FeedHealthEvent, LiveAccountSnapshot, LiveFill, LiveOrder,
+    LiveOrderIntent, LiveReconciliationEvent, LiveRedemption, LiveSession, MarketWindow,
+    ReplayFidelity, Signal, SignalDirection, SignalMetricRecord, SignalTelemetry, SimulatedTrade,
+    StrategyRejectionSummaryRecord, TradeResult, TradeStatus,
 };
 
 /// Thin wrapper around a `SQLite` connection that mirrors the `TypeScript` `Database`
@@ -62,6 +63,28 @@ pub struct UnresolvedTradeExposure {
     pub entry_price: f64,
     pub size: f64,
     pub market_end_time: u64,
+}
+
+/// Mutable status fields for one live venue order row.
+#[derive(Debug, Clone, Copy)]
+pub struct LiveOrderStatusUpdate<'a> {
+    pub status: &'a str,
+    pub status_reason: Option<&'a str>,
+    pub acknowledged_at_ms: Option<u64>,
+    pub updated_at_ms: u64,
+    pub accepted_size: Option<f64>,
+    pub details_json: Option<&'a str>,
+}
+
+/// Mutable lifecycle fields for one live redemption row.
+#[derive(Debug, Clone, Copy)]
+pub struct LiveRedemptionStatusUpdate<'a> {
+    pub status: &'a str,
+    pub submitted_at_ms: Option<u64>,
+    pub confirmed_at_ms: Option<u64>,
+    pub cash_credit_observed_at_ms: Option<u64>,
+    pub tx_hash: Option<&'a str>,
+    pub details_json: Option<&'a str>,
 }
 
 impl Database {
@@ -168,9 +191,11 @@ impl Database {
                 market_id, question, condition_id, slug, up_token_id, down_token_id, start_time,
                 end_time, outcome, resolution_source, fee_profile, order_min_size,
                 order_price_min_tick_size, maker_base_fee, taker_base_fee, rewards_min_size,
-                rewards_max_spread
+                rewards_max_spread, fees_enabled, fee_schedule_json, token_fee_rates_json,
+                accepting_orders, accepting_orders_timestamp, clear_book_on_start
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                ?18, ?19, ?20, ?21, ?22, ?23
              ) \
              ON CONFLICT(market_id) DO UPDATE SET \
                question      = excluded.question, \
@@ -188,7 +213,13 @@ impl Database {
                maker_base_fee = COALESCE(excluded.maker_base_fee, markets.maker_base_fee), \
                taker_base_fee = COALESCE(excluded.taker_base_fee, markets.taker_base_fee), \
                rewards_min_size = COALESCE(excluded.rewards_min_size, markets.rewards_min_size), \
-               rewards_max_spread = COALESCE(excluded.rewards_max_spread, markets.rewards_max_spread)",
+               rewards_max_spread = COALESCE(excluded.rewards_max_spread, markets.rewards_max_spread), \
+               fees_enabled = COALESCE(excluded.fees_enabled, markets.fees_enabled), \
+               fee_schedule_json = COALESCE(excluded.fee_schedule_json, markets.fee_schedule_json), \
+               token_fee_rates_json = COALESCE(excluded.token_fee_rates_json, markets.token_fee_rates_json), \
+               accepting_orders = COALESCE(excluded.accepting_orders, markets.accepting_orders), \
+               accepting_orders_timestamp = COALESCE(excluded.accepting_orders_timestamp, markets.accepting_orders_timestamp), \
+               clear_book_on_start = COALESCE(excluded.clear_book_on_start, markets.clear_book_on_start)",
         )?;
         stmt.execute(params![
             window.market_id,
@@ -208,6 +239,12 @@ impl Database {
             window.taker_base_fee,
             window.rewards_min_size,
             window.rewards_max_spread,
+            window.fees_enabled,
+            window.fee_schedule_json,
+            window.token_fee_rates_json,
+            window.accepting_orders,
+            window.accepting_orders_timestamp,
+            window.clear_book_on_start,
         ])?;
         Ok(())
     }
@@ -236,6 +273,12 @@ impl Database {
                 m.taker_base_fee,
                 m.rewards_min_size,
                 m.rewards_max_spread,
+                m.fees_enabled,
+                m.fee_schedule_json,
+                m.token_fee_rates_json,
+                m.accepting_orders,
+                m.accepting_orders_timestamp,
+                m.clear_book_on_start,
                 COUNT(st.id) AS open_trade_count
              FROM markets m
              JOIN simulated_trades st
@@ -263,7 +306,13 @@ impl Database {
                 m.maker_base_fee,
                 m.taker_base_fee,
                 m.rewards_min_size,
-                m.rewards_max_spread
+                m.rewards_max_spread,
+                m.fees_enabled,
+                m.fee_schedule_json,
+                m.token_fee_rates_json,
+                m.accepting_orders,
+                m.accepting_orders_timestamp,
+                m.clear_book_on_start
              ORDER BY m.end_time ASC, m.market_id ASC",
         )?;
         let rows = stmt.query_map(params![now_ms], |row| {
@@ -286,8 +335,14 @@ impl Database {
                     taker_base_fee: row.get(14)?,
                     rewards_min_size: row.get(15)?,
                     rewards_max_spread: row.get(16)?,
+                    fees_enabled: row.get(17)?,
+                    fee_schedule_json: row.get(18)?,
+                    token_fee_rates_json: row.get(19)?,
+                    accepting_orders: row.get(20)?,
+                    accepting_orders_timestamp: row.get(21)?,
+                    clear_book_on_start: row.get(22)?,
                 },
-                open_trade_count: row.get(17)?,
+                open_trade_count: row.get(23)?,
             })
         })?;
 
@@ -883,6 +938,290 @@ impl Database {
         )?;
         stmt.execute(params![timestamp, event, trade_id, amount, balance])?;
         Ok(())
+    }
+
+    /// Insert one live trading session and return its row ID.
+    pub fn insert_live_session(&self, session: &LiveSession) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_sessions (
+                started_at_ms, ended_at_ms, status, execution_mode, wallet_address,
+                proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd,
+                details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )?;
+        stmt.execute(params![
+            session.started_at_ms,
+            session.ended_at_ms,
+            session.status,
+            session.execution_mode,
+            session.wallet_address,
+            session.proxy_wallet,
+            session.enabled_strategies_json,
+            session.config_fingerprint,
+            session.cash_cap_usd,
+            session.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Mark one live trading session as finished.
+    pub fn finish_live_session(
+        &self,
+        session_id: i64,
+        ended_at_ms: u64,
+        status: &str,
+        details_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE live_sessions
+             SET ended_at_ms = ?1,
+                 status = ?2,
+                 details_json = COALESCE(?3, details_json)
+             WHERE id = ?4",
+        )?;
+        stmt.execute(params![ended_at_ms, status, details_json, session_id])?;
+        Ok(())
+    }
+
+    /// Insert one live order intent and return its row ID.
+    pub fn log_live_order_intent(&self, intent: &LiveOrderIntent) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_order_intents (
+                session_id, signal_id, market_id, strategy, side, order_type, status,
+                created_at_ms, requested_price, requested_size, limit_price,
+                fee_schedule_json, token_fee_rates_json, execution_group_id, details_json
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+             )",
+        )?;
+        stmt.execute(params![
+            intent.session_id,
+            intent.signal_id,
+            intent.market_id,
+            intent.strategy,
+            intent.side,
+            intent.order_type,
+            intent.status,
+            intent.created_at_ms,
+            intent.requested_price,
+            intent.requested_size,
+            intent.limit_price,
+            intent.fee_schedule_json,
+            intent.token_fee_rates_json,
+            intent.execution_group_id,
+            intent.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert one live venue order and return its row ID.
+    pub fn log_live_order(&self, order: &LiveOrder) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_orders (
+                session_id, intent_id, venue_order_id, client_order_id, market_id, token_id,
+                side, order_type, status, status_reason, created_at_ms, acknowledged_at_ms,
+                updated_at_ms, requested_price, limit_price, requested_size, accepted_size,
+                details_json
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18
+             )",
+        )?;
+        stmt.execute(params![
+            order.session_id,
+            order.intent_id,
+            order.venue_order_id,
+            order.client_order_id,
+            order.market_id,
+            order.token_id,
+            order.side,
+            order.order_type,
+            order.status,
+            order.status_reason,
+            order.created_at_ms,
+            order.acknowledged_at_ms,
+            order.updated_at_ms,
+            order.requested_price,
+            order.limit_price,
+            order.requested_size,
+            order.accepted_size,
+            order.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Update the mutable status fields for one live venue order.
+    pub fn update_live_order_status(
+        &self,
+        live_order_id: i64,
+        update: LiveOrderStatusUpdate<'_>,
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE live_orders
+             SET status = ?1,
+                 status_reason = ?2,
+                 acknowledged_at_ms = COALESCE(?3, acknowledged_at_ms),
+                 updated_at_ms = ?4,
+                 accepted_size = COALESCE(?5, accepted_size),
+                 details_json = COALESCE(?6, details_json)
+             WHERE id = ?7",
+        )?;
+        stmt.execute(params![
+            update.status,
+            update.status_reason,
+            update.acknowledged_at_ms,
+            update.updated_at_ms,
+            update.accepted_size,
+            update.details_json,
+            live_order_id,
+        ])?;
+        Ok(())
+    }
+
+    /// Insert one live fill and return its row ID.
+    pub fn log_live_fill(&self, fill: &LiveFill) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_fills (
+                session_id, intent_id, live_order_id, venue_trade_id, filled_at_ms, price,
+                size, fee_amount, fee_rate, liquidity_side, tx_hash, status, details_json
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12, ?13
+             )",
+        )?;
+        stmt.execute(params![
+            fill.session_id,
+            fill.intent_id,
+            fill.live_order_id,
+            fill.venue_trade_id,
+            fill.filled_at_ms,
+            fill.price,
+            fill.size,
+            fill.fee_amount,
+            fill.fee_rate,
+            fill.liquidity_side,
+            fill.tx_hash,
+            fill.status,
+            fill.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert one live account snapshot and return its row ID.
+    pub fn log_live_account_snapshot(&self, snapshot: &LiveAccountSnapshot) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_account_snapshots (
+                session_id, timestamp_ms, cash_available, cash_reserved_for_orders,
+                inventory_mark_value, redeemable_value, pending_redeem_value, total_equity,
+                allowance_available, details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )?;
+        stmt.execute(params![
+            snapshot.session_id,
+            snapshot.timestamp_ms,
+            snapshot.cash_available,
+            snapshot.cash_reserved_for_orders,
+            snapshot.inventory_mark_value,
+            snapshot.redeemable_value,
+            snapshot.pending_redeem_value,
+            snapshot.total_equity,
+            snapshot.allowance_available,
+            snapshot.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert one live redemption row and return its row ID.
+    pub fn log_live_redemption(&self, redemption: &LiveRedemption) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_redemptions (
+                session_id, market_id, detected_redeemable_at_ms, submitted_at_ms,
+                confirmed_at_ms, cash_credit_observed_at_ms, status, redeemable_value, tx_hash,
+                details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )?;
+        stmt.execute(params![
+            redemption.session_id,
+            redemption.market_id,
+            redemption.detected_redeemable_at_ms,
+            redemption.submitted_at_ms,
+            redemption.confirmed_at_ms,
+            redemption.cash_credit_observed_at_ms,
+            redemption.status,
+            redemption.redeemable_value,
+            redemption.tx_hash,
+            redemption.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Update one live redemption lifecycle row in place.
+    pub fn update_live_redemption_status(
+        &self,
+        redemption_id: i64,
+        update: LiveRedemptionStatusUpdate<'_>,
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE live_redemptions
+             SET status = ?1,
+                 submitted_at_ms = COALESCE(?2, submitted_at_ms),
+                 confirmed_at_ms = COALESCE(?3, confirmed_at_ms),
+                 cash_credit_observed_at_ms = COALESCE(?4, cash_credit_observed_at_ms),
+                 tx_hash = COALESCE(?5, tx_hash),
+                 details_json = COALESCE(?6, details_json)
+             WHERE id = ?7",
+        )?;
+        stmt.execute(params![
+            update.status,
+            update.submitted_at_ms,
+            update.confirmed_at_ms,
+            update.cash_credit_observed_at_ms,
+            update.tx_hash,
+            update.details_json,
+            redemption_id,
+        ])?;
+        Ok(())
+    }
+
+    /// Insert one live reconciliation event and return its row ID.
+    pub fn log_live_reconciliation_event(
+        &self,
+        event: &LiveReconciliationEvent,
+    ) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_reconciliation_events (
+                session_id, timestamp_ms, severity, event_type, local_value, remote_value,
+                details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+        stmt.execute(params![
+            event.session_id,
+            event.timestamp_ms,
+            event.severity,
+            event.event_type,
+            event.local_value,
+            event.remote_value,
+            event.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert one control-plane audit event and return its row ID.
+    pub fn log_control_audit(&self, entry: &ControlAuditEntry) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO control_audit (timestamp_ms, actor, action, target, details_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        stmt.execute(params![
+            entry.timestamp_ms,
+            entry.actor,
+            entry.action,
+            entry.target,
+            entry.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
     }
 
     /// Returns latest balance.

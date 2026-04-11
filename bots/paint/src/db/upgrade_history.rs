@@ -408,6 +408,12 @@ fn backfill_trade_result_fees(conn: &rusqlite::Connection) -> anyhow::Result<()>
             taker_base_fee: None,
             rewards_min_size: None,
             rewards_max_spread: None,
+            fees_enabled: None,
+            fee_schedule_json: None,
+            token_fee_rates_json: None,
+            accepting_orders: None,
+            accepting_orders_timestamp: None,
+            clear_book_on_start: None,
         };
         let fee_params =
             resolve_fee_params(&crate::config::Config::default(), Some(&market), end_time);
@@ -558,6 +564,20 @@ fn update_market_metadata(
         rewards_max_spread: gamma_meta
             .rewards_max_spread
             .or(clob_meta.rewards_max_spread),
+        fees_enabled: gamma_meta.fees_enabled.or(clob_meta.fees_enabled),
+        fee_schedule_json: gamma_meta
+            .fee_schedule_json
+            .clone()
+            .or_else(|| clob_meta.fee_schedule_json.clone()),
+        token_fee_rates_json: None,
+        accepting_orders: gamma_meta.accepting_orders.or(clob_meta.accepting_orders),
+        accepting_orders_timestamp: gamma_meta
+            .accepting_orders_timestamp
+            .clone()
+            .or_else(|| clob_meta.accepting_orders_timestamp.clone()),
+        clear_book_on_start: gamma_meta
+            .clear_book_on_start
+            .or(clob_meta.clear_book_on_start),
     };
     conn.execute(
         "UPDATE markets
@@ -569,8 +589,13 @@ fn update_market_metadata(
              maker_base_fee = COALESCE(?5, maker_base_fee),
              taker_base_fee = COALESCE(?6, taker_base_fee),
              rewards_min_size = COALESCE(?7, rewards_min_size),
-             rewards_max_spread = COALESCE(?8, rewards_max_spread)
-         WHERE market_id = ?9",
+             rewards_max_spread = COALESCE(?8, rewards_max_spread),
+             fees_enabled = COALESCE(?9, fees_enabled),
+             fee_schedule_json = COALESCE(?10, fee_schedule_json),
+             accepting_orders = COALESCE(?11, accepting_orders),
+             accepting_orders_timestamp = COALESCE(?12, accepting_orders_timestamp),
+             clear_book_on_start = COALESCE(?13, clear_book_on_start)
+         WHERE market_id = ?14",
         params![
             market_window.resolution_source,
             market_window.fee_profile,
@@ -580,6 +605,11 @@ fn update_market_metadata(
             market_window.taker_base_fee,
             market_window.rewards_min_size,
             market_window.rewards_max_spread,
+            market_window.fees_enabled,
+            market_window.fee_schedule_json,
+            market_window.accepting_orders,
+            market_window.accepting_orders_timestamp,
+            market_window.clear_book_on_start,
             market.market_id,
         ],
     )?;
@@ -595,6 +625,11 @@ struct MarketMetadata {
     taker_base_fee: Option<f64>,
     rewards_min_size: Option<f64>,
     rewards_max_spread: Option<f64>,
+    fees_enabled: Option<bool>,
+    fee_schedule_json: Option<String>,
+    accepting_orders: Option<bool>,
+    accepting_orders_timestamp: Option<String>,
+    clear_book_on_start: Option<bool>,
 }
 
 /// Extract market metadata from a Gamma event payload.
@@ -662,6 +697,30 @@ fn extract_gamma_metadata(
                 .get("rewardsMaxSpread")
                 .or_else(|| body.get("rewardsMaxSpread")),
         ),
+        fees_enabled: parse_boolish(
+            market
+                .get("feesEnabled")
+                .or_else(|| body.get("feesEnabled")),
+        ),
+        fee_schedule_json: market
+            .get("feeSchedule")
+            .or_else(|| body.get("feeSchedule"))
+            .map(serde_json::Value::to_string),
+        accepting_orders: parse_boolish(
+            market
+                .get("acceptingOrders")
+                .or_else(|| body.get("acceptingOrders")),
+        ),
+        accepting_orders_timestamp: market
+            .get("acceptingOrdersTimestamp")
+            .or_else(|| body.get("acceptingOrdersTimestamp"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        clear_book_on_start: parse_boolish(
+            market
+                .get("clearBookOnStart")
+                .or_else(|| body.get("clearBookOnStart")),
+        ),
     }
 }
 
@@ -689,6 +748,14 @@ fn extract_clob_metadata(body: &serde_json::Value) -> MarketMetadata {
                 .and_then(|rewards| rewards.get("max_spread"))
                 .or_else(|| body.get("rewards_max_spread")),
         ),
+        fees_enabled: parse_boolish(body.get("fees_enabled")),
+        fee_schedule_json: body.get("fee_schedule").map(serde_json::Value::to_string),
+        accepting_orders: parse_boolish(body.get("accepting_orders")),
+        accepting_orders_timestamp: body
+            .get("accepting_orders_timestamp")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        clear_book_on_start: parse_boolish(body.get("clear_book_on_start")),
     }
 }
 
@@ -699,6 +766,16 @@ fn parse_numeric(value: Option<&serde_json::Value>) -> Option<f64> {
             .as_f64()
             .or_else(|| value.as_i64().map(|n| n as f64))
             .or_else(|| value.as_str().and_then(|s| s.parse::<f64>().ok()))
+    })
+}
+
+/// Parse a boolean `JSON` field that may be encoded as a string or integer.
+fn parse_boolish(value: Option<&serde_json::Value>) -> Option<bool> {
+    value.and_then(|value| {
+        value
+            .as_bool()
+            .or_else(|| value.as_i64().map(|n| n != 0))
+            .or_else(|| value.as_str().and_then(crate::config::parse_boolish))
     })
 }
 

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -31,10 +32,11 @@ pub async fn run_market_discovery(config: &Config) -> MarketDiscoveryHandle {
     let (tx, rx) = mpsc::channel::<MarketDiscoveryEvent>(32);
 
     let gamma_api_url = config.gamma_api_url.clone();
+    let clob_api_url = config.clob_api_url.clone();
     let poll_interval_ms = config.gamma_poll_interval;
 
     tokio::spawn(async move {
-        discovery_loop(gamma_api_url, poll_interval_ms, tx).await;
+        discovery_loop(gamma_api_url, clob_api_url, poll_interval_ms, tx).await;
     });
 
     MarketDiscoveryHandle { window_rx: rx }
@@ -48,6 +50,7 @@ pub async fn run_market_discovery(config: &Config) -> MarketDiscoveryHandle {
 /// via `tokio::time::sleep` when a window's `end_time` arrives.
 async fn discovery_loop(
     gamma_api_url: String,
+    clob_api_url: String,
     poll_interval_ms: u64,
     tx: mpsc::Sender<MarketDiscoveryEvent>,
 ) {
@@ -76,7 +79,7 @@ async fn discovery_loop(
             let url = format!("{gamma_api_url}/events/slug/{slug}");
             info!(discovery = "gamma", "fetching {url}");
 
-            match fetch_market(&client, &url).await {
+            match fetch_market(&client, &url, &clob_api_url).await {
                 Ok(Some(window)) => {
                     info!(
                         discovery = "gamma",
@@ -119,7 +122,11 @@ async fn discovery_loop(
 
 /// Fetch a single market event from the Gamma API and parse it into a
 /// `MarketWindow`, or return `None` if the event is not found / not suitable.
-async fn fetch_market(client: &reqwest::Client, url: &str) -> anyhow::Result<Option<MarketWindow>> {
+async fn fetch_market(
+    client: &reqwest::Client,
+    url: &str,
+    clob_api_url: &str,
+) -> anyhow::Result<Option<MarketWindow>> {
     let resp = client.get(url).send().await?;
 
     if !resp.status().is_success() {
@@ -130,7 +137,12 @@ async fn fetch_market(client: &reqwest::Client, url: &str) -> anyhow::Result<Opt
     }
 
     let body: serde_json::Value = resp.json().await?;
-    Ok(parse_gamma_event_response(&body))
+    let Some(window) = parse_gamma_event_response(&body) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        augment_market_with_token_fee_rates(client, clob_api_url, window).await,
+    ))
 }
 
 /// Parse a Gamma API event response into a `MarketWindow`.
@@ -220,6 +232,12 @@ fn parse_gamma_market_candidate(
         taker_base_fee: number_field(market, event, "takerBaseFee"),
         rewards_min_size: number_field(market, event, "rewardsMinSize"),
         rewards_max_spread: number_field(market, event, "rewardsMaxSpread"),
+        fees_enabled: bool_field(market, event, "feesEnabled"),
+        fee_schedule_json: json_field(market, event, "feeSchedule"),
+        token_fee_rates_json: None,
+        accepting_orders: bool_field(market, event, "acceptingOrders"),
+        accepting_orders_timestamp: string_field(market, event, "acceptingOrdersTimestamp"),
+        clear_book_on_start: bool_field(market, event, "clearBookOnStart"),
     })
 }
 
@@ -283,6 +301,64 @@ fn string_field(
 /// Read a numeric field from the market entry with event-level fallback.
 fn number_field(market: &serde_json::Value, event: &serde_json::Value, key: &str) -> Option<f64> {
     parse_f64_value(market.get(key).or_else(|| event.get(key)))
+}
+
+/// Read one boolean field from the market entry with event-level fallback.
+fn bool_field(market: &Value, event: &Value, key: &str) -> Option<bool> {
+    market
+        .get(key)
+        .or_else(|| event.get(key))
+        .and_then(Value::as_bool)
+}
+
+/// Serialize one nested JSON field from the market entry with event-level fallback.
+fn json_field(market: &Value, event: &Value, key: &str) -> Option<String> {
+    market
+        .get(key)
+        .or_else(|| event.get(key))
+        .and_then(|value| serde_json::to_string(value).ok())
+}
+
+/// Fetch and attach the current token fee-rate payloads for both market sides.
+async fn augment_market_with_token_fee_rates(
+    client: &reqwest::Client,
+    clob_api_url: &str,
+    mut window: MarketWindow,
+) -> MarketWindow {
+    let mut token_rates = serde_json::Map::new();
+    for (label, token_id) in [
+        ("up", window.up_token_id.clone()),
+        ("down", window.down_token_id.clone()),
+    ] {
+        let url = format!("{clob_api_url}/fee-rate?token_id={token_id}");
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
+                Ok(value) => {
+                    token_rates.insert(label.to_string(), value);
+                }
+                Err(error) => {
+                    warn!(market_id = %window.market_id, %token_id, "failed to decode fee-rate response: {error}");
+                }
+            },
+            Ok(resp) => {
+                warn!(
+                    market_id = %window.market_id,
+                    %token_id,
+                    status = %resp.status(),
+                    "fee-rate endpoint returned non-success"
+                );
+            }
+            Err(error) => {
+                warn!(market_id = %window.market_id, %token_id, "fee-rate request failed: {error}");
+            }
+        }
+    }
+
+    if !token_rates.is_empty() {
+        window.token_fee_rates_json = serde_json::to_string(&Value::Object(token_rates)).ok();
+    }
+
+    window
 }
 
 /// Parse a `JSON` value that may be a string (`JSON`-encoded array) or an actual

@@ -3,6 +3,12 @@ import type {
   Bot,
   BotProcessStatus,
   BotStatus,
+  LiveFillsResponse,
+  LiveOrdersResponse,
+  LiveReconciliationResponse,
+  LiveRedemptionsResponse,
+  LiveSessionsResponse,
+  LiveStatusResponse,
   LogsResponse,
   SignalsResponse,
   StatsResponse,
@@ -119,6 +125,45 @@ export async function getBotProcessStatus(
   botId: string,
 ): Promise<BotProcessStatus> {
   return get(`/api/bots/${botId}/process`);
+}
+
+export async function getLiveStatus(botId: string): Promise<LiveStatusResponse> {
+  return get(`/api/bots/${botId}/live/status`);
+}
+
+export async function getLiveSessions(
+  botId: string,
+  limit = 20,
+): Promise<LiveSessionsResponse> {
+  return get(`/api/bots/${botId}/live/sessions?limit=${limit}`);
+}
+
+export async function getLiveOrders(
+  botId: string,
+  limit = 50,
+): Promise<LiveOrdersResponse> {
+  return get(`/api/bots/${botId}/live/orders?limit=${limit}`);
+}
+
+export async function getLiveFills(
+  botId: string,
+  limit = 50,
+): Promise<LiveFillsResponse> {
+  return get(`/api/bots/${botId}/live/fills?limit=${limit}`);
+}
+
+export async function getLiveRedemptions(
+  botId: string,
+  limit = 50,
+): Promise<LiveRedemptionsResponse> {
+  return get(`/api/bots/${botId}/live/redemptions?limit=${limit}`);
+}
+
+export async function getLiveReconciliation(
+  botId: string,
+  limit = 50,
+): Promise<LiveReconciliationResponse> {
+  return get(`/api/bots/${botId}/live/reconciliation?limit=${limit}`);
 }
 
 export async function botStart(botId: string): Promise<BotProcessStatus> {

@@ -139,3 +139,135 @@ pub enum WsMessage {
     #[serde(rename = "status")]
     Status(BotStatus),
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveSessionRow {
+    pub id: i64,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub status: String,
+    pub execution_mode: String,
+    pub wallet_address: Option<String>,
+    pub proxy_wallet: Option<String>,
+    pub enabled_strategies_json: String,
+    pub config_fingerprint: String,
+    pub cash_cap_usd: f64,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveAccountSnapshotRow {
+    pub id: i64,
+    pub session_id: i64,
+    pub timestamp_ms: u64,
+    pub cash_available: f64,
+    pub cash_reserved_for_orders: f64,
+    pub inventory_mark_value: f64,
+    pub redeemable_value: f64,
+    pub pending_redeem_value: f64,
+    pub total_equity: f64,
+    pub allowance_available: Option<f64>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveOrderRow {
+    pub id: i64,
+    pub session_id: i64,
+    pub intent_id: i64,
+    pub venue_order_id: Option<String>,
+    pub client_order_id: Option<String>,
+    pub market_id: String,
+    pub token_id: Option<String>,
+    pub side: String,
+    pub order_type: String,
+    pub status: String,
+    pub status_reason: Option<String>,
+    pub created_at_ms: u64,
+    pub acknowledged_at_ms: Option<u64>,
+    pub updated_at_ms: u64,
+    pub requested_price: Option<f64>,
+    pub limit_price: Option<f64>,
+    pub requested_size: Option<f64>,
+    pub accepted_size: Option<f64>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveFillRow {
+    pub id: i64,
+    pub session_id: i64,
+    pub intent_id: Option<i64>,
+    pub live_order_id: Option<i64>,
+    pub venue_trade_id: Option<String>,
+    pub filled_at_ms: u64,
+    pub price: f64,
+    pub size: f64,
+    pub fee_amount: Option<f64>,
+    pub fee_rate: Option<f64>,
+    pub liquidity_side: Option<String>,
+    pub tx_hash: Option<String>,
+    pub status: String,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveRedemptionRow {
+    pub id: i64,
+    pub session_id: i64,
+    pub market_id: String,
+    pub detected_redeemable_at_ms: u64,
+    pub submitted_at_ms: Option<u64>,
+    pub confirmed_at_ms: Option<u64>,
+    pub cash_credit_observed_at_ms: Option<u64>,
+    pub status: String,
+    pub redeemable_value: f64,
+    pub tx_hash: Option<String>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveReconciliationRow {
+    pub id: i64,
+    pub session_id: i64,
+    pub timestamp_ms: u64,
+    pub severity: String,
+    pub event_type: String,
+    pub local_value: Option<f64>,
+    pub remote_value: Option<f64>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveStatusResponse {
+    pub latest_session: Option<LiveSessionRow>,
+    pub latest_account_snapshot: Option<LiveAccountSnapshotRow>,
+    pub open_orders: u64,
+    pub pending_redemptions: u64,
+    pub critical_reconciliation_events: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveSessionsResponse {
+    pub sessions: Vec<LiveSessionRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveOrdersResponse {
+    pub orders: Vec<LiveOrderRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveFillsResponse {
+    pub fills: Vec<LiveFillRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveRedemptionsResponse {
+    pub redemptions: Vec<LiveRedemptionRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveReconciliationResponse {
+    pub events: Vec<LiveReconciliationRow>,
+}

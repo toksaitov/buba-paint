@@ -34,6 +34,12 @@ fn sample_window() -> MarketWindow {
         taker_base_fee: Some(1000.0),
         rewards_min_size: Some(50.0),
         rewards_max_spread: Some(4.5),
+        fees_enabled: Some(true),
+        fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".into()),
+        token_fee_rates_json: Some("{\"tok-up\":{\"base_fee\":1000}}".into()),
+        accepting_orders: Some(true),
+        accepting_orders_timestamp: Some("2024-01-01T00:00:00Z".into()),
+        clear_book_on_start: Some(false),
     }
 }
 
@@ -200,6 +206,12 @@ fn try_open_blocks_at_max_positions() {
         taker_base_fee: Some(1000.0),
         rewards_min_size: Some(50.0),
         rewards_max_spread: Some(4.5),
+        fees_enabled: Some(true),
+        fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".into()),
+        token_fee_rates_json: Some("{\"tok-up-2\":{\"base_fee\":1000}}".into()),
+        accepting_orders: Some(true),
+        accepting_orders_timestamp: Some("2024-01-01T00:00:00Z".into()),
+        clear_book_on_start: Some(false),
     };
     db.upsert_market(&window2).unwrap();
     let trade2 = pm.try_open(
@@ -792,6 +804,12 @@ fn resolve_window_no_matching_trades_returns_empty() {
         taker_base_fee: Some(1000.0),
         rewards_min_size: Some(50.0),
         rewards_max_spread: Some(4.5),
+        fees_enabled: Some(true),
+        fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".into()),
+        token_fee_rates_json: Some("{\"tok-up-none\":{\"base_fee\":1000}}".into()),
+        accepting_orders: Some(true),
+        accepting_orders_timestamp: Some("2024-01-01T00:00:00Z".into()),
+        clear_book_on_start: Some(false),
     };
 
     let results = pm.resolve_window(

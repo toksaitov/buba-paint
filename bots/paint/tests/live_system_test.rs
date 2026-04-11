@@ -15,6 +15,7 @@ fn test_config(binance_url: &str, clob_url: &str, chainlink_url: &str, gamma_url
         clob_ws_url: clob_url.to_string(),
         rtds_ws_url: chainlink_url.to_string(),
         gamma_api_url: gamma_url.to_string(),
+        clob_api_url: gamma_url.to_string(),
         gamma_poll_interval: 500,
         tick_interval: 200,
         clob_ping_interval: 30_000,
@@ -3363,6 +3364,12 @@ async fn live_bot_backfills_unresolved_open_trade_on_startup() {
             taker_base_fee: Some(1000.0),
             rewards_min_size: Some(50.0),
             rewards_max_spread: Some(4.5),
+            fees_enabled: Some(true),
+            fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".to_string()),
+            token_fee_rates_json: Some("{\"tok-up-wl5\":{\"base_fee\":1000}}".to_string()),
+            accepting_orders: Some(true),
+            accepting_orders_timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+            clear_book_on_start: Some(false),
         })
         .unwrap();
         db.open_trade(&buba_paint::types::SimulatedTrade {

@@ -1,0 +1,114 @@
+# Live Session Runbook
+
+This runbook describes the intended operator workflow for the first real-money proxy-wallet pilot. It also describes the current local limitation so nobody confuses readiness scaffolding with a production live venue runtime.
+
+## Current repository state
+
+What is ready locally:
+
+- explicit execution modes: `paper`, `live_readonly`, `live_trading`
+- live preflight CLI
+- sidecar package and typed authenticated-venue boundary
+- live session and reconciliation tables
+- agent and dashboard live-readiness surfaces
+- compact live telemetry schema
+
+What is still intentionally gated:
+
+- `buba-paint live` refuses `EXECUTION_MODE=live_readonly` and `EXECUTION_MODE=live_trading`
+- the sidecar uses a stub provider and does not place real orders
+- `live-preflight` is contract-only and is expected to remain unready while the stub provider is in place
+- redemption and user-stream handling are planned but not yet wired to a live venue runtime
+
+Do not deploy real-money trading from this state. Use it to finish implementation and validate readiness safely.
+
+## Preflight checklist
+
+Before any future live-money session:
+
+1. confirm host geoblock status from the actual deployment host
+2. confirm `POLY_PROXY` credentials are present:
+   - exported Polymarket private key
+   - proxy wallet address
+   - relayer API key
+   - optional funder override only if it must differ from the proxy wallet
+3. confirm local clock drift is below the configured threshold
+4. confirm venue min order size, tick size, and fee metadata for the active market set
+5. confirm configured cash caps permit at least one legal order
+6. confirm live mode is latency-arb only for the first pilot
+7. confirm dashboard Live page and agent live endpoints show healthy readiness state
+
+## Recommended first pilot envelope
+
+The first real-money canary should stay narrow:
+
+- bankroll target: `75-100 USD`
+- `latency-arb` only
+- very small per-order cap
+- tight open-notional cap
+- aggressive session loss and drawdown limits
+- short session, typically `2-3` days, with manual stop allowed earlier once enough data is collected
+
+The budgeting rule should be conservative:
+
+- `tradable_cash = min(actual_cash_available, LIVE_SESSION_CASH_CAP_USD)`
+
+## Session lifecycle
+
+Intended operator lifecycle once live trading is actually enabled:
+
+1. start in `live_readonly`
+2. pass preflight
+3. inspect budget preview, strategy set, geoblock, auth, account state, and user-stream health
+4. arm live trading explicitly from the dedicated Live page
+5. monitor open orders, fills, reconciliation warnings, and redeemable inventory
+6. if drawdown or divergence persists too long, disarm and stop after flat
+7. redeem winning resolved positions
+8. export official accounting/activity data after the session
+9. feed the collected live data back into paper and backtest parity improvements
+
+## Data to retain after each session
+
+Keep these artifacts:
+
+- local SQLite DB with compact live telemetry
+- bot log
+- agent/dashboard logs if relevant
+- official Polymarket accounting and activity exports
+- any rotated forensic private-payload files if that mode was enabled intentionally
+
+Do not bloat SQLite with full raw private websocket traffic unless a short forensic session explicitly requires it.
+
+## UI safety rules
+
+The dedicated Live page should enforce:
+
+- process control separated from trading control
+- typed confirmation before arming
+- full config fingerprint displayed before arming
+- mobile restricted to observe and disarm only
+- immediate disarm availability
+- clear `cancel all`, `redeem all`, and `stop after flat` actions
+
+Any of these should block or disarm trading automatically:
+
+- geoblock failure
+- auth failure
+- user-stream outage
+- reconciliation red state
+- configured risk cap trip
+
+## Release checklist before enabling real money
+
+Before the live venue runtime is considered ready:
+
+- Rust workspace builds cleanly
+- Rust tests pass
+- dashboard client tests and build pass
+- sidecar lint, tests, and build pass
+- docs are updated and internally consistent
+- comments and rustdoc are current
+- agent and dashboard live surfaces are verified against seeded local data
+- live-readonly soak completes without storage blow-up
+
+Only after that should a real deployment plan be written.

@@ -8,6 +8,16 @@ buba is a paper-trading platform for Polymarket prediction markets. The workspac
 
 Canonical reserve-mode and exact-run parity guidance lives in [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md). If reserve semantics, live capital usage, or exact-run parity are relevant, read that file before touching the knobs.
 
+Real-money readiness documentation is split across:
+
+- [docs/live-trading-architecture.md](./docs/live-trading-architecture.md)
+- [docs/polymarket-live-constraints.md](./docs/polymarket-live-constraints.md)
+- [docs/live-session-runbook.md](./docs/live-session-runbook.md)
+- [docs/live-readiness-review.md](./docs/live-readiness-review.md)
+
+The current local tree has live-readiness scaffolding and a TypeScript Polymarket sidecar, but the Rust bot still intentionally refuses `EXECUTION_MODE=live_readonly` and `EXECUTION_MODE=live_trading` inside the `live` runtime. Do not remove that guard until the dedicated live venue runtime is actually wired.
+The current sidecar provider is still a stub. Treat `live-preflight` as contract validation only until the real provider lands. It must not be described as venue-ready preflight in code or docs.
+
 Live feed transport hardening is part of the current release baseline. The important knobs are `WEBSOCKET_CONNECT_TIMEOUT_MS`, `BINANCE_NO_MESSAGE_RECONNECT_MS`, and `CLOB_NO_MESSAGE_RECONNECT_MS`. They reduce reconnect downtime only. They must not be used to loosen stale-data gates or change trading semantics.
 
 ## Build & Test
@@ -32,6 +42,8 @@ make coverage-gate          # component coverage floors
 cd dashboard/client && npm test         # run the frontend Vitest suite
 cd dashboard/client && npm run test:e2e # run browser E2E
 cd dashboard/client && npm run test:coverage
+cd polymarket-sidecar && npm test       # run the sidecar Vitest suite
+cd polymarket-sidecar && npm run build  # build the sidecar
 ```
 
 Example commands:
@@ -81,7 +93,7 @@ When writing or editing `.md` files, code comments, or any prose in this project
 
 ### paint bot (`bots/paint/src/`)
 
-Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`, `init-db`, `upgrade-history`, `latency-probe`), `live.rs` (live trading loop: feeds + discovery + delayed window activation + event-driven strategy evaluation + durable authoritative settlement reconciliation), `config.rs` (all env-configurable settings, `set_param` for sweeps, pending-settlement reserve knobs, backtest settlement mode), `latency_probe.rs` (operator-facing Gamma/Binance/RTDS/CLOB probe).
+Core loop: `cli.rs` (clap CLI parsing, command dispatch, `parse_time`, `init-db`, `upgrade-history`, `latency-probe`, `live-preflight`), `live.rs` (live trading loop: feeds + discovery + delayed window activation + event-driven strategy evaluation + durable authoritative settlement reconciliation, plus an explicit guard against accidentally running paper semantics in live execution modes), `config.rs` (all env-configurable settings, `set_param` for sweeps, execution mode, live budget caps, pending-settlement reserve knobs, backtest settlement mode), `latency_probe.rs` (operator-facing Gamma/Binance/RTDS/CLOB probe), `live_sidecar.rs` (typed client for the local Polymarket sidecar).
 
 Strategies: `strategies/latency_arb.rs` (feature-scored stale odds, adaptive threshold, cooldown), `strategies/spread_capture.rs` (fee-aware two-leg taker spread capture with legging-risk gates), `strategies/calm_persistence.rs` (late-window sign persistence in calm regimes), `signal_features.rs` (shared feature engine used by live paper and backtests).
 
@@ -95,13 +107,15 @@ Shared orchestration: `strategy_cycle.rs` (shared live/backtest strategy evaluat
 
 Fees and verification: `fees.rs` (historical fee schedule resolution plus Polymarket dynamic taker fee formula: `fee = shares * price * feeRate * (price * (1-price))^exponent`), `verify.rs` (backfill Polymarket resolutions from Gamma API, compare against Chainlink-derived settlements, `verify-settlements` CLI).
 
-SDK integration: `polymarket.rs` (read-only wrapper around the official `polymarket-client-sdk` crate, queries CLOB API for market resolution via `tokens[].winner` field, no trading capability).
+SDK integration: `polymarket.rs` (read-only wrapper around the official `polymarket-client-sdk` crate, queries CLOB API for market resolution via `tokens[].winner` field, no trading capability), `live_sidecar.rs` (preflight, account-state, readiness matrix, and future live order/redeem boundary).
 
 Backtesting: `backtest/runner.rs` (core replay loop: replay -> shared strategy cycle -> execution -> settle, with optional observed-market-resolution timing), `backtest/sweep.rs` (parallel parameter sweep via rayon, PID-based temp DBs, inherits env-backed config), `backtest/tick_replay.rs` (loads `feed_events` when present and falls back to `tick_data`), `backtest/window_manager.rs` (replays market windows from DB), `backtest/feed_state.rs` (simulated feed state for backtest strategies), `backtest/momentum.rs` (rolling window momentum calculator).
 
 Database: `db/database.rs` (rusqlite wrapper, prepared statements, bounded WAL mode, grouped footprint reporting), `db/schema.rs` (additive column and table migrations via `add_column_if_missing`), `db/build_data.rs` (merges enriched run DBs into `market-data.db`, including optional signal and telemetry tables when present), `db/upgrade_history.rs` (in-place historical upgrade and metadata backfill for runs `004` through `009`).
 
 Shared: `types.rs` (Signal, BookState, MarketWindow, TradeResult, replay fidelity, feed-event structs, signal telemetry), `clock.rs` (Clock trait + SystemClock + BacktestClock), `errors.rs` (thiserror error types).
+
+Polymarket authenticated sidecar: `polymarket-sidecar/` (TypeScript package for proxy-wallet auth, relayer integration, live preflight, live account-state, and the future real order/redeem boundary; current provider is a stub, not a trading implementation).
 
 ### agent (`agent/src/`)
 
@@ -111,11 +125,11 @@ Shared: `types.rs` (Signal, BookState, MarketWindow, TradeResult, replay fidelit
 
 `auth.rs` (Argon2 hashing, JWT creation/validation, auth middleware), `config.rs` (TOML config: server port, JWT secret, agents list), `db.rs` (SQLite users/sessions store), `proxy.rs` (HTTP proxy helpers for agent communication), `error.rs` (DashboardError with HTTP status mapping).
 
-API routes: `api/auth_routes.rs` (login, me), `api/bots.rs` (list bots, proxy status/trades/balance/signals/stats/logs/process/start/stop/restart), `api/users.rs` (admin-only user management), `api/ws_proxy.rs` (WebSocket proxy: validates JWT from query param, bridges client <-> agent WebSockets).
+API routes: `api/auth_routes.rs` (login, me), `api/bots.rs` (list bots, proxy status/trades/balance/signals/stats/logs/process/start/stop/restart plus live status/session/order/fill/redemption/reconciliation proxies), `api/users.rs` (admin-only user management), `api/ws_proxy.rs` (WebSocket proxy: validates JWT from query param, bridges client <-> agent WebSockets).
 
 ### dashboard client (`dashboard/client/src/`)
 
-Pages: `pages/login.tsx` (form-based login), `pages/dashboard.tsx` (stat cards, mini equity chart, open trades, recent activity), `pages/equity.tsx` (full-height equity curve), `pages/trades.tsx` (paginated trade table), `pages/signals.tsx` (signal log), `pages/logs.tsx` (ANSI-colored bot logs with auto-scroll), `pages/stats.tsx` (per-strategy breakdown).
+Pages: `pages/login.tsx` (form-based login), `pages/dashboard.tsx` (stat cards, mini equity chart, open trades, recent activity), `pages/equity.tsx` (full-height equity curve), `pages/trades.tsx` (paginated trade table), `pages/signals.tsx` (signal log), `pages/logs.tsx` (ANSI-colored bot logs with auto-scroll), `pages/stats.tsx` (per-strategy breakdown), `pages/live.tsx` (live-readiness, account decomposition, reconciliation, sessions, orders, fills, redemptions).
 
 Hooks: `hooks/use-auth.ts` (login, logout, session restore), `hooks/use-bot-status.ts`, `hooks/use-trades.ts`, `hooks/use-balance.ts`, `hooks/use-signals.ts`, `hooks/use-logs.ts`, `hooks/use-process-status.ts` (all TanStack React Query wrappers), `hooks/use-live-updates.ts` (WebSocket -> React Query cache invalidation + trade notifications), `hooks/use-media-query.ts` (reactive CSS media query hook for responsive layout), `hooks/use-theme.ts` (dark mode: reads theme store, detects OS preference, manages `.dark` class on `<html>`).
 

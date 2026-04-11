@@ -2,12 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::Mutex;
 
 use crate::error::AgentError;
 use crate::types::{
-    BalanceEntry, BalanceResponse, BotStatus, SignalRow, SignalsResponse, StatsResponse,
+    BalanceEntry, BalanceResponse, BotStatus, LiveAccountSnapshotRow, LiveFillRow,
+    LiveFillsResponse, LiveOrderRow, LiveOrdersResponse, LiveReconciliationResponse,
+    LiveReconciliationRow, LiveRedemptionRow, LiveRedemptionsResponse, LiveSessionRow,
+    LiveSessionsResponse, LiveStatusResponse, SignalRow, SignalsResponse, StatsResponse,
     StrategyStats, TradeRow, TradesResponse, WindowInfo,
 };
 
@@ -21,6 +24,20 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
         return false;
     };
     rows.flatten().any(|name| name == column)
+}
+
+/// Returns whether the given table currently exists.
+fn has_table(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?1
+        )",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .is_ok_and(|exists| exists != 0)
 }
 
 /// Read-only database reader for the bot's `SQLite` database.
@@ -382,6 +399,304 @@ impl DbReader {
         }
 
         Ok(StatsResponse { by_strategy })
+    }
+
+    /// Get a compact live-status summary from the additive live tables.
+    pub async fn get_live_status(&self) -> Result<LiveStatusResponse, AgentError> {
+        let conn = self.conn.lock().await;
+        if !has_table(&conn, "live_sessions") {
+            return Ok(LiveStatusResponse {
+                latest_session: None,
+                latest_account_snapshot: None,
+                open_orders: 0,
+                pending_redemptions: 0,
+                critical_reconciliation_events: 0,
+            });
+        }
+
+        let latest_session = conn
+            .query_row(
+                "SELECT id, started_at_ms, ended_at_ms, status, execution_mode, wallet_address,
+                        proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd,
+                        details_json
+                 FROM live_sessions
+                 ORDER BY started_at_ms DESC, id DESC
+                 LIMIT 1",
+                [],
+                |row| {
+                    Ok(LiveSessionRow {
+                        id: row.get(0)?,
+                        started_at_ms: row.get(1)?,
+                        ended_at_ms: row.get(2)?,
+                        status: row.get(3)?,
+                        execution_mode: row.get(4)?,
+                        wallet_address: row.get(5)?,
+                        proxy_wallet: row.get(6)?,
+                        enabled_strategies_json: row.get(7)?,
+                        config_fingerprint: row.get(8)?,
+                        cash_cap_usd: row.get(9)?,
+                        details_json: row.get(10)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        let latest_account_snapshot = if has_table(&conn, "live_account_snapshots") {
+            conn.query_row(
+                "SELECT id, session_id, timestamp_ms, cash_available, cash_reserved_for_orders,
+                        inventory_mark_value, redeemable_value, pending_redeem_value,
+                        total_equity, allowance_available, details_json
+                 FROM live_account_snapshots
+                 ORDER BY timestamp_ms DESC, id DESC
+                 LIMIT 1",
+                [],
+                |row| {
+                    Ok(LiveAccountSnapshotRow {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        timestamp_ms: row.get(2)?,
+                        cash_available: row.get(3)?,
+                        cash_reserved_for_orders: row.get(4)?,
+                        inventory_mark_value: row.get(5)?,
+                        redeemable_value: row.get(6)?,
+                        pending_redeem_value: row.get(7)?,
+                        total_equity: row.get(8)?,
+                        allowance_available: row.get(9)?,
+                        details_json: row.get(10)?,
+                    })
+                },
+            )
+            .optional()?
+        } else {
+            None
+        };
+
+        let open_orders = if has_table(&conn, "live_orders") {
+            conn.query_row(
+                "SELECT COUNT(*) FROM live_orders WHERE status IN ('open', 'submitted', 'partially_filled')",
+                [],
+                |row| row.get(0),
+            )?
+        } else {
+            0
+        };
+        let pending_redemptions = if has_table(&conn, "live_redemptions") {
+            conn.query_row(
+                "SELECT COUNT(*) FROM live_redemptions WHERE status NOT IN ('credited', 'failed')",
+                [],
+                |row| row.get(0),
+            )?
+        } else {
+            0
+        };
+        let critical_reconciliation_events = if has_table(&conn, "live_reconciliation_events") {
+            conn.query_row(
+                "SELECT COUNT(*) FROM live_reconciliation_events WHERE severity = 'critical'",
+                [],
+                |row| row.get(0),
+            )?
+        } else {
+            0
+        };
+
+        Ok(LiveStatusResponse {
+            latest_session,
+            latest_account_snapshot,
+            open_orders,
+            pending_redemptions,
+            critical_reconciliation_events,
+        })
+    }
+
+    /// Get the most recent live sessions.
+    pub async fn get_live_sessions(&self, limit: u64) -> Result<LiveSessionsResponse, AgentError> {
+        let conn = self.conn.lock().await;
+        if !has_table(&conn, "live_sessions") {
+            return Ok(LiveSessionsResponse { sessions: vec![] });
+        }
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, started_at_ms, ended_at_ms, status, execution_mode, wallet_address,
+                    proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd,
+                    details_json
+             FROM live_sessions
+             ORDER BY started_at_ms DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let sessions = stmt
+            .query_map(params![limit], |row| {
+                Ok(LiveSessionRow {
+                    id: row.get(0)?,
+                    started_at_ms: row.get(1)?,
+                    ended_at_ms: row.get(2)?,
+                    status: row.get(3)?,
+                    execution_mode: row.get(4)?,
+                    wallet_address: row.get(5)?,
+                    proxy_wallet: row.get(6)?,
+                    enabled_strategies_json: row.get(7)?,
+                    config_fingerprint: row.get(8)?,
+                    cash_cap_usd: row.get(9)?,
+                    details_json: row.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LiveSessionsResponse { sessions })
+    }
+
+    /// Get the most recent live orders.
+    pub async fn get_live_orders(&self, limit: u64) -> Result<LiveOrdersResponse, AgentError> {
+        let conn = self.conn.lock().await;
+        if !has_table(&conn, "live_orders") {
+            return Ok(LiveOrdersResponse { orders: vec![] });
+        }
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, session_id, intent_id, venue_order_id, client_order_id, market_id,
+                    token_id, side, order_type, status, status_reason, created_at_ms,
+                    acknowledged_at_ms, updated_at_ms, requested_price, limit_price,
+                    requested_size, accepted_size, details_json
+             FROM live_orders
+             ORDER BY updated_at_ms DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let orders = stmt
+            .query_map(params![limit], |row| {
+                Ok(LiveOrderRow {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    intent_id: row.get(2)?,
+                    venue_order_id: row.get(3)?,
+                    client_order_id: row.get(4)?,
+                    market_id: row.get(5)?,
+                    token_id: row.get(6)?,
+                    side: row.get(7)?,
+                    order_type: row.get(8)?,
+                    status: row.get(9)?,
+                    status_reason: row.get(10)?,
+                    created_at_ms: row.get(11)?,
+                    acknowledged_at_ms: row.get(12)?,
+                    updated_at_ms: row.get(13)?,
+                    requested_price: row.get(14)?,
+                    limit_price: row.get(15)?,
+                    requested_size: row.get(16)?,
+                    accepted_size: row.get(17)?,
+                    details_json: row.get(18)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LiveOrdersResponse { orders })
+    }
+
+    /// Get the most recent live fills.
+    pub async fn get_live_fills(&self, limit: u64) -> Result<LiveFillsResponse, AgentError> {
+        let conn = self.conn.lock().await;
+        if !has_table(&conn, "live_fills") {
+            return Ok(LiveFillsResponse { fills: vec![] });
+        }
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, session_id, intent_id, live_order_id, venue_trade_id, filled_at_ms,
+                    price, size, fee_amount, fee_rate, liquidity_side, tx_hash, status,
+                    details_json
+             FROM live_fills
+             ORDER BY filled_at_ms DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let fills = stmt
+            .query_map(params![limit], |row| {
+                Ok(LiveFillRow {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    intent_id: row.get(2)?,
+                    live_order_id: row.get(3)?,
+                    venue_trade_id: row.get(4)?,
+                    filled_at_ms: row.get(5)?,
+                    price: row.get(6)?,
+                    size: row.get(7)?,
+                    fee_amount: row.get(8)?,
+                    fee_rate: row.get(9)?,
+                    liquidity_side: row.get(10)?,
+                    tx_hash: row.get(11)?,
+                    status: row.get(12)?,
+                    details_json: row.get(13)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LiveFillsResponse { fills })
+    }
+
+    /// Get the most recent live redemptions.
+    pub async fn get_live_redemptions(
+        &self,
+        limit: u64,
+    ) -> Result<LiveRedemptionsResponse, AgentError> {
+        let conn = self.conn.lock().await;
+        if !has_table(&conn, "live_redemptions") {
+            return Ok(LiveRedemptionsResponse {
+                redemptions: vec![],
+            });
+        }
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, session_id, market_id, detected_redeemable_at_ms, submitted_at_ms,
+                    confirmed_at_ms, cash_credit_observed_at_ms, status, redeemable_value,
+                    tx_hash, details_json
+             FROM live_redemptions
+             ORDER BY detected_redeemable_at_ms DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let redemptions = stmt
+            .query_map(params![limit], |row| {
+                Ok(LiveRedemptionRow {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    market_id: row.get(2)?,
+                    detected_redeemable_at_ms: row.get(3)?,
+                    submitted_at_ms: row.get(4)?,
+                    confirmed_at_ms: row.get(5)?,
+                    cash_credit_observed_at_ms: row.get(6)?,
+                    status: row.get(7)?,
+                    redeemable_value: row.get(8)?,
+                    tx_hash: row.get(9)?,
+                    details_json: row.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LiveRedemptionsResponse { redemptions })
+    }
+
+    /// Get the most recent live reconciliation events.
+    pub async fn get_live_reconciliation(
+        &self,
+        limit: u64,
+    ) -> Result<LiveReconciliationResponse, AgentError> {
+        let conn = self.conn.lock().await;
+        if !has_table(&conn, "live_reconciliation_events") {
+            return Ok(LiveReconciliationResponse { events: vec![] });
+        }
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, session_id, timestamp_ms, severity, event_type, local_value,
+                    remote_value, details_json
+             FROM live_reconciliation_events
+             ORDER BY timestamp_ms DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let events = stmt
+            .query_map(params![limit], |row| {
+                Ok(LiveReconciliationRow {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    timestamp_ms: row.get(2)?,
+                    severity: row.get(3)?,
+                    event_type: row.get(4)?,
+                    local_value: row.get(5)?,
+                    remote_value: row.get(6)?,
+                    details_json: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LiveReconciliationResponse { events })
     }
 
     /// Get the latest trade ID (for WS polling).

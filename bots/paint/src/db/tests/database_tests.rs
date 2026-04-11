@@ -32,6 +32,12 @@ fn sample_market_window() -> MarketWindow {
         taker_base_fee: Some(1000.0),
         rewards_min_size: Some(50.0),
         rewards_max_spread: Some(4.5),
+        fees_enabled: Some(true),
+        fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".into()),
+        token_fee_rates_json: Some("{\"tok-up\":{\"base_fee\":1000}}".into()),
+        accepting_orders: Some(true),
+        accepting_orders_timestamp: Some("2024-01-01T00:00:00Z".into()),
+        clear_book_on_start: Some(false),
     }
 }
 
@@ -861,4 +867,128 @@ fn unresolved_open_trade_markets_returns_only_ended_unresolved_rows() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].window.market_id, "mkt-1");
     assert_eq!(rows[0].open_trade_count, 1);
+}
+
+/// Verifies that live session/account/order tables accept compact live telemetry.
+#[test]
+fn live_telemetry_tables_store_rows() {
+    let (db, _tmp) = temp_db();
+
+    let session_id = db
+        .insert_live_session(&crate::types::LiveSession {
+            id: None,
+            started_at_ms: 1_000,
+            ended_at_ms: None,
+            status: "readonly_ready".into(),
+            execution_mode: "live_readonly".into(),
+            wallet_address: Some("0xwallet".into()),
+            proxy_wallet: Some("0xproxy".into()),
+            enabled_strategies_json: "[\"latency-arb\"]".into(),
+            config_fingerprint: "fp-1".into(),
+            cash_cap_usd: 100.0,
+            details_json: Some("{}".into()),
+        })
+        .unwrap();
+
+    let intent_id = db
+        .log_live_order_intent(&crate::types::LiveOrderIntent {
+            id: None,
+            session_id,
+            signal_id: None,
+            market_id: "mkt-1".into(),
+            strategy: "latency-arb".into(),
+            side: "BUY".into(),
+            order_type: "FOK".into(),
+            status: "approved".into(),
+            created_at_ms: 1_050,
+            requested_price: Some(0.51),
+            requested_size: Some(5.0),
+            limit_price: Some(0.51),
+            fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".into()),
+            token_fee_rates_json: Some("{\"tok-up\":{\"base_fee\":1000}}".into()),
+            execution_group_id: Some("grp-1".into()),
+            details_json: Some("{}".into()),
+        })
+        .unwrap();
+
+    let order_id = db
+        .log_live_order(&crate::types::LiveOrder {
+            id: None,
+            session_id,
+            intent_id,
+            venue_order_id: Some("venue-1".into()),
+            client_order_id: Some("client-1".into()),
+            market_id: "mkt-1".into(),
+            token_id: Some("tok-up".into()),
+            side: "BUY".into(),
+            order_type: "FOK".into(),
+            status: "open".into(),
+            status_reason: None,
+            created_at_ms: 1_060,
+            acknowledged_at_ms: Some(1_061),
+            updated_at_ms: 1_061,
+            requested_price: Some(0.51),
+            limit_price: Some(0.51),
+            requested_size: Some(5.0),
+            accepted_size: Some(5.0),
+            details_json: Some("{}".into()),
+        })
+        .unwrap();
+
+    db.log_live_fill(&crate::types::LiveFill {
+        id: None,
+        session_id,
+        intent_id: Some(intent_id),
+        live_order_id: Some(order_id),
+        venue_trade_id: Some("trade-1".into()),
+        filled_at_ms: 1_070,
+        price: 0.51,
+        size: 5.0,
+        fee_amount: Some(0.09),
+        fee_rate: Some(0.072),
+        liquidity_side: Some("taker".into()),
+        tx_hash: Some("0xtx".into()),
+        status: "confirmed".into(),
+        details_json: Some("{}".into()),
+    })
+    .unwrap();
+
+    db.log_live_account_snapshot(&crate::types::LiveAccountSnapshot {
+        id: None,
+        session_id,
+        timestamp_ms: 1_080,
+        cash_available: 96.0,
+        cash_reserved_for_orders: 0.0,
+        inventory_mark_value: 2.0,
+        redeemable_value: 0.0,
+        pending_redeem_value: 0.0,
+        total_equity: 98.0,
+        allowance_available: Some(96.0),
+        details_json: Some("{}".into()),
+    })
+    .unwrap();
+
+    let session_count: i64 = db
+        .conn
+        .query_row("SELECT COUNT(*) FROM live_sessions", [], |row| row.get(0))
+        .unwrap();
+    let order_count: i64 = db
+        .conn
+        .query_row("SELECT COUNT(*) FROM live_orders", [], |row| row.get(0))
+        .unwrap();
+    let fill_count: i64 = db
+        .conn
+        .query_row("SELECT COUNT(*) FROM live_fills", [], |row| row.get(0))
+        .unwrap();
+    let snapshot_count: i64 = db
+        .conn
+        .query_row("SELECT COUNT(*) FROM live_account_snapshots", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert_eq!(session_count, 1);
+    assert_eq!(order_count, 1);
+    assert_eq!(fill_count, 1);
+    assert_eq!(snapshot_count, 1);
 }

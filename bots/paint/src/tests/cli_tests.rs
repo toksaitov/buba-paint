@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::ExecutionMode;
 
 /// Verifies that parse time rfc3339.
 #[test]
@@ -87,6 +88,16 @@ fn apply_set_override_boolish_flag() {
     assert!(config.calm_persistence_enabled);
     apply_set_override(&mut config, "REGIME_DETECTION_ENABLED=0").unwrap();
     assert!(!config.regime_detection_enabled);
+}
+
+/// Verifies that apply set override accepts string-backed live params.
+#[test]
+fn apply_set_override_string_param() {
+    let mut config = Config::default();
+    apply_set_override(&mut config, "EXECUTION_MODE=live_readonly").unwrap();
+    apply_set_override(&mut config, "LIVE_SIDECAR_URL=http://127.0.0.1:3211").unwrap();
+    assert_eq!(config.execution_mode, ExecutionMode::LiveReadonly);
+    assert_eq!(config.live_sidecar_url, "http://127.0.0.1:3211");
 }
 
 /// Verifies that apply set override unknown param ok.
@@ -212,6 +223,31 @@ fn cli_live_command_parses() {
             assert!((balance - 999.0).abs() < f64::EPSILON);
         }
         _ => panic!("expected Live command"),
+    }
+}
+
+/// Verifies that cli live-preflight command parses.
+#[test]
+fn cli_live_preflight_command_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "live-preflight",
+        "--set",
+        "EXECUTION_MODE=live_readonly",
+        "--set",
+        "LIVE_SESSION_CASH_CAP_USD=75",
+    ]);
+    match cli.command {
+        Commands::LivePreflight { sets } => {
+            assert_eq!(
+                sets,
+                vec![
+                    "EXECUTION_MODE=live_readonly".to_string(),
+                    "LIVE_SESSION_CASH_CAP_USD=75".to_string(),
+                ]
+            );
+        }
+        _ => panic!("expected LivePreflight command"),
     }
 }
 

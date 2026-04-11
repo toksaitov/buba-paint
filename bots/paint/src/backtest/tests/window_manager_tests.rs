@@ -69,6 +69,12 @@ fn settlement(id: &str, start: u64, end: u64, outcome: SignalDirection) -> Marke
         taker_base_fee: Some(1000.0),
         rewards_min_size: Some(50.0),
         rewards_max_spread: Some(4.5),
+        fees_enabled: Some(true),
+        fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".to_string()),
+        token_fee_rates_json: Some("{\"up\":1000,\"down\":1000}".to_string()),
+        accepting_orders: Some(true),
+        accepting_orders_timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+        clear_book_on_start: Some(false),
     }
 }
 
