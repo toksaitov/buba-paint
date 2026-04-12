@@ -1260,6 +1260,15 @@ impl Database {
         Ok(result)
     }
 
+    /// Returns the initial balance recorded for the current run, if any.
+    pub fn get_initial_balance(&self) -> anyhow::Result<Option<f64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT balance FROM balance_log WHERE event = 'init' ORDER BY id LIMIT 1",
+        )?;
+        let result = stmt.query_row([], |row| row.get(0)).optional()?;
+        Ok(result)
+    }
+
     /// Resolves market.
     pub fn resolve_market(&self, market_id: &str, status: &str) -> anyhow::Result<()> {
         let mut stmt = self

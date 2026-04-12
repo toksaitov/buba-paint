@@ -1,9 +1,9 @@
 import { Wallet } from "@ethersproject/wallet";
 import {
+  AssetType,
   Chain,
   ClobClient,
   type ApiKeyCreds,
-  type BalanceAllowanceResponse,
   type OpenOrder,
 } from "@polymarket/clob-client";
 import WebSocket, { type RawData } from "ws";
@@ -25,6 +25,7 @@ const USER_STREAM_CONNECT_TIMEOUT_MS = 5_000;
 const USER_STREAM_STABLE_GRACE_MS = 1_000;
 const USER_STREAM_RECONNECT_DELAY_MS = 1_000;
 const CHAIN_ID = Chain.POLYGON;
+const COLLATERAL_DECIMALS = 1_000_000;
 
 type LiveCheckStatus = "ok" | "failed";
 
@@ -71,6 +72,12 @@ interface PositionResponse {
   redeemable?: boolean;
 }
 
+interface BalanceAllowanceView {
+  balance: string;
+  allowance?: string;
+  allowances?: Record<string, string>;
+}
+
 interface ActiveMarket {
   slug: string;
   conditionId: string;
@@ -99,9 +106,10 @@ interface UserStreamMonitor {
 }
 
 interface ClobReadonlyClient {
-  createOrDeriveApiKey(): Promise<ApiKeyCreds>;
+  createApiKey(): Promise<ApiKeyCreds>;
+  deriveApiKey(): Promise<ApiKeyCreds>;
   getServerTime(): Promise<number>;
-  getBalanceAllowance(): Promise<BalanceAllowanceResponse>;
+  getBalanceAllowance(): Promise<BalanceAllowanceView>;
   getOpenOrders(): Promise<OpenOrder[]>;
 }
 
@@ -162,6 +170,25 @@ function parseNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function collateralUnitsToUsd(value: number): number {
+  return value / COLLATERAL_DECIMALS;
+}
+
+function maxAllowanceUsd(balanceAllowance: BalanceAllowanceView): number | null {
+  const view = balanceAllowance;
+  const directAllowance = parseNumber((view as { allowance?: unknown }).allowance);
+  if (directAllowance != null) {
+    return collateralUnitsToUsd(directAllowance);
+  }
+  const allowanceEntries = Object.values(view.allowances ?? {})
+    .map((entry) => parseNumber(entry))
+    .filter((entry): entry is number => entry != null);
+  if (allowanceEntries.length === 0) {
+    return null;
+  }
+  return collateralUnitsToUsd(Math.max(...allowanceEntries));
 }
 
 function normalizeServerTimeMs(value: number): number {
@@ -409,7 +436,7 @@ function defaultProviderDeps(): ProviderDeps {
         );
       }
       const signer = new Wallet(config.privateKey);
-      return new ClobClient(
+      const client = new ClobClient(
         config.clobHost,
         CHAIN_ID,
         signer,
@@ -424,6 +451,14 @@ function defaultProviderDeps(): ProviderDeps {
         undefined,
         true,
       );
+      return {
+        createApiKey: async () => client.createApiKey(),
+        deriveApiKey: async () => client.deriveApiKey(),
+        getServerTime: async () => client.getServerTime(),
+        getBalanceAllowance: async () =>
+          client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL }),
+        getOpenOrders: async () => client.getOpenOrders(),
+      };
     },
     createUserStreamMonitor: (clock) => new WsUserStreamMonitor(clock),
   };
@@ -806,7 +841,20 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
           );
         }
         const bootstrapClient = this.deps.createClobClient(this.config);
-        const creds = await bootstrapClient.createOrDeriveApiKey();
+        const createdCreds = await bootstrapClient.createApiKey().catch((error: unknown) => {
+          const message = stringError(error);
+          if (message.includes("Could not create api key")) {
+            return {
+              key: "",
+              secret: "",
+              passphrase: "",
+            } satisfies ApiKeyCreds;
+          }
+          throw error;
+        });
+        const creds = createdCreds.key
+          ? createdCreds
+          : await bootstrapClient.deriveApiKey();
         return {
           creds,
           client: this.deps.createClobClient(this.config, creds),
@@ -881,8 +929,9 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       this.fetchPositions(authState.walletAddress, gammaApiUrl),
     ]);
 
-    const rawBalance = parseNumber(balanceAllowance.balance) ?? 0;
-    const rawAllowance = parseNumber(balanceAllowance.allowance);
+    const rawBalance =
+      collateralUnitsToUsd(parseNumber(balanceAllowance.balance) ?? 0);
+    const rawAllowance = maxAllowanceUsd(balanceAllowance);
     const cashReservedForOrders = sumReservedBuyCash(openOrders);
     const inventoryMarkValue = positions
       .filter((position) => position.redeemable !== true)
@@ -891,10 +940,12 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       .filter((position) => position.redeemable === true)
       .reduce((total, position) => total + (parseNumber(position.currentValue) ?? 0), 0);
     const cashAvailable = Math.max(rawBalance - cashReservedForOrders, 0);
+    const cappedAllowanceUsd =
+      rawAllowance == null ? null : Math.max(Math.min(rawAllowance, rawBalance), 0);
     const allowanceAvailable =
-      rawAllowance == null
+      cappedAllowanceUsd == null
         ? null
-        : Math.max(Math.min(rawAllowance, rawBalance) - cashReservedForOrders, 0);
+        : Math.max(cappedAllowanceUsd - cashReservedForOrders, 0);
     const stream = this.userStream.snapshot();
     const legalMinUsd = legalOrderMinUsd(markets);
     const accountState: LiveAccountState = {
@@ -924,13 +975,14 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         redeemable_position_count: positions.filter((position) => position.redeemable === true)
           .length,
         observed_balance_usd: rawBalance,
-        observed_allowance_usd: rawAllowance,
+        observed_allowance_usd: cappedAllowanceUsd,
+        observed_allowance_approval_usd: rawAllowance,
         active_markets: markets,
       }),
     };
     return {
       state: accountState,
-      allowanceStatus: checkStatus((allowanceAvailable ?? 0) > 0),
+      allowanceStatus: checkStatus(rawAllowance != null),
       legalOrderMinUsd: legalMinUsd,
       openOrderCount: openOrders.length,
       positionCount: positions.length,

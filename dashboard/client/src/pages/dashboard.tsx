@@ -19,6 +19,13 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-2.5">
+      {status.execution_mode === "live_readonly" && (
+        <div className="border border-accent-yellow/40 bg-accent-yellow/10 px-3 py-2 text-[11px] text-accent-yellow">
+          Shadow paper runtime is active. Charts, trades, signals, and stats on this page reflect
+          simulated execution under <code>live_readonly</code>, while the Live page shows the real
+          Polymarket venue/account state.
+        </div>
+      )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         <StatCard
           label="Balance"
@@ -32,12 +39,12 @@ export function DashboardPage() {
         />
         <StatCard
           label="Win Rate"
-          value={`${status.win_rate.toFixed(1)}%`}
+          value={`${(status.win_rate * 100).toFixed(1)}%`}
           sub={`${status.wins}W / ${status.losses}L of ${status.total_trades}`}
         />
         <StatCard
           label="Max Drawdown"
-          value={formatPct(-status.max_drawdown_pct)}
+          value={formatPct(-status.max_drawdown_pct * 100)}
           color="text-accent-red"
           sub={`${status.uptime_hours.toFixed(1)}h uptime`}
         />

@@ -47,12 +47,14 @@ test("shows loading state", () => {
 test("renders data when loaded", async () => {
   mockGetStats.mockResolvedValue({
     by_strategy: {
-      "latency-arb": { trades: 10, wins: 6, losses: 4, win_rate: 60, total_pnl: 300 },
+      "latency-arb": { trades: 10, wins: 6, losses: 4, win_rate: 0.6, total_pnl: 300 },
     },
   });
   mockUseBotStatus.mockReturnValue({
     data: {
       balance: 500,
+      execution_mode: "paper",
+      live_session_status: null,
       uptime_hours: 48,
       open_trades: 1,
     },
@@ -62,5 +64,5 @@ test("renders data when loaded", async () => {
 
   const heading = await screen.findByText("Bot Status");
   expect(heading).toBeDefined();
+  expect(screen.getByText("60.0%")).toBeDefined();
 });
-

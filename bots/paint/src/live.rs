@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::bail;
 use tracing::{error, info, warn};
@@ -229,11 +230,8 @@ pub async fn run_live(
 ) -> anyhow::Result<()> {
     config.validate()?;
     match config.execution_mode {
-        crate::config::ExecutionMode::Paper => {
-            run_live_paper(config, db_path, balance, shutdown_rx).await
-        }
-        crate::config::ExecutionMode::LiveReadonly => {
-            crate::live_readonly::run_live_readonly(config, db_path, shutdown_rx).await
+        crate::config::ExecutionMode::Paper | crate::config::ExecutionMode::LiveReadonly => {
+            run_live_runtime(config, db_path, balance, shutdown_rx).await
         }
         crate::config::ExecutionMode::LiveTrading => {
             bail!(
@@ -245,30 +243,38 @@ pub async fn run_live(
     }
 }
 
-/// Run the paper-trading live runtime.
+/// Run the shared paper or readonly live runtime.
 #[allow(clippy::too_many_lines)]
-async fn run_live_paper(
+async fn run_live_runtime(
     config: Config,
     db_path: &str,
     balance: f64,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
+    let db = Database::new(db_path)?;
+    let clock = SystemClock;
+    let mut readonly_monitor = None;
+    let (db, runtime_balance) =
+        if config.execution_mode == crate::config::ExecutionMode::LiveReadonly {
+            let (db, bootstrap) =
+                crate::live_readonly::bootstrap_readonly_runtime(&config, db, &clock).await?;
+            readonly_monitor = Some(bootstrap.monitor);
+            (db, bootstrap.shadow_starting_balance)
+        } else {
+            (db, balance)
+        };
     let pending_policy = config.pending_settlement_policy_unchecked();
     info!(
-        balance = balance,
+        balance = runtime_balance,
         db = %db_path,
         execution_mode = config.execution_mode.as_str(),
         pending_settlement_mode = pending_policy.mode.as_str(),
         pending_settlement_family_reserve_fraction = pending_policy.family_reserve_fraction,
         pending_settlement_global_reserve_fraction = pending_policy.global_reserve_fraction,
         pending_settlement_counts_as_open_position = pending_policy.counts_as_open_position,
-        "starting live paper trading bot"
+        "starting live runtime"
     );
-
-    let db = Database::new(db_path)?;
-
-    let clock = SystemClock;
-    let mut bankroll = BankrollManager::new(balance, &config, &db, &clock);
+    let mut bankroll = BankrollManager::new(runtime_balance, &config, &db, &clock);
     let mut position_manager = PositionManager::new();
     let mut execution_engine = ExecutionEngine::new();
     let mut circuit_breaker = CircuitBreaker::new(
@@ -352,6 +358,26 @@ async fn run_live_paper(
     let _ = feed_health_report_timer.tick().await;
     let mut resolution_retry_timer = tokio::time::interval(std::time::Duration::from_secs(1));
     resolution_retry_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut readonly_poll_timer = if readonly_monitor.is_some() {
+        let mut timer = tokio::time::interval(Duration::from_secs(
+            crate::live_readonly::READONLY_POLL_INTERVAL_SECS,
+        ));
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let _ = timer.tick().await;
+        Some(timer)
+    } else {
+        None
+    };
+    let mut readonly_rollup_timer = if readonly_monitor.is_some() {
+        let mut timer = tokio::time::interval(Duration::from_secs(
+            crate::live_readonly::READONLY_ROLLUP_INTERVAL_SECS,
+        ));
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let _ = timer.tick().await;
+        Some(timer)
+    } else {
+        None
+    };
 
     info!("all tasks spawned, entering main loop");
 
@@ -1213,6 +1239,36 @@ async fn run_live_paper(
                 }
             }
 
+            () = async {
+                if let Some(timer) = readonly_poll_timer.as_mut() {
+                    timer.tick().await;
+                }
+            }, if readonly_monitor.is_some() => {
+                if let Some(monitor) = readonly_monitor.as_mut() {
+                    match monitor.fetch_account_state().await {
+                        Ok(account) => monitor.apply_account_state(&db, &config, account)?,
+                        Err(error) => {
+                            monitor.record_account_refresh_failure(
+                                &db,
+                                &config,
+                                &clock,
+                                &error.to_string(),
+                            )?;
+                        }
+                    }
+                }
+            }
+
+            () = async {
+                if let Some(timer) = readonly_rollup_timer.as_mut() {
+                    timer.tick().await;
+                }
+            }, if readonly_monitor.is_some() => {
+                if let Some(monitor) = readonly_monitor.as_ref() {
+                    monitor.log_shadow_rollup(&bankroll.get_stats());
+                }
+            }
+
             _ = &mut shutdown_rx => {
                 info!("shutdown signal received, shutting down");
                 break;
@@ -1235,6 +1291,10 @@ async fn run_live_paper(
         hwm = final_stats.high_water_mark,
         "final bankroll stats"
     );
+
+    if let Some(monitor) = readonly_monitor.as_mut() {
+        monitor.finish_stopped(&db, &clock)?;
+    }
 
     db.close();
     info!("database closed, goodbye");

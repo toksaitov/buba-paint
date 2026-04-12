@@ -70,6 +70,8 @@ beforeEach(() => {
     data: {
       balance: 200,
       starting_balance: 200,
+      execution_mode: "paper",
+      live_session_status: null,
       total_trades: 0,
       wins: 0,
       losses: 0,
@@ -157,6 +159,8 @@ test("shows Running badge in monitor-only mode when ticks are fresh", async () =
     data: {
       balance: 200,
       starting_balance: 200,
+      execution_mode: "paper",
+      live_session_status: null,
       total_trades: 0,
       wins: 0,
       losses: 0,
@@ -187,6 +191,8 @@ test("shows Stopped badge in monitor-only mode when ticks are stale", () => {
     data: {
       balance: 200,
       starting_balance: 200,
+      execution_mode: "paper",
+      live_session_status: null,
       total_trades: 0,
       wins: 0,
       losses: 0,
@@ -250,6 +256,8 @@ test("disables controls in monitor-only mode", async () => {
     data: {
       balance: 200,
       starting_balance: 200,
+      execution_mode: "paper",
+      live_session_status: null,
       total_trades: 0,
       wins: 0,
       losses: 0,
@@ -367,4 +375,29 @@ test("disables notifications when already enabled", async () => {
   expect(mockRequestNotificationPermission).not.toHaveBeenCalled();
   expect(mockSetNotificationEnabled).toHaveBeenCalledWith(false);
   expect(screen.getByTitle("Enable notifications")).toBeInTheDocument();
+});
+
+test("shows a human-readable shadow badge in live_readonly mode", () => {
+  mockUseBotStatus.mockReturnValue({
+    data: {
+      balance: 200,
+      starting_balance: 200,
+      execution_mode: "live_readonly",
+      live_session_status: "readonly_ready",
+      total_trades: 0,
+      wins: 0,
+      losses: 0,
+      win_rate: 0,
+      total_pnl: 0,
+      max_drawdown_pct: 0,
+      high_water_mark: 200,
+      uptime_hours: 1,
+      open_trades: 0,
+      current_window: null,
+      last_tick_at: null,
+    },
+  } as ReturnType<typeof useBotStatus>);
+
+  renderHeader();
+  expect(screen.getByText("Shadow ready")).toBeInTheDocument();
 });

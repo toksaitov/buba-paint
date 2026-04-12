@@ -615,7 +615,13 @@ impl ExecutionEngine {
         }
         self.record_fill(&order, book.best_ask, filled_size, context.now);
 
-        let mut trade = build_trade(&order, book.best_ask, filled_size, context.now);
+        let mut trade = build_trade(
+            &order,
+            book.best_ask,
+            filled_size,
+            context.now,
+            context.config.execution_mode.as_str(),
+        );
         let trade_id = context.db.open_trade(&trade)?;
         trade.id = Some(trade_id);
         let effective_arrival_delay_ms = context.now.saturating_sub(order.signal_timestamp);
@@ -1080,6 +1086,7 @@ fn build_trade(
     fill_price: f64,
     filled_size: f64,
     now: u64,
+    execution_mode: &str,
 ) -> SimulatedTrade {
     SimulatedTrade {
         id: None,
@@ -1105,7 +1112,7 @@ fn build_trade(
         fill_latency_ms: Some(now.saturating_sub(order.signal_timestamp)),
         execution_group_id: order.execution_group_id.clone(),
         execution_fidelity: Some(order.execution_fidelity.to_string()),
-        execution_mode: Some("paper".to_string()),
+        execution_mode: Some(execution_mode.to_string()),
         order_id: Some(format!("paper-{}", order.signal_id)),
         fill_price: Some(fill_price),
     }
@@ -1526,6 +1533,57 @@ mod tests {
         assert_eq!(persisted.0, "partial");
         assert_eq!(persisted.1, 40.0);
         assert_eq!(persisted.2, "legacy_snapshot");
+    }
+
+    #[test]
+    /// Verify that shadow-paper fills persist the readonly execution mode.
+    fn process_due_orders_persists_live_readonly_execution_mode() {
+        let (_dir, db) = temp_db();
+        let mut config = test_config();
+        config.execution_mode = crate::config::ExecutionMode::LiveReadonly;
+        let clock = BacktestClock::new();
+        let window = test_window();
+        db.upsert_market(&window).unwrap();
+
+        let mut bankroll = BankrollManager::new(1_000.0, &config, &db, &clock);
+        let mut engine = ExecutionEngine::new();
+        let signal = latency_signal_with_telemetry(15_000, SignalDirection::Up);
+
+        engine
+            .submit_single(
+                &signal,
+                &window,
+                &db,
+                &mut bankroll,
+                &config,
+                &clock,
+                ReplayFidelity::LegacySnapshot,
+            )
+            .unwrap();
+
+        let opened = engine
+            .process_due_orders(
+                15_250,
+                None,
+                Some(&window),
+                &up_book(0.55, 100.0, 15_250),
+                &db,
+                &mut bankroll,
+                &config,
+                &clock,
+            )
+            .unwrap();
+
+        assert_eq!(opened.len(), 1);
+        let execution_mode: String = db
+            .conn()
+            .query_row(
+                "SELECT execution_mode FROM simulated_trades LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(execution_mode, "live_readonly");
     }
 
     #[test]

@@ -126,4 +126,30 @@ describe("sidecar server", () => {
     expect(response.status).toBe(400);
     expect(json.error).toBe("order_id is required");
   });
+
+  it("keeps cancel-all and redeem-all explicitly stubbed", async () => {
+    const { url } = await startServer();
+
+    const cancelResponse = await fetch(`${url}/cancel-all`, { method: "POST" });
+    const cancelJson = (await cancelResponse.json()) as {
+      ok: boolean;
+      cancelled: number;
+      details_json: string | null;
+    };
+    expect(cancelResponse.ok).toBe(true);
+    expect(cancelJson.ok).toBe(false);
+    expect(cancelJson.cancelled).toBe(0);
+    expect(cancelJson.details_json).toContain("not implemented");
+
+    const redeemResponse = await fetch(`${url}/redeem-all`, { method: "POST" });
+    const redeemJson = (await redeemResponse.json()) as {
+      ok: boolean;
+      submitted: number;
+      details_json: string | null;
+    };
+    expect(redeemResponse.ok).toBe(true);
+    expect(redeemJson.ok).toBe(false);
+    expect(redeemJson.submitted).toBe(0);
+    expect(redeemJson.details_json).toContain("not implemented");
+  });
 });

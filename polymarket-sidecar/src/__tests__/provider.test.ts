@@ -65,6 +65,9 @@ describe("PolymarketReadonlyProvider", () => {
     ensureConnectedError?: string;
     openOrders?: Array<Record<string, string>>;
     positions?: Array<Record<string, number | string | boolean>>;
+    createApiKeyError?: string;
+    balance?: string;
+    allowance?: string | null;
   }) {
     const config = loadConfig({
       POLYMARKET_PRIVATE_KEY:
@@ -107,16 +110,34 @@ describe("PolymarketReadonlyProvider", () => {
         throw new Error(`unexpected fetch ${url}`);
       },
       createClobClient: () => ({
-        createOrDeriveApiKey: async () => ({
-          key: "key",
-          secret: "secret",
-          passphrase: "passphrase",
+        createApiKey: async () => {
+          if (options?.createApiKeyError) {
+            throw new Error(options.createApiKeyError);
+          }
+          return {
+            key: "key",
+            secret: "secret",
+            passphrase: "passphrase",
+          };
+        },
+        deriveApiKey: async () => ({
+          key: "derived-key",
+          secret: "derived-secret",
+          passphrase: "derived-passphrase",
         }),
         getServerTime: async () => Math.floor(nowMs / 1000),
-        getBalanceAllowance: async () => ({
-          balance: "100",
-          allowance: "80",
-        }),
+        getBalanceAllowance: async () => {
+          const allowances =
+            options?.allowance === null
+              ? undefined
+              : ({
+                  "0xexchange": options?.allowance ?? "80000000",
+                } satisfies Record<string, string>);
+          return {
+            balance: options?.balance ?? "100000000",
+            allowances,
+          };
+        },
         getOpenOrders: async () =>
           (options?.openOrders as never as []) ??
           [
@@ -177,6 +198,15 @@ describe("PolymarketReadonlyProvider", () => {
     expect(response.details_json).toContain("\"provider\":\"polymarket\"");
   });
 
+  it("falls back to derive-api-key when create-api-key is unavailable", async () => {
+    const provider = createProvider({ createApiKeyError: "Could not create api key" });
+    const response = await provider.preflight(request);
+
+    expect(response.ok).toBe(true);
+    expect(response.auth_status).toBe("ok");
+    expect(response.user_stream_status).toBe("ok");
+  });
+
   it("surfaces authenticated user-stream failures without enabling trading", async () => {
     const provider = createProvider({ ensureConnectedError: "auth rejected" });
     const response = await provider.preflight(request);
@@ -184,6 +214,39 @@ describe("PolymarketReadonlyProvider", () => {
     expect(response.ok).toBe(false);
     expect(response.user_stream_status).toBe("failed");
     expect(response.errors.join(" ")).toContain("Authenticated user stream failed");
+  });
+
+  it("treats zero allowance as readable venue state, not missing allowance metadata", async () => {
+    const provider = createProvider({ balance: "0", allowance: "0" });
+    const response = await provider.preflight({
+      ...request,
+      budget_limits: {
+        ...request.budget_limits,
+        min_required_cash_usd: 0,
+        max_single_order_usd: 10,
+      },
+    });
+
+    expect(response.allowance_status).toBe("ok");
+    expect(response.available_cash_usd).toBe(0);
+    expect(response.errors.join(" ")).toContain("legal order minimum");
+  });
+
+  it("caps the diagnostic allowance detail when approval is effectively unlimited", async () => {
+    const provider = createProvider({
+      allowance:
+        "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    });
+    await provider.preflight(request);
+    const account = await provider.accountState();
+    const details = JSON.parse(account.details_json ?? "{}") as {
+      observed_allowance_usd: number | null;
+      observed_allowance_approval_usd: number | null;
+    };
+
+    expect(account.allowance_available).toBe(95);
+    expect(details.observed_allowance_usd).toBe(100);
+    expect(details.observed_allowance_approval_usd).toBeGreaterThan(1e60);
   });
 
   it("returns a real account decomposition while keeping order flow disabled", async () => {

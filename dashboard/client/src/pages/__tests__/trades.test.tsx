@@ -9,6 +9,10 @@ vi.mock("../../hooks/use-trades", () => ({
   useTrades: vi.fn(),
 }));
 
+vi.mock("../../hooks/use-bot-status", () => ({
+  useBotStatus: vi.fn(),
+}));
+
 vi.mock("../../components/trades/trade-table", () => ({
   TradeTable: ({ trades }: { trades: unknown[] }) => (
     <div data-testid="trade-table">{trades.length} trades</div>
@@ -20,11 +24,14 @@ vi.mock("../../components/common/loading", () => ({
 }));
 
 import { TradesPage } from "../trades";
+import { useBotStatus } from "../../hooks/use-bot-status";
 import { useTrades } from "../../hooks/use-trades";
+const mockUseBotStatus = vi.mocked(useBotStatus);
 const mockUseTrades = vi.mocked(useTrades);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockUseBotStatus.mockReturnValue({ data: { execution_mode: "paper" } } as ReturnType<typeof useBotStatus>);
 });
 
 test("shows loading state", () => {

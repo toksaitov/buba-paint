@@ -82,6 +82,11 @@ test("renders empty-state copy when no live session exists", () => {
       content.includes("now runs against the real authenticated venue boundary"),
     ),
   ).toBeDefined();
+  expect(
+    screen.getByText((content) =>
+      content.includes("old dashboard pages remain the shadow paper view"),
+    ),
+  ).toBeDefined();
 });
 
 test("renders live status summary", () => {

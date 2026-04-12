@@ -1,5 +1,10 @@
+import { webcrypto } from "node:crypto";
 import { createServer } from "./server.js";
 import { loadConfig } from "./config.js";
+
+if (!globalThis.crypto?.subtle) {
+  globalThis.crypto = webcrypto as Crypto;
+}
 
 const config = loadConfig();
 const server = createServer(undefined, config);

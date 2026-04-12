@@ -95,6 +95,10 @@ export function LivePage() {
             <code>live_readonly</code> now runs against the real authenticated venue boundary.
             <code> live_trading</code> remains explicitly gated and cannot place orders yet.
           </p>
+          <p className="mt-2 text-xs text-muted">
+            The old dashboard pages remain the shadow paper view for strategy performance. This
+            page is the real venue/account and reconciliation view.
+          </p>
           {provider === "stub" && (
             <p className="mt-2 text-xs text-muted">
               Provider status: stub. Venue geoblock, allowance, user-stream, and remote cash

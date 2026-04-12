@@ -1,0 +1,9 @@
+[server]
+port = 3000
+jwt_secret = "ef52f2318414655959950767bd7fb70850d81c9cb1fcd9c86db6dfb99818a3ae"
+
+[[agents]]
+id = "paint-011"
+name = "BTC Paint (Run 011)"
+url = "http://127.0.0.1:9090"
+secret = "3fb3086e8e8a728654ca936e4b5c895c7d722edf6cead33c"

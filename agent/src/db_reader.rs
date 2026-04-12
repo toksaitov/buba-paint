@@ -40,6 +40,71 @@ fn has_table(conn: &Connection, table: &str) -> bool {
     .is_ok_and(|exists| exists != 0)
 }
 
+/// Return the best-effort execution mode and latest live-session status for this DB.
+fn current_execution_mode_and_session_status(conn: &Connection) -> (String, Option<String>) {
+    let latest_live_session = if has_table(conn, "live_sessions") {
+        conn.query_row(
+            "SELECT execution_mode, status, started_at_ms, id
+             FROM live_sessions
+             ORDER BY started_at_ms DESC, id DESC
+             LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .ok()
+    } else {
+        None
+    };
+
+    let latest_trade_mode = if has_table(conn, "simulated_trades")
+        && has_column(conn, "simulated_trades", "execution_mode")
+    {
+        conn.query_row(
+            "SELECT execution_mode, timestamp, id
+             FROM simulated_trades
+             WHERE execution_mode IS NOT NULL
+             ORDER BY timestamp DESC, id DESC
+             LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .ok()
+    } else {
+        None
+    };
+
+    let execution_mode = match (&latest_live_session, &latest_trade_mode) {
+        (
+            Some((live_mode, _, live_started_at, live_id)),
+            Some((trade_mode, trade_timestamp, trade_id)),
+        ) => {
+            if (*live_started_at, *live_id) >= (*trade_timestamp, *trade_id) {
+                live_mode.clone()
+            } else {
+                trade_mode.clone()
+            }
+        }
+        (Some((live_mode, _, _, _)), None) => live_mode.clone(),
+        (None, Some((trade_mode, _, _))) => trade_mode.clone(),
+        (None, None) => "paper".to_string(),
+    };
+    let live_session_status = latest_live_session.map(|(_, status, _, _)| status);
+    (execution_mode, live_session_status)
+}
+
 /// Read-only database reader for the bot's `SQLite` database.
 pub struct DbReader {
     conn: Arc<Mutex<Connection>>,
@@ -88,6 +153,8 @@ impl DbReader {
                 |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
             )
             .unwrap_or((0.0, 0.0));
+        let (execution_mode, live_session_status) =
+            current_execution_mode_and_session_status(&conn);
 
         let total_trades: u64 = conn
             .query_row("SELECT COUNT(*) FROM trade_results", [], |row| row.get(0))
@@ -178,6 +245,8 @@ impl DbReader {
         Ok(BotStatus {
             balance,
             starting_balance,
+            execution_mode,
+            live_session_status,
             total_trades,
             wins,
             losses,

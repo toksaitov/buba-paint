@@ -20,10 +20,10 @@ These boundaries are still intentionally non-live:
 
 - `EXECUTION_MODE=live_trading` is still rejected by `buba-paint live`
 - sidecar order placement, cancel, and redemption endpoints are still explicit not-implemented stubs
-- the readonly runtime does not create `signals` or `simulated_trades`
+- the readonly runtime does not place real orders or populate live order/fill/redemption tables from local execution
 - redemption submission and live order or fill ingestion are not yet wired to Polymarket
 
-This means `live-preflight` and `live_readonly` are real venue-readiness surfaces, but not a green light for live money yet.
+This means `live-preflight` and `live_readonly` are real venue-readiness surfaces, but not a green light for live money yet. `live_readonly` now reuses the shared paper loop so the legacy charts, trades, signals, and stats pages remain useful as a shadow-performance view.
 
 ## What was reviewed in this pass
 
@@ -31,7 +31,8 @@ This review pass verified:
 
 - execution-mode semantics are stated consistently across bot, sidecar, agent, dashboard, and docs
 - live-mode config validation rejects malformed URLs and invalid small-bankroll envelopes
-- the readonly runtime creates real live sessions, account snapshots, and reconciliation events without placing orders
+- the readonly runtime creates real live sessions, account snapshots, and reconciliation events without placing orders while continuing to populate the paper tables as a shadow track
+- readonly session degradation follows the latest account snapshot instead of getting stuck on stale startup-preflight cash or allowance state
 - the sidecar health, account, and preflight routes use real readonly-safe venue checks
 - sidecar server request validation rejects malformed JSON and malformed order/preflight bodies with `400`
 - live DB tables, agent endpoints, and dashboard Live page handle readonly and empty states cleanly

@@ -12,6 +12,8 @@ export interface Bot {
 export interface BotStatus {
   balance: number;
   starting_balance: number;
+  execution_mode: string;
+  live_session_status: string | null;
   total_trades: number;
   wins: number;
   losses: number;

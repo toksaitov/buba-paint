@@ -5,7 +5,7 @@ This document describes the real-money architecture that now exists in the local
 The system has three execution modes:
 
 - `paper`: the current production-quality paper trading and backtest environment
-- `live_readonly`: authenticated venue preflight, account-state, and reconciliation surfaces without order placement
+- `live_readonly`: authenticated venue/account monitoring plus the shared shadow paper runtime, still without order placement
 - `live_trading`: reserved for real venue order flow once the dedicated live venue runtime is finished
 
 The mode boundary is explicit in `Config::execution_mode`. The goal is to keep the strategy core shared while isolating venue-specific risk.
@@ -34,7 +34,7 @@ The venue boundary is intentionally narrow:
 - `LiveReadonlyVenue`: authenticated account and venue state, but no order placement
 - `LiveVenue`: future real order submission, fills, redemption, and reconciliation
 
-In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue monitor. It creates readonly live sessions, polls live account state, persists account snapshots, and logs reconciliation events without placing or simulating orders. `EXECUTION_MODE=live_trading` is still intentionally gated so real order flow cannot start by accident.
+In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` is still intentionally gated so real order flow cannot start by accident.
 
 ## Authenticated sidecar
 

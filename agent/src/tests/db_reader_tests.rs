@@ -235,6 +235,11 @@ async fn get_status_with_fixture_data() {
     let status = reader.get_status().await.unwrap();
     assert_eq!(status.balance, 220.0);
     assert_eq!(status.starting_balance, 200.0);
+    assert_eq!(status.execution_mode, "live_readonly");
+    assert_eq!(
+        status.live_session_status.as_deref(),
+        Some("readonly_ready")
+    );
     assert_eq!(status.total_trades, 2);
     assert_eq!(status.wins, 1);
     assert_eq!(status.losses, 1);
@@ -252,9 +257,43 @@ async fn get_status_empty_db() {
 
     let status = reader.get_status().await.unwrap();
     assert_eq!(status.balance, 0.0);
+    assert_eq!(status.execution_mode, "paper");
+    assert!(status.live_session_status.is_none());
     assert_eq!(status.total_trades, 0);
     assert_eq!(status.open_trades, 0);
     assert!(status.current_window.is_none());
+}
+
+/// Verifies that a newer readonly session overrides stale trade execution metadata.
+#[tokio::test]
+async fn get_status_prefers_newer_live_session_mode_over_stale_trade_mode() {
+    let conn = fixture_db();
+    seed_fixtures(&conn);
+    conn.execute(
+        "ALTER TABLE simulated_trades ADD COLUMN execution_mode TEXT",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE simulated_trades SET execution_mode = 'paper', timestamp = 1_000",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM live_sessions", []).unwrap();
+    conn.execute(
+        "INSERT INTO live_sessions (started_at_ms, ended_at_ms, status, execution_mode, wallet_address, proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd, details_json)
+         VALUES (9_000, NULL, 'readonly_ready', 'live_readonly', '0xwallet', '0xproxy', '[\"latency-arb\"]', 'fingerprint-2', 100.0, '{}')",
+        [],
+    )
+    .unwrap();
+    let reader = DbReader::from_connection(conn);
+
+    let status = reader.get_status().await.unwrap();
+    assert_eq!(status.execution_mode, "live_readonly");
+    assert_eq!(
+        status.live_session_status.as_deref(),
+        Some("readonly_ready")
+    );
 }
 
 /// Verifies that get status current window.

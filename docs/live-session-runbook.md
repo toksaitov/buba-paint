@@ -13,12 +13,13 @@ What is ready locally:
 - live session and reconciliation tables
 - agent and dashboard live-readiness surfaces
 - compact live telemetry schema
+- shadow paper charts/trades/signals/stats during readonly sessions
 
 What is still intentionally gated:
 
 - `EXECUTION_MODE=live_trading` is still rejected by `buba-paint live`
 - sidecar order placement, cancel, and redemption endpoints are still explicit not-implemented stubs
-- the readonly runtime does not place or simulate orders
+- the readonly runtime does not place real orders
 - redemption is not wired yet
 - readonly monitoring uses live account reads and user-stream health, but not full event-driven order or fill ingestion yet
 

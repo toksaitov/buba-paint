@@ -61,12 +61,14 @@ function createWrapper() {
 const mockStatus = {
   balance: 500,
   starting_balance: 200,
+  execution_mode: "paper",
+  live_session_status: null,
   total_trades: 10,
   wins: 6,
   losses: 4,
-  win_rate: 60,
+  win_rate: 0.6,
   total_pnl: 300,
-  max_drawdown_pct: 15,
+  max_drawdown_pct: 0.15,
   high_water_mark: 550,
   uptime_hours: 48.5,
   current_window: null,
@@ -91,6 +93,8 @@ test("renders stat cards", () => {
   render(<DashboardPage />, { wrapper: createWrapper() });
   const cards = screen.getAllByTestId("stat-card");
   expect(cards.length).toBe(4);
+  expect(screen.getByText("Win Rate: 60.0%")).toBeDefined();
+  expect(screen.getByText("Max Drawdown: -15.0%")).toBeDefined();
 });
 
 test("renders open trades component", () => {

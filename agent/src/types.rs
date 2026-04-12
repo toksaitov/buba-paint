@@ -5,6 +5,8 @@ use serde::Serialize;
 pub struct BotStatus {
     pub balance: f64,
     pub starting_balance: f64,
+    pub execution_mode: String,
+    pub live_session_status: Option<String>,
     pub total_trades: u64,
     pub wins: u64,
     pub losses: u64,

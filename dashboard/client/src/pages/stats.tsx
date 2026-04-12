@@ -19,6 +19,12 @@ export function StatsPage() {
 
   return (
     <div className="space-y-4">
+      {status?.execution_mode === "live_readonly" && (
+        <div className="border border-accent-yellow/40 bg-accent-yellow/10 px-3 py-2 text-[11px] text-accent-yellow">
+          Status and strategy breakdown on this page are the <code>live_readonly</code> shadow
+          paper view. The Live page shows the real venue/account state.
+        </div>
+      )}
       <h2 className="text-[14px] font-bold">Bot Status</h2>
 
       <div className="border border-border bg-bg overflow-hidden">
@@ -26,6 +32,14 @@ export function StatsPage() {
           <tbody>
             <Row label="Name" value={bot?.name ?? "--"} />
             <Row label="ID" value={bot?.id ?? "--"} />
+            <Row
+              label="Execution"
+              value={status?.execution_mode ?? "paper"}
+            />
+            <Row
+              label="Live Session"
+              value={status?.live_session_status ?? "--"}
+            />
             <Row
               label="Balance"
               value={status ? formatUsd(status.balance) : "--"}
@@ -59,7 +73,7 @@ export function StatsPage() {
                     <span className="text-right tabular-nums">{s.trades}</span>
                     <span className="text-muted">Win Rate</span>
                     <span className="text-right tabular-nums">
-                      {s.win_rate.toFixed(1)}%
+                      {(s.win_rate * 100).toFixed(1)}%
                     </span>
                     <span className="text-muted">W/L</span>
                     <span className="text-right tabular-nums">

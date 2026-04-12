@@ -44,6 +44,23 @@ function formatUptime(secs: number): string {
   return `${h}h ${m}m`;
 }
 
+function shadowModeLabel(liveSessionStatus: string | null | undefined): string {
+  switch (liveSessionStatus) {
+    case "readonly_ready":
+      return "Shadow ready";
+    case "readonly_degraded":
+      return "Shadow degraded";
+    case "readonly_starting":
+      return "Shadow starting";
+    case "readonly_failed":
+      return "Shadow failed";
+    case "readonly_stopped":
+      return "Shadow stopped";
+    default:
+      return "Shadow readonly";
+  }
+}
+
 export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderProps) {
   const { user, logout } = useAuth();
   const { data: process } = useProcessStatus(botId);
@@ -87,6 +104,14 @@ export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderPro
   const actionUnavailableTitle = controlAvailable
     ? null
     : "Process control unavailable in monitor-only mode";
+  const executionMode = status?.execution_mode ?? "paper";
+  const liveSessionStatus = status?.live_session_status;
+  const modeBadgeLabel =
+    executionMode === "live_readonly"
+      ? shadowModeLabel(liveSessionStatus)
+      : executionMode === "live_trading"
+        ? "Live trading"
+        : "Paper";
 
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -147,6 +172,27 @@ export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderPro
           <span className="text-[12px] md:text-[13px] font-bold tracking-tight truncate text-muted md:text-text">
             {bot?.name ?? "buba-paint"}
           </span>
+          {status && (
+            <span
+              className={cn(
+                "hidden md:inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 border shrink-0",
+                executionMode === "live_readonly"
+                  ? "border-accent-yellow text-accent-yellow"
+                  : executionMode === "live_trading"
+                    ? "border-accent-red text-accent-red"
+                    : "border-border text-muted",
+              )}
+              title={
+                executionMode === "live_readonly"
+                  ? "Shadow paper runtime backed by the real Polymarket readonly venue monitor"
+                  : executionMode === "live_trading"
+                    ? "Real-money venue execution"
+                    : "Paper trading runtime"
+              }
+            >
+              {modeBadgeLabel}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
           {botId && (
