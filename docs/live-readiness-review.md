@@ -60,3 +60,5 @@ The main remaining work is:
 - user-stream-driven order and fill ingestion
 - redemption and relayer integration
 - live-trading runtime implementation and deployment soak
+
+See also [Next Pass: Real `live_trading`](./live-trading-next-pass.md) for the compact handoff note that should be used to recover context before starting that work.
