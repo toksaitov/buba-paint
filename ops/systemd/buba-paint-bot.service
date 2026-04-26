@@ -1,0 +1,17 @@
+[Unit]
+Description=Buba Paint Bot
+After=network-online.target buba-polymarket-sidecar.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/buba-paint-live/current
+EnvironmentFile=%h/buba-paint-live/config/bot.env
+ExecStart=/usr/bin/env bash -lc 'exec "$HOME/buba-paint-live/current/target/release/buba-paint" live --db-path "$BUBA_PAINT_DB_PATH" --balance "$BUBA_PAINT_BALANCE"'
+Restart=always
+RestartSec=3
+StandardOutput=append:%h/buba-paint-live/logs/bot.log
+StandardError=append:%h/buba-paint-live/logs/bot.log
+
+[Install]
+WantedBy=default.target

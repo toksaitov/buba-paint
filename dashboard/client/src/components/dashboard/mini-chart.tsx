@@ -14,7 +14,7 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
 
     const c = getChartColors(isDark);
     const chart = createChart(containerRef.current, {
-      height: 120,
+      height: containerRef.current.clientHeight || 120,
       layout: {
         background: { color: c.background },
         textColor: c.textColor,
@@ -37,8 +37,18 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
       handleScroll: false,
       handleScale: false,
       crosshair: {
-        vertLine: { visible: false },
-        horzLine: { visible: false },
+        vertLine: {
+          color: c.crosshairColor,
+          width: 1,
+          style: 0,
+          labelVisible: false,
+        },
+        horzLine: {
+          color: c.crosshairColor,
+          width: 1,
+          style: 0,
+          labelVisible: true,
+        },
       },
     });
 
@@ -52,6 +62,7 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
 
     const byTime = new Map<number, number>();
     for (const e of entries) {
+      if (e.timestamp <= 0) continue;
       const t = Math.round(e.timestamp / 1000);
       byTime.set(t, e.balance);
     }
@@ -69,7 +80,10 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
 
     const ro = new ResizeObserver(() => {
       if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
+        chart.applyOptions({
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight,
+        });
       }
     });
     ro.observe(containerRef.current);
@@ -80,12 +94,5 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
     };
   }, [entries, isDark]);
 
-  return (
-    <div className="border border-border px-3 py-2.5 bg-bg">
-      <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">
-        Equity Curve
-      </div>
-      <div ref={containerRef} />
-    </div>
-  );
+  return <div ref={containerRef} className="w-full h-full min-h-[120px]" />;
 }

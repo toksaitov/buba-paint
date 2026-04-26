@@ -11,42 +11,47 @@ const defaultProps = {
   onSelectBot: vi.fn(),
 };
 
-test("renders all nav links", () => {
+test("renders grouped navigation with Execution near the top", () => {
   render(
     <MemoryRouter>
       <Nav {...defaultProps} />
     </MemoryRouter>,
   );
-  expect(screen.getByText("Overview")).toBeDefined();
-  expect(screen.getByText("Equity")).toBeDefined();
-  expect(screen.getByText("Trades")).toBeDefined();
-  expect(screen.getByText("Signals")).toBeDefined();
-  expect(screen.getByText("Logs")).toBeDefined();
-  expect(screen.getByText("Stats")).toBeDefined();
-  expect(screen.getByText("Live")).toBeDefined();
+
+  expect(screen.getByText("Monitor")).toBeInTheDocument();
+  expect(screen.getByText("Analysis")).toBeInTheDocument();
+  expect(screen.getByText("Overview")).toBeInTheDocument();
+  expect(screen.getByText("Execution")).toBeInTheDocument();
+  expect(screen.getByText("Logs")).toBeInTheDocument();
+  expect(screen.getByText("Equity")).toBeInTheDocument();
+  expect(screen.getByText("Trades")).toBeInTheDocument();
+  expect(screen.getByText("Signals")).toBeInTheDocument();
+  expect(screen.getByText("Strategies")).toBeInTheDocument();
 });
 
-test("highlights active route", () => {
+test("highlights the active execution route", () => {
   render(
-    <MemoryRouter initialEntries={["/"]}>
+    <MemoryRouter initialEntries={["/execution"]}>
       <Nav {...defaultProps} />
     </MemoryRouter>,
   );
-  const overview = screen.getByText("Overview").closest("a");
-  expect(overview?.className).toContain("bg-text");
+
+  const execution = screen.getByText("Execution").closest("a");
+  expect(execution?.className).toContain("bg-text");
 });
 
-test("collapsed hides labels", () => {
+test("collapsed mode hides labels", () => {
   render(
     <MemoryRouter>
       <Nav {...defaultProps} collapsed={true} />
     </MemoryRouter>,
   );
+
   expect(screen.queryByText("Overview")).toBeNull();
-  expect(screen.queryByText("Trades")).toBeNull();
+  expect(screen.queryByText("Execution")).toBeNull();
 });
 
-test("collapsed bot selector uses icon buttons with titles", async () => {
+test("collapsed bot selector uses titled icon buttons", async () => {
   const onSelectBot = vi.fn();
   const user = userEvent.setup();
 
@@ -64,9 +69,7 @@ test("collapsed bot selector uses icon buttons with titles", async () => {
     </MemoryRouter>,
   );
 
-  const paperButton = screen.getByTitle("Paper");
-  await user.click(paperButton);
-
+  await user.click(screen.getByTitle("Paper"));
   expect(onSelectBot).toHaveBeenCalledWith("paper");
 });
 
@@ -87,14 +90,10 @@ test("page navigation calls onNavigate when provided", async () => {
 test("omits the bot section when no bots are available", () => {
   render(
     <MemoryRouter>
-      <Nav
-        {...defaultProps}
-        bots={[]}
-        activeBotId=""
-      />
+      <Nav {...defaultProps} bots={[]} activeBotId="" />
     </MemoryRouter>,
   );
 
   expect(screen.queryByText("Bot")).toBeNull();
-  expect(screen.getByText("Pages")).toBeInTheDocument();
+  expect(screen.getByText("Monitor")).toBeInTheDocument();
 });

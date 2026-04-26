@@ -1,25 +1,23 @@
+import { useEffect, useState } from "react";
 import type { TradeRow } from "../../lib/types";
-import { formatTime, formatUsd, cn } from "../../lib/utils";
+import { empty } from "../../lib/copy";
+import { formatDurationShort, formatUsd, cn } from "../../lib/utils";
 
 export function OpenTrades({ trades }: { trades: TradeRow[] }) {
   const open = trades.filter((t) => t.status === "open");
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   if (open.length === 0) {
-    return (
-      <div className="border border-border px-3 py-2.5 bg-bg">
-        <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">
-          Open Trades
-        </div>
-        <div className="text-[12px] text-muted">No open trades</div>
-      </div>
-    );
+    return <div className="text-[12px] text-muted">{empty.noOpenTrades}</div>;
   }
 
   return (
-    <div className="border border-border p-4 bg-bg">
-      <div className="text-[11px] uppercase tracking-wide text-muted mb-2">
-        Open Trades
-      </div>
+    <div>
       <div className="space-y-1.5">
         {open.map((t) => (
           <div
@@ -42,7 +40,7 @@ export function OpenTrades({ trades }: { trades: TradeRow[] }) {
             <div className="flex items-center gap-3">
               <span className="tabular-nums">{formatUsd(t.size)}</span>
               <span className="text-muted tabular-nums">
-                {formatTime(t.timestamp)}
+                Opened {formatDurationShort(Math.max(0, now - t.timestamp))} ago
               </span>
             </div>
           </div>

@@ -1,0 +1,17 @@
+[Unit]
+Description=Buba Dashboard
+After=network-online.target buba-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/buba-paint-live/current
+EnvironmentFile=%h/buba-paint-live/config/dashboard.env
+ExecStart=/usr/bin/env bash -lc 'exec "$HOME/buba-paint-live/current/target/release/buba-dashboard" --config "$BUBA_DASHBOARD_CONFIG" --static-dir "$HOME/buba-paint-live/current/dashboard/client/dist"'
+Restart=always
+RestartSec=3
+StandardOutput=append:%h/buba-paint-live/logs/dashboard.log
+StandardError=append:%h/buba-paint-live/logs/dashboard.log
+
+[Install]
+WantedBy=default.target

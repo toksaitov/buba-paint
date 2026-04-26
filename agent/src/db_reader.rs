@@ -7,12 +7,28 @@ use tokio::sync::Mutex;
 
 use crate::error::AgentError;
 use crate::types::{
-    BalanceEntry, BalanceResponse, BotStatus, LiveAccountSnapshotRow, LiveFillRow,
-    LiveFillsResponse, LiveOrderRow, LiveOrdersResponse, LiveReconciliationResponse,
+    BalanceEntry, BalanceResponse, BotStatus, EquitySeriesResponse, LiveAccountSnapshotRow,
+    LiveFillRow, LiveFillsResponse, LiveOrderRow, LiveOrdersResponse, LiveReconciliationResponse,
     LiveReconciliationRow, LiveRedemptionRow, LiveRedemptionsResponse, LiveSessionRow,
-    LiveSessionsResponse, LiveStatusResponse, SignalRow, SignalsResponse, StatsResponse,
-    StrategyStats, TradeRow, TradesResponse, WindowInfo,
+    LiveSessionsResponse, LiveStatusResponse, SignalGroupRow, SignalGroupsResponse, SignalRow,
+    SignalsResponse, StatsResponse, StrategyStats, TradeRow, TradesResponse, WindowInfo,
 };
+
+struct SignalGroupAccumulator {
+    strategy: String,
+    direction: String,
+    market_id: Option<String>,
+    start_timestamp: u64,
+    end_timestamp: u64,
+    count: u64,
+    first_signal_id: i64,
+    last_signal_id: i64,
+    binance_price: Option<f64>,
+    chainlink_price: Option<f64>,
+    up_ask: Option<f64>,
+    down_ask: Option<f64>,
+    execution_fidelity: Option<String>,
+}
 
 /// Returns whether the given table currently exposes the requested column.
 fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
@@ -38,6 +54,35 @@ fn has_table(conn: &Connection, table: &str) -> bool {
         |row| row.get::<_, i64>(0),
     )
     .is_ok_and(|exists| exists != 0)
+}
+
+/// Converts an accumulated signal burst into its serialized response row.
+fn finish_signal_group(group: SignalGroupAccumulator) -> SignalGroupRow {
+    let market_part = group
+        .market_id
+        .as_deref()
+        .unwrap_or("none")
+        .replace(':', "_");
+    let id = format!(
+        "{}:{}:{}:{}:{}",
+        market_part, group.strategy, group.direction, group.start_timestamp, group.end_timestamp
+    );
+    SignalGroupRow {
+        id,
+        strategy: group.strategy,
+        direction: group.direction,
+        market_id: group.market_id,
+        start_timestamp: group.start_timestamp,
+        end_timestamp: group.end_timestamp,
+        count: group.count,
+        first_signal_id: group.first_signal_id,
+        last_signal_id: group.last_signal_id,
+        binance_price: group.binance_price,
+        chainlink_price: group.chainlink_price,
+        up_ask: group.up_ask,
+        down_ask: group.down_ask,
+        execution_fidelity: group.execution_fidelity,
+    }
 }
 
 /// Return the best-effort execution mode and latest live-session status for this DB.
@@ -375,6 +420,25 @@ impl DbReader {
         Ok(BalanceResponse { entries })
     }
 
+    /// Get chart-safe equity data with timestamp-zero baseline rows separated.
+    pub async fn get_equity_series(&self, since: u64) -> Result<EquitySeriesResponse, AgentError> {
+        let entries = self.get_balance_log(since).await?.entries;
+        let mut baseline = None;
+        let mut points = Vec::new();
+
+        for entry in entries {
+            if entry.timestamp == 0 {
+                if baseline.is_none() {
+                    baseline = Some(entry);
+                }
+            } else {
+                points.push(entry);
+            }
+        }
+
+        Ok(EquitySeriesResponse { baseline, points })
+    }
+
     /// Get recent signals.
     pub async fn get_signals(&self, limit: u64) -> Result<SignalsResponse, AgentError> {
         let conn = self.conn.lock().await;
@@ -415,6 +479,84 @@ impl DbReader {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(SignalsResponse { signals })
+    }
+
+    /// Get recent signal bursts grouped for operator-level dashboard review.
+    pub async fn get_signal_groups(
+        &self,
+        limit: u64,
+        quiet_gap_ms: u64,
+        raw_limit: u64,
+    ) -> Result<SignalGroupsResponse, AgentError> {
+        if limit == 0 || raw_limit == 0 {
+            return Ok(SignalGroupsResponse {
+                groups: Vec::new(),
+                raw_rows_scanned: 0,
+                quiet_gap_ms,
+            });
+        }
+
+        let signals = self.get_signals(raw_limit).await?.signals;
+        let raw_rows_scanned = signals.len() as u64;
+        let mut groups = Vec::new();
+        let mut current: Option<SignalGroupAccumulator> = None;
+
+        for signal in signals {
+            if groups.len() as u64 >= limit {
+                break;
+            }
+
+            let should_extend = current.as_ref().is_some_and(|group| {
+                group.strategy == signal.strategy
+                    && group.direction == signal.direction
+                    && group.market_id == signal.market_id
+                    && group.start_timestamp.saturating_sub(signal.timestamp) <= quiet_gap_ms
+            });
+
+            if should_extend {
+                if let Some(group) = current.as_mut() {
+                    group.start_timestamp = signal.timestamp;
+                    group.count += 1;
+                    group.last_signal_id = signal.id;
+                }
+                continue;
+            }
+
+            if let Some(group) = current.take() {
+                groups.push(finish_signal_group(group));
+                if groups.len() as u64 >= limit {
+                    break;
+                }
+            }
+
+            current = Some(SignalGroupAccumulator {
+                strategy: signal.strategy,
+                direction: signal.direction,
+                market_id: signal.market_id,
+                start_timestamp: signal.timestamp,
+                end_timestamp: signal.timestamp,
+                count: 1,
+                first_signal_id: signal.id,
+                last_signal_id: signal.id,
+                binance_price: signal.binance_price,
+                chainlink_price: signal.chainlink_price,
+                up_ask: signal.up_ask,
+                down_ask: signal.down_ask,
+                execution_fidelity: signal.execution_fidelity,
+            });
+        }
+
+        if (groups.len() as u64) < limit {
+            if let Some(group) = current.take() {
+                groups.push(finish_signal_group(group));
+            }
+        }
+
+        Ok(SignalGroupsResponse {
+            groups,
+            raw_rows_scanned,
+            quiet_gap_ms,
+        })
     }
 
     /// Get aggregated stats per strategy.

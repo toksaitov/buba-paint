@@ -10,8 +10,11 @@ import {
   getBotStatus,
   getTrades,
   getBalance,
+  getEquitySeries,
   getSignals,
+  getSignalGroups,
   getStats,
+  getTradingSummary,
   getLogs,
   getBotProcessStatus,
   botStart,
@@ -231,6 +234,14 @@ describe("getBalance", () => {
   });
 });
 
+describe("getEquitySeries", () => {
+  test("includes since", async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ baseline: null, points: [] }));
+    await getEquitySeries("bot-1", 1000);
+    expect(pathFromCall()).toBe("/api/bots/bot-1/equity/series?since=1000");
+  });
+});
+
 describe("getSignals", () => {
   test("includes limit", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ signals: [] }));
@@ -239,11 +250,27 @@ describe("getSignals", () => {
   });
 });
 
+describe("getSignalGroups", () => {
+  test("includes limit and quiet gap", async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ groups: [] }));
+    await getSignalGroups("bot-1", 25, 2000);
+    expect(pathFromCall()).toBe("/api/bots/bot-1/signals/groups?limit=25&quiet_gap_ms=2000");
+  });
+});
+
 describe("getStats", () => {
   test("calls correct URL", async () => {
     mockFetch.mockResolvedValue(jsonResponse({ strategies: [] }));
     await getStats("bot-1");
     expect(pathFromCall()).toBe("/api/bots/bot-1/stats");
+  });
+});
+
+describe("getTradingSummary", () => {
+  test("calls correct URL", async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ runtime_mode: "paper" }));
+    await getTradingSummary("bot-1");
+    expect(pathFromCall()).toBe("/api/bots/bot-1/trading/summary");
   });
 });
 

@@ -1,26 +1,8 @@
+import { Bot as BotIcon } from "lucide-react";
 import { NavLink } from "react-router-dom";
-import {
-  LayoutDashboard,
-  ArrowLeftRight,
-  LineChart,
-  Radio,
-  ScrollText,
-  BarChart3,
-  Bot as BotIcon,
-  ShieldAlert,
-} from "lucide-react";
 import { cn } from "../../lib/utils";
+import { dashboardRoutes } from "../../lib/routes";
 import type { Bot } from "../../lib/types";
-
-const pages = [
-  { to: "/", icon: LayoutDashboard, label: "Overview" },
-  { to: "/equity", icon: LineChart, label: "Equity" },
-  { to: "/trades", icon: ArrowLeftRight, label: "Trades" },
-  { to: "/signals", icon: Radio, label: "Signals" },
-  { to: "/logs", icon: ScrollText, label: "Logs" },
-  { to: "/stats", icon: BarChart3, label: "Stats" },
-  { to: "/live", icon: ShieldAlert, label: "Live" },
-];
 
 interface NavProps {
   collapsed: boolean;
@@ -30,73 +12,96 @@ interface NavProps {
   onNavigate?: () => void;
 }
 
-export function Nav({ collapsed, bots, activeBotId, onSelectBot, onNavigate }: NavProps) {
+const groupedRoutes = [
+  {
+    label: "Monitor",
+    routes: dashboardRoutes.filter((route) => route.section === "Monitor"),
+  },
+  {
+    label: "Analysis",
+    routes: dashboardRoutes.filter((route) => route.section === "Analysis"),
+  },
+];
+
+export function Nav({
+  collapsed,
+  bots,
+  activeBotId,
+  onSelectBot,
+  onNavigate,
+}: NavProps) {
   return (
     <nav className="flex flex-col flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
       {bots.length > 0 && (
-        <div className="pt-2 pb-0.5">
+        <div className="pt-2 pb-1" role="radiogroup" aria-label="Select bot">
           {!collapsed && (
-            <div className="text-[9px] uppercase tracking-widest text-muted px-3 mb-0.5">
-              Bot
-            </div>
+            <div className="px-3 text-[10px] text-muted">Bot</div>
           )}
-          {bots.map((b) =>
+          {bots.map((bot) =>
             collapsed ? (
               <button
-                key={b.id}
-                onClick={() => onSelectBot(b.id)}
-                title={b.name}
+                key={bot.id}
+                onClick={() => onSelectBot(bot.id)}
+                role="radio"
+                aria-checked={bot.id === activeBotId}
+                title={bot.name}
+                aria-label={bot.name}
                 className={cn(
-                  "w-full flex justify-center py-1 transition-colors",
-                  b.id === activeBotId
+                  "flex w-full justify-center py-2 transition-colors",
+                  bot.id === activeBotId
                     ? "bg-text text-bg"
                     : "text-muted hover:bg-surface",
                 )}
               >
-                <BotIcon size={14} strokeWidth={2} />
+                <BotIcon size={16} strokeWidth={2} />
               </button>
             ) : (
               <button
-                key={b.id}
-                onClick={() => onSelectBot(b.id)}
+                key={bot.id}
+                onClick={() => onSelectBot(bot.id)}
+                role="radio"
+                aria-checked={bot.id === activeBotId}
+                title={bot.name}
                 className={cn(
-                  "w-full text-left px-3 py-2 md:py-1 text-[13px] md:text-[12px] transition-colors truncate",
-                  b.id === activeBotId
-                    ? "bg-text text-bg font-semibold"
+                  "w-full truncate px-3 py-2.5 text-left text-[13px] transition-colors md:py-2",
+                  bot.id === activeBotId
+                    ? "bg-text font-semibold text-bg"
                     : "text-muted hover:bg-surface",
                 )}
               >
-                {b.name}
+                {bot.name}
               </button>
             ),
           )}
         </div>
       )}
-      <div className="pt-1.5 pb-2 flex flex-col">
-        {!collapsed && (
-          <div className="text-[9px] uppercase tracking-widest text-muted px-3 mb-0.5">
-            Pages
+      <div className="pb-2">
+        {groupedRoutes.map((group) => (
+          <div key={group.label} className="pt-2">
+            {!collapsed && (
+              <div className="px-3 text-[10px] text-muted">{group.label}</div>
+            )}
+            {group.routes.map(({ to, icon: Icon, label }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={to === "/"}
+                onClick={onNavigate}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-2 px-3 py-3 text-[14px] transition-colors md:py-2 md:text-[13px]",
+                    isActive
+                      ? "bg-text font-semibold text-bg"
+                      : "text-text hover:bg-surface",
+                    collapsed && "justify-center",
+                  )
+                }
+              >
+                <Icon size={16} strokeWidth={2} />
+                {!collapsed && <span>{label}</span>}
+              </NavLink>
+            ))}
           </div>
-        )}
-        {pages.map(({ to, icon: Icon, label }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === "/"}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-2 px-3 py-2.5 md:py-1 text-[14px] md:text-[12px] transition-colors",
-                isActive
-                  ? "bg-text text-bg font-semibold"
-                  : "text-text hover:bg-surface",
-                collapsed && "justify-center",
-              )
-            }
-          >
-            <Icon size={14} strokeWidth={2} />
-            {!collapsed && <span>{label}</span>}
-          </NavLink>
         ))}
       </div>
     </nav>

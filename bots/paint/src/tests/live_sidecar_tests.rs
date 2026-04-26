@@ -110,3 +110,43 @@ async fn live_sidecar_client_reports_transport_failures() {
     assert!(error.contains("failed with 500"));
     assert!(error.contains("boom"));
 }
+
+/// Verifies that additive sidecar health fields remain readable through the Rust client.
+#[tokio::test]
+async fn live_sidecar_client_health_reports_additive_readiness_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "ready": false,
+            "readiness_status": "degraded",
+            "mode": "local-sidecar",
+            "provider": "polymarket",
+            "signature_type": 1,
+            "wallet_address": "0xwallet",
+            "proxy_wallet": "0xproxy",
+            "auth_configured": true,
+            "relayer_api_key_present": false,
+            "user_stream_status": "failed",
+            "last_user_stream_connected_at_ms": 1,
+            "last_user_stream_event_at_ms": null,
+            "last_user_stream_error": "stream down",
+            "last_successful_account_refresh_at_ms": 2,
+            "last_account_refresh_error": "positions: timed out",
+            "last_user_stream_disconnect_at_ms": 3,
+            "last_user_stream_disconnect_reason": "closed",
+            "consecutive_user_stream_failures": 4
+        })))
+        .mount(&server)
+        .await;
+
+    let client = LiveSidecarClient::new(&server.uri());
+    let response = client.health().await.unwrap();
+    assert_eq!(response["readiness_status"], "degraded");
+    assert_eq!(
+        response["last_account_refresh_error"],
+        "positions: timed out"
+    );
+    assert_eq!(response["consecutive_user_stream_failures"], 4);
+}

@@ -374,6 +374,18 @@ fn storage_footprint_reports_grouped_feed_events() {
     assert_eq!(footprint.grouped_feed_events[0].event_type, "aggTrade");
 }
 
+/// Verifies that run metadata upserts stable values.
+#[test]
+fn run_metadata_upserts_values() {
+    let (db, _tmp) = temp_db();
+    db.set_run_metadata("replay_quality_class", "descriptive_only", 1_000)
+        .unwrap();
+    db.set_run_metadata("replay_quality_class", "sweep_grade", 2_000)
+        .unwrap();
+    let value = db.get_run_metadata("replay_quality_class").unwrap();
+    assert_eq!(value.as_deref(), Some("sweep_grade"));
+}
+
 /// Verifies that open trade returns id.
 #[test]
 fn open_trade_returns_id() {

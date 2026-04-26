@@ -1,32 +1,41 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  LogOut,
-  PanelLeftClose,
-  PanelLeft,
-  Play,
-  Square,
-  RotateCw,
-  X,
   Bell,
   BellOff,
-  Sun,
-  Moon,
+  LogOut,
   Monitor,
+  Moon,
+  PanelLeft,
+  PanelLeftClose,
+  Play,
+  RotateCw,
+  Square,
+  Sun,
 } from "lucide-react";
 import { useAuth } from "../../hooks/use-auth";
-import { useBotStatus } from "../../hooks/use-bot-status";
 import { useProcessStatus } from "../../hooks/use-process-status";
 import { useTheme } from "../../hooks/use-theme";
-import { botStart, botStop, botRestart } from "../../lib/api";
-import { cn } from "../../lib/utils";
+import { useTradingSummary } from "../../hooks/use-trading-summary";
+import { botRestart, botStart, botStop } from "../../lib/api";
 import {
-  isNotificationSupported,
   isNotificationEnabled,
-  setNotificationEnabled,
+  isNotificationSupported,
   requestNotificationPermission,
+  setNotificationEnabled,
 } from "../../lib/notifications";
+import {
+  type ChipTone,
+  mobileHeaderStateLabel,
+  processStateLabel,
+  processStateTone,
+  runtimeModeLabel,
+  tradingStateLabel,
+  tradingStateTone,
+} from "../../lib/trading-summary";
+import { cn } from "../../lib/utils";
 import type { Bot } from "../../lib/types";
+import { StatusChip } from "../ui/dashboard-primitives";
 
 interface HeaderProps {
   bot: Bot | null;
@@ -39,32 +48,45 @@ interface HeaderProps {
 function formatUptime(secs: number): string {
   if (secs < 60) return `${secs}s`;
   if (secs < 3600) return `${Math.floor(secs / 60)}m`;
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  return `${h}h ${m}m`;
+  const hours = Math.floor(secs / 3600);
+  const minutes = Math.floor((secs % 3600) / 60);
+  return `${hours}h ${minutes}m`;
 }
 
-function shadowModeLabel(liveSessionStatus: string | null | undefined): string {
-  switch (liveSessionStatus) {
-    case "readonly_ready":
-      return "Shadow ready";
-    case "readonly_degraded":
-      return "Shadow degraded";
-    case "readonly_starting":
-      return "Shadow starting";
-    case "readonly_failed":
-      return "Shadow failed";
-    case "readonly_stopped":
-      return "Shadow stopped";
-    default:
-      return "Shadow readonly";
+function visibleHeaderState(
+  runtimeMode: string,
+  tradingState: string,
+): Array<{ label: string; tone: ChipTone }> {
+  if (runtimeMode === "paper" && tradingState === "paper") {
+    return [];
   }
+
+  if (runtimeMode === "live_readonly" && tradingState === "readonly") {
+    return [{ label: runtimeModeLabel(runtimeMode), tone: "muted" }];
+  }
+
+  const badges: Array<{ label: string; tone: ChipTone }> = [
+    { label: runtimeModeLabel(runtimeMode), tone: "muted" },
+  ];
+  if (tradingState !== "paper") {
+    badges.push({
+      label: tradingStateLabel(tradingState),
+      tone: tradingStateTone(tradingState),
+    });
+  }
+  return badges;
 }
 
-export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderProps) {
+export function Header({
+  bot,
+  botId,
+  collapsed,
+  onToggle,
+  isDesktop,
+}: HeaderProps) {
   const { user, logout } = useAuth();
   const { data: process } = useProcessStatus(botId);
-  const { data: status } = useBotStatus(botId);
+  const { data: tradingSummary } = useTradingSummary(botId);
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,12 +94,10 @@ export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderPro
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
 
   const cycleTheme = () => {
-    const next = themeMode === "system" ? "dark" : themeMode === "dark" ? "light" : "system";
+    const next =
+      themeMode === "system" ? "dark" : themeMode === "dark" ? "light" : "system";
     setThemeMode(next);
   };
-
-  const ThemeIcon = themeMode === "dark" ? Moon : themeMode === "light" ? Sun : Monitor;
-  const themeTitle = themeMode === "system" ? "Theme: system" : themeMode === "dark" ? "Theme: dark" : "Theme: light";
 
   const toggleNotifications = async () => {
     if (!isNotificationSupported()) return;
@@ -87,44 +107,35 @@ export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderPro
         setNotificationEnabled(true);
         setNotifyEnabled(true);
       }
-    } else {
-      setNotificationEnabled(false);
-      setNotifyEnabled(false);
+      return;
     }
+    setNotificationEnabled(false);
+    setNotifyEnabled(false);
   };
 
-  const processRunning = process?.active ?? false;
+  const ThemeIcon =
+    themeMode === "dark" ? Moon : themeMode === "light" ? Sun : Monitor;
+  const processRunning = process?.active ?? tradingSummary?.process_state === "running";
   const controlAvailable = process?.control_available ?? true;
-  const observedRunning =
-    !processRunning &&
-    !controlAvailable &&
-    status?.last_tick_at != null &&
-    Date.now() - status.last_tick_at < 15_000;
-  const isRunning = processRunning || observedRunning;
+  const runtimeMode = tradingSummary?.runtime_mode ?? "paper";
+  const tradingState = tradingSummary?.trading_state ?? "paper";
+  const stateBadges = visibleHeaderState(runtimeMode, tradingState);
   const actionUnavailableTitle = controlAvailable
     ? null
     : "Process control unavailable in monitor-only mode";
-  const executionMode = status?.execution_mode ?? "paper";
-  const liveSessionStatus = status?.live_session_status;
-  const modeBadgeLabel =
-    executionMode === "live_readonly"
-      ? shadowModeLabel(liveSessionStatus)
-      : executionMode === "live_trading"
-        ? "Live trading"
-        : "Paper";
 
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
     try {
       await action();
-      await queryClient.invalidateQueries({
-        queryKey: ["process-status", botId],
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Action failed";
-      setError(msg);
-      setTimeout(() => setError(null), 6000);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["process-status", botId] }),
+        queryClient.invalidateQueries({ queryKey: ["trading-summary", botId] }),
+      ]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Action failed";
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -132,13 +143,25 @@ export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderPro
 
   return (
     <>
-      <header className="flex items-center justify-between h-12 px-2 md:px-4 border-b border-border bg-bg shrink-0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)]">
-        <div className="flex items-center gap-1.5 md:gap-3 min-w-0 overflow-hidden">
+      <header className="flex h-14 items-center justify-between border-b border-border bg-bg px-2 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] md:px-4">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden md:gap-3">
           <button
             onClick={onToggle}
-            className="p-1 hover:bg-surface transition-colors shrink-0"
-            title={isDesktop ? (collapsed ? "Expand sidebar" : "Collapse sidebar") : "Expand navigation"}
-            aria-label={isDesktop ? (collapsed ? "Expand sidebar" : "Collapse sidebar") : "Expand navigation"}
+            className="shrink-0 inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
+            title={
+              isDesktop
+                ? collapsed
+                  ? "Expand sidebar"
+                  : "Collapse sidebar"
+                : "Expand navigation"
+            }
+            aria-label={
+              isDesktop
+                ? collapsed
+                  ? "Expand sidebar"
+                  : "Collapse sidebar"
+                : "Expand navigation"
+            }
           >
             {isDesktop ? (
               collapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />
@@ -146,117 +169,132 @@ export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderPro
               <PanelLeft size={16} />
             )}
           </button>
-          {process && (
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 border shrink-0",
-                isRunning
-                  ? "border-accent-green text-accent-green"
-                  : "border-accent-red text-accent-red",
-              )}
-            >
-              <span
-                className={cn(
-                  "w-1.5 h-1.5 rounded-full shrink-0",
-                  isRunning ? "bg-accent-green" : "bg-accent-red",
-                )}
-              />
-              {isRunning ? "Running" : "Stopped"}
-            </span>
-          )}
-          {process?.uptime_secs != null && isRunning && (
-            <span className="text-[11px] text-muted hidden md:inline shrink-0">
-              {formatUptime(process.uptime_secs)}
-            </span>
-          )}
-          <span className="text-[12px] md:text-[13px] font-bold tracking-tight truncate text-muted md:text-text">
-            {bot?.name ?? "buba-paint"}
-          </span>
-          {status && (
-            <span
-              className={cn(
-                "hidden md:inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 border shrink-0",
-                executionMode === "live_readonly"
-                  ? "border-accent-yellow text-accent-yellow"
-                  : executionMode === "live_trading"
-                    ? "border-accent-red text-accent-red"
-                    : "border-border text-muted",
-              )}
+          <div className="flex min-w-0 items-center gap-2 overflow-hidden md:gap-3">
+            <StatusChip
+              label={processStateLabel(tradingSummary?.process_state ?? "stopped")}
+              tone={processStateTone(tradingSummary?.process_state ?? "stopped")}
+              dot={processRunning}
+              compact
               title={
-                executionMode === "live_readonly"
-                  ? "Shadow paper runtime backed by the real Polymarket readonly venue monitor"
-                  : executionMode === "live_trading"
-                    ? "Real-money venue execution"
-                    : "Paper trading runtime"
+                process?.uptime_secs != null && processRunning
+                  ? `Process uptime ${formatUptime(process.uptime_secs)}`
+                  : "Current bot process state"
               }
-            >
-              {modeBadgeLabel}
-            </span>
-          )}
+            />
+            <div className="min-w-0">
+              <div className="truncate text-[14px] font-semibold tracking-tight">
+                {bot?.name ?? "buba"}
+              </div>
+              <div className="flex items-center gap-1.5">
+                {bot && <div className="truncate text-[11px] text-muted">{bot.id}</div>}
+                <span className="md:hidden">
+                  <StatusChip
+                    label={mobileHeaderStateLabel(runtimeMode, tradingState)}
+                    tone={runtimeMode === "paper" ? "muted" : tradingStateTone(tradingState)}
+                    compact
+                  />
+                </span>
+              </div>
+            </div>
+            <div className="hidden flex-wrap items-center gap-1.5 md:flex">
+              {stateBadges.map((badge) => (
+                <StatusChip key={badge.label} label={badge.label} tone={badge.tone} compact />
+              ))}
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-0.5 shrink-0">
+
+        <div className="flex shrink-0 items-center gap-1 lg:gap-0.5">
           {botId && (
-            <div className="flex items-center gap-0.5 mr-1 md:mr-3">
+            <div className="mr-2 flex items-center gap-1 lg:gap-0.5 md:mr-3">
               <button
                 onClick={() => run(() => botStart(botId))}
-                disabled={busy || !controlAvailable || isRunning}
-                className="p-1 md:p-1.5 hover:bg-surface transition-colors text-accent-green disabled:opacity-40"
+                disabled={busy || !controlAvailable || processRunning}
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 text-accent-green transition-colors hover:bg-surface disabled:opacity-40"
                 title={
                   actionUnavailableTitle ??
-                  (isRunning ? "Bot is already running" : "Start bot")
+                  (processRunning ? "Bot is already running" : "Start bot")
+                }
+                aria-label={
+                  actionUnavailableTitle ??
+                  (processRunning ? "Bot is already running" : "Start bot")
                 }
               >
                 <Play size={14} />
               </button>
               <button
                 onClick={() => run(() => botStop(botId))}
-                disabled={busy || !controlAvailable || !processRunning}
-                className="p-1 md:p-1.5 hover:bg-surface transition-colors text-accent-red disabled:opacity-40"
+                disabled={busy || !controlAvailable || !process?.active}
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 text-accent-red transition-colors hover:bg-surface disabled:opacity-40"
                 title={
                   actionUnavailableTitle ??
-                  (!processRunning ? "Bot is not running" : "Stop bot")
+                  (!process?.active ? "Bot is not running" : "Stop bot")
+                }
+                aria-label={
+                  actionUnavailableTitle ??
+                  (!process?.active ? "Bot is not running" : "Stop bot")
                 }
               >
                 <Square size={14} />
               </button>
               <button
                 onClick={() => run(() => botRestart(botId))}
-                disabled={busy || !controlAvailable || !processRunning}
+                disabled={busy || !controlAvailable || !process?.active}
                 className={cn(
-                  "p-1 md:p-1.5 hover:bg-surface transition-colors text-muted disabled:opacity-40",
+                  "inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 text-muted transition-colors hover:bg-surface disabled:opacity-40",
                   busy && "animate-spin",
                 )}
                 title={
                   actionUnavailableTitle ??
-                  (!processRunning ? "Bot is not running" : "Restart bot")
+                  (!process?.active ? "Bot is not running" : "Restart bot")
+                }
+                aria-label={
+                  actionUnavailableTitle ??
+                  (!process?.active ? "Bot is not running" : "Restart bot")
                 }
               >
                 <RotateCw size={14} />
               </button>
             </div>
           )}
-          <div className="flex items-center gap-1 md:gap-3 text-[12px] text-muted">
+
+          <div className="flex items-center gap-1 text-[12px] text-muted lg:gap-0.5 md:gap-3">
             {user && <span className="hidden md:inline">{user.username}</span>}
             <button
               onClick={cycleTheme}
-              className="p-1 hover:bg-surface transition-colors"
-              title={themeTitle}
+              className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
+              title={
+                themeMode === "system"
+                  ? "Theme: system"
+                  : themeMode === "dark"
+                    ? "Theme: dark"
+                    : "Theme: light"
+              }
+              aria-label={
+                themeMode === "system"
+                  ? "Theme: system"
+                  : themeMode === "dark"
+                    ? "Theme: dark"
+                    : "Theme: light"
+              }
             >
               <ThemeIcon size={14} />
             </button>
             {isNotificationSupported() && (
               <button
                 onClick={toggleNotifications}
-                className="p-1 hover:bg-surface transition-colors"
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
                 title={notifyEnabled ? "Disable notifications" : "Enable notifications"}
+                aria-label={notifyEnabled ? "Disable notifications" : "Enable notifications"}
               >
                 {notifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
               </button>
             )}
             <button
               onClick={logout}
-              className="p-1 hover:bg-surface transition-colors"
+              className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
               title="Logout"
+              aria-label="Logout"
             >
               <LogOut size={14} />
             </button>
@@ -264,13 +302,19 @@ export function Header({ bot, botId, collapsed, onToggle, isDesktop }: HeaderPro
         </div>
       </header>
       {error && (
-        <div className="flex items-center gap-2 px-3 md:px-4 py-2 bg-accent-red/10 border-b border-accent-red/30 text-accent-red text-[12px]">
-          <span className="flex-1">{error}</span>
+        <div
+          role="alert"
+          aria-live="polite"
+          className="flex items-start justify-between gap-3 border-b border-border bg-bg px-3 py-2 text-[11px] text-accent-red"
+        >
+          <span className="min-w-0">{error}</span>
           <button
+            type="button"
             onClick={() => setError(null)}
-            className="p-0.5 hover:bg-accent-red/20 transition-colors shrink-0"
+            className="shrink-0 px-2 py-0.5 text-[11px] text-muted hover:bg-surface"
+            aria-label="Dismiss error"
           >
-            <X size={12} />
+            Dismiss
           </button>
         </div>
       )}

@@ -9,6 +9,7 @@ import { useMobileNavStore } from "../../../stores/mobile-nav-store";
 const getBotsMock = vi.fn<() => Promise<{ bots: Bot[] }>>();
 const liveUpdatesMock = vi.fn<(botId: string) => void>();
 const useMediaQueryMock = vi.fn<(query: string) => boolean>();
+const useTradingSummaryMock = vi.fn<(botId: string) => unknown>();
 
 vi.mock("../nav", () => ({
   Nav: ({
@@ -77,9 +78,13 @@ vi.mock("../../../hooks/use-media-query", () => ({
   useMediaQuery: (query: string) => useMediaQueryMock(query),
 }));
 
+vi.mock("../../../hooks/use-trading-summary", () => ({
+  useTradingSummary: (botId: string) => useTradingSummaryMock(botId),
+}));
+
 import { AppShell } from "../app-shell";
 
-function renderShell() {
+function renderShell(initialEntries: string[] = ["/"]) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -88,10 +93,11 @@ function renderShell() {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter initialEntries={initialEntries}>
         <Routes>
           <Route element={<AppShell />}>
             <Route path="/" element={<div data-testid="outlet">overview</div>} />
+            <Route path="/trades" element={<div data-testid="outlet">trades</div>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -110,8 +116,15 @@ beforeEach(() => {
   getBotsMock.mockReset();
   liveUpdatesMock.mockReset();
   useMediaQueryMock.mockReset();
+  useTradingSummaryMock.mockReset();
   getBotsMock.mockResolvedValue({ bots });
   useMediaQueryMock.mockReturnValue(true);
+  useTradingSummaryMock.mockReturnValue({
+    data: {
+      runtime_mode: "live_readonly",
+      trading_state: "readonly",
+    },
+  });
 });
 
 it("auto-selects the first bot and persists it", async () => {
@@ -126,6 +139,12 @@ it("auto-selects the first bot and persists it", async () => {
     expect(sessionStorage.getItem("activeBotId")).toBe("bot-1");
   });
   expect(liveUpdatesMock).toHaveBeenLastCalledWith("bot-1");
+  expect(screen.getByText("Overview")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      "Simulated performance and a quick look at the Polymarket account. Open Execution for venue detail.",
+    ),
+  ).toBeInTheDocument();
 });
 
 it("keeps a valid persisted bot selection", async () => {
@@ -250,4 +269,17 @@ it("handles an empty bot list without selecting a phantom bot", async () => {
   });
   expect(screen.getByTestId("header-bot-name")).toHaveTextContent("none");
   expect(liveUpdatesMock).toHaveBeenLastCalledWith("");
+});
+
+it("does not render the global intro bar on analysis pages", async () => {
+  renderShell(["/trades"]);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("header-bot-id")).toHaveTextContent("bot-1");
+  });
+
+  expect(
+    screen.queryByText("Shadow trade history and PnL. Real venue fills stay on Execution."),
+  ).not.toBeInTheDocument();
+  expect(screen.getByTestId("outlet")).toHaveTextContent("trades");
 });

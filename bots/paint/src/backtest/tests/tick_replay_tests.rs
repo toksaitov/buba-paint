@@ -76,13 +76,20 @@ fn tick(ts: u64, source: &str, price: Option<f64>) -> RawTick {
         timestamp_us: None,
         source: source.to_string(),
         event_type: "legacy_snapshot".to_string(),
+        sequence_key: None,
         market_id: None,
         asset_id: None,
         price,
+        trade_size: None,
+        signed_quantity: None,
         bid: None,
         ask: None,
         bid_size: None,
         ask_size: None,
+        depth_bid_notional: None,
+        depth_ask_notional: None,
+        depth_imbalance: None,
+        microprice: None,
         fidelity: ReplayFidelity::LegacySnapshot,
     }
 }
@@ -234,13 +241,20 @@ fn all_four_sources_grouped() {
             timestamp_us: None,
             source: "clob_up".into(),
             event_type: "legacy_snapshot".into(),
+            sequence_key: None,
             market_id: None,
             asset_id: None,
             price: None,
+            trade_size: None,
+            signed_quantity: None,
             bid: Some(0.45),
             ask: Some(0.55),
             bid_size: Some(100.0),
             ask_size: Some(200.0),
+            depth_bid_notional: None,
+            depth_ask_notional: None,
+            depth_imbalance: None,
+            microprice: None,
             fidelity: ReplayFidelity::LegacySnapshot,
         },
         RawTick {
@@ -248,13 +262,20 @@ fn all_four_sources_grouped() {
             timestamp_us: None,
             source: "clob_down".into(),
             event_type: "legacy_snapshot".into(),
+            sequence_key: None,
             market_id: None,
             asset_id: None,
             price: None,
+            trade_size: None,
+            signed_quantity: None,
             bid: Some(0.40),
             ask: Some(0.50),
             bid_size: Some(50.0),
             ask_size: Some(75.0),
+            depth_bid_notional: None,
+            depth_ask_notional: None,
+            depth_imbalance: None,
+            microprice: None,
             fidelity: ReplayFidelity::LegacySnapshot,
         },
     ];
@@ -398,9 +419,9 @@ fn from_db_feed_events_preserve_raw_event_microsecond_order() {
     assert!(second.binance.is_none());
 }
 
-/// Verifies that raw feed-events with identical microsecond timestamps share one group.
+/// Verifies that raw feed-events with identical microsecond timestamps stay ordered.
 #[test]
-fn from_db_groups_raw_events_with_identical_microsecond_timestamp() {
+fn from_db_keeps_identical_microsecond_raw_events_separate() {
     let conn = setup_test_db();
     insert_feed_event(
         &conn,
@@ -426,13 +447,63 @@ fn from_db_groups_raw_events_with_identical_microsecond_timestamp() {
     );
 
     let mut replay = TickReplay::from_db(&conn, 0, 2000).unwrap();
-    let group = replay.next_group().unwrap();
+    let first = replay.next_group().unwrap();
+    assert_eq!(first.fidelity, ReplayFidelity::RawEvent);
+    assert_eq!(first.timestamp_us, Some(1_000_250));
+    assert!(first.binance.is_some());
+    assert!(first.chainlink.is_none());
 
-    assert_eq!(group.fidelity, ReplayFidelity::RawEvent);
-    assert_eq!(group.timestamp_us, Some(1_000_250));
-    assert!(group.binance.is_some());
-    assert!(group.chainlink.is_some());
+    let second = replay.next_group().unwrap();
+    assert_eq!(second.timestamp_us, Some(1_000_250));
+    assert!(second.binance.is_none());
+    assert!(second.chainlink.is_some());
     assert!(replay.next_group().is_none());
+}
+
+/// Verifies that raw feed-event replay preserves live-only feature inputs.
+#[test]
+fn from_db_feed_events_preserve_raw_feature_fields() {
+    let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO feed_events (
+            received_at_ms,
+            event_at_ms,
+            received_at_us,
+            event_at_us,
+            source,
+            event_type,
+            sequence_key,
+            price,
+            trade_size,
+            signed_quantity,
+            best_bid,
+            best_ask,
+            bid_size,
+            ask_size,
+            depth_bid_notional,
+            depth_ask_notional,
+            depth_imbalance,
+            microprice,
+            fidelity
+         ) VALUES (1000, 1000, 1000100, 1000100, 'binance', 'depth', 'seq-1',
+                   42000.0, 0.25, -0.25, 41999.5, 42000.5, 2.0, 3.0,
+                   100000.0, 120000.0, -0.0909, 42000.1, 'raw_event')",
+        [],
+    )
+    .unwrap();
+
+    let mut replay = TickReplay::from_db(&conn, 0, 2000).unwrap();
+    let group = replay.next_group().unwrap();
+    let sample = group.binance.unwrap();
+
+    assert_eq!(sample.event_type, "depth");
+    assert_eq!(sample.sequence_key.as_deref(), Some("seq-1"));
+    assert_eq!(sample.trade_size, Some(0.25));
+    assert_eq!(sample.signed_quantity, Some(-0.25));
+    assert_eq!(sample.depth_bid_notional, Some(100000.0));
+    assert_eq!(sample.depth_ask_notional, Some(120000.0));
+    assert_eq!(sample.depth_imbalance, Some(-0.0909));
+    assert_eq!(sample.microprice, Some(42000.1));
 }
 
 /// Verifies that from db splits beyond 10ms.

@@ -17,20 +17,36 @@ import type {
   LiveRedemptionResponse,
 } from "./types.js";
 import type { SidecarConfig } from "./config.js";
+import { logEvent, type LogLevel } from "./logging.js";
 
 const DEFAULT_GAMMA_API_URL = "https://gamma-api.polymarket.com";
 const DEFAULT_DATA_API_URL = "https://data-api.polymarket.com";
 const USER_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
-const USER_STREAM_CONNECT_TIMEOUT_MS = 5_000;
-const USER_STREAM_STABLE_GRACE_MS = 1_000;
-const USER_STREAM_RECONNECT_DELAY_MS = 1_000;
 const CHAIN_ID = Chain.POLYGON;
 const COLLATERAL_DECIMALS = 1_000_000;
 
 type LiveCheckStatus = "ok" | "failed";
+type ReadinessStatus = "ready" | "degraded" | "failed";
+type SidecarErrorStage =
+  | "geoblock_check"
+  | "auth_bootstrap"
+  | "clock_check"
+  | "market_discovery"
+  | "user_stream_connect"
+  | "balance_allowance"
+  | "open_orders"
+  | "positions";
+type UserStreamLifecycle =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "closed";
 
 interface SidecarHealthResponse {
   ok: boolean;
+  ready: boolean;
+  readiness_status: ReadinessStatus;
   mode: string;
   provider: string;
   signature_type: number;
@@ -42,6 +58,11 @@ interface SidecarHealthResponse {
   last_user_stream_connected_at_ms: number | null;
   last_user_stream_event_at_ms: number | null;
   last_user_stream_error: string | null;
+  last_successful_account_refresh_at_ms: number | null;
+  last_account_refresh_error: string | null;
+  last_user_stream_disconnect_at_ms: number | null;
+  last_user_stream_disconnect_reason: string | null;
+  consecutive_user_stream_failures: number;
 }
 
 interface GeoblockResponse {
@@ -89,13 +110,20 @@ interface ActiveMarket {
 interface ActiveMarketDiscovery {
   markets: ActiveMarket[];
   legalOrderMinUsd: number | null;
+  degraded: boolean;
+  error: string | null;
+  usedFallback: boolean;
 }
 
 interface UserStreamSnapshot {
   status: LiveCheckStatus;
+  lifecycle: UserStreamLifecycle;
   lastConnectedAtMs: number | null;
   lastEventAtMs: number | null;
   lastError: string | null;
+  lastDisconnectedAtMs: number | null;
+  lastDisconnectReason: string | null;
+  consecutiveFailures: number;
   subscribedMarkets: string[];
 }
 
@@ -124,27 +152,78 @@ interface AccountObservation {
   state: LiveAccountState;
   allowanceStatus: LiveCheckStatus;
   legalOrderMinUsd: number | null;
-  openOrderCount: number;
-  positionCount: number;
+}
+
+interface ProviderHealthState {
+  lastSuccessfulAccountRefreshAtMs: number | null;
+  lastAccountRefreshError: string | null;
+  lastDiscoveryError: string | null;
+  lastDiscoveryFallbackUsedAtMs: number | null;
 }
 
 interface ProviderDeps {
-  fetchImpl: typeof fetch;
+  fetchImpl: (
+    input: URL | RequestInfo,
+    init?: RequestInit,
+  ) => Promise<Response>;
   nowMs: () => number;
-  createClobClient: (config: SidecarConfig, creds?: ApiKeyCreds) => ClobReadonlyClient;
-  createUserStreamMonitor: (nowMs: () => number) => UserStreamMonitor;
+  createClobClient: (
+    config: SidecarConfig,
+    creds?: ApiKeyCreds,
+  ) => ClobReadonlyClient;
+  createUserStreamMonitor: (
+    config: SidecarConfig,
+    nowMs: () => number,
+    logger: SidecarLogger,
+  ) => UserStreamMonitor;
 }
 
-export interface SidecarProvider {
-  health(): Promise<SidecarHealthResponse>;
-  preflight(request: LivePreflightRequest): Promise<LivePreflightResponse>;
-  accountState(): Promise<LiveAccountState>;
-  submitOrderIntent(
-    request: LiveOrderIntentRequest,
-  ): Promise<LiveOrderIntentResponse>;
-  cancelOrder(orderId: string): Promise<LiveCancellationResponse>;
-  cancelAll(): Promise<LiveCancellationResponse>;
-  redeemAll(): Promise<LiveRedemptionResponse>;
+interface SidecarLogger {
+  (level: LogLevel, event: string, fields?: Record<string, unknown>): void;
+}
+
+interface UserStreamSocketLike {
+  readyState: number;
+  send(data: string): void;
+  close(code?: number, data?: string): void;
+  terminate?(): void;
+  on(event: "open", listener: () => void): this;
+  on(event: "message", listener: (data: RawData) => void): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  on(event: "close", listener: (code: number, reason: Buffer) => void): this;
+}
+
+interface WsUserStreamMonitorDeps {
+  now: () => number;
+  createSocket: (url: string) => UserStreamSocketLike;
+  setTimeoutFn: typeof setTimeout;
+  clearTimeoutFn: typeof clearTimeout;
+  random: () => number;
+  log: SidecarLogger;
+  connectTimeoutMs: number;
+  stableGraceMs: number;
+  reconnectBaseMs: number;
+  reconnectMaxMs: number;
+}
+
+interface ConnectionAttempt {
+  id: number;
+  revision: number;
+  markets: string[];
+  socket: UserStreamSocketLike;
+  connectTimer: NodeJS.Timeout | null;
+  readyTimer: NodeJS.Timeout | null;
+  abort?: (error: unknown) => void;
+}
+
+export class ProviderStageError extends Error {
+  constructor(
+    public readonly stage: SidecarErrorStage,
+    message: string,
+  ) {
+    super(`${stage}: ${message}`);
+    this.name = "ProviderStageError";
+  }
 }
 
 function nowMs(): number {
@@ -270,34 +349,148 @@ function legalOrderMinUsd(markets: ActiveMarket[]): number | null {
   return Math.min(...values);
 }
 
-class WsUserStreamMonitor implements UserStreamMonitor {
-  private socket: WebSocket | null = null;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private desired: { auth: ApiKeyCreds; markets: string[] } | null = null;
+function stringError(error: unknown): string {
+  if (error instanceof ProviderStageError) {
+    return error.message;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isAuthLikeError(error: unknown): boolean {
+  const message = stringError(error).toLowerCase();
+  return (
+    message.includes("401") ||
+    message.includes("403") ||
+    message.includes("forbidden") ||
+    message.includes("unauthorized") ||
+    message.includes("api key") ||
+    message.includes("auth")
+  );
+}
+
+function arraysEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function computeReconnectDelayMs(
+  failures: number,
+  baseMs: number,
+  maxMs: number,
+  random: () => number,
+): number {
+  const exponent = Math.max(failures - 1, 0);
+  const capped = Math.min(baseMs * 2 ** exponent, maxMs);
+  const jitter = 0.8 + random() * 0.4;
+  return Math.max(1, Math.round(capped * jitter));
+}
+
+function safeCloseSocket(socket: UserStreamSocketLike, log: SidecarLogger): void {
+  try {
+    if (socket.readyState === WebSocket.CONNECTING) {
+      if (typeof socket.terminate === "function") {
+        socket.terminate();
+      }
+      return;
+    }
+    if (
+      socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CLOSING
+    ) {
+      socket.close();
+    }
+  } catch (error) {
+    log("warn", "user_stream_socket_close_failed", {
+      error: stringError(error),
+    });
+  }
+}
+
+function stageError(stage: SidecarErrorStage, error: unknown): ProviderStageError {
+  if (error instanceof ProviderStageError) {
+    return error;
+  }
+  return new ProviderStageError(stage, stringError(error));
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  stage: SidecarErrorStage,
+  action: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new ProviderStageError(
+            stage,
+            `${action} timed out after ${timeoutMs}ms`,
+          ),
+        );
+      }, timeoutMs);
+      promise.then(resolve, reject);
+    });
+  } catch (error) {
+    throw stageError(stage, error);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export class WsUserStreamMonitor implements UserStreamMonitor {
+  private desired:
+    | { auth: ApiKeyCreds; markets: string[]; revision: number }
+    | null = null;
   private readonly state: UserStreamSnapshot = {
     status: "failed",
+    lifecycle: "idle",
     lastConnectedAtMs: null,
     lastEventAtMs: null,
     lastError: null,
+    lastDisconnectedAtMs: null,
+    lastDisconnectReason: null,
+    consecutiveFailures: 0,
     subscribedMarkets: [],
   };
+  private currentAttempt: ConnectionAttempt | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private desiredRevision = 0;
+  private nextAttemptId = 0;
+  private closed = false;
 
-  constructor(private readonly now: () => number) {}
+  constructor(private readonly deps: WsUserStreamMonitorDeps) {}
 
   async ensureConnected(auth: ApiKeyCreds, markets: string[]): Promise<void> {
     const desiredMarkets = dedupeStrings(markets).sort();
     if (desiredMarkets.length === 0) {
       throw new Error("no market ids available for the authenticated user stream");
     }
-    this.desired = { auth, markets: desiredMarkets };
+    if (this.closed) {
+      throw new Error("authenticated user stream monitor is closed");
+    }
+
+    this.desired = {
+      auth,
+      markets: desiredMarkets,
+      revision: ++this.desiredRevision,
+    };
+
     if (
-      this.socket &&
       this.state.status === "ok" &&
-      JSON.stringify(this.state.subscribedMarkets) === JSON.stringify(desiredMarkets)
+      arraysEqual(this.state.subscribedMarkets, desiredMarkets)
     ) {
       return;
     }
-    await this.connect(desiredMarkets, auth);
+
+    if (!this.connectPromise) {
+      this.connectPromise = this.ensureDesiredConnection().finally(() => {
+        this.connectPromise = null;
+      });
+    }
+    return this.connectPromise;
   }
 
   snapshot(): UserStreamSnapshot {
@@ -305,70 +498,139 @@ class WsUserStreamMonitor implements UserStreamMonitor {
   }
 
   close(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    this.closed = true;
+    this.desired = null;
+    this.clearReconnectTimer();
+    if (this.currentAttempt) {
+      this.disposeAttempt(this.currentAttempt, "monitor_closed");
     }
-    if (this.socket) {
-      this.socket.removeAllListeners();
-      this.socket.close();
-      this.socket = null;
-    }
+    this.currentAttempt = null;
     this.state.status = "failed";
+    this.state.lifecycle = "closed";
+    this.state.lastError = "monitor closed";
   }
 
-  private async connect(markets: string[], auth: ApiKeyCreds): Promise<void> {
-    this.close();
-    await new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(USER_STREAM_URL);
-      let settled = false;
-      let readyTimer: NodeJS.Timeout | null = null;
-      let connectTimer: NodeJS.Timeout | null = setTimeout(() => {
-        fail(new Error("timed out connecting to the authenticated user stream"));
-      }, USER_STREAM_CONNECT_TIMEOUT_MS);
+  private async ensureDesiredConnection(): Promise<void> {
+    while (!this.closed) {
+      const desired = this.desired;
+      if (!desired) return;
+      if (
+        this.state.status === "ok" &&
+        arraysEqual(this.state.subscribedMarkets, desired.markets)
+      ) {
+        return;
+      }
+      await this.openConnection(desired);
+      if (
+        !this.desired ||
+        arraysEqual(this.state.subscribedMarkets, this.desired.markets)
+      ) {
+        return;
+      }
+      if (this.currentAttempt) {
+        this.disposeAttempt(this.currentAttempt, "subscription_updated");
+      }
+    }
+  }
 
-      const succeed = (): void => {
+  private async openConnection(desired: {
+    auth: ApiKeyCreds;
+    markets: string[];
+    revision: number;
+  }): Promise<void> {
+    this.clearReconnectTimer();
+    if (this.currentAttempt) {
+      this.disposeAttempt(this.currentAttempt, "subscription_updated");
+    }
+    const reconnecting =
+      this.state.lifecycle === "reconnecting" || this.state.consecutiveFailures > 0;
+    this.state.lifecycle = reconnecting ? "reconnecting" : "connecting";
+    this.deps.log("info", "user_stream_connect_start", {
+      markets: desired.markets,
+      reconnecting,
+      failures: this.state.consecutiveFailures,
+    });
+    const socket = this.deps.createSocket(USER_STREAM_URL);
+    const attempt: ConnectionAttempt = {
+      id: ++this.nextAttemptId,
+      revision: desired.revision,
+      markets: desired.markets,
+      socket,
+      connectTimer: null,
+      readyTimer: null,
+    };
+    this.currentAttempt = attempt;
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+
+      const completeFailure = (error: unknown): void => {
         if (settled) return;
         settled = true;
-        if (connectTimer) clearTimeout(connectTimer);
-        if (readyTimer) clearTimeout(readyTimer);
-        this.socket = socket;
+        const failure = stageError("user_stream_connect", error);
+        this.failAttempt(attempt, failure);
+        reject(failure);
+      };
+      attempt.abort = completeFailure;
+
+      const completeSuccess = (): void => {
+        if (settled) return;
+        settled = true;
+        if (!this.isActiveAttempt(attempt)) {
+          safeCloseSocket(socket, this.deps.log);
+          resolve();
+          return;
+        }
+        this.clearAttemptTimers(attempt);
         this.state.status = "ok";
-        this.state.lastConnectedAtMs = this.now();
+        this.state.lifecycle = "connected";
+        this.state.lastConnectedAtMs = this.deps.now();
         this.state.lastError = null;
-        this.state.subscribedMarkets = [...markets];
+        this.state.subscribedMarkets = [...attempt.markets];
+        this.state.consecutiveFailures = 0;
+        this.deps.log("info", "user_stream_connect_ok", {
+          markets: attempt.markets,
+        });
         resolve();
       };
 
-      const fail = (error: Error): void => {
-        if (settled) return;
-        settled = true;
-        if (connectTimer) clearTimeout(connectTimer);
-        if (readyTimer) clearTimeout(readyTimer);
-        this.state.status = "failed";
-        this.state.lastError = error.message;
-        socket.removeAllListeners();
-        socket.close();
-        reject(error);
-      };
+      attempt.connectTimer = this.deps.setTimeoutFn(() => {
+        completeFailure(
+          new Error("timed out connecting to the authenticated user stream"),
+        );
+      }, this.deps.connectTimeoutMs);
 
       socket.on("open", () => {
-        socket.send(
-          JSON.stringify({
-            auth: {
-              apiKey: auth.key,
-              secret: auth.secret,
-              passphrase: auth.passphrase,
-            },
-            markets,
-            type: "user",
-          }),
-        );
-        readyTimer = setTimeout(() => succeed(), USER_STREAM_STABLE_GRACE_MS);
+        if (!this.isActiveAttempt(attempt)) {
+          safeCloseSocket(socket, this.deps.log);
+          return;
+        }
+        try {
+          socket.send(
+            JSON.stringify({
+              auth: {
+                apiKey: desired.auth.key,
+                secret: desired.auth.secret,
+                passphrase: desired.auth.passphrase,
+              },
+              markets: desired.markets,
+              type: "user",
+            }),
+          );
+        } catch (error) {
+          completeFailure(error);
+          return;
+        }
+        attempt.readyTimer = this.deps.setTimeoutFn(() => {
+          completeSuccess();
+        }, this.deps.stableGraceMs);
       });
 
       socket.on("message", (data: RawData) => {
-        this.state.lastEventAtMs = this.now();
+        if (!this.isActiveAttempt(attempt)) {
+          return;
+        }
+        this.state.lastEventAtMs = this.deps.now();
         const message = data.toString();
         try {
           const parsed = JSON.parse(message) as Record<string, unknown>;
@@ -377,30 +639,35 @@ class WsUserStreamMonitor implements UserStreamMonitor {
             ((parsed.type === "error" && typeof parsed.error === "string") ||
               (parsed.event_type === "error" && typeof parsed.error === "string"))
           ) {
-            fail(new Error(parsed.error as string));
+            completeFailure(new Error(parsed.error as string));
             return;
           }
         } catch {
           void 0;
         }
         if (!settled) {
-          succeed();
+          completeSuccess();
         }
       });
 
       socket.on("error", (error: Error) => {
-        const err = error instanceof Error ? error : new Error(String(error));
-        if (!settled) {
-          fail(err);
+        if (!this.isActiveAttempt(attempt)) {
           return;
         }
-        this.markDisconnected(err.message);
+        if (!settled) {
+          completeFailure(error);
+          return;
+        }
+        this.markDisconnected(error.message);
       });
 
       socket.on("close", (code: number, reason: Buffer) => {
+        if (!this.isActiveAttempt(attempt)) {
+          return;
+        }
         const message = `user stream closed (${code}): ${reason.toString()}`;
         if (!settled) {
-          fail(new Error(message));
+          completeFailure(new Error(message));
           return;
         }
         this.markDisconnected(message);
@@ -408,24 +675,111 @@ class WsUserStreamMonitor implements UserStreamMonitor {
     });
   }
 
+  private failAttempt(attempt: ConnectionAttempt, error: ProviderStageError): void {
+    if (!this.isActiveAttempt(attempt)) {
+      return;
+    }
+    this.clearAttemptTimers(attempt);
+    this.state.status = "failed";
+    this.state.lastError = error.message;
+    this.state.lifecycle = this.closed ? "closed" : "reconnecting";
+    this.state.lastDisconnectedAtMs = this.deps.now();
+    this.state.lastDisconnectReason = error.message;
+    this.state.consecutiveFailures += 1;
+    this.deps.log("warn", "user_stream_connect_failed", {
+      error: error.message,
+      failures: this.state.consecutiveFailures,
+      markets: attempt.markets,
+    });
+    this.currentAttempt = null;
+    safeCloseSocket(attempt.socket, this.deps.log);
+    this.scheduleReconnect();
+  }
+
   private markDisconnected(message: string): void {
     this.state.status = "failed";
     this.state.lastError = message;
-    this.socket = null;
-    if (!this.desired || this.reconnectTimer) return;
-    this.reconnectTimer = setTimeout(() => {
+    this.state.lifecycle = this.closed ? "closed" : "reconnecting";
+    this.state.lastDisconnectedAtMs = this.deps.now();
+    this.state.lastDisconnectReason = message;
+    this.state.consecutiveFailures += 1;
+    this.deps.log("warn", "user_stream_disconnected", {
+      reason: message,
+      failures: this.state.consecutiveFailures,
+    });
+    this.currentAttempt = null;
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed || !this.desired || this.reconnectTimer) {
+      return;
+    }
+    const delayMs = computeReconnectDelayMs(
+      this.state.consecutiveFailures,
+      this.deps.reconnectBaseMs,
+      this.deps.reconnectMaxMs,
+      this.deps.random,
+    );
+    this.deps.log("info", "user_stream_reconnect_scheduled", {
+      delay_ms: delayMs,
+      markets: this.desired.markets,
+    });
+    this.reconnectTimer = this.deps.setTimeoutFn(() => {
       this.reconnectTimer = null;
-      const desired = this.desired;
-      if (!desired) return;
-      void this.connect(desired.markets, desired.auth).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.markDisconnected(message);
-      });
-    }, USER_STREAM_RECONNECT_DELAY_MS);
+      if (this.closed || !this.desired) {
+        return;
+      }
+      if (!this.connectPromise) {
+        this.connectPromise = this.ensureDesiredConnection().finally(() => {
+          this.connectPromise = null;
+        });
+      }
+      void this.connectPromise.catch(() => undefined);
+    }, delayMs);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      this.deps.clearTimeoutFn(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private clearAttemptTimers(attempt: ConnectionAttempt): void {
+    if (attempt.connectTimer) {
+      this.deps.clearTimeoutFn(attempt.connectTimer);
+      attempt.connectTimer = null;
+    }
+    if (attempt.readyTimer) {
+      this.deps.clearTimeoutFn(attempt.readyTimer);
+      attempt.readyTimer = null;
+    }
+  }
+
+  private disposeAttempt(attempt: ConnectionAttempt, reason: string): void {
+    if (!this.isActiveAttempt(attempt)) {
+      return;
+    }
+    this.clearAttemptTimers(attempt);
+    this.currentAttempt = null;
+    attempt.abort?.(new Error(`connection cancelled: ${reason}`));
+    this.deps.log("info", "user_stream_connect_cancelled", {
+      reason,
+      markets: attempt.markets,
+    });
+    safeCloseSocket(attempt.socket, this.deps.log);
+  }
+
+  private isActiveAttempt(attempt: ConnectionAttempt): boolean {
+    return this.currentAttempt?.id === attempt.id;
   }
 }
 
 function defaultProviderDeps(): ProviderDeps {
+  const logger: SidecarLogger = (level, event, fields = {}) => {
+    logEvent(level, event, fields);
+  };
   return {
     fetchImpl: fetch,
     nowMs,
@@ -460,8 +814,33 @@ function defaultProviderDeps(): ProviderDeps {
         getOpenOrders: async () => client.getOpenOrders(),
       };
     },
-    createUserStreamMonitor: (clock) => new WsUserStreamMonitor(clock),
+    createUserStreamMonitor: (config, clock, log) =>
+      new WsUserStreamMonitor({
+        now: clock,
+        createSocket: (url) => new WebSocket(url),
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+        random: Math.random,
+        log,
+        connectTimeoutMs: config.userStreamConnectTimeoutMs,
+        stableGraceMs: config.userStreamStableGraceMs,
+        reconnectBaseMs: config.userStreamReconnectBaseMs,
+        reconnectMaxMs: config.userStreamReconnectMaxMs,
+      }),
   };
+}
+
+export interface SidecarProvider {
+  health(): Promise<SidecarHealthResponse>;
+  preflight(request: LivePreflightRequest): Promise<LivePreflightResponse>;
+  accountState(): Promise<LiveAccountState>;
+  submitOrderIntent(
+    request: LiveOrderIntentRequest,
+  ): Promise<LiveOrderIntentResponse>;
+  cancelOrder(orderId: string): Promise<LiveCancellationResponse>;
+  cancelAll(): Promise<LiveCancellationResponse>;
+  redeemAll(): Promise<LiveRedemptionResponse>;
+  close(): Promise<void> | void;
 }
 
 export class StubSidecarProvider implements SidecarProvider {
@@ -470,6 +849,8 @@ export class StubSidecarProvider implements SidecarProvider {
   async health(): Promise<SidecarHealthResponse> {
     return {
       ok: true,
+      ready: false,
+      readiness_status: "failed",
       mode: "local-sidecar",
       provider: "stub",
       signature_type: this.config.signatureType,
@@ -481,6 +862,11 @@ export class StubSidecarProvider implements SidecarProvider {
       last_user_stream_connected_at_ms: null,
       last_user_stream_event_at_ms: null,
       last_user_stream_error: "stub provider",
+      last_successful_account_refresh_at_ms: null,
+      last_account_refresh_error: "stub provider",
+      last_user_stream_disconnect_at_ms: null,
+      last_user_stream_disconnect_reason: null,
+      consecutive_user_stream_failures: 0,
     };
   }
 
@@ -581,14 +967,26 @@ export class StubSidecarProvider implements SidecarProvider {
       details_json: JSON.stringify({ provider: "stub", reason: "redemption not implemented" }),
     };
   }
+
+  close(): void {
+    void 0;
+  }
 }
 
 export class PolymarketReadonlyProvider implements SidecarProvider {
   private readonly deps: ProviderDeps;
   private readonly userStream: UserStreamMonitor;
+  private readonly log: SidecarLogger;
+  private authState: AuthState | null = null;
   private authStatePromise: Promise<AuthState> | null = null;
   private lastGammaApiUrl: string = DEFAULT_GAMMA_API_URL;
   private lastDiscovery: ActiveMarket[] = [];
+  private readonly healthState: ProviderHealthState = {
+    lastSuccessfulAccountRefreshAtMs: null,
+    lastAccountRefreshError: null,
+    lastDiscoveryError: null,
+    lastDiscoveryFallbackUsedAtMs: null,
+  };
 
   constructor(
     private readonly config: SidecarConfig,
@@ -602,13 +1000,23 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       createUserStreamMonitor:
         deps.createUserStreamMonitor ?? defaults.createUserStreamMonitor,
     };
-    this.userStream = this.deps.createUserStreamMonitor(this.deps.nowMs);
+    this.log = (level, event, fields = {}) => {
+      logEvent(level, event, fields);
+    };
+    this.userStream = this.deps.createUserStreamMonitor(
+      this.config,
+      this.deps.nowMs,
+      this.log,
+    );
   }
 
   async health(): Promise<SidecarHealthResponse> {
     const stream = this.userStream.snapshot();
+    const readiness = this.readinessStatus(stream);
     return {
       ok: true,
+      ready: readiness === "ready",
+      readiness_status: readiness,
       mode: "local-sidecar",
       provider: "polymarket",
       signature_type: this.config.signatureType,
@@ -620,6 +1028,12 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       last_user_stream_connected_at_ms: stream.lastConnectedAtMs,
       last_user_stream_event_at_ms: stream.lastEventAtMs,
       last_user_stream_error: stream.lastError,
+      last_successful_account_refresh_at_ms:
+        this.healthState.lastSuccessfulAccountRefreshAtMs,
+      last_account_refresh_error: this.healthState.lastAccountRefreshError,
+      last_user_stream_disconnect_at_ms: stream.lastDisconnectedAtMs,
+      last_user_stream_disconnect_reason: stream.lastDisconnectReason,
+      consecutive_user_stream_failures: stream.consecutiveFailures,
     };
   }
 
@@ -628,7 +1042,8 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
 
     const errors: string[] = [];
     const geoblock = await this.fetchGeoblock().catch((error: unknown) => {
-      errors.push(`Geoblock check failed: ${stringError(error)}`);
+      const failure = stageError("geoblock_check", error);
+      errors.push(`Geoblock check failed: ${failure.message}`);
       return null;
     });
     const geoblockOk = geoblock?.blocked === false;
@@ -646,13 +1061,16 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       authState = await this.getAuthState();
       authStatus = "ok";
     } catch (error) {
-      errors.push(`Authentication failed: ${stringError(error)}`);
+      const failure = stageError("auth_bootstrap", error);
+      errors.push(`Authentication failed: ${failure.message}`);
     }
 
     if (authState) {
       try {
         const serverTimeMs = normalizeServerTimeMs(
-          await authState.client.getServerTime(),
+          await this.runClobCall("clock_check", async () =>
+            authState.client.getServerTime(),
+          ),
         );
         const driftMs = Math.abs(serverTimeMs - this.deps.nowMs());
         clockStatus = checkStatus(driftMs <= this.config.clockDriftMaxMs);
@@ -662,7 +1080,8 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
           );
         }
       } catch (error) {
-        errors.push(`Clock check failed: ${stringError(error)}`);
+        const failure = stageError("clock_check", error);
+        errors.push(`Clock check failed: ${failure.message}`);
       }
 
       try {
@@ -672,8 +1091,12 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         if (discovery.markets.length === 0) {
           errors.push("No active BTC 5-minute markets were discovered from Gamma.");
         }
+        if (discovery.degraded && discovery.error) {
+          errors.push(`Active-market discovery degraded: ${discovery.error}`);
+        }
       } catch (error) {
-        errors.push(`Active-market discovery failed: ${stringError(error)}`);
+        const failure = stageError("market_discovery", error);
+        errors.push(`Active-market discovery failed: ${failure.message}`);
       }
 
       if (discovery && discovery.markets.length > 0) {
@@ -684,7 +1107,8 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
           );
           userStreamStatus = "ok";
         } catch (error) {
-          errors.push(`Authenticated user stream failed: ${stringError(error)}`);
+          const failure = stageError("user_stream_connect", error);
+          errors.push(`Authenticated user stream failed: ${failure.message}`);
         }
       }
 
@@ -693,12 +1117,16 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
           authState,
           discovery?.markets ?? [],
           request.gamma_api_url,
+          discovery ?? undefined,
         );
         allowanceStatus = account.allowanceStatus;
         availableCashUsd = account.state.cash_available;
         legalOrderMinUsd = legalOrderMinUsd ?? account.legalOrderMinUsd;
       } catch (error) {
-        errors.push(`Account state could not be read: ${stringError(error)}`);
+        const failure = error instanceof ProviderStageError ? error : null;
+        errors.push(
+          `Account state could not be read: ${failure?.message ?? stringError(error)}`,
+        );
       }
     }
 
@@ -749,40 +1177,74 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         strategy_readiness: request.strategy_readiness,
         relayer_api_key_present: Boolean(this.config.relayerApiKey),
         geoblock,
-        active_markets: this.lastDiscovery,
+        active_markets: discovery?.markets ?? this.lastDiscovery,
+        discovery_degraded: discovery?.degraded ?? false,
+        discovery_error: discovery?.error ?? this.healthState.lastDiscoveryError,
         wallet_address_source: this.config.funder ? "funder" : "proxy_wallet",
         last_user_stream_connected_at_ms: stream.lastConnectedAtMs,
         last_user_stream_event_at_ms: stream.lastEventAtMs,
         last_user_stream_error: stream.lastError,
+        last_user_stream_disconnect_at_ms: stream.lastDisconnectedAtMs,
+        last_user_stream_disconnect_reason: stream.lastDisconnectReason,
+        last_successful_account_refresh_at_ms:
+          this.healthState.lastSuccessfulAccountRefreshAtMs,
+        last_account_refresh_error: this.healthState.lastAccountRefreshError,
       }),
       errors,
     };
   }
 
   async accountState(): Promise<LiveAccountState> {
-    const authState = await this.getAuthState();
-    const gammaApiUrl = this.lastGammaApiUrl || DEFAULT_GAMMA_API_URL;
-    const discovery = await this.discoverActiveMarkets(gammaApiUrl).catch(() => ({
-      markets: this.lastDiscovery,
-      legalOrderMinUsd: legalOrderMinUsd(this.lastDiscovery),
-    }));
-    this.lastDiscovery = discovery.markets;
+    try {
+      const authState = await this.getAuthState();
+      const gammaApiUrl = this.lastGammaApiUrl || DEFAULT_GAMMA_API_URL;
+      let discovery: ActiveMarketDiscovery;
+      try {
+        discovery = await this.discoverActiveMarkets(gammaApiUrl);
+      } catch (error) {
+        if (this.lastDiscovery.length === 0) {
+          throw error;
+        }
+        const failure = stageError("market_discovery", error);
+        this.healthState.lastDiscoveryError = failure.message;
+        this.healthState.lastDiscoveryFallbackUsedAtMs = this.deps.nowMs();
+        this.log("warn", "market_discovery_fallback", {
+          error: failure.message,
+          cached_market_count: this.lastDiscovery.length,
+        });
+        discovery = {
+          markets: this.lastDiscovery,
+          legalOrderMinUsd: legalOrderMinUsd(this.lastDiscovery),
+          degraded: true,
+          error: failure.message,
+          usedFallback: true,
+        };
+      }
+      this.lastDiscovery = discovery.markets;
 
-    if (discovery.markets.length > 0) {
-      await this.userStream
-        .ensureConnected(
-          authState.creds,
-          discovery.markets.map((market) => market.conditionId),
-        )
-        .catch(() => undefined);
+      if (discovery.markets.length > 0) {
+        await this.userStream
+          .ensureConnected(
+            authState.creds,
+            discovery.markets.map((market) => market.conditionId),
+          )
+          .catch(() => undefined);
+      }
+
+      const observation = await this.observeAccountState(
+        authState,
+        discovery.markets,
+        gammaApiUrl,
+        discovery,
+      );
+      return observation.state;
+    } catch (error) {
+      const failure = error instanceof ProviderStageError
+        ? error
+        : new ProviderStageError("balance_allowance", stringError(error));
+      this.recordAccountRefreshFailure(failure);
+      throw failure;
     }
-
-    const observation = await this.observeAccountState(
-      authState,
-      discovery.markets,
-      gammaApiUrl,
-    );
-    return observation.state;
   }
 
   async submitOrderIntent(
@@ -832,16 +1294,50 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
     };
   }
 
+  close(): void {
+    this.userStream.close();
+  }
+
+  private readinessStatus(stream: UserStreamSnapshot): ReadinessStatus {
+    if (!hasAuthCredentials(this.config)) {
+      return "failed";
+    }
+    if (this.healthState.lastSuccessfulAccountRefreshAtMs == null) {
+      return "failed";
+    }
+    if (
+      stream.status === "ok" &&
+      this.healthState.lastAccountRefreshError == null &&
+      this.healthState.lastDiscoveryError == null
+    ) {
+      return "ready";
+    }
+    if (this.healthState.lastDiscoveryError && this.lastDiscovery.length === 0) {
+      return "failed";
+    }
+    return "degraded";
+  }
+
   private async getAuthState(): Promise<AuthState> {
-    if (!this.authStatePromise) {
-      this.authStatePromise = (async () => {
-        if (!hasAuthCredentials(this.config)) {
-          throw new Error(
-            "Missing POLY_PROXY credentials. Set POLYMARKET_PRIVATE_KEY, POLYMARKET_PROXY_WALLET, and POLYMARKET_FUNDER.",
-          );
-        }
-        const bootstrapClient = this.deps.createClobClient(this.config);
-        const createdCreds = await bootstrapClient.createApiKey().catch((error: unknown) => {
+    if (this.authState) {
+      return this.authState;
+    }
+    if (this.authStatePromise) {
+      return this.authStatePromise;
+    }
+    this.authStatePromise = (async () => {
+      if (!hasAuthCredentials(this.config)) {
+        throw new ProviderStageError(
+          "auth_bootstrap",
+          "Missing POLY_PROXY credentials. Set POLYMARKET_PRIVATE_KEY, POLYMARKET_PROXY_WALLET, and POLYMARKET_FUNDER.",
+        );
+      }
+      this.log("info", "auth_bootstrap_start");
+      const bootstrapClient = this.deps.createClobClient(this.config);
+      const createdCreds = await this.runClobCall("auth_bootstrap", async () => {
+        try {
+          return await bootstrapClient.createApiKey();
+        } catch (error) {
           const message = stringError(error);
           if (message.includes("Could not create api key")) {
             return {
@@ -851,50 +1347,157 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
             } satisfies ApiKeyCreds;
           }
           throw error;
+        }
+      });
+      const creds = createdCreds.key
+        ? createdCreds
+        : await this.runClobCall("auth_bootstrap", async () =>
+            bootstrapClient.deriveApiKey(),
+          );
+      const state = {
+        creds,
+        client: this.deps.createClobClient(this.config, creds),
+        walletAddress: walletAddress(this.config),
+        proxyWallet: this.config.proxyWallet,
+      } satisfies AuthState;
+      this.authState = state;
+      this.log("info", "auth_bootstrap_ok", {
+        wallet_address: state.walletAddress,
+        proxy_wallet: state.proxyWallet,
+      });
+      return state;
+    })()
+      .catch((error) => {
+        this.invalidateAuthState("auth bootstrap failed");
+        this.log("error", "auth_bootstrap_failed", {
+          error: stringError(error),
         });
-        const creds = createdCreds.key
-          ? createdCreds
-          : await bootstrapClient.deriveApiKey();
-        return {
-          creds,
-          client: this.deps.createClobClient(this.config, creds),
-          walletAddress: walletAddress(this.config),
-          proxyWallet: this.config.proxyWallet,
-        } satisfies AuthState;
-      })();
-    }
+        throw stageError("auth_bootstrap", error);
+      })
+      .finally(() => {
+        this.authStatePromise = null;
+      });
     return this.authStatePromise;
   }
 
-  private async fetchGeoblock(): Promise<GeoblockResponse> {
-    const response = await this.deps.fetchImpl(this.config.geoblockUrl);
-    if (!response.ok) {
-      throw new Error(`geoblock endpoint returned ${response.status}`);
+  private invalidateAuthState(reason: string): void {
+    this.authState = null;
+    this.authStatePromise = null;
+    this.log("warn", "auth_state_invalidated", { reason });
+  }
+
+  private async fetchJson<T>(
+    url: string | URL,
+    stage: SidecarErrorStage,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.config.httpTimeoutMs);
+    try {
+      const response = await withTimeout(
+        this.deps.fetchImpl(url, {
+          signal: controller.signal,
+        }),
+        this.config.httpTimeoutMs,
+        stage,
+        "request",
+      );
+      if (!response.ok) {
+        throw new ProviderStageError(stage, `endpoint returned ${response.status}`);
+      }
+      return (await response.json()) as T;
+    } catch (error) {
+      const message =
+        error instanceof Error && error.name === "AbortError"
+          ? `request timed out after ${this.config.httpTimeoutMs}ms`
+          : stringError(error);
+      throw new ProviderStageError(stage, message);
+    } finally {
+      clearTimeout(timer);
     }
-    return (await response.json()) as GeoblockResponse;
+  }
+
+  private async fetchGeoblock(): Promise<GeoblockResponse> {
+    return this.fetchJson<GeoblockResponse>(
+      this.config.geoblockUrl,
+      "geoblock_check",
+    );
   }
 
   private async discoverActiveMarkets(
     gammaApiUrl: string,
   ): Promise<ActiveMarketDiscovery> {
     const markets: ActiveMarket[] = [];
+    const errors: string[] = [];
+
     for (const slug of currentSlotSlugs(this.deps.nowMs())) {
-      const response = await this.deps.fetchImpl(`${gammaApiUrl}/events/slug/${slug}`);
-      if (response.status === 404) continue;
-      if (!response.ok) {
-        throw new Error(`gamma discovery returned ${response.status} for ${slug}`);
+      const url = `${gammaApiUrl}/events/slug/${slug}`;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.config.httpTimeoutMs);
+      try {
+        const response = await withTimeout(
+          this.deps.fetchImpl(url, {
+            signal: controller.signal,
+          }),
+          this.config.httpTimeoutMs,
+          "market_discovery",
+          `gamma discovery for ${slug}`,
+        );
+        if (response.status === 404) {
+          continue;
+        }
+          if (!response.ok) {
+            throw new ProviderStageError(
+              "market_discovery",
+              `gamma discovery returned ${response.status} for ${slug}`,
+            );
+          }
+          markets.push(...parseActiveMarkets(await response.json()));
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch (error) {
+        errors.push(stageError("market_discovery", error).message);
       }
-      const parsed = parseActiveMarkets(await response.json());
-      markets.push(...parsed);
     }
+
     const deduped = dedupeStrings(markets.map((market) => market.conditionId)).map(
       (conditionId) =>
         markets.find((market) => market.conditionId === conditionId) as ActiveMarket,
     );
-    return {
-      markets: deduped,
-      legalOrderMinUsd: legalOrderMinUsd(deduped),
-    };
+
+    if (errors.length === 0) {
+      this.healthState.lastDiscoveryError = null;
+      return {
+        markets: deduped,
+        legalOrderMinUsd: legalOrderMinUsd(deduped),
+        degraded: false,
+        error: null,
+        usedFallback: false,
+      };
+    }
+
+    const message = errors.join("; ");
+    this.healthState.lastDiscoveryError = message;
+    if (deduped.length > 0) {
+      this.healthState.lastDiscoveryFallbackUsedAtMs = this.deps.nowMs();
+      this.log("warn", "market_discovery_degraded", {
+        error: message,
+        discovered_market_count: deduped.length,
+      });
+      return {
+        markets: deduped,
+        legalOrderMinUsd: legalOrderMinUsd(deduped),
+        degraded: true,
+        error: message,
+        usedFallback: false,
+      };
+    }
+
+    this.log("error", "market_discovery_failed", {
+      error: message,
+    });
+    throw new ProviderStageError("market_discovery", message);
   }
 
   private async fetchPositions(
@@ -906,92 +1509,140 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
     url.searchParams.set("user", wallet);
     url.searchParams.set("sizeThreshold", "0");
     url.searchParams.set("limit", "500");
-    const response = await this.deps.fetchImpl(url);
-    if (!response.ok) {
-      throw new Error(`positions endpoint returned ${response.status}`);
-    }
-    const parsed = await response.json();
+    const parsed = await this.fetchJson<unknown>(url, "positions");
     return Array.isArray(parsed) ? (parsed as PositionResponse[]) : [];
+  }
+
+  private async runClobCall<T>(
+    stage: SidecarErrorStage,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await withTimeout(fn(), this.config.sdkTimeoutMs, stage, stage);
+    } catch (error) {
+      if (isAuthLikeError(error)) {
+        this.invalidateAuthState(`${stage} failed with an auth-like error`);
+      }
+      throw stageError(stage, error);
+    }
   }
 
   private async observeAccountState(
     authState: AuthState,
     markets: ActiveMarket[],
     gammaApiUrl: string,
+    discovery?: ActiveMarketDiscovery,
   ): Promise<AccountObservation> {
     if (!authState.walletAddress) {
-      throw new Error("wallet address is missing");
+      const failure = new ProviderStageError(
+        "balance_allowance",
+        "wallet address is missing",
+      );
+      this.recordAccountRefreshFailure(failure);
+      throw failure;
     }
 
-    const [balanceAllowance, openOrders, positions] = await Promise.all([
-      authState.client.getBalanceAllowance(),
-      authState.client.getOpenOrders(),
-      this.fetchPositions(authState.walletAddress, gammaApiUrl),
-    ]);
+    try {
+      const [balanceAllowance, openOrders, positions] = await Promise.all([
+        this.runClobCall("balance_allowance", async () =>
+          authState.client.getBalanceAllowance(),
+        ),
+        this.runClobCall("open_orders", async () => authState.client.getOpenOrders()),
+        this.fetchPositions(authState.walletAddress, gammaApiUrl),
+      ]);
 
-    const rawBalance =
-      collateralUnitsToUsd(parseNumber(balanceAllowance.balance) ?? 0);
-    const rawAllowance = maxAllowanceUsd(balanceAllowance);
-    const cashReservedForOrders = sumReservedBuyCash(openOrders);
-    const inventoryMarkValue = positions
-      .filter((position) => position.redeemable !== true)
-      .reduce((total, position) => total + (parseNumber(position.currentValue) ?? 0), 0);
-    const redeemableValue = positions
-      .filter((position) => position.redeemable === true)
-      .reduce((total, position) => total + (parseNumber(position.currentValue) ?? 0), 0);
-    const cashAvailable = Math.max(rawBalance - cashReservedForOrders, 0);
-    const cappedAllowanceUsd =
-      rawAllowance == null ? null : Math.max(Math.min(rawAllowance, rawBalance), 0);
-    const allowanceAvailable =
-      cappedAllowanceUsd == null
-        ? null
-        : Math.max(cappedAllowanceUsd - cashReservedForOrders, 0);
-    const stream = this.userStream.snapshot();
-    const legalMinUsd = legalOrderMinUsd(markets);
-    const accountState: LiveAccountState = {
-      timestamp_ms: this.deps.nowMs(),
-      wallet_address: authState.walletAddress,
-      proxy_wallet: authState.proxyWallet,
-      cash_available: cashAvailable,
-      cash_reserved_for_orders: cashReservedForOrders,
-      inventory_mark_value: inventoryMarkValue,
-      redeemable_value: redeemableValue,
-      pending_redeem_value: 0,
-      total_equity: rawBalance + inventoryMarkValue + redeemableValue,
-      allowance_available: allowanceAvailable,
-      details_json: JSON.stringify({
-        provider: "polymarket",
-        relayer_api_key_present: Boolean(this.config.relayerApiKey),
-        user_stream_status: stream.status,
-        last_user_stream_connected_at_ms: stream.lastConnectedAtMs,
-        last_user_stream_event_at_ms: stream.lastEventAtMs,
-        last_successful_account_refresh_at_ms: this.deps.nowMs(),
-        account_refresh_error: null,
-        legal_order_min_usd: legalMinUsd,
-        open_order_count: openOrders.length,
-        open_buy_order_count: openOrders.filter((order) => order.side === "BUY").length,
-        open_sell_order_count: openOrders.filter((order) => order.side === "SELL").length,
-        position_count: positions.length,
-        redeemable_position_count: positions.filter((position) => position.redeemable === true)
-          .length,
-        observed_balance_usd: rawBalance,
-        observed_allowance_usd: cappedAllowanceUsd,
-        observed_allowance_approval_usd: rawAllowance,
-        active_markets: markets,
-      }),
-    };
-    return {
-      state: accountState,
-      allowanceStatus: checkStatus(rawAllowance != null),
-      legalOrderMinUsd: legalMinUsd,
-      openOrderCount: openOrders.length,
-      positionCount: positions.length,
-    };
+      const rawBalance =
+        collateralUnitsToUsd(parseNumber(balanceAllowance.balance) ?? 0);
+      const rawAllowance = maxAllowanceUsd(balanceAllowance);
+      const cashReservedForOrders = sumReservedBuyCash(openOrders);
+      const inventoryMarkValue = positions
+        .filter((position) => position.redeemable !== true)
+        .reduce(
+          (total, position) => total + (parseNumber(position.currentValue) ?? 0),
+          0,
+        );
+      const redeemableValue = positions
+        .filter((position) => position.redeemable === true)
+        .reduce(
+          (total, position) => total + (parseNumber(position.currentValue) ?? 0),
+          0,
+        );
+      const cashAvailable = Math.max(rawBalance - cashReservedForOrders, 0);
+      const cappedAllowanceUsd =
+        rawAllowance == null ? null : Math.max(Math.min(rawAllowance, rawBalance), 0);
+      const allowanceAvailable =
+        cappedAllowanceUsd == null
+          ? null
+          : Math.max(cappedAllowanceUsd - cashReservedForOrders, 0);
+      const stream = this.userStream.snapshot();
+      const legalMinUsd = legalOrderMinUsd(markets);
+      const refreshAtMs = this.deps.nowMs();
+      const accountState: LiveAccountState = {
+        timestamp_ms: refreshAtMs,
+        wallet_address: authState.walletAddress,
+        proxy_wallet: authState.proxyWallet,
+        cash_available: cashAvailable,
+        cash_reserved_for_orders: cashReservedForOrders,
+        inventory_mark_value: inventoryMarkValue,
+        redeemable_value: redeemableValue,
+        pending_redeem_value: 0,
+        total_equity: rawBalance + inventoryMarkValue + redeemableValue,
+        allowance_available: allowanceAvailable,
+        details_json: JSON.stringify({
+          provider: "polymarket",
+          relayer_api_key_present: Boolean(this.config.relayerApiKey),
+          user_stream_status: stream.status,
+          last_user_stream_connected_at_ms: stream.lastConnectedAtMs,
+          last_user_stream_event_at_ms: stream.lastEventAtMs,
+          last_user_stream_disconnect_at_ms: stream.lastDisconnectedAtMs,
+          last_user_stream_disconnect_reason: stream.lastDisconnectReason,
+          last_successful_account_refresh_at_ms: refreshAtMs,
+          account_refresh_error: null,
+          discovery_degraded: discovery?.degraded ?? false,
+          discovery_error: discovery?.error ?? this.healthState.lastDiscoveryError,
+          legal_order_min_usd: legalMinUsd,
+          open_order_count: openOrders.length,
+          open_buy_order_count: openOrders.filter((order) => order.side === "BUY")
+            .length,
+          open_sell_order_count: openOrders.filter((order) => order.side === "SELL")
+            .length,
+          position_count: positions.length,
+          redeemable_position_count: positions.filter(
+            (position) => position.redeemable === true,
+          ).length,
+          observed_balance_usd: rawBalance,
+          observed_allowance_usd: cappedAllowanceUsd,
+          observed_allowance_approval_usd: rawAllowance,
+          active_markets: markets,
+        }),
+      };
+      this.recordAccountRefreshSuccess(refreshAtMs);
+      return {
+        state: accountState,
+        allowanceStatus: checkStatus(rawAllowance != null),
+        legalOrderMinUsd: legalMinUsd,
+      };
+    } catch (error) {
+      const failure =
+        error instanceof ProviderStageError
+          ? error
+          : new ProviderStageError("balance_allowance", stringError(error));
+      this.recordAccountRefreshFailure(failure);
+      this.log("warn", "account_refresh_failed", {
+        error: failure.message,
+      });
+      throw failure;
+    }
   }
-}
 
-function stringError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  private recordAccountRefreshSuccess(timestampMs: number): void {
+    this.healthState.lastSuccessfulAccountRefreshAtMs = timestampMs;
+    this.healthState.lastAccountRefreshError = null;
+  }
+
+  private recordAccountRefreshFailure(error: ProviderStageError): void {
+    this.healthState.lastAccountRefreshError = error.message;
+  }
 }
 
 export function createDefaultProvider(

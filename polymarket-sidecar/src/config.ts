@@ -5,6 +5,12 @@ export interface SidecarConfig {
   clobHost: string;
   relayerHost: string;
   clockDriftMaxMs: number;
+  httpTimeoutMs: number;
+  sdkTimeoutMs: number;
+  userStreamConnectTimeoutMs: number;
+  userStreamStableGraceMs: number;
+  userStreamReconnectBaseMs: number;
+  userStreamReconnectMaxMs: number;
   signatureType: number;
   privateKey: string | null;
   proxyWallet: string | null;
@@ -41,6 +47,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     clobHost: env.POLYMARKET_CLOB_HOST ?? "https://clob.polymarket.com",
     relayerHost: env.POLYMARKET_RELAYER_HOST ?? "https://relayer.polymarket.com",
     clockDriftMaxMs: envInt(env, "POLYMARKET_CLOCK_DRIFT_MAX_MS", 1500),
+    httpTimeoutMs: envInt(env, "POLYMARKET_HTTP_TIMEOUT_MS", 5000),
+    sdkTimeoutMs: envInt(env, "POLYMARKET_SDK_TIMEOUT_MS", 5000),
+    userStreamConnectTimeoutMs: envInt(
+      env,
+      "POLYMARKET_USER_STREAM_CONNECT_TIMEOUT_MS",
+      5000,
+    ),
+    userStreamStableGraceMs: envInt(
+      env,
+      "POLYMARKET_USER_STREAM_STABLE_GRACE_MS",
+      1000,
+    ),
+    userStreamReconnectBaseMs: envInt(
+      env,
+      "POLYMARKET_USER_STREAM_RECONNECT_BASE_MS",
+      1000,
+    ),
+    userStreamReconnectMaxMs: envInt(
+      env,
+      "POLYMARKET_USER_STREAM_RECONNECT_MAX_MS",
+      30000,
+    ),
     signatureType: envInt(env, "POLYMARKET_SIGNATURE_TYPE", 1),
     privateKey: envStr(env, "POLYMARKET_PRIVATE_KEY"),
     proxyWallet,

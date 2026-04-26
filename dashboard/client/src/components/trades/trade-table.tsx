@@ -1,45 +1,60 @@
+import { useMemo, useState } from "react";
 import type { TradeRow } from "../../lib/types";
-import { formatDateTime, formatUsd, pnlColor, cn } from "../../lib/utils";
+import { cn, formatDateTime, formatSignedUsd, formatUsd, pnlColor } from "../../lib/utils";
+import { TableToolbar } from "../ui/dashboard-primitives";
 
 interface TradeTableProps {
   trades: TradeRow[];
   page: number;
   total: number;
   perPage: number;
-  onPageChange: (p: number) => void;
+  onPageChange: (page: number) => void;
 }
 
-function TradeCard({ trade: t }: { trade: TradeRow }) {
+function sideTone(side: string) {
+  return side === "UP" ? "text-accent-green border-accent-green" : "text-accent-red border-accent-red";
+}
+
+function settleValue(trade: TradeRow) {
+  return trade.settlement_price != null ? trade.settlement_price.toFixed(1) : "--";
+}
+
+function pnlValue(trade: TradeRow) {
+  return trade.pnl != null ? formatSignedUsd(trade.pnl) : "--";
+}
+
+function MobileTradeCard({ trade }: { trade: TradeRow }) {
   return (
-    <div className="flex flex-col gap-0.5 py-2 border-b border-surface last:border-0 px-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              "font-semibold text-[12px]",
-              t.side === "UP" ? "text-accent-green" : "text-accent-red",
-            )}
-          >
-            {t.side}
-          </span>
-          <span className="text-[12px] text-muted">{t.strategy}</span>
+    <div className="border-b border-surface px-3 py-3 last:border-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className={cn("border px-1.5 py-0.5 text-[11px] font-semibold", sideTone(trade.side))}>
+              {trade.side}
+            </span>
+            <span className="text-[12px] text-text">{trade.strategy}</span>
+          </div>
+          <div className="mt-1 text-[11px] text-muted tabular-nums">
+            {formatDateTime(trade.timestamp)}
+          </div>
         </div>
-        <span className="text-[11px] text-muted tabular-nums">
-          {formatDateTime(t.timestamp)}
-        </span>
+        <div className={cn("text-[12px] font-semibold tabular-nums", pnlColor(trade.pnl ?? 0))}>
+          {pnlValue(trade)}
+        </div>
       </div>
-      <div className="flex items-center justify-between text-[12px]">
-        <div className="flex items-center gap-3 tabular-nums">
-          <span>{formatUsd(t.size)}</span>
-          <span className="text-muted">@ {t.entry_price.toFixed(4)}</span>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <div className="text-muted">Size</div>
+          <div className="mt-1 tabular-nums">{formatUsd(trade.size)}</div>
         </div>
-        <span
-          className={cn("tabular-nums font-medium", pnlColor(t.pnl ?? 0))}
-        >
-          {t.pnl !== null
-            ? `${t.pnl >= 0 ? "+" : ""}${formatUsd(t.pnl)}`
-            : "--"}
-        </span>
+        <div>
+          <div className="text-muted">Entry</div>
+          <div className="mt-1 tabular-nums">{trade.entry_price.toFixed(4)}</div>
+        </div>
+        <div>
+          <div className="text-muted">Settle</div>
+          <div className="mt-1 tabular-nums">{settleValue(trade)}</div>
+        </div>
       </div>
     </div>
   );
@@ -53,74 +68,139 @@ export function TradeTable({
   onPageChange,
 }: TradeTableProps) {
   const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const [strategy, setStrategy] = useState("all");
+  const [side, setSide] = useState("all");
+  const [status, setStatus] = useState("all");
+  const [market, setMarket] = useState("");
+  const strategies = useMemo(
+    () => Array.from(new Set(trades.map((trade) => trade.strategy))).sort(),
+    [trades],
+  );
+  const statuses = useMemo(
+    () => Array.from(new Set(trades.map((trade) => trade.status))).sort(),
+    [trades],
+  );
+  const filtered = useMemo(
+    () =>
+      trades.filter((trade) => {
+        if (strategy !== "all" && trade.strategy !== strategy) return false;
+        if (side !== "all" && trade.side !== side) return false;
+        if (status !== "all" && trade.status !== status) return false;
+        if (market.trim() && !trade.market_id.toLowerCase().includes(market.trim().toLowerCase())) {
+          return false;
+        }
+        return true;
+      }),
+    [market, side, status, strategy, trades],
+  );
+  const allFilteredSameStatus =
+    filtered.length > 0 && new Set(filtered.map((trade) => trade.status)).size === 1;
 
   return (
-    <div className="border border-border bg-bg overflow-hidden">
-      <div className="hidden md:block overflow-x-auto">
+    <div className="border border-border bg-bg">
+      <TableToolbar
+        left={
+          <div className="text-[11px] text-muted">
+            {filtered.length === trades.length
+              ? `${trades.length} trades`
+              : `${filtered.length} of ${trades.length} trades`}
+          </div>
+        }
+        right={
+          <>
+            <select
+              aria-label="Strategy"
+              value={strategy}
+              onChange={(event) => setStrategy(event.target.value)}
+              className="border border-border bg-bg px-2 py-1 text-[11px]"
+            >
+              <option value="all">All strategies</option>
+              {strategies.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Side"
+              value={side}
+              onChange={(event) => setSide(event.target.value)}
+              className="border border-border bg-bg px-2 py-1 text-[11px]"
+            >
+              <option value="all">All sides</option>
+              <option value="UP">UP</option>
+              <option value="DOWN">DOWN</option>
+            </select>
+            <select
+              aria-label="Status"
+              value={status}
+              onChange={(event) => setStatus(event.target.value)}
+              className="border border-border bg-bg px-2 py-1 text-[11px]"
+            >
+              <option value="all">All statuses</option>
+              {statuses.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <input
+              value={market}
+              onChange={(event) => setMarket(event.target.value)}
+              placeholder="Market"
+              className="border border-border bg-bg px-2 py-1 text-[11px]"
+            />
+          </>
+        }
+      />
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full text-[12px]">
           <thead>
             <tr className="border-b border-border bg-surface">
-              <th className="text-left px-3 py-2 font-semibold">Time</th>
-              <th className="text-left px-3 py-2 font-semibold">Strategy</th>
-              <th className="text-left px-3 py-2 font-semibold">Side</th>
-              <th className="text-right px-3 py-2 font-semibold">Size</th>
-              <th className="text-right px-3 py-2 font-semibold">Entry</th>
-              <th className="text-right px-3 py-2 font-semibold">Settle</th>
-              <th className="text-right px-3 py-2 font-semibold">PnL</th>
+              <th className="px-3 py-2 text-left font-semibold text-muted">Time</th>
+              <th className="px-3 py-2 text-left font-semibold text-muted">Strategy</th>
+              <th className="px-3 py-2 text-left font-semibold text-muted">Side</th>
+              <th className="px-3 py-2 text-right font-semibold text-muted">Size</th>
+              <th className="px-3 py-2 text-right font-semibold text-muted">Entry</th>
+              <th className="px-3 py-2 text-right font-semibold text-muted">Settle</th>
+              <th className="px-3 py-2 text-right font-semibold text-muted">PnL</th>
             </tr>
           </thead>
           <tbody>
-            {trades.map((t) => (
-              <tr key={t.id} className="border-b border-surface last:border-0">
-                <td className="px-3 py-1.5 tabular-nums text-muted">
-                  {formatDateTime(t.timestamp)}
+            {filtered.map((trade) => (
+              <tr key={trade.id} className="border-b border-surface last:border-0">
+                <td className="px-3 py-2 text-muted tabular-nums">{formatDateTime(trade.timestamp)}</td>
+                <td className="px-3 py-2">
+                  <div className="font-medium">{trade.strategy}</div>
+                  {!allFilteredSameStatus && (
+                    <div className="text-[11px] text-muted">{trade.status}</div>
+                  )}
                 </td>
-                <td className="px-3 py-1.5">{t.strategy}</td>
-                <td className="px-3 py-1.5">
-                  <span
-                    className={cn(
-                      "font-semibold",
-                      t.side === "UP"
-                        ? "text-accent-green"
-                        : "text-accent-red",
-                    )}
-                  >
-                    {t.side}
+                <td className="px-3 py-2">
+                  <span className={cn("border px-1.5 py-0.5 text-[11px] font-semibold", sideTone(trade.side))}>
+                    {trade.side}
                   </span>
                 </td>
-                <td className="px-3 py-1.5 text-right tabular-nums">
-                  {formatUsd(t.size)}
-                </td>
-                <td className="px-3 py-1.5 text-right tabular-nums">
-                  {t.entry_price.toFixed(4)}
-                </td>
-                <td className="px-3 py-1.5 text-right tabular-nums text-muted">
-                  {t.settlement_price !== null
-                    ? t.settlement_price.toFixed(1)
-                    : "--"}
-                </td>
-                <td
-                  className={cn(
-                    "px-3 py-1.5 text-right tabular-nums font-medium",
-                    pnlColor(t.pnl ?? 0),
-                  )}
-                >
-                  {t.pnl !== null
-                    ? `${t.pnl >= 0 ? "+" : ""}${formatUsd(t.pnl)}`
-                    : "--"}
+                <td className="px-3 py-2 text-right tabular-nums">{formatUsd(trade.size)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{trade.entry_price.toFixed(4)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted">{settleValue(trade)}</td>
+                <td className={cn("px-3 py-2 text-right font-semibold tabular-nums", pnlColor(trade.pnl ?? 0))}>
+                  {pnlValue(trade)}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
       <div className="md:hidden">
-        {trades.map((t) => (
-          <TradeCard key={t.id} trade={t} />
+        {filtered.map((trade) => (
+          <MobileTradeCard key={trade.id} trade={trade} />
         ))}
       </div>
+
       {totalPages > 1 && (
-        <div className="flex items-center justify-between px-3 py-2 border-t border-border text-[11px]">
+        <div className="flex items-center justify-between border-t border-border px-3 py-2 text-[11px]">
           <span className="text-muted">
             {total} trades, page {page}/{totalPages}
           </span>
@@ -128,14 +208,14 @@ export function TradeTable({
             <button
               onClick={() => onPageChange(page - 1)}
               disabled={page <= 1}
-              className="px-2 py-0.5 border border-border rounded disabled:opacity-30 hover:bg-surface transition-colors"
+              className="border border-border px-2 py-1 transition-colors hover:bg-surface disabled:opacity-30"
             >
               Prev
             </button>
             <button
               onClick={() => onPageChange(page + 1)}
               disabled={page >= totalPages}
-              className="px-2 py-0.5 border border-border rounded disabled:opacity-30 hover:bg-surface transition-colors"
+              className="border border-border px-2 py-1 transition-colors hover:bg-surface disabled:opacity-30"
             >
               Next
             </button>

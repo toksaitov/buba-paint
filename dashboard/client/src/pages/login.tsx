@@ -28,7 +28,7 @@ export function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-bg">
       <div className="w-full max-w-xs">
         <div className="border border-border p-6 bg-bg">
-          <h1 className="text-[15px] font-bold mb-1">buba-paint</h1>
+          <h1 className="text-[15px] font-bold mb-1">buba</h1>
           <p className="text-[11px] text-muted mb-5">
             Sign in to the dashboard
           </p>

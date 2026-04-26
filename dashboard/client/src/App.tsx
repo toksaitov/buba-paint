@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppShell } from "./components/layout/app-shell";
 import { ProtectedRoute } from "./components/common/protected-route";
@@ -9,7 +9,7 @@ import { EquityPage } from "./pages/equity";
 import { SignalsPage } from "./pages/signals";
 import { LogsPage } from "./pages/logs";
 import { StatsPage } from "./pages/stats";
-import { LivePage } from "./pages/live";
+import { ExecutionPage } from "./pages/execution";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,8 +38,11 @@ export default function App() {
             <Route path="/trades" element={<TradesPage />} />
             <Route path="/signals" element={<SignalsPage />} />
             <Route path="/logs" element={<LogsPage />} />
-            <Route path="/stats" element={<StatsPage />} />
-            <Route path="/live" element={<LivePage />} />
+            <Route path="/strategies" element={<StatsPage />} />
+            <Route path="/stats" element={<Navigate to="/strategies" replace />} />
+            <Route path="/execution" element={<ExecutionPage />} />
+            <Route path="/trading" element={<Navigate to="/execution" replace />} />
+            <Route path="/live" element={<Navigate to="/execution" replace />} />
           </Route>
         </Routes>
       </BrowserRouter>

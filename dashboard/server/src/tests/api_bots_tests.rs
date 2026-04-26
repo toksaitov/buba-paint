@@ -49,8 +49,17 @@ fn test_app_with_agent(agent_url: &str) -> (Router, Arc<DashboardDb>) {
         .route("/api/bots/{id}/status", get(bots::bot_status))
         .route("/api/bots/{id}/trades", get(bots::bot_trades))
         .route("/api/bots/{id}/balance", get(bots::bot_balance))
+        .route("/api/bots/{id}/equity/series", get(bots::bot_equity_series))
         .route("/api/bots/{id}/signals", get(bots::bot_signals))
+        .route(
+            "/api/bots/{id}/signals/groups",
+            get(bots::bot_signal_groups),
+        )
         .route("/api/bots/{id}/stats", get(bots::bot_stats))
+        .route(
+            "/api/bots/{id}/trading/summary",
+            get(bots::bot_trading_summary),
+        )
         .route("/api/bots/{id}/live/status", get(bots::bot_live_status))
         .route("/api/bots/{id}/live/sessions", get(bots::bot_live_sessions))
         .route("/api/bots/{id}/live/orders", get(bots::bot_live_orders))
@@ -203,6 +212,34 @@ async fn bot_status_unknown_id_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+/// Verifies that trading summary proxies to the agent.
+#[tokio::test]
+async fn bot_trading_summary_proxies_to_agent() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/trading/summary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "runtime_mode": "live_readonly",
+            "trading_state": "readonly",
+            "alerts": [],
+        })))
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get("/api/bots/paint/trading/summary", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = json_body(resp).await;
+    assert_eq!(body["runtime_mode"], "live_readonly");
+    assert_eq!(body["trading_state"], "readonly");
+}
+
 /// Verifies that bot trades forwards query params.
 #[tokio::test]
 async fn bot_trades_forwards_query_params() {
@@ -251,6 +288,30 @@ async fn bot_balance_forwards_since_param() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// Verifies that bot equity series proxies to agent with query params.
+#[tokio::test]
+async fn bot_equity_series_forwards_since_param() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/equity/series"))
+        .and(query_param("since", "5000"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"baseline": null, "points": []})),
+        )
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get("/api/bots/paint/equity/series?since=5000", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
 /// Verifies that bot signals forwards limit param.
 #[tokio::test]
 async fn bot_signals_forwards_limit_param() {
@@ -267,6 +328,35 @@ async fn bot_signals_forwards_limit_param() {
 
     let resp = app
         .oneshot(auth_get("/api/bots/paint/signals?limit=50", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Verifies that bot signal groups proxies grouping query params.
+#[tokio::test]
+async fn bot_signal_groups_forwards_grouping_params() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/signals/groups"))
+        .and(query_param("limit", "25"))
+        .and(query_param("quiet_gap_ms", "1000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "groups": [],
+            "raw_rows_scanned": 0,
+            "quiet_gap_ms": 1000
+        })))
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get(
+            "/api/bots/paint/signals/groups?limit=25&quiet_gap_ms=1000",
+            &token,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

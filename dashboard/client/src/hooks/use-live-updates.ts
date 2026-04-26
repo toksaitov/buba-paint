@@ -20,14 +20,11 @@ export function useLiveUpdates(botId: string) {
           showTradeNotification(m);
         } else if (m.type === "balance") {
           void qc.invalidateQueries({ queryKey: ["balance", botId] });
+          void qc.invalidateQueries({ queryKey: ["equity-series", botId] });
           void qc.invalidateQueries({ queryKey: ["bot-status", botId] });
         } else if (m.type === "signal") {
           void qc.invalidateQueries({ queryKey: ["signals", botId] });
-        } else if (m.type === "status") {
-          void qc.invalidateQueries({ queryKey: ["bot-status", botId] });
-          void qc.invalidateQueries({
-            queryKey: ["process-status", botId],
-          });
+          void qc.invalidateQueries({ queryKey: ["signal-groups", botId] });
         }
       },
       () => {

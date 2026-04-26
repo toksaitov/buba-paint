@@ -8,7 +8,7 @@
 use std::str::FromStr;
 
 use anyhow::Context;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::types::{MarketWindow, SignalDirection};
 
@@ -222,7 +222,86 @@ fn load_settlements(
     for row in rows {
         windows.push(row.context("reading market row")?);
     }
+    apply_replay_open_prices(conn, &mut windows)?;
     Ok(windows)
+}
+
+/// Prefer run-native Binance open prices when replaying pulled run data.
+fn apply_replay_open_prices(
+    conn: &rusqlite::Connection,
+    windows: &mut [MarketSettlement],
+) -> anyhow::Result<()> {
+    for window in windows {
+        if let Some(open_price) =
+            replay_native_open_price(conn, window.start_time, window.end_time)?
+        {
+            window.open_price = open_price;
+        }
+    }
+    Ok(())
+}
+
+/// Return the first native Binance price inside one market window.
+fn replay_native_open_price(
+    conn: &rusqlite::Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<Option<f64>> {
+    if let Some(price) = earliest_tick_data_binance_price(conn, start_time, end_time)? {
+        return Ok(Some(price));
+    }
+    earliest_feed_event_binance_price(conn, start_time, end_time)
+}
+
+/// Return the first sampled Binance tick price inside one market window.
+fn earliest_tick_data_binance_price(
+    conn: &rusqlite::Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<Option<f64>> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT price
+         FROM tick_data
+         WHERE source = 'binance'
+           AND timestamp >= ?1
+           AND timestamp < ?2
+           AND price IS NOT NULL
+         ORDER BY timestamp ASC, id ASC
+         LIMIT 1",
+    ) else {
+        return Ok(None);
+    };
+    let start_ms = timestamp_param(start_time, "start_time")?;
+    let end_ms = timestamp_param(end_time, "end_time")?;
+    Ok(stmt
+        .query_row(params![start_ms, end_ms], |row| row.get(0))
+        .optional()?)
+}
+
+/// Return the first raw Binance trade price inside one market window.
+fn earliest_feed_event_binance_price(
+    conn: &rusqlite::Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<Option<f64>> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT price
+         FROM feed_events
+         WHERE source = 'binance'
+           AND event_type = 'aggTrade'
+           AND received_at_ms >= ?1
+           AND received_at_ms < ?2
+           AND price IS NOT NULL
+         ORDER BY received_at_ms ASC, COALESCE(received_at_us, received_at_ms * 1000) ASC, id ASC
+         LIMIT 1",
+    ) else {
+        return Ok(None);
+    };
+    let start_ms = timestamp_param(start_time, "start_time")?;
+    let end_ms = timestamp_param(end_time, "end_time")?;
+    Ok(stmt
+        .query_row(params![start_ms, end_ms], |row| row.get(0))
+        .optional()?)
 }
 
 /// Convert a `SQLite` market row into a fully populated settlement.

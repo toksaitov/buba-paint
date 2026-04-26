@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PolymarketReadonlyProvider,
   StubSidecarProvider,
@@ -56,31 +56,42 @@ describe("PolymarketReadonlyProvider", () => {
       max_single_order_usd: 7.5,
       max_open_notional_usd: 20,
       max_daily_loss_usd: 10,
-        max_session_drawdown_usd: 12,
-        min_required_cash_usd: 25,
-      },
-    };
+      max_session_drawdown_usd: 12,
+      min_required_cash_usd: 25,
+    },
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   function createProvider(options?: {
-    ensureConnectedError?: string;
+    ensureConnectedError?: { value: string | null };
     openOrders?: Array<Record<string, string>>;
     positions?: Array<Record<string, number | string | boolean>>;
-    createApiKeyError?: string;
+    createApiKeyError?: { value: string | null };
+    createApiKeyCalls?: { value: number };
     balance?: string;
     allowance?: string | null;
+    openOrdersError?: { value: string | null };
+    discoveryMode?: "ok" | "partial_failure";
+    httpTimeoutOnPositions?: boolean;
   }) {
     const config = loadConfig({
       POLYMARKET_PRIVATE_KEY:
         "0x59c6995e998f97a5a0044966f0945382db3e5e8a0a5729b6b6b6f8c0d4b47a6a",
       POLYMARKET_PROXY_WALLET: "0xproxy",
       POLYMARKET_FUNDER: "0xfunder",
+      POLYMARKET_HTTP_TIMEOUT_MS: options?.httpTimeoutOnPositions ? "10" : "5000",
+      POLYMARKET_SDK_TIMEOUT_MS: "50",
     });
     let connectedMarkets: string[] = [];
 
     const provider = new PolymarketReadonlyProvider(config, {
       nowMs: () => nowMs,
-      fetchImpl: async (input: URL | RequestInfo) => {
+      fetchImpl: async (input, init) => {
         const url = typeof input === "string" ? input : input.toString();
+        void init;
         if (url === "https://polymarket.com/api/geoblock") {
           return new Response(
             JSON.stringify({ blocked: false, country: "IE", ip: "1.2.3.4" }),
@@ -88,13 +99,19 @@ describe("PolymarketReadonlyProvider", () => {
           );
         }
         if (url.includes("/events/slug/btc-updown-5m-")) {
+          const isFutureSlot = url.endsWith("-1700000100");
+          if (options?.discoveryMode === "partial_failure" && !isFutureSlot) {
+            return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
+          }
           return new Response(
             JSON.stringify({
-              slug: "btc-updown-5m-1700000100",
+              slug: isFutureSlot
+                ? "btc-updown-5m-1700000100"
+                : "btc-updown-5m-1700000000",
               markets: [
                 {
-                  id: "0xcondition",
-                  conditionId: "0xcondition",
+                  id: isFutureSlot ? "0xnext" : "0xcondition",
+                  conditionId: isFutureSlot ? "0xnext" : "0xcondition",
                   orderMinSize: 5,
                   orderPriceMinTickSize: 0.01,
                   acceptingOrders: true,
@@ -105,14 +122,20 @@ describe("PolymarketReadonlyProvider", () => {
           );
         }
         if (url.startsWith("https://data-api.polymarket.com/positions")) {
+          if (options?.httpTimeoutOnPositions) {
+            return new Promise<Response>(() => undefined);
+          }
           return new Response(JSON.stringify(options?.positions ?? []), { status: 200 });
         }
         throw new Error(`unexpected fetch ${url}`);
       },
       createClobClient: () => ({
         createApiKey: async () => {
-          if (options?.createApiKeyError) {
-            throw new Error(options.createApiKeyError);
+          if (options?.createApiKeyCalls) {
+            options.createApiKeyCalls.value += 1;
+          }
+          if (options?.createApiKeyError?.value) {
+            throw new Error(options.createApiKeyError.value);
           }
           return {
             key: "key",
@@ -138,40 +161,50 @@ describe("PolymarketReadonlyProvider", () => {
             allowances,
           };
         },
-        getOpenOrders: async () =>
-          (options?.openOrders as never as []) ??
-          [
-            {
-              id: "0xorder",
-              status: "OPEN",
-              owner: "owner",
-              maker_address: "maker",
-              market: "0xcondition",
-              asset_id: "0xasset",
-              side: "BUY",
-              original_size: "10",
-              size_matched: "0",
-              price: "0.5",
-              associate_trades: [],
-              outcome: "YES",
-              created_at: 1,
-              expiration: "2",
-              order_type: "FOK",
-            },
-          ],
+        getOpenOrders: async () => {
+          if (options?.openOrdersError?.value) {
+            throw new Error(options.openOrdersError.value);
+          }
+          return (
+            (options?.openOrders as never as []) ??
+            [
+              {
+                id: "0xorder",
+                status: "OPEN",
+                owner: "owner",
+                maker_address: "maker",
+                market: "0xcondition",
+                asset_id: "0xasset",
+                side: "BUY",
+                original_size: "10",
+                size_matched: "0",
+                price: "0.5",
+                associate_trades: [],
+                outcome: "YES",
+                created_at: 1,
+                expiration: "2",
+                order_type: "FOK",
+              },
+            ]
+          );
+        },
       }),
       createUserStreamMonitor: () => ({
         ensureConnected: async (_auth, markets) => {
           connectedMarkets = markets;
-          if (options?.ensureConnectedError) {
-            throw new Error(options.ensureConnectedError);
+          if (options?.ensureConnectedError?.value) {
+            throw new Error(options.ensureConnectedError.value);
           }
         },
         snapshot: () => ({
-          status: options?.ensureConnectedError ? "failed" : "ok",
-          lastConnectedAtMs: options?.ensureConnectedError ? null : nowMs,
+          status: options?.ensureConnectedError?.value ? "failed" : "ok",
+          lifecycle: options?.ensureConnectedError?.value ? "reconnecting" : "connected",
+          lastConnectedAtMs: options?.ensureConnectedError?.value ? null : nowMs,
           lastEventAtMs: null,
-          lastError: options?.ensureConnectedError ?? null,
+          lastError: options?.ensureConnectedError?.value ?? null,
+          lastDisconnectedAtMs: options?.ensureConnectedError?.value ? nowMs : null,
+          lastDisconnectReason: options?.ensureConnectedError?.value ?? null,
+          consecutiveFailures: options?.ensureConnectedError?.value ? 2 : 0,
           subscribedMarkets: connectedMarkets,
         }),
         close: () => undefined,
@@ -184,6 +217,7 @@ describe("PolymarketReadonlyProvider", () => {
   it("runs a successful readonly preflight against the real provider contract", async () => {
     const provider = createProvider();
     const response = await provider.preflight(request);
+    const health = await provider.health();
 
     expect(response.ok).toBe(true);
     expect(response.wallet_address).toBe("0xfunder");
@@ -196,10 +230,50 @@ describe("PolymarketReadonlyProvider", () => {
     expect(response.available_cash_usd).toBe(95);
     expect(response.legal_order_min_usd).toBe(5);
     expect(response.details_json).toContain("\"provider\":\"polymarket\"");
+    expect(health.ready).toBe(true);
+    expect(health.readiness_status).toBe("ready");
+    expect(health.last_successful_account_refresh_at_ms).toBe(nowMs);
+    expect(health.last_account_refresh_error).toBeNull();
+  });
+
+  it("does not permanently cache a rejected auth bootstrap", async () => {
+    const calls = { value: 0 };
+    const createApiKeyError: { value: string | null } = { value: "boom" };
+    const provider = createProvider({ createApiKeyCalls: calls, createApiKeyError });
+
+    const first = await provider.preflight(request);
+    expect(first.ok).toBe(false);
+    expect(first.errors.join(" ")).toContain("auth_bootstrap: boom");
+
+    createApiKeyError.value = null;
+    const second = await provider.preflight(request);
+
+    expect(second.ok).toBe(true);
+    expect(calls.value).toBe(2);
+  });
+
+  it("invalidates cached auth state on downstream auth-like failures", async () => {
+    const calls = { value: 0 };
+    const openOrdersError = { value: null as string | null };
+    const provider = createProvider({ createApiKeyCalls: calls, openOrdersError });
+
+    await provider.accountState();
+    expect(calls.value).toBe(1);
+
+    openOrdersError.value = "401 api key expired";
+    await expect(provider.accountState()).rejects.toThrow(
+      "open_orders: 401 api key expired",
+    );
+
+    openOrdersError.value = null;
+    await provider.accountState();
+    expect(calls.value).toBe(2);
   });
 
   it("falls back to derive-api-key when create-api-key is unavailable", async () => {
-    const provider = createProvider({ createApiKeyError: "Could not create api key" });
+    const provider = createProvider({
+      createApiKeyError: { value: "Could not create api key" },
+    });
     const response = await provider.preflight(request);
 
     expect(response.ok).toBe(true);
@@ -208,12 +282,18 @@ describe("PolymarketReadonlyProvider", () => {
   });
 
   it("surfaces authenticated user-stream failures without enabling trading", async () => {
-    const provider = createProvider({ ensureConnectedError: "auth rejected" });
+    const ensureConnectedError: { value: string | null } = {
+      value: "auth rejected",
+    };
+    const provider = createProvider({ ensureConnectedError });
     const response = await provider.preflight(request);
+    const health = await provider.health();
 
     expect(response.ok).toBe(false);
     expect(response.user_stream_status).toBe("failed");
     expect(response.errors.join(" ")).toContain("Authenticated user stream failed");
+    expect(health.readiness_status).toBe("degraded");
+    expect(health.consecutive_user_stream_failures).toBe(2);
   });
 
   it("treats zero allowance as readable venue state, not missing allowance metadata", async () => {
@@ -279,5 +359,55 @@ describe("PolymarketReadonlyProvider", () => {
     expect(account.allowance_available).toBe(75);
     expect(account.details_json).toContain("\"open_order_count\":1");
     expect(order.status).toBe("not_implemented");
+  });
+
+  it("returns degraded discovery details when one market lookup fails", async () => {
+    const provider = createProvider({ discoveryMode: "partial_failure" });
+    const account = await provider.accountState();
+    const health = await provider.health();
+    const details = JSON.parse(account.details_json ?? "{}") as {
+      discovery_degraded: boolean;
+      discovery_error: string | null;
+      active_markets: Array<{ conditionId: string }>;
+    };
+
+    expect(details.discovery_degraded).toBe(true);
+    expect(details.discovery_error).toContain("market_discovery");
+    expect(details.active_markets).toHaveLength(1);
+    expect(health.readiness_status).toBe("degraded");
+  });
+
+  it("fails closed when core account decomposition cannot be read", async () => {
+    vi.useFakeTimers();
+    const provider = createProvider({ httpTimeoutOnPositions: true });
+    const accountPromise = provider.accountState().catch((error) => error as Error);
+
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(20);
+    const error = (await accountPromise) as Error;
+    expect(error.message).toContain("positions: request timed out after 10ms");
+
+    const health = await provider.health();
+    expect(health.last_account_refresh_error).toContain("positions:");
+    expect(health.ready).toBe(false);
+  });
+
+  it("clears degraded account health after a successful recovery", async () => {
+    vi.useFakeTimers();
+    const ensureConnectedError: { value: string | null } = {
+      value: "stream down",
+    };
+    const provider = createProvider({ ensureConnectedError });
+
+    await provider.preflight(request);
+    let health = await provider.health();
+    expect(health.readiness_status).toBe("degraded");
+
+    ensureConnectedError.value = null;
+    await provider.accountState();
+    health = await provider.health();
+
+    expect(health.readiness_status).toBe("ready");
+    expect(health.last_account_refresh_error).toBeNull();
   });
 });

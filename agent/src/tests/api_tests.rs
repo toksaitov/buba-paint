@@ -13,7 +13,7 @@ use crate::api::{self, AppState};
 use crate::auth::{SharedSecret, require_secret};
 use crate::db_reader::DbReader;
 use crate::process_manager::NoopProcessManager;
-use crate::types::WsMessage;
+use crate::types::{LiveStatusResponse, WsMessage};
 
 /// Create a fixture DB identical to the one in `db_reader_tests`.
 fn fixture_db() -> Connection {
@@ -78,8 +78,11 @@ fn test_app_with_bot(conn: Connection, log_path: Option<&str>) -> Router {
         .route("/api/status", get(api::get_status))
         .route("/api/trades", get(api::get_trades))
         .route("/api/balance", get(api::get_balance))
+        .route("/api/equity/series", get(api::get_equity_series))
         .route("/api/signals", get(api::get_signals))
+        .route("/api/signals/groups", get(api::get_signal_groups))
         .route("/api/stats", get(api::get_stats))
+        .route("/api/trading/summary", get(api::get_trading_summary))
         .route("/api/live/status", get(api::get_live_status))
         .route("/api/live/sessions", get(api::get_live_sessions))
         .route("/api/live/orders", get(api::get_live_orders))
@@ -210,6 +213,33 @@ async fn balance_since_filter() {
     assert_eq!(json["entries"].as_array().unwrap().len(), 1);
 }
 
+/// Verifies that equity series separates timestamp-zero baseline rows.
+#[tokio::test]
+async fn equity_series_separates_baseline_from_points() {
+    let conn = fixture_db();
+    conn.execute(
+        "INSERT INTO balance_log (timestamp, event, trade_id, amount, balance)
+         VALUES (0, 'init', NULL, 0.0, 180.0)",
+        [],
+    )
+    .unwrap();
+    let app = test_app(conn);
+    let resp = app.oneshot(authed_get("/api/equity/series")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let json = json_body(resp).await;
+    assert_eq!(json["baseline"]["timestamp"], 0);
+    assert_eq!(json["baseline"]["balance"], 180.0);
+    assert_eq!(json["points"].as_array().unwrap().len(), 2);
+    assert!(
+        json["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|point| point["timestamp"].as_u64().unwrap() > 0)
+    );
+}
+
 /// Verifies that signals returns list.
 #[tokio::test]
 async fn signals_returns_list() {
@@ -235,6 +265,39 @@ async fn signals_limit() {
     let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(json["signals"].as_array().unwrap().is_empty());
+}
+
+/// Verifies that grouped signals collapse adjacent duplicate bursts.
+#[tokio::test]
+async fn signal_groups_collapse_adjacent_duplicates() {
+    let conn = fixture_db();
+    conn.execute_batch(
+        "INSERT INTO signals (timestamp, strategy, direction, binance_price, chainlink_price, up_ask, down_ask, metadata)
+         VALUES (5000, 'calm-persistence', 'DOWN', 42010.0, 42009.0, 0.31, 0.70, '{}');
+         INSERT INTO signals (timestamp, strategy, direction, binance_price, chainlink_price, up_ask, down_ask, metadata)
+         VALUES (4990, 'calm-persistence', 'DOWN', 42010.0, 42009.0, 0.31, 0.70, '{}');
+         INSERT INTO signals (timestamp, strategy, direction, binance_price, chainlink_price, up_ask, down_ask, metadata)
+         VALUES (4980, 'calm-persistence', 'DOWN', 42010.0, 42009.0, 0.31, 0.70, '{}');
+         INSERT INTO signals (timestamp, strategy, direction, binance_price, chainlink_price, up_ask, down_ask, metadata)
+         VALUES (100, 'calm-persistence', 'DOWN', 42010.0, 42009.0, 0.31, 0.70, '{}');",
+    )
+    .unwrap();
+    let app = test_app(conn);
+    let resp = app
+        .oneshot(authed_get("/api/signals/groups?limit=2&quiet_gap_ms=100"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let json = json_body(resp).await;
+    let groups = json["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0]["strategy"], "calm-persistence");
+    assert_eq!(groups[0]["direction"], "DOWN");
+    assert_eq!(groups[0]["count"], 3);
+    assert_eq!(groups[0]["start_timestamp"], 4980);
+    assert_eq!(groups[0]["end_timestamp"], 5000);
+    assert_eq!(json["quiet_gap_ms"], 100);
 }
 
 /// Verifies that stats returns by strategy.
@@ -263,6 +326,34 @@ async fn live_status_returns_summary() {
     assert_eq!(json["open_orders"], 1);
     assert_eq!(json["pending_redemptions"], 1);
     assert_eq!(json["critical_reconciliation_events"], 1);
+}
+
+/// Verifies that trading summary returns the derived dashboard model.
+#[tokio::test]
+async fn trading_summary_returns_derived_model() {
+    let app = test_app(fixture_db());
+    let resp = app
+        .oneshot(authed_get("/api/trading/summary"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = json_body(resp).await;
+    assert_eq!(body["runtime_mode"], "live_readonly");
+    assert_eq!(body["trading_state"], "readonly");
+    assert_eq!(body["process_state"], "monitoring");
+    assert_eq!(body["shadow_summary"]["balance"], 250.0);
+    assert_eq!(body["real_account_summary"]["available_cash"], 96.0);
+    assert_eq!(body["venue_health"]["label"], "Venue state incomplete");
+    assert_eq!(
+        body["capabilities"]["arm"]["enabled"],
+        serde_json::Value::Bool(false)
+    );
+    assert!(
+        body["alerts"]
+            .as_array()
+            .is_some_and(|alerts| !alerts.is_empty())
+    );
 }
 
 /// Verifies that live table endpoints return seeded rows and honor the query limit.
@@ -436,4 +527,196 @@ async fn get_logs_without_log_path() {
     let lines = json["lines"].as_array().unwrap();
 
     assert!(!lines.is_empty());
+}
+
+/// Builds an empty live-status payload for helper tests.
+fn empty_live_status() -> LiveStatusResponse {
+    LiveStatusResponse {
+        latest_session: None,
+        latest_account_snapshot: None,
+        open_orders: 0,
+        pending_redemptions: 0,
+        critical_reconciliation_events: 0,
+    }
+}
+
+/// Verifies that details helpers parse object payloads and ignore invalid shapes.
+#[test]
+fn details_helpers_parse_expected_shapes() {
+    let parsed = super::parse_details(Some(
+        r#"{"provider":"stub","last_user_stream_connected_at_ms":1234,"ignored":[1,2]}"#,
+    ))
+    .unwrap();
+    assert_eq!(
+        super::detail_string(Some(&parsed), "provider").as_deref(),
+        Some("stub")
+    );
+    assert_eq!(
+        super::detail_u64(Some(&parsed), "last_user_stream_connected_at_ms"),
+        Some(1234)
+    );
+    assert!(super::detail_string(Some(&parsed), "missing").is_none());
+    assert!(super::parse_details(Some("[]")).is_none());
+    assert!(super::parse_details(Some("not-json")).is_none());
+    assert!(super::parse_details(None).is_none());
+}
+
+/// Verifies that enabled strategies parsing filters out invalid entries.
+#[test]
+fn parse_enabled_strategies_filters_non_strings() {
+    assert_eq!(
+        super::parse_enabled_strategies(r#"["latency-arb",7,"calm-persistence",null]"#),
+        vec!["latency-arb".to_string(), "calm-persistence".to_string()]
+    );
+    assert!(super::parse_enabled_strategies(r#"{"not":"an-array"}"#).is_empty());
+}
+
+/// Verifies that process-state derivation distinguishes running, monitoring, and stopped.
+#[test]
+fn derive_process_state_covers_runtime_modes() {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    assert_eq!(super::derive_process_state(true, true, None), "running");
+    assert_eq!(
+        super::derive_process_state(false, false, Some(now_ms)),
+        "running"
+    );
+    assert_eq!(
+        super::derive_process_state(false, false, Some(1)),
+        "monitoring"
+    );
+    assert_eq!(super::derive_process_state(false, true, None), "stopped");
+}
+
+/// Verifies that trading-state derivation handles readonly degradation and gating.
+#[test]
+fn derive_trading_state_covers_modes() {
+    assert_eq!(
+        super::derive_trading_state("live_readonly", Some("readonly_failed")),
+        "degraded"
+    );
+    assert_eq!(
+        super::derive_trading_state("live_readonly", Some("readonly_ready")),
+        "readonly"
+    );
+    assert_eq!(super::derive_trading_state("live_trading", None), "gated");
+    assert_eq!(super::derive_trading_state("paper", None), "paper");
+}
+
+/// Verifies that the trading-health helpers cover paper, missing, degraded, and healthy states.
+#[test]
+fn trading_health_helpers_cover_branches() {
+    let venue_paper = super::build_venue_health("paper", false, None, None);
+    assert_eq!(venue_paper.state, "idle");
+
+    let venue_missing = super::build_venue_health("live_readonly", false, None, None);
+    assert_eq!(venue_missing.state, "critical");
+
+    let venue_stub = super::build_venue_health("live_readonly", true, Some("stub"), None);
+    assert_eq!(venue_stub.label, "Stub provider");
+
+    let venue_ok = super::build_venue_health("live_readonly", true, Some("polymarket"), Some("ok"));
+    assert_eq!(venue_ok.state, "healthy");
+
+    let venue_degraded =
+        super::build_venue_health("live_readonly", true, Some("polymarket"), Some("down"));
+    assert_eq!(venue_degraded.label, "User stream degraded");
+
+    let venue_incomplete =
+        super::build_venue_health("live_readonly", true, Some("polymarket"), None);
+    assert_eq!(venue_incomplete.label, "Venue state incomplete");
+
+    let account_paper = super::build_account_health("paper", false, None);
+    assert_eq!(account_paper.state, "idle");
+
+    let account_missing = super::build_account_health("live_readonly", false, None);
+    assert_eq!(account_missing.label, "No account snapshot");
+
+    let account_unknown = super::build_account_health("live_readonly", true, None);
+    assert_eq!(account_unknown.label, "Allowance unknown");
+
+    let account_ok = super::build_account_health("live_readonly", true, Some(10.0));
+    assert_eq!(account_ok.state, "healthy");
+
+    let recon_paper = super::build_reconciliation_health("paper", 0, 0, 0);
+    assert_eq!(recon_paper.state, "idle");
+
+    let recon_critical = super::build_reconciliation_health("live_readonly", 2, 0, 0);
+    assert_eq!(recon_critical.state, "critical");
+
+    let recon_pending = super::build_reconciliation_health("live_readonly", 0, 1, 2);
+    assert_eq!(recon_pending.label, "Pending activity");
+
+    let recon_ok = super::build_reconciliation_health("live_readonly", 0, 0, 0);
+    assert_eq!(recon_ok.state, "healthy");
+}
+
+/// Verifies that capability and alert helpers expose the expected gating reasons.
+#[test]
+fn trading_capabilities_and_alerts_cover_branches() {
+    let paper_capabilities = super::build_trading_capabilities("paper");
+    assert!(paper_capabilities.preflight.reason.contains("Paper mode"));
+    assert!(!paper_capabilities.arm.enabled);
+
+    let live_capabilities = super::build_trading_capabilities("live_readonly");
+    assert!(live_capabilities.preflight.reason.contains("not wired"));
+    assert!(
+        live_capabilities
+            .kill_switch
+            .reason
+            .contains("no dashboard action endpoint")
+    );
+
+    let mut missing_allowance = empty_live_status();
+    missing_allowance.latest_account_snapshot = Some(crate::types::LiveAccountSnapshotRow {
+        id: 1,
+        session_id: 1,
+        timestamp_ms: 1000,
+        cash_available: 10.0,
+        cash_reserved_for_orders: 0.0,
+        inventory_mark_value: 0.0,
+        redeemable_value: 0.0,
+        pending_redeem_value: 0.0,
+        total_equity: 10.0,
+        allowance_available: None,
+        details_json: None,
+    });
+
+    let readonly_alerts = super::build_trading_alerts(
+        "live_readonly",
+        Some("stub"),
+        Some("down"),
+        &LiveStatusResponse {
+            open_orders: 2,
+            critical_reconciliation_events: 3,
+            ..missing_allowance.clone()
+        },
+        "stopped",
+    );
+    let readonly_titles = readonly_alerts
+        .iter()
+        .map(|alert| alert.title.as_str())
+        .collect::<Vec<_>>();
+    assert!(readonly_titles.contains(&"Process stopped"));
+    assert!(readonly_titles.contains(&"Shadow and execution views differ"));
+    assert!(readonly_titles.contains(&"No live session"));
+    assert!(readonly_titles.contains(&"Stub provider"));
+    assert!(readonly_titles.contains(&"User stream degraded"));
+    assert!(readonly_titles.contains(&"Unexpected remote open orders"));
+    assert!(readonly_titles.contains(&"Allowance missing"));
+    assert!(readonly_titles.contains(&"Critical reconciliation events"));
+
+    let live_trading_alerts =
+        super::build_trading_alerts("live_trading", None, None, &empty_live_status(), "running");
+    assert!(
+        live_trading_alerts
+            .iter()
+            .any(|alert| alert.title == "Live trading gated")
+    );
+
+    let paper_alerts =
+        super::build_trading_alerts("paper", None, None, &empty_live_status(), "running");
+    assert!(paper_alerts.is_empty());
 }

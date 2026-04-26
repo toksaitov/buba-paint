@@ -24,29 +24,33 @@ test("login, navigate, and persist the active session", async ({ page }) => {
   await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page).toHaveURL("/");
-  await expect(page.getByText("Balance")).toBeVisible();
-  await expect(page.getByText("Total PnL")).toBeVisible();
+  await expect(page.getByText("Balance", { exact: true })).toBeVisible();
+  await expect(page.getByText("PnL", { exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: "Execution" }).click();
+  await expect(page.getByRole("heading", { name: "Controls" })).toBeVisible();
+  await expect(page.getByText("Cash available")).toBeVisible();
 
   await page.getByRole("link", { name: "Trades" }).click();
-  await expect(page.getByRole("heading", { name: "Trade History" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Trade history" })).toBeVisible();
   await expect(
     page.locator("table").getByRole("cell", { name: "latency-arb" }),
   ).toBeVisible();
 
   await page.getByRole("link", { name: "Signals" }).click();
-  await expect(page.getByRole("heading", { name: "Signal Log" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Signals" })).toBeVisible();
 
   await page.getByRole("link", { name: "Logs" }).click();
-  await expect(page.getByRole("heading", { name: "Bot Log" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Logs" })).toBeVisible();
   await expect(page.getByText("connected to feeds")).toBeVisible();
 
-  await page.getByRole("link", { name: "Stats" }).click();
-  await expect(page.getByRole("heading", { name: "Bot Status" })).toBeVisible();
+  await page.getByRole("link", { name: "Strategies" }).click();
+  await expect(page.getByRole("heading", { name: "Strategies" })).toBeVisible();
   await expect(page.getByText("latency-arb", { exact: true }).first()).toBeVisible();
 
   await page.reload();
-  await expect(page).toHaveURL("/stats");
-  await expect(page.getByRole("heading", { name: "Bot Status" })).toBeVisible();
+  await expect(page).toHaveURL("/strategies");
+  await expect(page.getByRole("heading", { name: "Strategies" })).toBeVisible();
 });
 
 test("redirects to login when an authenticated request returns 401", async ({ page }) => {

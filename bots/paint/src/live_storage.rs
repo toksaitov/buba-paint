@@ -46,16 +46,23 @@ impl FeedEventStorageState {
     ) -> FeedEvent {
         event.trade_size = Some(trade_size);
         event.signed_quantity = signed_quantity;
-        if self.profile == FeedEventStorageProfile::Compact {
+        if self.profile != FeedEventStorageProfile::FullDebug {
             sanitize_hot_event(&mut event);
         }
         event
     }
 
-    /// Return one top-of-book event or drop it in compact mode.
-    pub(crate) fn prepare_binance_book_ticker(&mut self, event: FeedEvent) -> Option<FeedEvent> {
+    /// Return one Binance top-of-book event for replay-capable storage profiles.
+    pub(crate) fn prepare_binance_book_ticker(
+        &mut self,
+        mut event: FeedEvent,
+    ) -> Option<FeedEvent> {
         match self.profile {
             FeedEventStorageProfile::Compact => None,
+            FeedEventStorageProfile::ReplayGrade => {
+                sanitize_hot_event(&mut event);
+                Some(event)
+            }
             FeedEventStorageProfile::FullDebug => Some(event),
         }
     }
@@ -94,7 +101,7 @@ impl FeedEventStorageState {
 
     /// Return one compact Chainlink price event.
     pub(crate) fn prepare_chainlink_price(&mut self, mut event: FeedEvent) -> FeedEvent {
-        if self.profile == FeedEventStorageProfile::Compact {
+        if self.profile != FeedEventStorageProfile::FullDebug {
             sanitize_hot_event(&mut event);
         }
         event
@@ -154,7 +161,7 @@ impl FeedEventStorageState {
         {
             return None;
         }
-        if self.profile == FeedEventStorageProfile::Compact {
+        if self.profile != FeedEventStorageProfile::FullDebug {
             event.payload_json = None;
         }
         Some(event)
@@ -312,6 +319,30 @@ mod tests {
                 .prepare_binance_book_ticker(sample_event("binance", "bookTicker"))
                 .is_none()
         );
+    }
+
+    /// Verify that replay-grade mode persists compact book-ticker rows.
+    #[test]
+    fn replay_grade_mode_persists_compact_book_ticker_rows() {
+        let mut state = FeedEventStorageState::new(FeedEventStorageProfile::ReplayGrade);
+        let stored = state
+            .prepare_binance_book_ticker(sample_event("binance", "bookTicker"))
+            .unwrap();
+        assert_eq!(stored.best_bid, Some(0.48));
+        assert_eq!(stored.best_ask, Some(0.52));
+        assert!(stored.payload_json.is_none());
+        assert!(stored.details_json.is_none());
+    }
+
+    /// Verify that full-debug mode preserves book-ticker payloads.
+    #[test]
+    fn full_debug_mode_preserves_book_ticker_payloads() {
+        let mut state = FeedEventStorageState::new(FeedEventStorageProfile::FullDebug);
+        let stored = state
+            .prepare_binance_book_ticker(sample_event("binance", "bookTicker"))
+            .unwrap();
+        assert!(stored.payload_json.is_some());
+        assert!(stored.details_json.is_some());
     }
 
     /// Verify that compact depth persistence buckets rows by 250ms.

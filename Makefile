@@ -3,7 +3,7 @@ SIDECAR_DIR := polymarket-sidecar
 COMMENT_POLICY := cargo run --quiet --manifest-path tools/rust-comment-policy/Cargo.toml --
 TS_COMMENT_AUDIT := node scripts/ts_comment_audit.mjs
 
-.PHONY: lint comment-audit sidecar-lint sidecar-test sidecar-build test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
+.PHONY: lint comment-audit docs-audit sidecar-lint sidecar-test sidecar-build test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
 
 lint:
 	cargo fmt --all --check
@@ -24,6 +24,9 @@ sidecar-build:
 comment-audit:
 	$(COMMENT_POLICY) report
 	$(TS_COMMENT_AUDIT) report
+
+docs-audit:
+	python3 scripts/audit-docs.py
 
 test-fast:
 	cargo test --workspace --lib

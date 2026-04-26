@@ -28,6 +28,10 @@ pub fn run_sweep(
 ) -> anyhow::Result<()> {
     let t0 = Instant::now();
 
+    let quality =
+        crate::backtest::replay_quality::validate_sweep_input(data_path, start_time, end_time)?;
+    println!("Replay quality: {}\n", quality.class.as_str());
+
     println!("Loading tick data into memory...");
     let conn = rusqlite::Connection::open_with_flags(
         data_path,

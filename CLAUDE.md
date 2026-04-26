@@ -4,7 +4,7 @@ AI development guidelines for the buba workspace.
 
 ## Project
 
-buba is a paper-trading platform for Polymarket prediction markets. The workspace has four components. paint (`bots/paint`) is the first bot: 5-minute BTC Up/Down, three WebSocket feeds, three strategy families, SQLite persistence, a shared live-like execution engine for live paper trading and backtests, compact raw `feed_events` capture for new runs, additive compatibility for legacy-snapshot runs, a shared signal-feature engine, order-book liquidity checks, dynamic fee modeling, and a portfolio router with strategy sleeves so the families do not compete for the same snapshot. The agent (`agent/`) monitors any bot's database and exposes REST + WebSocket APIs. The dashboard has a Rust backend (`dashboard/server/`) that proxies to agents with JWT auth, and a React frontend (`dashboard/client/`) for the UI. Rust, Cargo workspace, TDD throughout.
+buba is a paper-trading platform for Polymarket prediction markets. The workspace has four components. paint (`bots/paint`) is the first bot: 5-minute BTC Up/Down, three WebSocket feeds, three strategy families, SQLite persistence, a shared live-like execution engine for live paper trading and backtests, replay-grade `feed_events` capture for new research runs, additive compatibility for legacy-snapshot runs, a shared signal-feature engine, order-book liquidity checks, dynamic fee modeling, and a portfolio router with strategy sleeves so the families do not compete for the same snapshot. The agent (`agent/`) monitors any bot's database and exposes REST + WebSocket APIs. The dashboard has a Rust backend (`dashboard/server/`) that proxies to agents with JWT auth, and a React frontend (`dashboard/client/`) for the UI. Rust, Cargo workspace, TDD throughout.
 
 Canonical reserve-mode and exact-run parity guidance lives in [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md). If reserve semantics, live capital usage, or exact-run parity are relevant, read that file before touching the knobs.
 
@@ -15,7 +15,7 @@ Real-money readiness documentation is split across:
 - [docs/live-session-runbook.md](./docs/live-session-runbook.md)
 - [docs/live-readiness-review.md](./docs/live-readiness-review.md)
 
-The current local tree now supports a real authenticated `live_readonly` runtime inside `buba-paint live`. It reuses the shared paper runtime, creates readonly live sessions, persists live account snapshots, reconciles remote venue state, and keeps the old charts/trades/signals/stats pages useful via a shadow paper track without placing real orders.
+The current local tree now supports a real authenticated `live_readonly` runtime inside `buba-paint live`. It reuses the shared paper runtime, creates readonly live sessions, persists live account snapshots, reconciles remote venue state, and keeps the shadow analysis pages useful via a paper track without placing real orders.
 `EXECUTION_MODE=live_trading` is still intentionally gated. The sidecar now implements real readonly-safe surfaces (`/health`, `/account`, `/preflight`), while `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` remain intentionally not implemented.
 
 Live feed transport hardening is part of the current release baseline. The important knobs are `WEBSOCKET_CONNECT_TIMEOUT_MS`, `BINANCE_NO_MESSAGE_RECONNECT_MS`, and `CLOB_NO_MESSAGE_RECONNECT_MS`. They reduce reconnect downtime only. They must not be used to loosen stale-data gates or change trading semantics.
@@ -115,27 +115,27 @@ Database: `db/database.rs` (rusqlite wrapper, prepared statements, bounded WAL m
 
 Shared: `types.rs` (Signal, BookState, MarketWindow, TradeResult, replay fidelity, feed-event structs, signal telemetry), `clock.rs` (Clock trait + SystemClock + BacktestClock), `errors.rs` (thiserror error types).
 
-Polymarket authenticated sidecar: `polymarket-sidecar/` (TypeScript package for proxy-wallet auth, relayer integration, live preflight, live account-state, and the future real order/redeem boundary; current provider is a stub, not a trading implementation).
+Polymarket authenticated sidecar: `polymarket-sidecar/` (TypeScript package for proxy-wallet auth, relayer integration, live preflight, live account-state, and the future real order/redeem boundary; readonly-safe `/health`, `/account`, and `/preflight` paths are real, while write paths remain explicitly non-live).
 
 ### agent (`agent/src/`)
 
-`api.rs` (10 REST endpoints + WS route), `db_reader.rs` (read-only SQLite connection, status/trades/balance/signals/stats queries), `ws.rs` (DB poller + WebSocket broadcast handler), `process_manager.rs` (ChildProcessManager for bot lifecycle control, NoopProcessManager for monitoring-only mode), `auth.rs` (shared-secret Bearer middleware), `types.rs` (BotStatus, TradeRow, WsMessage), `error.rs` (AgentError with HTTP status mapping).
+`api.rs` (REST endpoints + WS route), `db_reader.rs` (read-only SQLite connection, status, trades, balance, chart-safe equity series, signals, grouped signals, stats, trading-summary, and live-detail queries), `ws.rs` (DB poller + WebSocket broadcast handler), `process_manager.rs` (ChildProcessManager for bot lifecycle control, NoopProcessManager for monitoring-only mode), `auth.rs` (shared-secret Bearer middleware), `types.rs` (BotStatus, TradeRow, EquitySeriesResponse, SignalGroupsResponse, TradingSummary, WsMessage), `error.rs` (AgentError with HTTP status mapping).
 
 ### dashboard server (`dashboard/server/src/`)
 
 `auth.rs` (Argon2 hashing, JWT creation/validation, auth middleware), `config.rs` (TOML config: server port, JWT secret, agents list), `db.rs` (SQLite users/sessions store), `proxy.rs` (HTTP proxy helpers for agent communication), `error.rs` (DashboardError with HTTP status mapping).
 
-API routes: `api/auth_routes.rs` (login, me), `api/bots.rs` (list bots, proxy status/trades/balance/signals/stats/logs/process/start/stop/restart plus live status/session/order/fill/redemption/reconciliation proxies), `api/users.rs` (admin-only user management), `api/ws_proxy.rs` (WebSocket proxy: validates JWT from query param, bridges client <-> agent WebSockets).
+API routes: `api/auth_routes.rs` (login, me), `api/bots.rs` (list bots, proxy status, trades, balance, chart-safe equity series, signals, grouped signals, stats, logs, process controls, trading summary, and compatibility live status/session/order/fill/redemption/reconciliation routes), `api/users.rs` (admin-only user management), `api/ws_proxy.rs` (WebSocket proxy: validates JWT from query param, bridges client <-> agent WebSockets).
 
 ### dashboard client (`dashboard/client/src/`)
 
-Pages: `pages/login.tsx` (form-based login), `pages/dashboard.tsx` (stat cards, mini equity chart, open trades, recent activity), `pages/equity.tsx` (full-height equity curve), `pages/trades.tsx` (paginated trade table), `pages/signals.tsx` (signal log), `pages/logs.tsx` (ANSI-colored bot logs with auto-scroll), `pages/stats.tsx` (per-strategy breakdown), `pages/live.tsx` (live-readiness, account decomposition, reconciliation, sessions, orders, fills, redemptions).
+Pages: `pages/login.tsx` (form-based login), `pages/dashboard.tsx` (mixed landing page: shadow-performance KPIs, current market, open trades, execution snapshot, and recent outcomes), `pages/execution.tsx` (mode-aware execution cockpit: paper execution, readonly account truth, readiness, health, alerts, gated future controls, and compatibility live detail panels), `pages/equity.tsx` (shadow equity curve using chart-safe series data so timestamp `0` stays baseline context), `pages/trades.tsx` (shadow trade history with lightweight filters), `pages/signals.tsx` (grouped shadow signal bursts by default with raw rows available), `pages/logs.tsx` (ANSI-colored bot logs with client-side search and operator filters), `pages/stats.tsx` (visible Strategies page: ranked strategy contribution and risk context). Compatibility aliases are handled in route metadata and `App.tsx`: `/trading` and `/live` redirect to `/execution`, and `/stats` redirects to `/strategies`.
 
-Hooks: `hooks/use-auth.ts` (login, logout, session restore), `hooks/use-bot-status.ts`, `hooks/use-trades.ts`, `hooks/use-balance.ts`, `hooks/use-signals.ts`, `hooks/use-logs.ts`, `hooks/use-process-status.ts` (all TanStack React Query wrappers), `hooks/use-live-updates.ts` (WebSocket -> React Query cache invalidation + trade notifications), `hooks/use-media-query.ts` (reactive CSS media query hook for responsive layout), `hooks/use-theme.ts` (dark mode: reads theme store, detects OS preference, manages `.dark` class on `<html>`).
+Hooks: `hooks/use-auth.ts` (login, logout, session restore), `hooks/use-trades.ts`, `hooks/use-equity-series.ts`, `hooks/use-signals.ts`, `hooks/use-signal-groups.ts`, `hooks/use-logs.ts`, `hooks/use-process-status.ts`, `hooks/use-live-status.ts`, `hooks/use-trading-summary.ts` (dashboard-facing presentation model for process, mode, trading state, health, alerts, capabilities, and real-account summary), `hooks/use-live-updates.ts` (WebSocket -> React Query cache invalidation + trade notifications), `hooks/use-media-query.ts` (reactive CSS media query hook for responsive layout), `hooks/use-theme.ts` (dark mode: reads theme store, detects OS preference, manages `.dark` class on `<html>`).
 
-Lib: `lib/api.ts` (typed REST client, Bearer token, auto-clear on 401), `lib/ws.ts` (WebSocket with backoff retry, max 3 attempts), `lib/types.ts` (shared TypeScript interfaces), `lib/utils.ts` (formatUsd, formatPct, formatTime, cn, pnlColor), `lib/notifications.ts` (browser Notification API wrapper for trade alerts), `lib/chart-colors.ts` (theme-aware color sets for lightweight-charts).
+Lib: `lib/api.ts` (typed REST client, Bearer token, auto-clear on 401), `lib/ws.ts` (WebSocket with backoff retry, max 3 attempts), `lib/types.ts` (shared TypeScript interfaces plus `TradingSummary`, `EquitySeriesResponse`, and `SignalGroupsResponse` presentation types), `lib/utils.ts` (formatUsd, formatPct, formatTime, cn, pnlColor, signed USD formatting, address truncation), `lib/routes.ts` (central route metadata for nav grouping, route scope, canonical `/execution`, canonical `/strategies`, and compatibility redirects), `lib/trading-summary.ts` (UI presentation helpers for process, runtime, trading, health, capabilities, and alert labeling), `lib/notifications.ts` (browser Notification API wrapper for trade alerts), `lib/chart-colors.ts` (theme-aware color sets for lightweight-charts).
 
-Components: `components/layout/app-shell.tsx` (responsive shell: persistent sidebar on desktop, compact icon-only sidebar plus expandable drawer on mobile, bot selection via sessionStorage), `components/layout/header.tsx` (bot status, process controls, theme toggle cycling system/dark/light, notification bell toggle, sidebar expand toggle), `components/layout/nav.tsx` (bot list + page links, 44px touch targets on mobile), `components/layout/logo.tsx` (SVG using CSS variable for accent green, auto-adjusts with theme), `components/common/protected-route.tsx` (auth guard), `components/common/loading.tsx` (spinner), `components/dashboard/stat-card.tsx`, `components/dashboard/mini-chart.tsx`, `components/dashboard/open-trades.tsx`, `components/dashboard/recent-activity.tsx`, `components/equity/equity-chart.tsx` (responsive height: 320px mobile, 480px desktop), `components/trades/trade-table.tsx` (desktop table + mobile card list), `components/signals/signal-table.tsx` (desktop table + mobile card list).
+Components: `components/layout/app-shell.tsx` (responsive shell with grouped navigation and lightweight route intros on monitor pages), `components/layout/header.tsx` (process state, bot identity, runtime mode, process controls, theme toggle, notification bell, sidebar toggle), `components/layout/nav.tsx` (bot list + grouped Monitor and Analysis page links, 44px touch targets on mobile), `components/layout/logo.tsx` (SVG using CSS variable for accent green, auto-adjusts with theme), `components/common/protected-route.tsx` (auth guard), `components/common/loading.tsx` (spinner), `components/ui/dashboard-primitives.tsx` (shared `StatusChip`, `ContextStrip`, `SectionCard`, `MetricCard`, `AlertList`, `KeyValueList`, `StateEmpty`, `TableToolbar`, and lightweight surface primitives), `components/dashboard/mini-chart.tsx`, `components/dashboard/open-trades.tsx`, `components/dashboard/recent-activity.tsx`, `components/equity/equity-chart.tsx` (responsive shadow equity chart), `components/trades/trade-table.tsx` (desktop table + mobile card list with filters), `components/signals/signal-table.tsx` (grouped signal bursts by default plus raw table/card views).
 
 Store: `stores/auth-store.ts` (Zustand, token + user, persisted to localStorage), `stores/mobile-nav-store.ts` (Zustand, drawer open/close state), `stores/theme-store.ts` (Zustand, theme mode: system/light/dark, persisted to localStorage).
 
@@ -174,8 +174,13 @@ Preferred staging:
 
 The `buba-paint` host still has a Node 18 toolchain. Do not rely on building the frontend there. The correct deploy artifact is the locally-built `dashboard/client/dist`.
 
+`ops/` is the complete operations artifact home. It includes service templates for sidecar, bot, agent, and dashboard, plus `ops/Readme.md`. Treat those templates as the starting point for future supervised host work instead of an unsupervised `nohup node` process.
+
 Preferred process model on `buba-paint`:
 
+- run the sidecar under supervision from `~/buba-paint-live/current/polymarket-sidecar`
+- keep the sidecar env at `~/buba-paint-live/config/sidecar.env`
+- keep the sidecar log at `~/buba-paint-live/logs/sidecar.log`
 - start the bot directly, typically via `script -qefa`, so the run log captures ANSI output cleanly
 - run `buba-agent` in `--monitor-only` mode against the bot DB
 - run `buba-dashboard` against the monitor-only agent and serve static files from `~/buba-paint-live/current/dashboard/client/dist`
@@ -188,7 +193,7 @@ Fresh run vs partial update:
 Preferred partial update steps:
 
 1. Back up the current run DB and log into `runtime/backups`.
-2. Stop bot, agent, and dashboard.
+2. Stop sidecar, bot, agent, and dashboard.
 3. Verify no stale processes remain before switching releases. Check both wrapper and child processes:
 
 ```bash
@@ -197,7 +202,7 @@ ssh buba-paint 'ps -eo pid=,args= | awk "/script -qefa|buba-paint live|buba-agen
 
 4. Verify no process from the old release path remains.
 5. Repoint `current` to the new release.
-6. Restart over the same runtime dir, DB, and log. For live-feed robustness releases, set the feed timeout/watchdog env knobs explicitly instead of relying on memory.
+6. Restart the supervised sidecar first, then restart over the same runtime dir, DB, and log. For live-feed robustness releases, set the sidecar and feed timeout/watchdog env knobs explicitly instead of relying on memory.
 7. Re-check health endpoints, DB integrity, and that the bot recovered the active window correctly.
 
 Preferred fresh-run steps:
@@ -212,6 +217,7 @@ Preferred fresh-run steps:
 Minimum remote acceptance after any deploy:
 
 - `readlink -f ~/buba-paint-live/current` matches the intended release
+- `curl http://127.0.0.1:3210/health` is healthy and reports sane readiness fields
 - `curl http://127.0.0.1:9090/health` is healthy
 - `curl http://127.0.0.1:3000/health` is healthy
 - `sqlite3 ... "pragma quick_check;"` returns `ok`
@@ -283,7 +289,7 @@ Test inventory changes frequently. Use `cargo test`, `make test-all`, and the fr
 - CLOB initial book: array of `{asset_id, bids, asks}` (no `event_type`). Subsequent updates: `{event_type: "price_change", price_changes: [...]}`.
 - Chainlink RTDS: initial dump `{payload:{data:[...]}}` (no `topic`), then live `{topic:"crypto_prices_chainlink", payload:{...}}`.
 - Binance live capture: the default market-data URL now combines `aggTrade`, `bookTicker`, and `depth@100ms`, and requests microsecond timestamps when Binance exposes them.
-- Live storage profile: `FEED_EVENT_STORAGE_PROFILE=compact` is the production default. It keeps typed replay fields, suppresses `bookTicker` persistence, buckets Binance depth to 250ms summaries, coalesces `CLOB` top-of-book writes, and drops bulky hot-path payload blobs. `full_debug` is only for short local diagnostics.
+- Live storage profile: `FEED_EVENT_STORAGE_PROFILE=replay_grade` is the research default. It keeps the typed decision inputs needed for future sweeps, including compact Binance `bookTicker`, `aggTrade`, `depth`, Chainlink, and CLOB top-of-book rows, while still dropping bulky hot-path payload blobs. `compact` is descriptive-only because it suppresses Binance `bookTicker`; use it only when replay-grade research is intentionally not required. `full_debug` is only for short local diagnostics.
 - Portfolio routing: when `REGIME_DETECTION_ENABLED=true`, one evaluation snapshot is classified as `dislocation`, `structural_pair`, or `calm`. Only the matching family should act on that snapshot. Strategy sleeves such as `LATENCY_ARB_MAX_POSITION_FRACTION`, `SPREAD_CAPTURE_MAX_POSITION_FRACTION`, and `CALM_PERSISTENCE_MAX_POSITION_FRACTION` keep one family from consuming another family's budget.
 - Boolean config hygiene: env vars and boolean `--set` overrides now accept `true/false`, `1/0`, `yes/no`, and `on/off`, but operator docs should prefer `true/false`. Live and backtest should fail loudly if zero strategies resolve as enabled after config parsing.
 - No-signal diagnostics: live runs aggregate explicit strategy rejection reasons into `strategy_rejection_summaries` and concise structured log rollups. Inspect those before guessing a retune when a run shows zero signals. The DB keeps the full JSON detail; the normal log should stay operator-readable.
@@ -307,6 +313,7 @@ Test inventory changes frequently. Use `cargo test`, `make test-all`, and the fr
 - Momentum: `(latest - oldest) / oldest` over rolling window. Guarded against division by zero (oldest price <= 0 returns 0).
 - Opposing position guard: single signals block same-strategy same-window. Batch signals (spread-capture) only block exact duplicates. All rejections are logged at debug level with the reason.
 - Deferred resolution: when a window closes, the live loop marks the market `closed` immediately and registers any still-open market for durable Gamma reconciliation. Startup also seeds reconciliation from ended markets that still have open trades. The live loop performs one authoritative fetch per pending market every `RESOLUTION_POLL_DELAY_MS` after `RESOLUTION_INITIAL_DELAY_MS` until Gamma resolves it, then settles exactly once.
+- Replay data quality: run `buba-paint validate-replay-data --data <db> --start <time> --end <time>` before any long parameter sweep. `buba-paint sweep` now refuses inputs that are not `sweep_grade`. Backtests still run on descriptive archives, but they warn when the selected interval lacks replay-grade decision inputs.
 - Exact-run parity mode: use `BACKTEST_SETTLEMENT_MODE=observed_market_resolution` when replaying a pulled live run such as `runs/010/run-018-live.db`. Backtests and sweeps now inherit env-backed config, so pending-settlement reserve knobs and settlement mode apply to both commands without extra CLI wiring. For exact-run work, conservative reserve handling is the baseline unless you are explicitly comparing against compatibility or risky mode.
 - Gamma API `outcomePrices` is a JSON-encoded string (not a JSON array). Parse with `serde_json::from_str::<Vec<String>>`.
 - Official Polymarket Rust SDK (`polymarket-client-sdk` v0.4) integrated for read-only CLOB queries. `Client::new(host, Config::default())` creates unauthenticated client. `client.market(condition_id)` returns `MarketResponse` with `tokens[].winner: bool`.

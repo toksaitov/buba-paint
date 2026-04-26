@@ -63,6 +63,14 @@ In the current local tree, the sidecar has a real readonly provider for:
 
 These endpoints use real proxy-wallet auth, host geoblock checks, account-state reads, active-market discovery, and authenticated user-stream connectivity. The write endpoints still return explicit not-implemented responses in this pass.
 
+The sidecar now also carries its own crash-resistance and readiness model:
+
+- websocket user-stream lifecycle is explicit and reconnect-safe
+- auth bootstrap failures are not cached forever
+- health stays live at `200` but includes additive readiness fields
+- account refresh remains fail-closed for money and order facts
+- graceful shutdown and fatal-process logging are part of the process model
+
 The Rust bot talks to the sidecar over a private local HTTP contract:
 
 - `GET /health`
@@ -74,6 +82,13 @@ The Rust bot talks to the sidecar over a private local HTTP contract:
 - `POST /redeem-all`
 
 The sidecar now implements real readonly-safe venue checks on the health, account, and preflight routes. It does not place real orders yet, and the write-path endpoints still return explicit not-implemented responses.
+
+The preferred host process model is no longer an unsupervised `nohup node` process. The target deployment shape is:
+
+- sidecar code from `~/buba-paint-live/current/polymarket-sidecar`
+- env from `~/buba-paint-live/config/sidecar.env`
+- logs at `~/buba-paint-live/logs/sidecar.log`
+- supervised restart policy
 
 ## Proxy-wallet account model
 
@@ -121,7 +136,7 @@ The intended cash model is:
 
 The first real-money pilot may spend only `cash_available`.
 
-SQLite capture must stay compact:
+Private live-account SQLite capture must stay compact. Public market feed capture for research runs should use `FEED_EVENT_STORAGE_PROFILE=replay_grade` so future sweeps have the Binance book state needed for parity:
 
 - one row per state transition
 - periodic account snapshots every 60s
@@ -141,7 +156,7 @@ Local-only safe workflow:
 1. keep `EXECUTION_MODE=paper` for actual trading decisions
 2. run `live-preflight` with `EXECUTION_MODE=live_readonly` against the sidecar
 3. run `buba-paint live` with `EXECUTION_MODE=live_readonly` for an authenticated readonly soak
-4. inspect live readiness in the dashboard Live page and agent live endpoints
+4. inspect live readiness in the dashboard Execution page and agent live endpoints
 5. do not arm or deploy real trading until the dedicated live venue runtime and redemption path are fully wired
 
 This repository state is intentionally staged for correctness. It exposes a real readonly venue boundary without pretending that live order flow is ready before the live trading runtime exists.

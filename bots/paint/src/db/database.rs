@@ -1435,6 +1435,38 @@ impl Database {
         drop(self);
     }
 
+    /// Upsert one run metadata value.
+    pub fn set_run_metadata(
+        &self,
+        key: &str,
+        value: &str,
+        recorded_at_ms: u64,
+    ) -> anyhow::Result<()> {
+        let recorded_at_ms = i64::try_from(recorded_at_ms)
+            .with_context(|| format!("run metadata timestamp exceeds i64: {recorded_at_ms}"))?;
+        self.conn.execute(
+            "INSERT INTO run_metadata (key, value, recorded_at_ms)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                recorded_at_ms = excluded.recorded_at_ms",
+            params![key, value, recorded_at_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Return one run metadata value.
+    pub fn get_run_metadata(&self, key: &str) -> anyhow::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM run_metadata WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .with_context(|| format!("reading run metadata: {key}"))
+    }
+
     /// Summarize the current on-disk footprint of the live database.
     pub fn storage_footprint(&self) -> anyhow::Result<DbFootprint> {
         let db_bytes = file_size_at(&self.db_path)?;

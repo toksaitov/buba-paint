@@ -80,6 +80,8 @@ export async function stubApi(page: Page) {
     await json(route, {
       balance: 250.5,
       starting_balance: 200,
+      execution_mode: "live_readonly",
+      live_session_status: "readonly_ready",
       total_trades: 12,
       wins: 8,
       losses: 4,
@@ -95,6 +97,83 @@ export async function stubApi(page: Page) {
         question: "Will BTC go up?",
         end_time: 1_716_000_300_000,
       },
+    });
+  });
+
+  await page.route("**/api/bots/*/trading/summary", async (route) => {
+    await json(route, {
+      runtime_mode: "live_readonly",
+      trading_state: "readonly",
+      process_state: "running",
+      venue_health: {
+        state: "healthy",
+        label: "Venue connected",
+        detail: "Authenticated venue monitoring and user-stream health are green.",
+      },
+      account_health: {
+        state: "healthy",
+        label: "Account tracked",
+        detail: "Real cash, allowance, and equity decomposition are available.",
+      },
+      reconciliation_health: {
+        state: "healthy",
+        label: "Clean",
+        detail: "No critical reconciliation events are currently recorded.",
+      },
+      shadow_summary: {
+        balance: 250.5,
+        starting_balance: 200,
+        total_pnl: 50.5,
+        total_trades: 12,
+        wins: 8,
+        losses: 4,
+        win_rate: 0.667,
+        max_drawdown_pct: 0.12,
+        high_water_mark: 275,
+        uptime_hours: 4.5,
+        open_trades: 2,
+        current_window: {
+          market_id: "mkt-1",
+          question: "Will BTC go up?",
+          end_time: 1_716_000_300_000,
+        },
+      },
+      real_account_summary: {
+        session_id: 1,
+        session_status: "readonly_ready",
+        session_started_at_ms: 1_716_000_000_000,
+        cash_cap_usd: 100,
+        available_cash: 99.17,
+        reserved_cash: 0,
+        inventory_mark_value: 0,
+        redeemable_value: 0,
+        pending_redeem_value: 0,
+        total_equity: 99.17,
+        allowance_available: 99.17,
+        latest_snapshot_at_ms: 1_716_000_100_000,
+        provider: "polymarket",
+        user_stream_status: "ok",
+        last_user_stream_connected_at_ms: 1_716_000_050_000,
+        last_user_stream_event_at_ms: null,
+        last_account_refresh_at_ms: 1_716_000_100_000,
+        wallet_address: "0x1234",
+        proxy_wallet: "0xabcd",
+        enabled_strategies: ["latency-arb", "spread-capture"],
+        open_orders: 0,
+        pending_redemptions: 0,
+        critical_reconciliation_events: 0,
+        config_fingerprint: "{\"execution_mode\":\"live_readonly\"}",
+      },
+      capabilities: {
+        preflight: { enabled: false, reason: "Dashboard preflight action is not wired in this pass." },
+        arm: { enabled: false, reason: "Live trading remains gated in this pass." },
+        disarm: { enabled: false, reason: "No dashboard action endpoint exists in this pass." },
+        cancel_all: { enabled: false, reason: "No dashboard action endpoint exists in this pass." },
+        stop_after_flat: { enabled: false, reason: "No dashboard action endpoint exists in this pass." },
+        redeem: { enabled: false, reason: "No dashboard action endpoint exists in this pass." },
+        kill_switch: { enabled: false, reason: "No dashboard action endpoint exists in this pass." },
+      },
+      alerts: [],
     });
   });
 
@@ -135,7 +214,63 @@ export async function stubApi(page: Page) {
     });
   });
 
+  await page.route("**/api/bots/*/equity/series**", async (route) => {
+    await json(route, {
+      baseline: { id: 1, timestamp: 0, event: "baseline", balance: 200 },
+      points: [
+        { id: 2, timestamp: 1_716_000_000_000, event: "init", balance: 200 },
+        { id: 3, timestamp: 1_716_000_100_000, event: "settlement", balance: 250.5 },
+      ],
+    });
+  });
+
+  await page.route("**/api/bots/*/signals/groups**", async (route) => {
+    await json(route, {
+      groups: [
+        {
+          id: "mkt-1:latency-arb:UP:1716000000000",
+          first_timestamp: 1_716_000_000_000,
+          last_timestamp: 1_716_000_000_000,
+          count: 1,
+          strategy: "latency-arb",
+          direction: "UP",
+          market_id: "mkt-1",
+          binance_price: 68000,
+          chainlink_price: 68010,
+          up_ask: 0.54,
+          down_ask: 0.46,
+          momentum: 0.0012,
+        },
+      ],
+      raw_rows_scanned: 1,
+      quiet_gap_ms: 5000,
+    });
+  });
+
   await page.route("**/api/bots/*/signals**", async (route) => {
+    if (route.request().url().includes("/signals/groups")) {
+      await json(route, {
+        groups: [
+          {
+            id: "mkt-1:latency-arb:UP:1716000000000",
+            first_timestamp: 1_716_000_000_000,
+            last_timestamp: 1_716_000_000_000,
+            count: 1,
+            strategy: "latency-arb",
+            direction: "UP",
+            market_id: "mkt-1",
+            binance_price: 68000,
+            chainlink_price: 68010,
+            up_ask: 0.54,
+            down_ask: 0.46,
+            momentum: 0.0012,
+          },
+        ],
+        raw_rows_scanned: 1,
+        quiet_gap_ms: 5000,
+      });
+      return;
+    }
     await json(route, {
       signals: [
         {
@@ -159,6 +294,52 @@ export async function stubApi(page: Page) {
     await json(route, {
       lines: ["booted paint", "connected to feeds", "latency arb signal"],
     });
+  });
+
+  await page.route("**/api/bots/*/live/status", async (route) => {
+    await json(route, {
+      latest_session: null,
+      latest_account_snapshot: null,
+      open_orders: 0,
+      pending_redemptions: 0,
+      critical_reconciliation_events: 0,
+    });
+  });
+
+  await page.route("**/api/bots/*/live/sessions**", async (route) => {
+    await json(route, {
+      sessions: [
+        {
+          id: 1,
+          started_at_ms: 1_716_000_000_000,
+          ended_at_ms: null,
+          status: "readonly_ready",
+          execution_mode: "live_readonly",
+          wallet_address: "0x1234",
+          proxy_wallet: "0xabcd",
+          enabled_strategies_json: "[\"latency-arb\",\"spread-capture\"]",
+          config_fingerprint: "{\"execution_mode\":\"live_readonly\"}",
+          cash_cap_usd: 100,
+          details_json: null,
+        },
+      ],
+    });
+  });
+
+  await page.route("**/api/bots/*/live/orders**", async (route) => {
+    await json(route, { orders: [] });
+  });
+
+  await page.route("**/api/bots/*/live/fills**", async (route) => {
+    await json(route, { fills: [] });
+  });
+
+  await page.route("**/api/bots/*/live/redemptions**", async (route) => {
+    await json(route, { redemptions: [] });
+  });
+
+  await page.route("**/api/bots/*/live/reconciliation**", async (route) => {
+    await json(route, { events: [] });
   });
 
   await page.route("**/api/bots/*/stats", async (route) => {

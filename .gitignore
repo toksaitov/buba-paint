@@ -9,6 +9,13 @@ data/market-data.db
 *.db-wal
 *.db-shm
 
+# Local database artifacts: keep on disk, never commit.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
 # Bot runtime (root-level only; runs/*/bot.log is LFS-tracked)
 /bot.log
 /bot.pid

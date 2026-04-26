@@ -1,0 +1,17 @@
+[Unit]
+Description=Buba Polymarket Sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/buba-paint-live/current/polymarket-sidecar
+EnvironmentFile=%h/buba-paint-live/config/sidecar.env
+ExecStart=/usr/bin/env node dist/index.js
+Restart=always
+RestartSec=2
+StandardOutput=append:%h/buba-paint-live/logs/sidecar.log
+StandardError=append:%h/buba-paint-live/logs/sidecar.log
+
+[Install]
+WantedBy=default.target

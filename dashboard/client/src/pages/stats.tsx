@@ -1,118 +1,102 @@
-import { useOutletContext } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { useBotStatus } from "../hooks/use-bot-status";
-import { getStats } from "../lib/api";
+import { useOutletContext } from "react-router-dom";
 import { Loading } from "../components/common/loading";
-import { formatUsd, pnlColor, cn } from "../lib/utils";
-import type { Bot } from "../lib/types";
+import {
+  PageHeader,
+  SectionCard,
+} from "../components/ui/dashboard-primitives";
+import { getStats } from "../lib/api";
+import { cn, formatUsd, pnlColor } from "../lib/utils";
 
 export function StatsPage() {
-  const { botId, bot } = useOutletContext<{ botId: string; bot: Bot | null }>();
-  const { data: status } = useBotStatus(botId);
+  const { botId } = useOutletContext<{ botId: string }>();
   const { data: stats, isLoading } = useQuery({
     queryKey: ["stats", botId],
     queryFn: () => getStats(botId),
     enabled: !!botId,
   });
 
-  if (isLoading) return <Loading />;
+  if (isLoading || !stats) return <Loading label="Loading strategies" />;
+
+  const strategies = Object.entries(stats.by_strategy)
+    .map(([name, strategy]) => ({
+      name,
+      ...strategy,
+      avg_pnl: strategy.trades > 0 ? strategy.total_pnl / strategy.trades : 0,
+    }))
+    .sort((a, b) => b.total_pnl - a.total_pnl);
+  const best = strategies[0] ?? null;
+  const worst = strategies[strategies.length - 1] ?? null;
+  const hasMultiple = strategies.length > 1;
 
   return (
-    <div className="space-y-4">
-      {status?.execution_mode === "live_readonly" && (
-        <div className="border border-accent-yellow/40 bg-accent-yellow/10 px-3 py-2 text-[11px] text-accent-yellow">
-          Status and strategy breakdown on this page are the <code>live_readonly</code> shadow
-          paper view. The Live page shows the real venue/account state.
-        </div>
-      )}
-      <h2 className="text-[14px] font-bold">Bot Status</h2>
+    <div className="space-y-3">
+      <PageHeader
+        title="Strategies"
+        description="Ranked strategy contribution and risk context for the shadow run."
+      />
 
-      <div className="border border-border bg-bg overflow-hidden">
-        <table className="w-full text-[12px]">
-          <tbody>
-            <Row label="Name" value={bot?.name ?? "--"} />
-            <Row label="ID" value={bot?.id ?? "--"} />
-            <Row
-              label="Execution"
-              value={status?.execution_mode ?? "paper"}
-            />
-            <Row
-              label="Live Session"
-              value={status?.live_session_status ?? "--"}
-            />
-            <Row
-              label="Balance"
-              value={status ? formatUsd(status.balance) : "--"}
-            />
-            <Row
-              label="Uptime"
-              value={status ? `${status.uptime_hours.toFixed(1)}h` : "--"}
-            />
-            <Row
-              label="Open Trades"
-              value={status?.open_trades?.toString() ?? "0"}
-            />
-          </tbody>
-        </table>
-      </div>
-
-      {stats && Object.keys(stats.by_strategy).length > 0 && (
-        <>
-          <h2 className="text-[14px] font-bold">Strategy Breakdown</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {Object.entries(stats.by_strategy).map(([name, s]) => {
-              const avgPnl = s.trades > 0 ? s.total_pnl / s.trades : 0;
-              return (
-                <div
-                  key={name}
-                  className="border border-border p-4 bg-bg"
-                >
-                  <div className="text-[12px] font-bold mb-2">{name}</div>
-                  <div className="grid grid-cols-2 gap-y-1 text-[11px]">
-                    <span className="text-muted">Trades</span>
-                    <span className="text-right tabular-nums">{s.trades}</span>
-                    <span className="text-muted">Win Rate</span>
-                    <span className="text-right tabular-nums">
-                      {(s.win_rate * 100).toFixed(1)}%
-                    </span>
-                    <span className="text-muted">W/L</span>
-                    <span className="text-right tabular-nums">
-                      {s.wins}/{s.losses}
-                    </span>
-                    <span className="text-muted">Total PnL</span>
-                    <span
-                      className={cn(
-                        "text-right tabular-nums font-medium",
-                        pnlColor(s.total_pnl),
-                      )}
-                    >
-                      {formatUsd(s.total_pnl)}
-                    </span>
-                    <span className="text-muted">Avg PnL</span>
-                    <span
-                      className={cn(
-                        "text-right tabular-nums",
-                        pnlColor(avgPnl),
-                      )}
-                    >
-                      {formatUsd(avgPnl)}
-                    </span>
-                  </div>
+      <SectionCard title="Strategy contribution">
+        {hasMultiple && (best || worst) && (
+          <div className="mb-4 grid gap-2 md:grid-cols-2">
+            {best && (
+              <div className="border border-border p-3">
+                <div className="text-[11px] text-muted">Best contributor</div>
+                <div className="mt-1 flex items-center justify-between gap-3 text-[13px]">
+                  <span className="font-semibold">{best.name}</span>
+                  <span className={cn("font-semibold tabular-nums", pnlColor(best.total_pnl))}>
+                    {formatUsd(best.total_pnl)}
+                  </span>
                 </div>
-              );
-            })}
+              </div>
+            )}
+            {worst && worst !== best && (
+              <div className="border border-border p-3">
+                <div className="text-[11px] text-muted">Worst contributor</div>
+                <div className="mt-1 flex items-center justify-between gap-3 text-[13px]">
+                  <span className="font-semibold">{worst.name}</span>
+                  <span className={cn("font-semibold tabular-nums", pnlColor(worst.total_pnl))}>
+                    {formatUsd(worst.total_pnl)}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
-        </>
-      )}
+        )}
+        <div className="grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+          {strategies.map((strategy) => (
+            <div key={strategy.name} className="border border-border p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[13px] font-semibold tracking-tight">{strategy.name}</div>
+                <div className={cn("text-[13px] font-semibold tabular-nums", pnlColor(strategy.total_pnl))}>
+                  {formatUsd(strategy.total_pnl)}
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-y-2 text-[12px]">
+                <span className="text-muted">Trades</span>
+                <span className="text-right tabular-nums">{strategy.trades}</span>
+                <span className="text-muted">Win rate</span>
+                <span className="text-right tabular-nums">
+                  {(strategy.win_rate * 100).toFixed(1)}%
+                </span>
+                <span className="text-muted">W/L</span>
+                <span className="text-right tabular-nums">
+                  {strategy.wins}/{strategy.losses}
+                </span>
+                <span className="text-muted">Avg PnL</span>
+                <span className={cn("text-right tabular-nums", pnlColor(strategy.avg_pnl))}>
+                  {formatUsd(strategy.avg_pnl)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {hasMultiple && (
+          <p className="mt-3 text-[11px] text-muted">
+            Ranked by signed PnL, highest first.
+          </p>
+        )}
+      </SectionCard>
     </div>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <tr className="border-b border-surface last:border-0">
-      <td className="px-3 py-1.5 text-muted font-semibold w-32">{label}</td>
-      <td className="px-3 py-1.5 tabular-nums">{value}</td>
-    </tr>
   );
 }

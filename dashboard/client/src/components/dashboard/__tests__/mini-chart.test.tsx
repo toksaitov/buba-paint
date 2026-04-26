@@ -55,7 +55,7 @@ it("deduplicates and sorts chart data before rendering", async () => {
     { id: 3, timestamp: 3_001, event: "tick", balance: 103 },
   ];
 
-  const { unmount, getByText } = render(<MiniChart entries={entries} />);
+  const { unmount } = render(<MiniChart entries={entries} />);
 
   await waitFor(() => {
     expect(chartMocks.setData).toHaveBeenCalledWith([
@@ -64,11 +64,9 @@ it("deduplicates and sorts chart data before rendering", async () => {
     ]);
   });
 
-  expect(getByText("Equity Curve")).toBeInTheDocument();
   expect(chartMocks.fitContent).toHaveBeenCalled();
 
   unmount();
 
   expect(chartMocks.remove).toHaveBeenCalled();
 });
-

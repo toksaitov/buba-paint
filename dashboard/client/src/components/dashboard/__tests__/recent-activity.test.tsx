@@ -24,8 +24,7 @@ function makeTrade(overrides: Partial<TradeRow> = {}): TradeRow {
 it("renders an empty state when there are no settled trades", () => {
   render(<RecentActivity trades={[makeTrade({ resolved_at: null, pnl: null })]} />);
 
-  expect(screen.getByText("Recent Trades")).toBeInTheDocument();
-  expect(screen.getByText("No settled trades yet")).toBeInTheDocument();
+  expect(screen.getByText("No settled trades yet.")).toBeInTheDocument();
 });
 
 it("renders only settled trades and caps the list to eight items", () => {
@@ -45,4 +44,3 @@ it("renders only settled trades and caps the list to eight items", () => {
   expect(screen.queryByText("strategy-9")).not.toBeInTheDocument();
   expect(screen.queryByText("strategy-10")).not.toBeInTheDocument();
 });
-

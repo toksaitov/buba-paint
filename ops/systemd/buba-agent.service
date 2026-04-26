@@ -1,0 +1,17 @@
+[Unit]
+Description=Buba Agent
+After=network-online.target buba-paint-bot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/buba-paint-live/current
+EnvironmentFile=%h/buba-paint-live/config/agent.env
+ExecStart=/usr/bin/env bash -lc 'exec "$HOME/buba-paint-live/current/target/release/buba-agent" --db-path "$BUBA_PAINT_DB_PATH" --port "${BUBA_AGENT_PORT:-9090}" --monitor-only --log-path "$BUBA_PAINT_LOG_PATH"'
+Restart=always
+RestartSec=3
+StandardOutput=append:%h/buba-paint-live/logs/agent.log
+StandardError=append:%h/buba-paint-live/logs/agent.log
+
+[Install]
+WantedBy=default.target

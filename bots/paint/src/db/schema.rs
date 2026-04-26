@@ -1,6 +1,4 @@
-/// SQL migration statements — executed once in order when the database is created.
-///
-/// Ported verbatim from the `TypeScript` `MIGRATIONS` array.
+/// SQL migration statements executed once in order when the database is created.
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS tick_data (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,6 +211,11 @@ fn ensure_additive_tables(conn: &rusqlite::Connection) {
         CREATE INDEX IF NOT EXISTS idx_feed_events_received_us ON feed_events(received_at_us);
         CREATE INDEX IF NOT EXISTS idx_feed_events_source_ts ON feed_events(source, received_at_ms);
         CREATE INDEX IF NOT EXISTS idx_feed_events_market_ts ON feed_events(market_id, received_at_ms);
+        CREATE TABLE IF NOT EXISTS run_metadata (
+            key             TEXT PRIMARY KEY,
+            value           TEXT NOT NULL,
+            recorded_at_ms  INTEGER NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_signals_market_ts ON signals(market_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_trades_signal ON simulated_trades(signal_id);
         CREATE INDEX IF NOT EXISTS idx_trades_group ON simulated_trades(execution_group_id);

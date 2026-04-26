@@ -47,6 +47,15 @@ pub enum Commands {
         #[arg(long = "set")]
         sets: Vec<String>,
     },
+    /// Validate whether a database interval is safe for parameter sweeps
+    ValidateReplayData {
+        #[arg(long)]
+        data: String,
+        #[arg(long)]
+        start: String,
+        #[arg(long)]
+        end: String,
+    },
     /// Run the long-lived runtime in paper or `live_readonly` mode
     Live {
         #[arg(long, default_value = "./data/paint.db")]
@@ -142,6 +151,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             config.validate()?;
 
+            let quality =
+                crate::backtest::replay_quality::analyze_path(&data, start_time, end_time)?;
+            if !quality.is_sweep_grade() {
+                eprintln!(
+                    "warning: backtest input is not sweep-grade: replay_quality={}",
+                    quality.class.as_str()
+                );
+            }
+
             crate::backtest::runner::run_backtest(BacktestOptions {
                 tick_source: TickSource::FromDb(data.clone()),
                 data_db_path: data,
@@ -190,6 +208,22 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 &fixed_overrides,
                 &base_config,
             )?;
+        }
+        Commands::ValidateReplayData { data, start, end } => {
+            let start_time = parse_time(&start)?;
+            let end_time = parse_time(&end)?;
+            let quality =
+                crate::backtest::replay_quality::analyze_path(&data, start_time, end_time)?;
+            println!(
+                "{}",
+                crate::backtest::replay_quality::format_report(&quality)
+            );
+            if !quality.is_sweep_grade() {
+                bail!(
+                    "{}",
+                    crate::backtest::replay_quality::blocking_error(&quality)
+                );
+            }
         }
         Commands::Live {
             db_path,

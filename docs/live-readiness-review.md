@@ -23,7 +23,7 @@ These boundaries are still intentionally non-live:
 - the readonly runtime does not place real orders or populate live order/fill/redemption tables from local execution
 - redemption submission and live order or fill ingestion are not yet wired to Polymarket
 
-This means `live-preflight` and `live_readonly` are real venue-readiness surfaces, but not a green light for live money yet. `live_readonly` now reuses the shared paper loop so the legacy charts, trades, signals, and stats pages remain useful as a shadow-performance view.
+This means `live-preflight` and `live_readonly` are real venue-readiness surfaces, but not a green light for live money yet. `live_readonly` now reuses the shared paper loop so the shadow analysis pages remain useful as a shadow-performance view.
 
 ## What was reviewed in this pass
 
@@ -34,8 +34,9 @@ This review pass verified:
 - the readonly runtime creates real live sessions, account snapshots, and reconciliation events without placing orders while continuing to populate the paper tables as a shadow track
 - readonly session degradation follows the latest account snapshot instead of getting stuck on stale startup-preflight cash or allowance state
 - the sidecar health, account, and preflight routes use real readonly-safe venue checks
+- the sidecar process now has explicit websocket lifecycle, shutdown, timeout, and readiness behavior instead of relying on ad hoc cleanup
 - sidecar server request validation rejects malformed JSON and malformed order/preflight bodies with `400`
-- live DB tables, agent endpoints, and dashboard Live page handle readonly and empty states cleanly
+- live DB tables, agent endpoints, and dashboard Execution page handle readonly and empty states cleanly
 - docs and `.env.example` describe the `POLY_PROXY` account model and the current readonly-only state without stale claims
 
 ## Verified local gates
@@ -60,5 +61,7 @@ The main remaining work is:
 - user-stream-driven order and fill ingestion
 - redemption and relayer integration
 - live-trading runtime implementation and deployment soak
+
+The current hardening pass does not deploy supervision automatically, but the repository now carries the intended supervised sidecar process model and service artifact for `buba-paint`.
 
 See also [Next Pass: Real `live_trading`](./live-trading-next-pass.md) for the compact handoff note that should be used to recover context before starting that work.

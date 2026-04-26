@@ -1,16 +1,37 @@
 import { useState, useEffect } from "react";
-import { Link, Outlet } from "react-router-dom";
+import { Link, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Nav } from "./nav";
 import { Header } from "./header";
 import { Logo } from "./logo";
+import { ContextStrip } from "../ui/dashboard-primitives";
 import { getBots } from "../../lib/api";
 import { useLiveUpdates } from "../../hooks/use-live-updates";
 import { useMediaQuery } from "../../hooks/use-media-query";
+import { useTradingSummary } from "../../hooks/use-trading-summary";
+import { routeMetaForPath } from "../../lib/routes";
+import type { DashboardRouteMeta } from "../../lib/routes";
+import type { TradingSummary } from "../../lib/types";
 import { useMobileNavStore } from "../../stores/mobile-nav-store";
+
+function contextDescription(routeMeta: DashboardRouteMeta, summary?: TradingSummary) {
+  const mode = summary?.runtime_mode ?? "paper";
+  if (routeMeta.to === "/") {
+    return mode === "paper"
+      ? "Simulated performance. Polymarket account shows only in live mode."
+      : "Simulated performance and a quick look at the Polymarket account. Open Execution for venue detail.";
+  }
+  if (routeMeta.to === "/execution") {
+    return mode === "paper"
+      ? "Simulated execution. Nothing touches Polymarket."
+      : "Live venue state. Switch to Overview for simulated results.";
+  }
+  return routeMeta.contextDescription;
+}
 
 export function AppShell() {
   const isDesktop = useMediaQuery("(min-width: 768px)");
+  const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const drawerOpen = useMobileNavStore((s) => s.isOpen);
   const closeDrawer = useMobileNavStore((s) => s.close);
@@ -37,6 +58,8 @@ export function AppShell() {
 
   const bot = bots.find((b) => b.id === selectedBotId) ?? null;
   const botId = bot?.id ?? "";
+  const routeMeta = routeMetaForPath(location.pathname);
+  const { data: tradingSummary } = useTradingSummary(botId);
 
   useLiveUpdates(botId);
 
@@ -64,7 +87,7 @@ export function AppShell() {
             >
               <Logo size={collapsed ? 20 : 18} />
               {!collapsed && (
-                <span className="text-[11px] font-bold uppercase tracking-widest text-muted ml-2">
+                <span className="ml-2 text-[11px] font-semibold text-muted">
                   buba
                 </span>
               )}
@@ -108,7 +131,7 @@ export function AppShell() {
                     className="flex items-center hover:opacity-80 transition-opacity"
                   >
                     <Logo size={18} />
-                    <span className="text-[11px] font-bold uppercase tracking-widest text-muted ml-2">
+                    <span className="ml-2 text-[11px] font-semibold text-muted">
                       buba
                     </span>
                   </Link>
@@ -137,6 +160,12 @@ export function AppShell() {
           onToggle={isDesktop ? () => setCollapsed((c) => !c) : toggleDrawer}
           isDesktop={isDesktop}
         />
+        {routeMeta.showContextStrip && (
+          <ContextStrip
+            title={routeMeta.contextTitle}
+            description={contextDescription(routeMeta, tradingSummary)}
+          />
+        )}
         <main className="flex-1 overflow-y-auto p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <Outlet context={{ botId, bot }} />
         </main>

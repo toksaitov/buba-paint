@@ -17,7 +17,7 @@ This note exists to preserve context after the `live_readonly` soak.
 - proxy-wallet auth and sidecar readonly integration work on the server
 - real venue/account health can be monitored safely
 - the old dashboard pages remain useful through the shadow-paper track
-- the Live page remains the real venue/account diagnostics surface
+- the Execution page remains the real venue/account diagnostics surface
 - the rejection telemetry is meaningful enough to explain inactive periods
 
 ## What still blocks real money
@@ -60,7 +60,7 @@ UI work is reasonable now, but keep it operational:
 
 - make mode/state easier to understand
 - keep the old pages clearly labeled as shadow-paper output in `live_readonly`
-- keep the Live page clearly labeled as real venue/account truth
+- keep the Execution page clearly labeled as real venue/account truth
 - improve readonly and future live control/status clarity
 
 Do not design destructive live controls until the real trading path exists end to end.

@@ -80,16 +80,6 @@ test("signal message invalidates signals query", () => {
   expect(spy).toHaveBeenCalledWith({ queryKey: ["signals", "bot-1"] });
 });
 
-test("status message invalidates bot-status and process-status", () => {
-  const spy = vi.spyOn(queryClient, "invalidateQueries");
-  renderHook(() => useLiveUpdates("bot-1"), { wrapper: createWrapper() });
-
-  capturedOnMessage!({ type: "status" });
-
-  expect(spy).toHaveBeenCalledWith({ queryKey: ["bot-status", "bot-1"] });
-  expect(spy).toHaveBeenCalledWith({ queryKey: ["process-status", "bot-1"] });
-});
-
 test("cleanup disconnects on unmount", () => {
   const { unmount } = renderHook(() => useLiveUpdates("bot-1"), {
     wrapper: createWrapper(),

@@ -26,6 +26,28 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
             bid_size  REAL,
             ask_size  REAL
         );
+        CREATE TABLE feed_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            received_at_ms INTEGER NOT NULL,
+            received_at_us INTEGER,
+            event_at_ms INTEGER,
+            source TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            market_id TEXT,
+            asset_id TEXT,
+            price REAL,
+            best_bid REAL,
+            best_ask REAL,
+            bid_size REAL,
+            ask_size REAL,
+            trade_size REAL,
+            signed_quantity REAL,
+            depth_bid_notional REAL,
+            depth_ask_notional REAL,
+            depth_imbalance REAL,
+            microprice REAL,
+            fidelity TEXT NOT NULL DEFAULT 'raw_event'
+        );
         CREATE TABLE markets (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             market_id     TEXT NOT NULL UNIQUE,
@@ -109,6 +131,7 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
             Some(100.0),
             Some(100.0),
         );
+        insert_replay_grade_events(&conn, ts, base_price);
     }
 
     for i in 0..330 {
@@ -140,10 +163,58 @@ fn create_fixture_data_db() -> (NamedTempFile, String) {
             Some(100.0),
             Some(100.0),
         );
+        insert_replay_grade_events(&conn, ts, price);
     }
 
     drop(conn);
     (tmp, path)
+}
+
+/// Insert replay-grade feed events for one fixture timestamp.
+fn insert_replay_grade_events(conn: &Connection, timestamp: i64, price: f64) {
+    let timestamp_us = timestamp * 1_000;
+    conn.execute(
+        "INSERT INTO feed_events
+         (received_at_ms, received_at_us, event_at_ms, source, event_type, price, trade_size, signed_quantity, fidelity)
+         VALUES (?1, ?2, ?1, 'binance', 'aggTrade', ?3, 0.1, 0.1, 'raw_event')",
+        params![timestamp, timestamp_us, price],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO feed_events
+         (received_at_ms, received_at_us, event_at_ms, source, event_type, best_bid, best_ask, bid_size, ask_size, fidelity)
+         VALUES (?1, ?2, ?1, 'binance', 'bookTicker', ?3, ?4, 1.0, 1.0, 'raw_event')",
+        params![timestamp, timestamp_us + 1, price - 1.0, price + 1.0],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO feed_events
+         (received_at_ms, received_at_us, event_at_ms, source, event_type, best_bid, best_ask, bid_size, ask_size, depth_bid_notional, depth_ask_notional, depth_imbalance, fidelity)
+         VALUES (?1, ?2, ?1, 'binance', 'depth', ?3, ?4, 1.0, 1.0, 10000.0, 9000.0, 0.0526, 'raw_event')",
+        params![timestamp, timestamp_us + 2, price - 1.0, price + 1.0],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO feed_events
+         (received_at_ms, received_at_us, event_at_ms, source, event_type, price, fidelity)
+         VALUES (?1, ?2, ?1, 'chainlink', 'chainlink_price', ?3, 'raw_event')",
+        params![timestamp, timestamp_us + 3, price],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO feed_events
+         (received_at_ms, received_at_us, event_at_ms, source, event_type, market_id, asset_id, best_bid, best_ask, bid_size, ask_size, fidelity)
+         VALUES (?1, ?2, ?1, 'clob_up', 'best_bid_ask', 'mkt-fixture-1', 'tok-up', 0.40, 0.45, 100.0, 100.0, 'raw_event')",
+        params![timestamp, timestamp_us + 4],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO feed_events
+         (received_at_ms, received_at_us, event_at_ms, source, event_type, market_id, asset_id, best_bid, best_ask, bid_size, ask_size, fidelity)
+         VALUES (?1, ?2, ?1, 'clob_down', 'best_bid_ask', 'mkt-fixture-1', 'tok-down', 0.40, 0.50, 100.0, 100.0, 'raw_event')",
+        params![timestamp, timestamp_us + 5],
+    )
+    .unwrap();
 }
 
 /// Insert tick.

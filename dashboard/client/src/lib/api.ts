@@ -3,15 +3,17 @@ import type {
   Bot,
   BotProcessStatus,
   BotStatus,
+  EquitySeriesResponse,
   LiveFillsResponse,
   LiveOrdersResponse,
   LiveReconciliationResponse,
   LiveRedemptionsResponse,
   LiveSessionsResponse,
-  LiveStatusResponse,
   LogsResponse,
+  SignalGroupsResponse,
   SignalsResponse,
   StatsResponse,
+  TradingSummary,
   TradesResponse,
   User,
 } from "./types";
@@ -103,6 +105,13 @@ export async function getBalance(
   return get(`/api/bots/${botId}/balance?since=${since}`);
 }
 
+export async function getEquitySeries(
+  botId: string,
+  since = 0,
+): Promise<EquitySeriesResponse> {
+  return get(`/api/bots/${botId}/equity/series?since=${since}`);
+}
+
 export async function getSignals(
   botId: string,
   limit = 100,
@@ -110,8 +119,22 @@ export async function getSignals(
   return get(`/api/bots/${botId}/signals?limit=${limit}`);
 }
 
+export async function getSignalGroups(
+  botId: string,
+  limit = 50,
+  quietGapMs = 5000,
+): Promise<SignalGroupsResponse> {
+  return get(
+    `/api/bots/${botId}/signals/groups?limit=${limit}&quiet_gap_ms=${quietGapMs}`,
+  );
+}
+
 export async function getStats(botId: string): Promise<StatsResponse> {
   return get(`/api/bots/${botId}/stats`);
+}
+
+export async function getTradingSummary(botId: string): Promise<TradingSummary> {
+  return get(`/api/bots/${botId}/trading/summary`);
 }
 
 export async function getLogs(
@@ -125,10 +148,6 @@ export async function getBotProcessStatus(
   botId: string,
 ): Promise<BotProcessStatus> {
   return get(`/api/bots/${botId}/process`);
-}
-
-export async function getLiveStatus(botId: string): Promise<LiveStatusResponse> {
-  return get(`/api/bots/${botId}/live/status`);
 }
 
 export async function getLiveSessions(

@@ -95,7 +95,7 @@ fn default_values_match_typescript() {
     assert_eq!(cfg.gamma_market_limit, 20);
     assert_eq!(
         cfg.feed_event_storage_profile,
-        FeedEventStorageProfile::Compact
+        FeedEventStorageProfile::ReplayGrade
     );
 
     assert_eq!(cfg.resolution_poll_retries, 30);
@@ -599,16 +599,25 @@ fn storage_profile_env_parses_full_debug() {
     );
 }
 
-/// Verifies that storage profile env parsing defaults to compact mode.
+/// Verifies that storage profile env parsing accepts compact mode.
 #[test]
-fn storage_profile_env_defaults_to_compact() {
+fn storage_profile_env_parses_compact() {
+    assert_eq!(
+        FeedEventStorageProfile::from_env_value(Some("compact")),
+        FeedEventStorageProfile::Compact
+    );
+}
+
+/// Verifies that storage profile env parsing defaults to replay-grade mode.
+#[test]
+fn storage_profile_env_defaults_to_replay_grade() {
     assert_eq!(
         FeedEventStorageProfile::from_env_value(Some("unexpected")),
-        FeedEventStorageProfile::Compact
+        FeedEventStorageProfile::ReplayGrade
     );
     assert_eq!(
         FeedEventStorageProfile::from_env_value(None),
-        FeedEventStorageProfile::Compact
+        FeedEventStorageProfile::ReplayGrade
     );
 }
 

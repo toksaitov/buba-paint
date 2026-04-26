@@ -1,24 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Setup script for buba-paint on Ubuntu 24.04
-# Usage: ssh buba-paint 'bash -s' < scripts/setup-ubuntu.sh
-
-echo "=== Installing system packages ==="
+echo "=== Installing host packages ==="
 sudo apt update
-sudo apt install -y nodejs npm sqlite3 python3 python3-pip python3-matplotlib python3-pandas python3-numpy
+sudo apt install -y \
+  build-essential \
+  curl \
+  git \
+  pkg-config \
+  sqlite3 \
+  libssl-dev \
+  nodejs \
+  npm \
+  python3 \
+  python3-matplotlib \
+  python3-numpy \
+  python3-pandas
 
-echo "=== Node version ==="
+echo "=== Verifying toolchains ==="
+rustc --version
+cargo --version
 node --version
+npm --version
 
-echo "=== Installing npm dependencies ==="
-cd ~/buba-paint
+echo "=== Installing dashboard dependencies ==="
+cd ~/buba-paint/dashboard/client
 npm install
 
-echo "=== Creating data directory ==="
-mkdir -p data
+echo "=== Installing sidecar dependencies ==="
+cd ~/buba-paint/polymarket-sidecar
+npm install
 
-echo "=== Verifying typecheck ==="
-npx tsc --noEmit
+echo "=== Building Rust workspace ==="
+cd ~/buba-paint
+cargo build --release --workspace
+
+echo "=== Building dashboard client ==="
+cd ~/buba-paint/dashboard/client
+npm run build
+
+echo "=== Building Polymarket sidecar ==="
+cd ~/buba-paint/polymarket-sidecar
+npm run build
 
 echo "=== Done ==="

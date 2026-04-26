@@ -23,16 +23,20 @@ test("mobile drawer opens and closes", async ({ page, browserName }) => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL("/");
 
-  await expect(page.getByText("Balance")).toBeVisible();
+  await expect(page.getByText("Balance", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Current market" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Open shadow trades" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Polymarket account" })).toBeVisible();
 
   const hamburger = page.getByRole("button", { name: "Expand navigation" });
   await expect(hamburger).toBeVisible();
+  await expect(hamburger).toBeEnabled();
 
-  await hamburger.click();
+  await hamburger.click({ force: true });
   await expect(page.getByRole("link", { name: "Trades" })).toBeVisible();
 
   await page.getByRole("link", { name: "Trades" }).click();
-  await expect(page.getByRole("heading", { name: "Trade History" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Trade history" })).toBeVisible();
 
   await expect(page.getByRole("link", { name: "Trades" })).not.toBeVisible();
 });
@@ -45,9 +49,10 @@ test("mobile shows trade cards instead of table", async ({ page }) => {
   await page.getByRole("textbox").first().fill("admin");
   await page.locator('input[type="password"]').fill("secret");
   await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByText("Balance", { exact: true })).toBeVisible();
 
   const hamburger = page.getByRole("button", { name: "Expand navigation" });
-  await hamburger.click();
+  await hamburger.click({ force: true });
   await page.getByRole("link", { name: "Trades" }).click();
 
   await expect(

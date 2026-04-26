@@ -69,6 +69,11 @@ export interface BalanceResponse {
   entries: BalanceEntry[];
 }
 
+export interface EquitySeriesResponse {
+  baseline: BalanceEntry | null;
+  points: BalanceEntry[];
+}
+
 export interface SignalRow {
   id: number;
   timestamp: number;
@@ -85,6 +90,29 @@ export interface SignalRow {
 
 export interface SignalsResponse {
   signals: SignalRow[];
+}
+
+export interface SignalGroupRow {
+  id: string;
+  strategy: string;
+  direction: string;
+  market_id: string | null;
+  start_timestamp: number;
+  end_timestamp: number;
+  count: number;
+  first_signal_id: number;
+  last_signal_id: number;
+  binance_price: number | null;
+  chainlink_price: number | null;
+  up_ask: number | null;
+  down_ask: number | null;
+  execution_fidelity: string | null;
+}
+
+export interface SignalGroupsResponse {
+  groups: SignalGroupRow[];
+  raw_rows_scanned: number;
+  quiet_gap_ms: number;
 }
 
 export interface LogsResponse {
@@ -202,14 +230,6 @@ export interface LiveReconciliationRow {
   details_json: string | null;
 }
 
-export interface LiveStatusResponse {
-  latest_session: LiveSessionRow | null;
-  latest_account_snapshot: LiveAccountSnapshotRow | null;
-  open_orders: number;
-  pending_redemptions: number;
-  critical_reconciliation_events: number;
-}
-
 export interface LiveSessionsResponse {
   sessions: LiveSessionRow[];
 }
@@ -228,4 +248,87 @@ export interface LiveRedemptionsResponse {
 
 export interface LiveReconciliationResponse {
   events: LiveReconciliationRow[];
+}
+
+export interface TradingHealth {
+  state: string;
+  label: string;
+  detail: string | null;
+}
+
+export interface TradingControlCapability {
+  enabled: boolean;
+  reason: string;
+}
+
+export interface TradingCapabilities {
+  preflight: TradingControlCapability;
+  arm: TradingControlCapability;
+  disarm: TradingControlCapability;
+  cancel_all: TradingControlCapability;
+  stop_after_flat: TradingControlCapability;
+  redeem: TradingControlCapability;
+  kill_switch: TradingControlCapability;
+}
+
+export interface TradingAlert {
+  severity: string;
+  title: string;
+  detail: string;
+}
+
+export interface ShadowSummary {
+  balance: number;
+  starting_balance: number;
+  total_pnl: number;
+  total_trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  open_trades: number;
+  uptime_hours: number;
+  high_water_mark: number;
+  max_drawdown_pct: number;
+  live_session_status: string | null;
+  last_tick_at: number | null;
+  current_window: BotStatus["current_window"];
+}
+
+export interface RealAccountSummary {
+  available_cash: number | null;
+  reserved_cash: number | null;
+  inventory_mark_value: number | null;
+  redeemable_value: number | null;
+  pending_redeem_value: number | null;
+  total_equity: number | null;
+  allowance_available: number | null;
+  latest_snapshot_at_ms: number | null;
+  session_id: number | null;
+  session_status: string | null;
+  session_started_at_ms: number | null;
+  wallet_address: string | null;
+  proxy_wallet: string | null;
+  cash_cap_usd: number | null;
+  enabled_strategies: string[];
+  provider: string | null;
+  user_stream_status: string | null;
+  last_user_stream_connected_at_ms: number | null;
+  last_user_stream_event_at_ms: number | null;
+  last_account_refresh_at_ms: number | null;
+  open_orders: number;
+  pending_redemptions: number;
+  critical_reconciliation_events: number;
+}
+
+export interface TradingSummary {
+  runtime_mode: string;
+  trading_state: string;
+  process_state: string;
+  venue_health: TradingHealth;
+  account_health: TradingHealth;
+  reconciliation_health: TradingHealth;
+  shadow_summary: ShadowSummary;
+  real_account_summary: RealAccountSummary;
+  capabilities: TradingCapabilities;
+  alerts: TradingAlert[];
 }

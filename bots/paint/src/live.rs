@@ -8,8 +8,8 @@ use crate::backtest::momentum::MomentumCalculator;
 use crate::bankroll::BankrollManager;
 use crate::circuit_breaker::CircuitBreaker;
 use crate::clock::{Clock, SystemClock};
-use crate::config::Config;
-use crate::db::database::Database;
+use crate::config::{Config, FeedEventStorageProfile};
+use crate::db::database::{Database, FeedEventFootprintRow};
 use crate::executor::{
     ExecutionEngine, OrderOutcomeDisposition, ProcessedOrderOutcome, SubmissionOutcome,
 };
@@ -264,10 +264,27 @@ async fn run_live_runtime(
             (db, balance)
         };
     let pending_policy = config.pending_settlement_policy_unchecked();
+    db.set_run_metadata(
+        "feed_event_storage_profile",
+        config.feed_event_storage_profile.as_str(),
+        clock.now(),
+    )?;
+    db.set_run_metadata(
+        "replay_quality_class",
+        initial_replay_quality_class(config.feed_event_storage_profile),
+        clock.now(),
+    )?;
+    db.set_run_metadata(
+        "required_feed_event_classes",
+        required_feed_event_classes(),
+        clock.now(),
+    )?;
     info!(
         balance = runtime_balance,
         db = %db_path,
         execution_mode = config.execution_mode.as_str(),
+        feed_event_storage_profile = config.feed_event_storage_profile.as_str(),
+        replay_quality_class = initial_replay_quality_class(config.feed_event_storage_profile),
         pending_settlement_mode = pending_policy.mode.as_str(),
         pending_settlement_family_reserve_fraction = pending_policy.family_reserve_fraction,
         pending_settlement_global_reserve_fraction = pending_policy.global_reserve_fraction,
@@ -1166,8 +1183,20 @@ async fn run_live_runtime(
                         wal_bytes = footprint.wal_bytes,
                         feed_events = footprint.feed_event_count,
                         rows = row_summary,
+                        replay_quality_class = footprint_replay_quality_class(&footprint.grouped_feed_events),
                         "live storage footprint"
                     );
+                    let now = clock.now();
+                    if let Err(error) = db.set_run_metadata(
+                        "replay_quality_class",
+                        footprint_replay_quality_class(&footprint.grouped_feed_events),
+                        now,
+                    ) {
+                        warn!(%error, "failed to persist replay quality metadata");
+                    }
+                    if let Err(error) = db.set_run_metadata("feed_event_classes", &row_summary, now) {
+                        warn!(%error, "failed to persist feed class metadata");
+                    }
                 }
             }
 
@@ -1988,6 +2017,48 @@ fn log_feed_health_rollups(rows: &[FeedHealthRollupRow]) {
             "feed health rollup"
         );
     }
+}
+
+/// Return the initial quality class implied by the configured storage profile.
+fn initial_replay_quality_class(profile: FeedEventStorageProfile) -> &'static str {
+    match profile {
+        FeedEventStorageProfile::Compact => "descriptive_only",
+        FeedEventStorageProfile::ReplayGrade | FeedEventStorageProfile::FullDebug => "sweep_grade",
+    }
+}
+
+/// Return the required feed classes for sweep-grade replay.
+fn required_feed_event_classes() -> &'static str {
+    "binance:aggTrade, binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:top_of_book, clob_down:top_of_book"
+}
+
+/// Return the best current quality class implied by persisted feed classes.
+fn footprint_replay_quality_class(rows: &[FeedEventFootprintRow]) -> &'static str {
+    if has_feed_class(rows, "binance", "aggTrade")
+        && has_feed_class(rows, "binance", "bookTicker")
+        && has_feed_class(rows, "binance", "depth")
+        && has_feed_class(rows, "chainlink", "chainlink_price")
+        && has_source(rows, "clob_up")
+        && has_source(rows, "clob_down")
+    {
+        "sweep_grade"
+    } else if rows.is_empty() {
+        "empty"
+    } else {
+        "descriptive_only"
+    }
+}
+
+/// Return whether footprint rows include one source and event type.
+fn has_feed_class(rows: &[FeedEventFootprintRow], source: &str, event_type: &str) -> bool {
+    rows.iter()
+        .any(|row| row.source == source && row.event_type == event_type && row.row_count > 0)
+}
+
+/// Return whether footprint rows include any event for one source.
+fn has_source(rows: &[FeedEventFootprintRow], source: &str) -> bool {
+    rows.iter()
+        .any(|row| row.source == source && row.row_count > 0)
 }
 
 /// Register or update one market that still needs authoritative settlement.

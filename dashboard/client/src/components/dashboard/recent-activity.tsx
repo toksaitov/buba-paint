@@ -1,4 +1,5 @@
 import type { TradeRow } from "../../lib/types";
+import { empty } from "../../lib/copy";
 import { formatTime, formatUsd, pnlColor, cn } from "../../lib/utils";
 
 export function RecentActivity({ trades }: { trades: TradeRow[] }) {
@@ -7,12 +8,9 @@ export function RecentActivity({ trades }: { trades: TradeRow[] }) {
     .slice(0, 8);
 
   return (
-    <div className="border border-border px-3 py-2.5 bg-bg">
-      <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">
-        Recent Trades
-      </div>
+    <div>
       {settled.length === 0 ? (
-        <div className="text-[12px] text-muted">No settled trades yet</div>
+        <div className="text-[12px] text-muted">{empty.noSettledTrades}</div>
       ) : (
         <div className="space-y-1">
           {settled.map((t) => (

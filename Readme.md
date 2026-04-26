@@ -1,8 +1,8 @@
 # buba
 
-Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy stack that consumes Binance market data, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, raw feed-event capture for new runs, a shared signal-feature engine, a shared evaluation/submission path, and a portfolio router that keeps the strategy families from competing for the same market snapshot. Historical runs `004` through `009` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream while still merging older legacy data with future richer runs.
+Paper-trading and backtesting platform for Polymarket prediction markets. `paint` is the first bot: a 5-minute BTC Up/Down strategy stack that consumes Binance market data, the Polymarket CLOB, and Chainlink RTDS settlement prices. Live paper trading and backtesting now share the same live-like execution model: event-driven strategy evaluation, simulated order-arrival latency, partial fills, min-size and tick-size checks, replay-grade feed-event capture for new research runs, a shared signal-feature engine, a shared evaluation/submission path, and a portfolio router that keeps the strategy families from competing for the same market snapshot. Historical runs `004` through `009` can be upgraded in place with additive metadata and replay tables so the backtester can replay one canonical event stream while still merging older legacy data with future richer runs.
 
-The local tree now also contains real-money readiness scaffolding for a future small-bankroll proxy-wallet pilot. Execution modes are explicit (`paper`, `live_readonly`, `live_trading`), market discovery persists live fee and venue metadata, additive live ledger tables exist, the agent and dashboard expose live-readiness and reconciliation surfaces, and a local TypeScript sidecar provides the authenticated Polymarket boundary for proxy-wallet accounts. `buba-paint live` now supports a real authenticated `live_readonly` runtime that reuses the shared paper loop, persists real live sessions/account snapshots/reconciliation state, and keeps the old charts, trades, signals, and stats pages useful via a shadow paper track. Actual live order placement remains intentionally gated.
+The local tree now also contains real-money readiness scaffolding for a future small-bankroll proxy-wallet pilot. Execution modes are explicit (`paper`, `live_readonly`, `live_trading`), market discovery persists live fee and venue metadata, additive live ledger tables exist, the agent and dashboard expose live-readiness and reconciliation surfaces, and a local TypeScript sidecar provides the authenticated Polymarket boundary for proxy-wallet accounts. `buba-paint live` now supports a real authenticated `live_readonly` runtime that reuses the shared paper loop, persists real live sessions/account snapshots/reconciliation state, and keeps the shadow analysis pages useful via a paper track. Actual live order placement remains intentionally gated.
 
 Settlements are applied only on authoritative Polymarket outcomes. Dynamic taker fees follow the March 30, 2026 crypto schedule by default (`feeRate=0.072`, `exponent=1`) while still supporting historical-by-date fee resolution and explicit overrides for sweeps. Reserve accounting is phase-aware: once a market closes, unresolved trades can move from active-market risk into pending-settlement reserve so the live bot can stop charging the strategy sleeve for closed risk while still keeping global capital locked until Gamma resolves the market. A shared agent monitors bot databases and exposes REST + WebSocket APIs. A dashboard (Rust backend + React frontend) provides a unified UI for status, trades, signals, and process control.
 
@@ -17,7 +17,7 @@ For live-money readiness details, use:
 - [docs/live-session-runbook.md](./docs/live-session-runbook.md)
 - [docs/live-readiness-review.md](./docs/live-readiness-review.md)
 
-The current local tree is ready for authenticated readonly venue verification, compact live-session telemetry, and pre-live review work. It is not ready for real-money deployment. `live_readonly` is a real venue/account monitor plus a shared shadow paper runtime. `live_trading` is still gated and cannot place orders.
+The current local tree is ready for authenticated readonly venue verification, replay-grade research capture, compact live-session telemetry, and pre-live review work. It is not ready for real-money deployment. `live_readonly` is a real venue/account monitor plus a shared shadow paper runtime. `live_trading` is still gated and cannot place orders.
 
 Repository agent-instruction alias: [AGENTS.md](./AGENTS.md) points to the canonical [CLAUDE.md](./CLAUDE.md). Keep `CLAUDE.md` as the real source of truth.
 
@@ -28,16 +28,17 @@ cargo build --release              # optimized binaries (paint, agent, dashboard
 cargo test                         # Rust test suites across all crates
 cargo clippy -- -D warnings        # lint (zero warnings required)
 make lint                          # fmt + clippy + strict Rust + TS comment audits
+make docs-audit                    # docs, script, and derived-data hygiene audit
 
 cd dashboard/client && npm install && npm test   # frontend Vitest suite
 cd polymarket-sidecar && npm install && npm test # sidecar Vitest suite
 cd dashboard/client && npm run dev               # dev server on :3000 (proxies to :3001)
 
-# Or run the full stack via Docker:
+# Or run the local paper dashboard stack via Docker:
 docker compose up -d
 ```
 
-Requires Rust 1.94+ (install via [rustup](https://rustup.rs)) and Node 22+ for the dashboard frontend. Or just Docker: `docker compose up` builds and runs everything.
+Requires Rust 1.94+ (install via [rustup](https://rustup.rs)) and Node 22+ for the dashboard frontend. Docker Compose builds a local paper stack with paint, agent, and dashboard. It does not start the Polymarket sidecar or a `live_readonly` venue monitor.
 
 ## How It Works (paint bot)
 
@@ -57,7 +58,7 @@ The portfolio router chooses one family per evaluation snapshot:
 
 Per-strategy capital sleeves and per-strategy trend filtering keep one family from starving another family by shared bankroll or shared suppression state.
 
-For new live paper runs, compact raw feed events are written to `feed_events` and replayed by timestamp. The default storage profile keeps typed replay fields and drops bulky hot-path payload blobs so week-long paper runs remain practical. Signal-generation telemetry is persisted to `signal_metrics`, feed lifecycle events are persisted to `feed_health_events`, and no-signal strategy decisions are summarized into `strategy_rejection_summaries` so live diagnostics can explain why a strategy kept returning `None`. Live quote freshness now uses observed local receipt time when the CLOB source timestamp is missing or zero, while the raw `feed_events.event_at_ms` value is still preserved for replay/debugging truth. For older runs, the simulator falls back to synthetic `legacy_snapshot` events built from 1 Hz `tick_data`. That path is intentionally conservative and should be treated as lower-fidelity than new raw-event runs.
+For new live paper and `live_readonly` research runs, replay-grade raw feed events are written to `feed_events` and replayed by timestamp. The default storage profile keeps typed decision inputs, including compact Binance `bookTicker` rows, and drops bulky hot-path payload blobs so week-long paper runs remain practical. Signal-generation telemetry is persisted to `signal_metrics`, feed lifecycle events are persisted to `feed_health_events`, and no-signal strategy decisions are summarized into `strategy_rejection_summaries` so live diagnostics can explain why a strategy kept returning `None`. Live quote freshness now uses observed local receipt time when the CLOB source timestamp is missing or zero, while the raw `feed_events.event_at_ms` value is still preserved for replay/debugging truth. For older runs, the simulator falls back to synthetic `legacy_snapshot` events built from 1 Hz `tick_data`. That path is intentionally conservative and should be treated as lower-fidelity than new raw-event runs.
 
 At window close, the bot records a provisional estimate for observability but waits for the authoritative Polymarket resolution before applying settlement to bankroll, Kelly state, trend tracking, or the circuit breaker. Closed trades can be reclassified from active-market risk into pending-settlement reserve immediately at window close. In conservative mode, that releases the strategy sleeve while keeping the full global reserve locked. In riskier mode, both the sleeve release and a configurable global-reserve haircut are available behind explicit config. Fees use Polymarket's dynamic formula: `fee = shares * price * feeRate * (price * (1 - price))^exponent`. The default live crypto params are `feeRate=0.072` and `exponent=1` as of March 30, 2026.
 
@@ -76,9 +77,9 @@ All feeds auto-reconnect with exponential backoff (1s base, 30s max, jitter). We
 The workspace contains three Rust crates, a React frontend, and a TypeScript Polymarket sidecar:
 
 - `bots/paint` (`buba-paint`): the BTC Up/Down trading bot. Runs live trading, backtests, parameter sweeps, settlement verification (`verify-settlements`), and the `build-data` merge tool.
-- `agent` (`buba-agent`): monitoring agent that sits alongside a bot, reads its SQLite database (WAL mode, read-only), and exposes status, trades, balance, signals, stats, logs, and bot process control over REST. Polls the DB every 2 seconds and broadcasts changes over WebSocket.
+- `agent` (`buba-agent`): monitoring agent that sits alongside a bot, reads its SQLite database (WAL mode, read-only), and exposes status, trades, balance, chart-safe equity series, signals, grouped signals, stats, logs, trading summary, live-readiness details, and bot process control over REST. Polls the DB every 2 seconds and broadcasts changes over WebSocket.
 - `dashboard/server` (`buba-dashboard`): dashboard backend. Manages users (Argon2 password hashing, JWT auth), proxies REST and WebSocket requests to one or more agents. Can serve the built React frontend as static files.
-- `dashboard/client`: React/Vite frontend. Displays bot status, equity curves, trades, signals, and logs. Uses TanStack React Query for server state with WebSocket-driven cache invalidation. Installable as a PWA on iPhone, iPad, and Android with safe-area handling, responsive mobile layout (compact icon sidebar + drawer), dark mode (system/dark/light toggle, persisted), and trade notifications.
+- `dashboard/client`: React/Vite frontend. The information architecture is split into `Monitor` and `Analysis`. `Overview` is the mixed triage page, `Execution` is the mode-aware account/execution cockpit, `Logs` is the operator event stream, and `Equity`, `Trades`, `Signals`, and `Strategies` are shadow-performance analysis pages. `/execution` is canonical. `/trading`, `/live`, and `/stats` remain compatibility redirects. Uses TanStack React Query for server state with WebSocket-driven cache invalidation. Installable as a PWA on iPhone, iPad, and Android with safe-area handling, responsive mobile layout (compact icon sidebar + drawer), dark mode (system/dark/light toggle, persisted), and trade notifications.
 - `polymarket-sidecar`: authenticated Polymarket boundary for proxy-wallet accounts. Owns live preflight, account-state, and future order/redeem flows behind a local HTTP API. The current provider is real for readonly-safe surfaces (`/health`, `/account`, `/preflight`) and still stubbed for write paths. It does not place real orders yet.
 
 ### Data flow
@@ -113,13 +114,13 @@ Shared: `types.rs` (Signal, BookState, MarketWindow, TradeResult with settlement
 
 ### Agent modules
 
-`api.rs` (10 REST endpoints + WS route), `db_reader.rs` (read-only SQLite connection, status/trades/balance/signals/stats queries), `ws.rs` (DB poller + WebSocket broadcast handler), `process_manager.rs` (ChildProcessManager for bot lifecycle control, NoopProcessManager for monitoring-only mode), `auth.rs` (shared-secret Bearer middleware), `types.rs` (BotStatus, TradeRow, WsMessage), `error.rs` (AgentError with HTTP status mapping).
+`api.rs` (REST endpoints + WS route), `db_reader.rs` (read-only SQLite connection, status, trades, balance, chart-safe equity series, signals, grouped signals, stats, and live-detail queries), `ws.rs` (DB poller + WebSocket broadcast handler), `process_manager.rs` (ChildProcessManager for bot lifecycle control, NoopProcessManager for monitoring-only mode), `auth.rs` (shared-secret Bearer middleware), `types.rs` (BotStatus, TradeRow, EquitySeriesResponse, SignalGroupsResponse, WsMessage), `error.rs` (AgentError with HTTP status mapping).
 
 ### Dashboard server modules
 
 `auth.rs` (Argon2 hashing, JWT creation/validation, auth middleware), `config.rs` (TOML config: server port, JWT secret, agents list), `db.rs` (SQLite users/sessions store), `proxy.rs` (HTTP proxy helpers for agent communication), `error.rs` (DashboardError with HTTP status mapping).
 
-API routes: `api/auth_routes.rs` (login, me), `api/bots.rs` (list bots, proxy status/trades/balance/signals/stats/logs/process/start/stop/restart), `api/users.rs` (admin-only user management), `api/ws_proxy.rs` (WebSocket proxy: validates JWT, bridges client <-> agent).
+API routes: `api/auth_routes.rs` (login, me), `api/bots.rs` (list bots, proxy status, trades, balance, chart-safe equity series, signals, grouped signals, stats, logs, process controls, trading summary, and live detail routes), `api/users.rs` (admin-only user management), `api/ws_proxy.rs` (WebSocket proxy: validates JWT, bridges client <-> agent).
 
 ## Project Structure
 
@@ -160,11 +161,10 @@ buba-paint/
   polymarket-sidecar/             # local TS sidecar for proxy-wallet auth/relayer
     package.json
     src/
-  legacy-ts/                       # archived TypeScript implementation
-  scripts/                         # Python analysis scripts + demo DB seed
+  scripts/                         # audits, setup helpers, manual analysis scripts, archive
   data/                            # derived data (reproducible)
   runs/                            # primary live data (IRREPLACEABLE)
-    001/ ... 009/                  #   DB, logs, analysis PNGs (LFS)
+    001/ ... 012/                  #   DB, logs, analysis PNGs (LFS)
 ```
 
 `runs/` contains primary data collected during live paper trading sessions over weeks. Do not edit these DBs manually. The only supported in-place mutation is `upgrade-history`, which performs additive schema upgrades and metadata backfills on historical runs. `data/` is derived and reproducible.
@@ -177,7 +177,7 @@ buba-paint/
 cargo run -p buba-paint --release -- live --db-path runs/009/buba-paint.db --balance 200
 cargo run -p buba-paint --release -- live --set LATENCY_ARB_MAX_ASK=0.55
 
-# Recommended conservative live baseline for the next release candidate:
+# Historical conservative run-018 parity baseline for reference only:
 PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0 \
 PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0 \
 PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false \
@@ -222,7 +222,7 @@ cargo run -p buba-paint --release -- live \
   --balance 100
 ```
 
-`live-preflight` and `EXECUTION_MODE=live_readonly` now use the real readonly sidecar provider. They validate proxy-wallet credentials, host geoblock, clock drift, active-market metadata, account state, and authenticated user-stream connectivity without placing orders. In `live_readonly`, the shared runtime still evaluates strategies and produces shadow paper signals/trades/equity while the Live page shows real venue/account truth. `EXECUTION_MODE=live_trading` is still rejected until the dedicated live trading runtime exists.
+`live-preflight` and `EXECUTION_MODE=live_readonly` now use the real readonly sidecar provider. They validate proxy-wallet credentials, host geoblock, clock drift, active-market metadata, account state, and authenticated user-stream connectivity without placing orders. In `live_readonly`, the shared runtime still evaluates strategies and produces shadow paper signals/trades/equity while the `Execution` page shows real venue/account truth. `EXECUTION_MODE=live_trading` is still rejected until the dedicated live trading runtime exists.
 
 ### Single backtest (paint)
 
@@ -371,8 +371,9 @@ Normal operator logs now also emit `paper order filled`, `paper order missed`, a
 
 All settings via environment variables or `--set` CLI flag.
 
-- `FEED_EVENT_STORAGE_PROFILE=compact|full_debug`
-  - `compact` is the production default. It keeps typed replay fields, drops bulky hot-path payload blobs, buckets Binance depth rows, and suppresses high-rate book-ticker persistence.
+- `FEED_EVENT_STORAGE_PROFILE=replay_grade|compact|full_debug`
+  - `replay_grade` is the default for research runs. It keeps typed replay fields, including compact Binance book-ticker rows, and drops bulky hot-path payload blobs.
+  - `compact` is descriptive-only. It suppresses high-rate Binance book-ticker persistence and is blocked by the sweep preflight gate.
   - `full_debug` keeps raw payload retention for short local diagnostics and should not be the week-long live-paper default.
 
 Core: `DB_PATH` (default `./data/paint.db`) is the SQLite database path. `LOG_LEVEL` (default `info`): debug, info, warn, error. `TICK_INTERVAL` (default `1000`): coarse telemetry sampling interval in ms. `GAMMA_POLL_INTERVAL` (default `60000`): Gamma API poll interval in ms. `CHAINLINK_STALE_MS` (default `30000`): force-reconnect after silence. `WEBSOCKET_CONNECT_TIMEOUT_MS` (default `10000`): bound websocket handshake/connect hangs before normal reconnect backoff resumes. `BINANCE_NO_MESSAGE_RECONNECT_MS` (default `5000`) and `CLOB_NO_MESSAGE_RECONNECT_MS` (default `20000`): force reconnect when the socket stays open but no text market data arrives. `MAX_SIGNAL_FEED_AGE_MS` and `MAX_QUOTE_AGE_MS` cap stale inputs for signal generation.
@@ -393,7 +394,7 @@ Kelly criterion: `KELLY_FRACTION` (default `0.5`) is the half-Kelly multiplier. 
 
 Fees: `TAKER_FEE_RATE` (default `0.072`) and `TAKER_FEE_EXPONENT` (default `1`) are the live crypto defaults as of March 30, 2026. If not explicitly overridden, the engine can still resolve historical fee params by market end timestamp when replaying older periods.
 
-Execution: `EXECUTION_MODE` (default `paper`): paper or live. Live order placement is still not implemented, but paper/live simulation uses the shared execution engine. `SIM_ORDER_LATENCY_MS` (default `250`) controls simulated order-arrival delay. It is a paper-trading heuristic, not a measured venue latency, so later calibration should use the persisted effective-arrival telemetry rather than treating `250` as ground truth. `MAX_BOOK_STALENESS_MS` (default `1500`) rejects fills against stale books. Submit-time sizing now checks both the market minimum size and `MIN_BET_USD` before an order is queued, so obviously too-small orders fail early as `below_market_min_size_on_submit` or `below_min_bet_on_submit` instead of turning into guaranteed misses later.
+Execution: `EXECUTION_MODE` (default `paper`): `paper`, `live_readonly`, or `live_trading`. `paper` and `live_readonly` both use the shared execution engine for shadow execution. `live_trading` is still intentionally gated and does not place real orders yet. `SIM_ORDER_LATENCY_MS` (default `250`) controls simulated order-arrival delay. It is a paper-trading heuristic, not a measured venue latency, so later calibration should use the persisted effective-arrival telemetry rather than treating `250` as ground truth. `MAX_BOOK_STALENESS_MS` (default `1500`) rejects fills against stale books. Submit-time sizing now checks both the market minimum size and `MIN_BET_USD` before an order is queued, so obviously too-small orders fail early as `below_market_min_size_on_submit` or `below_min_bet_on_submit` instead of turning into guaranteed misses later.
 
 Strategy sleeves: `SPREAD_CAPTURE_MAX_POSITION_FRACTION`, `CALM_PERSISTENCE_MAX_POSITION_FRACTION`, and `LATENCY_ARB_MAX_POSITION_FRACTION` are optional strategy-only balance caps. If any of them is unset, that family falls back to `MAX_POSITION_FRACTION`. The shared hard caps `MAX_POSITION_USD_FRACTION` and `MAX_POSITION_USD` still apply.
 
@@ -408,6 +409,7 @@ Trend filter (experimental, off by default): `TREND_FILTER_ENABLED` (default `fa
 SQLite (WAL mode). Python scripts can read concurrently while the bot writes.
 
 - tick_data: 1-second sampled prices from all feeds. This remains available for dashboards and coarse inspection. Columns: timestamp (Unix ms), source (binance/clob_up/clob_down/chainlink), price, bid, ask, bid_size, ask_size.
+- run_metadata: key-value run metadata such as feed storage profile, replay-quality class, and observed feed-event classes.
 - feed_events: canonical replay source for the live-like simulator. Stores raw or synthesized event timing with normalized book fields and a fidelity marker (`raw_event` or `legacy_snapshot`).
 - markets: one row per 5-minute window. Columns: market_id (Gamma API ID), question, condition_id, slug, up_token_id, down_token_id, start_time, end_time, status (active/closed/resolved), outcome (authoritative runtime outcome), polymarket_outcome, resolution_source, fee_profile, min-size and tick-size metadata, and reward metadata.
 - signals: every strategy detection event. Includes the market link, replay fidelity, and execution timing fields when available.
@@ -523,7 +525,7 @@ curl -X POST -H "Authorization: Bearer your-secret" http://localhost:9090/api/bo
 
 The dashboard frontend builds with a Node 22+ toolchain. If the production host has an older Node version, build `dashboard/client/dist` locally and deploy the static bundle.
 
-For Docker local testing: `docker compose up` starts all three services (paint bot, agent, dashboard). The bot creates its own DB on first run; no seeding step needed. The dashboard is at `http://localhost:3001` (admin/changeme). For frontend hot reload during development, run `cd dashboard/client && npm run dev` against the Docker backend on port 3001. The `dashboard.toml` at the project root has dev defaults that match the compose env vars. Override secrets via `.env` (see `.env.example`).
+For Docker local testing: `docker compose up` starts the paper-only stack: paint bot, agent, and dashboard. It does not start the Polymarket sidecar or authenticated `live_readonly` monitoring. The bot creates its own DB on first run; no seeding step is needed. The dashboard is at `http://localhost:3001` (admin/changeme). For frontend hot reload during development, run `cd dashboard/client && npm run dev` against the Docker backend on port 3001. The `dashboard.toml` at the project root has dev defaults that match the compose env vars. Override secrets via `.env` (see `.env.example`).
 
 The paint bot runs indefinitely, rolling through 5-minute windows. Ctrl+C for graceful shutdown (final stats printed, feeds disconnect, DB closes).
 
@@ -554,15 +556,20 @@ Preferred staging flow:
 
 The server still runs a Node 18 toolchain. Do not rely on building the frontend there. Treat the locally-built `dashboard/client/dist` bundle as the deployable artifact until the server toolchain is upgraded.
 
+The repository now carries operations templates under `ops/`. Use `ops/Readme.md` and the systemd user-service templates for sidecar, bot, agent, and dashboard instead of improvising `nohup` restarts.
+
 `buba-paint` process model:
 
+- the sidecar runs under supervision from `~/buba-paint-live/current/polymarket-sidecar`
+- the sidecar env lives at `~/buba-paint-live/config/sidecar.env`
+- the sidecar log lives at `~/buba-paint-live/logs/sidecar.log`
 - the bot is started directly, usually through `script -qefa` so its ANSI log stream lands in the run log cleanly
 - the agent runs in `--monitor-only` mode and reads the bot DB
 - the dashboard serves the static frontend bundle from `~/buba-paint-live/current/dashboard/client/dist` and proxies to the monitor-only agent
 
 Preferred fresh-run deploy:
 
-1. Stop bot, agent, and dashboard.
+1. Stop sidecar, bot, agent, and dashboard.
 2. Verify there are no stale processes left before switching releases. Check both the wrapper and the child processes:
 
 ```bash
@@ -579,15 +586,16 @@ Preferred partial update over an existing run:
 Use this only for code-only fixes where the run should remain comparable, for example diagnostics, logging, dashboard/agent fixes, restart-safe bot fixes, or live-feed transport hardening that leaves strategy semantics unchanged. Do not use it for strategy or parameter changes that should start a fresh experiment.
 
 1. Back up the current run DB and log into `runtime/backups`.
-2. Stop bot, agent, and dashboard.
+2. Stop sidecar, bot, agent, and dashboard.
 3. Verify no stale processes remain from the old release path and no old `buba-paint live` child is still attached to the run DB.
 4. Point `current` at the new release.
-5. Restart over the same runtime directory, DB, and log. If the release added new live robustness knobs such as websocket timeouts or no-message watchdogs, set them explicitly in the bot environment instead of relying on memory.
+5. Restart the supervised sidecar first, then restart over the same runtime directory, DB, and log. If the release added new live robustness knobs such as websocket timeouts or no-message watchdogs, set them explicitly in the sidecar and bot environments instead of relying on memory.
 6. Verify that the bot recovered the same active window correctly and continued the run.
 
 Minimum remote acceptance checks:
 
 - `readlink -f ~/buba-paint-live/current` points to the intended release
+- `curl http://127.0.0.1:3210/health` returns `ok: true` and a sane readiness payload
 - `curl http://127.0.0.1:9090/health` returns `{"ok":true}`
 - `curl http://127.0.0.1:3000/health` returns `{"ok":true}`
 - `sqlite3 ~/buba-paint-live/runtime/run-0NN/paint.db "pragma quick_check;"` returns `ok`
@@ -603,14 +611,17 @@ Disk cleanup policy:
 ## Analysis Scripts
 
 ```bash
-python3 scripts/pnl_curve.py              runs/008/buba-paint.db
-python3 scripts/latency_distribution.py   runs/008/buba-paint.db
-python3 scripts/spread_over_time.py       runs/008/buba-paint.db
-python3 scripts/signal_frequency.py       runs/008/buba-paint.db
-python3 scripts/binance_vs_chainlink.py   runs/008/buba-paint.db
+python3 scripts/analysis/chart-run.py              runs/012/server-20260424-183503/paint.db
+python3 scripts/analysis/pnl_curve.py              runs/012/server-20260424-183503/paint.db
+python3 scripts/analysis/latency_distribution.py   runs/012/server-20260424-183503/paint.db
+python3 scripts/analysis/spread_over_time.py       runs/012/server-20260424-183503/paint.db
+python3 scripts/analysis/signal_frequency.py       runs/012/server-20260424-183503/paint.db
+python3 scripts/analysis/binance_vs_chainlink.py   runs/012/server-20260424-183503/paint.db
 ```
 
-Requires Python 3 with matplotlib, pandas, numpy. Each script produces a `.png` and an interactive matplotlib window.
+Requires Python 3 with matplotlib, pandas, numpy. Each script produces a `.png`; they use a non-interactive matplotlib backend.
+
+These helpers require an explicit DB path and are legacy-compatible charting tools. Use replay-quality validation and backtester reports for parameter sweeps; do not use these quick charts as sweep-grade evidence.
 
 ## Cross-compilation
 

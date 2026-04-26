@@ -24,8 +24,7 @@ function makeTrade(overrides: Partial<TradeRow> = {}): TradeRow {
 it("renders an empty state when no open trades exist", () => {
   render(<OpenTrades trades={[makeTrade({ status: "closed" })]} />);
 
-  expect(screen.getByText("Open Trades")).toBeInTheDocument();
-  expect(screen.getByText("No open trades")).toBeInTheDocument();
+  expect(screen.getByText("No open trades.")).toBeInTheDocument();
 });
 
 it("filters to open trades and renders their key fields", () => {
@@ -47,4 +46,3 @@ it("filters to open trades and renders their key fields", () => {
   expect(screen.getByText("UP")).toBeInTheDocument();
   expect(screen.queryByText("spread-capture")).not.toBeInTheDocument();
 });
-

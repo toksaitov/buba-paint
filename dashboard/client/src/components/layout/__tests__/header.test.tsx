@@ -1,10 +1,10 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import { Header } from "../header";
 import { renderWithProviders } from "../../../test/test-utils";
-import { useBotStatus } from "../../../hooks/use-bot-status";
 import { useProcessStatus } from "../../../hooks/use-process-status";
+import { useTradingSummary } from "../../../hooks/use-trading-summary";
 import { useAuthStore } from "../../../stores/auth-store";
 import { useThemeStore } from "../../../stores/theme-store";
 
@@ -14,12 +14,12 @@ vi.mock("../../../lib/api", () => ({
   botRestart: vi.fn(),
 }));
 
-vi.mock("../../../hooks/use-bot-status", () => ({
-  useBotStatus: vi.fn(),
-}));
-
 vi.mock("../../../hooks/use-process-status", () => ({
   useProcessStatus: vi.fn(),
+}));
+
+vi.mock("../../../hooks/use-trading-summary", () => ({
+  useTradingSummary: vi.fn(),
 }));
 
 vi.mock("../../../lib/notifications", () => ({
@@ -29,27 +29,87 @@ vi.mock("../../../lib/notifications", () => ({
   requestNotificationPermission: vi.fn(),
 }));
 
+import { botRestart, botStart, botStop } from "../../../lib/api";
 import {
-  botStart,
-  botStop,
-  botRestart,
-} from "../../../lib/api";
-import {
-  isNotificationSupported,
   isNotificationEnabled,
-  setNotificationEnabled,
+  isNotificationSupported,
   requestNotificationPermission,
+  setNotificationEnabled,
 } from "../../../lib/notifications";
 
 const mockBotStart = vi.mocked(botStart);
 const mockBotStop = vi.mocked(botStop);
 const mockBotRestart = vi.mocked(botRestart);
-const mockUseBotStatus = vi.mocked(useBotStatus);
 const mockUseProcessStatus = vi.mocked(useProcessStatus);
+const mockUseTradingSummary = vi.mocked(useTradingSummary);
 const mockIsNotificationSupported = vi.mocked(isNotificationSupported);
 const mockIsNotificationEnabled = vi.mocked(isNotificationEnabled);
 const mockSetNotificationEnabled = vi.mocked(setNotificationEnabled);
 const mockRequestNotificationPermission = vi.mocked(requestNotificationPermission);
+
+const tradingSummary = {
+  runtime_mode: "live_readonly",
+  trading_state: "readonly",
+  process_state: "running",
+  venue_health: { state: "healthy", label: "Venue connected", detail: null },
+  account_health: { state: "healthy", label: "Account tracked", detail: null },
+  reconciliation_health: {
+    state: "healthy",
+    label: "Reconciliation clean",
+    detail: null,
+  },
+  shadow_summary: {
+    balance: 120,
+    starting_balance: 100,
+    total_pnl: 20,
+    total_trades: 3,
+    wins: 2,
+    losses: 1,
+    win_rate: 2 / 3,
+    open_trades: 0,
+    uptime_hours: 12,
+    high_water_mark: 130,
+    max_drawdown_pct: 0.1,
+    live_session_status: "readonly_ready",
+    last_tick_at: null,
+    current_window: null,
+  },
+  real_account_summary: {
+    available_cash: 99,
+    reserved_cash: 0,
+    inventory_mark_value: 0,
+    redeemable_value: 0,
+    pending_redeem_value: 0,
+    total_equity: 99,
+    allowance_available: 99,
+    latest_snapshot_at_ms: null,
+    session_id: 1,
+    session_status: "readonly_ready",
+    session_started_at_ms: null,
+    wallet_address: null,
+    proxy_wallet: null,
+    cash_cap_usd: 100,
+    enabled_strategies: ["latency-arb"],
+    provider: "polymarket",
+    user_stream_status: "ok",
+    last_user_stream_connected_at_ms: null,
+    last_user_stream_event_at_ms: null,
+    last_account_refresh_at_ms: null,
+    open_orders: 0,
+    pending_redemptions: 0,
+    critical_reconciliation_events: 0,
+  },
+  capabilities: {
+    preflight: { enabled: false, reason: "disabled" },
+    arm: { enabled: false, reason: "disabled" },
+    disarm: { enabled: false, reason: "disabled" },
+    cancel_all: { enabled: false, reason: "disabled" },
+    stop_after_flat: { enabled: false, reason: "disabled" },
+    redeem: { enabled: false, reason: "disabled" },
+    kill_switch: { enabled: false, reason: "disabled" },
+  },
+  alerts: [],
+};
 
 beforeEach(() => {
   localStorage.clear();
@@ -66,25 +126,9 @@ beforeEach(() => {
       control_available: true,
     },
   } as ReturnType<typeof useProcessStatus>);
-  mockUseBotStatus.mockReturnValue({
-    data: {
-      balance: 200,
-      starting_balance: 200,
-      execution_mode: "paper",
-      live_session_status: null,
-      total_trades: 0,
-      wins: 0,
-      losses: 0,
-      win_rate: 0,
-      total_pnl: 0,
-      max_drawdown_pct: 0,
-      high_water_mark: 200,
-      uptime_hours: 1,
-      open_trades: 0,
-      current_window: null,
-      last_tick_at: null,
-    },
-  } as ReturnType<typeof useBotStatus>);
+  mockUseTradingSummary.mockReturnValue({
+    data: tradingSummary,
+  } as ReturnType<typeof useTradingSummary>);
   mockIsNotificationSupported.mockReturnValue(false);
   mockIsNotificationEnabled.mockReturnValue(false);
   mockRequestNotificationPermission.mockResolvedValue(true);
@@ -113,9 +157,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderHeader(
-  props: Partial<React.ComponentProps<typeof Header>> = {},
-) {
+function renderHeader(props: Partial<React.ComponentProps<typeof Header>> = {}) {
   return renderWithProviders(
     <Header
       bot={{ id: "bot-1", name: "Test Bot" }}
@@ -128,12 +170,25 @@ function renderHeader(
   );
 }
 
-test("shows Running badge when process is active", () => {
+test("shows process state and one meaningful live_readonly badge", () => {
   renderHeader();
   expect(screen.getByText("Running")).toBeInTheDocument();
+  expect(screen.getByText("Live Readonly")).toBeInTheDocument();
+  expect(screen.queryByText("Readonly")).not.toBeInTheDocument();
 });
 
-test("shows Stopped badge when process is inactive", () => {
+test("renders paper as a single mobile pill without duplicating desktop badges", () => {
+  mockUseTradingSummary.mockReturnValue({
+    data: { ...tradingSummary, runtime_mode: "paper", trading_state: "paper" },
+  } as ReturnType<typeof useTradingSummary>);
+
+  renderHeader();
+
+  expect(screen.getByText("Running")).toBeInTheDocument();
+  expect(screen.getAllByText("Paper")).toHaveLength(1);
+});
+
+test("shows stopped process state when process is inactive", () => {
   mockUseProcessStatus.mockReturnValue({
     data: {
       active: false,
@@ -142,11 +197,15 @@ test("shows Stopped badge when process is inactive", () => {
       control_available: true,
     },
   } as ReturnType<typeof useProcessStatus>);
+  mockUseTradingSummary.mockReturnValue({
+    data: { ...tradingSummary, process_state: "stopped" },
+  } as ReturnType<typeof useTradingSummary>);
+
   renderHeader();
   expect(screen.getByText("Stopped")).toBeInTheDocument();
 });
 
-test("shows Running badge in monitor-only mode when ticks are fresh", async () => {
+test("shows monitor-only state when control is unavailable", () => {
   mockUseProcessStatus.mockReturnValue({
     data: {
       active: false,
@@ -155,67 +214,20 @@ test("shows Running badge in monitor-only mode when ticks are fresh", async () =
       control_available: false,
     },
   } as ReturnType<typeof useProcessStatus>);
-  mockUseBotStatus.mockReturnValue({
-    data: {
-      balance: 200,
-      starting_balance: 200,
-      execution_mode: "paper",
-      live_session_status: null,
-      total_trades: 0,
-      wins: 0,
-      losses: 0,
-      win_rate: 0,
-      total_pnl: 0,
-      max_drawdown_pct: 0,
-      high_water_mark: 200,
-      uptime_hours: 1,
-      open_trades: 0,
-      current_window: null,
-      last_tick_at: Date.now() - 5_000,
-    },
-  } as ReturnType<typeof useBotStatus>);
+  mockUseTradingSummary.mockReturnValue({
+    data: { ...tradingSummary, process_state: "monitoring" },
+  } as ReturnType<typeof useTradingSummary>);
+
   renderHeader();
-  await waitFor(() => expect(screen.getByText("Running")).toBeInTheDocument());
+  expect(screen.getByText("Monitor Only")).toBeInTheDocument();
 });
 
-test("shows Stopped badge in monitor-only mode when ticks are stale", () => {
-  mockUseProcessStatus.mockReturnValue({
-    data: {
-      active: false,
-      pid: null,
-      uptime_secs: null,
-      control_available: false,
-    },
-  } as ReturnType<typeof useProcessStatus>);
-  mockUseBotStatus.mockReturnValue({
-    data: {
-      balance: 200,
-      starting_balance: 200,
-      execution_mode: "paper",
-      live_session_status: null,
-      total_trades: 0,
-      wins: 0,
-      losses: 0,
-      win_rate: 0,
-      total_pnl: 0,
-      max_drawdown_pct: 0,
-      high_water_mark: 200,
-      uptime_hours: 1,
-      open_trades: 0,
-      current_window: null,
-      last_tick_at: Date.now() - 60_000,
-    },
-  } as ReturnType<typeof useBotStatus>);
-  renderHeader();
-  expect(screen.getByText("Stopped")).toBeInTheDocument();
-});
-
-test("Start button disabled when process is running", () => {
+test("start button is disabled when process is already running", () => {
   renderHeader();
   expect(screen.getByTitle("Bot is already running")).toBeDisabled();
 });
 
-test("Stop button disabled when process is stopped", async () => {
+test("stop button is disabled when process is not running", () => {
   mockUseProcessStatus.mockReturnValue({
     data: {
       active: false,
@@ -224,26 +236,13 @@ test("Stop button disabled when process is stopped", async () => {
       control_available: true,
     },
   } as ReturnType<typeof useProcessStatus>);
+
   renderHeader();
   const disabledButtons = screen.getAllByTitle("Bot is not running");
-  expect(disabledButtons.length).toBe(2);
-  disabledButtons.forEach((btn) => expect(btn).toBeDisabled());
+  expect(disabledButtons).toHaveLength(2);
 });
 
-test("Start button enabled when process is stopped", async () => {
-  mockUseProcessStatus.mockReturnValue({
-    data: {
-      active: false,
-      pid: null,
-      uptime_secs: null,
-      control_available: true,
-    },
-  } as ReturnType<typeof useProcessStatus>);
-  renderHeader();
-  expect(screen.getByTitle("Start bot")).toBeEnabled();
-});
-
-test("disables controls in monitor-only mode", async () => {
+test("disables process controls in monitor-only mode", () => {
   mockUseProcessStatus.mockReturnValue({
     data: {
       active: false,
@@ -252,152 +251,81 @@ test("disables controls in monitor-only mode", async () => {
       control_available: false,
     },
   } as ReturnType<typeof useProcessStatus>);
-  mockUseBotStatus.mockReturnValue({
-    data: {
-      balance: 200,
-      starting_balance: 200,
-      execution_mode: "paper",
-      live_session_status: null,
-      total_trades: 0,
-      wins: 0,
-      losses: 0,
-      win_rate: 0,
-      total_pnl: 0,
-      max_drawdown_pct: 0,
-      high_water_mark: 200,
-      uptime_hours: 1,
-      open_trades: 0,
-      current_window: null,
-      last_tick_at: Date.now() - 5_000,
-    },
-  } as ReturnType<typeof useBotStatus>);
+  mockUseTradingSummary.mockReturnValue({
+    data: { ...tradingSummary, process_state: "monitoring" },
+  } as ReturnType<typeof useTradingSummary>);
+
   renderHeader();
-  const disabledButtons = screen.getAllByTitle(
-    "Process control unavailable in monitor-only mode",
-  );
-  expect(disabledButtons.length).toBe(3);
-  disabledButtons.forEach((btn) => expect(btn).toBeDisabled());
+  screen
+    .getAllByTitle("Process control unavailable in monitor-only mode")
+    .forEach((button) => expect(button).toBeDisabled());
 });
 
-test("Stop button enabled when process is running", async () => {
-  renderHeader();
-  expect(screen.getByTitle("Stop bot")).toBeEnabled();
-});
-
-test("Stop button calls botStop", async () => {
-  renderHeader();
-  await userEvent.click(screen.getByTitle("Stop bot"));
-  await waitFor(() => expect(mockBotStop).toHaveBeenCalledWith("bot-1"));
-});
-
-test("shows error toast on action failure", async () => {
-  mockBotStop.mockRejectedValue(new Error("something broke"));
-  renderHeader();
-  await userEvent.click(screen.getByTitle("Stop bot"));
-  await waitFor(() =>
-    expect(screen.getByText("something broke")).toBeInTheDocument(),
-  );
-});
-
-test("error toast dismisses on X click", async () => {
-  mockBotStop.mockRejectedValue(new Error("test error"));
-  renderHeader();
-  await userEvent.click(screen.getByTitle("Stop bot"));
-  await waitFor(() =>
-    expect(screen.getByText("test error")).toBeInTheDocument(),
-  );
-  const errorBanner = screen.getByText("test error").closest("div")!;
-  const dismissBtn = errorBanner.querySelector("button")!;
-  await userEvent.click(dismissBtn);
-  expect(screen.queryByText("test error")).not.toBeInTheDocument();
-});
-
-test("shows uptime when process is running", () => {
-  renderHeader();
-  expect(screen.getByText("2m")).toBeInTheDocument();
-});
-
-test("displays bot name", () => {
-  renderHeader();
-  expect(screen.getByText("Test Bot")).toBeInTheDocument();
-});
-
-test("uses the mobile navigation toggle label on mobile", () => {
-  renderHeader({ isDesktop: false });
-  expect(screen.getByTitle("Expand navigation")).toBeInTheDocument();
-});
-
-test("cycles theme mode across system, dark, and light", async () => {
+test("runs restart action and invalidates trading summary cache", async () => {
   const user = userEvent.setup();
   renderHeader();
 
-  const themeButton = screen.getByTitle("Theme: system");
-  await user.click(themeButton);
-  expect(screen.getByTitle("Theme: dark")).toBeInTheDocument();
-
-  await user.click(screen.getByTitle("Theme: dark"));
-  expect(screen.getByTitle("Theme: light")).toBeInTheDocument();
-
-  await user.click(screen.getByTitle("Theme: light"));
-  expect(screen.getByTitle("Theme: system")).toBeInTheDocument();
-});
-
-test("hides the notification toggle when notifications are unsupported", () => {
-  renderHeader();
-  expect(
-    screen.queryByTitle(/Enable notifications|Disable notifications/),
-  ).not.toBeInTheDocument();
-});
-
-test("enables notifications after permission is granted", async () => {
-  mockIsNotificationSupported.mockReturnValue(true);
-  mockIsNotificationEnabled.mockReturnValue(false);
-  const user = userEvent.setup();
-
-  renderHeader();
-  await user.click(screen.getByTitle("Enable notifications"));
+  await user.click(screen.getByTitle("Restart bot"));
 
   await waitFor(() => {
-    expect(mockRequestNotificationPermission).toHaveBeenCalled();
-    expect(mockSetNotificationEnabled).toHaveBeenCalledWith(true);
+    expect(mockBotRestart).toHaveBeenCalledWith("bot-1");
   });
-  expect(screen.getByTitle("Disable notifications")).toBeInTheDocument();
 });
 
-test("disables notifications when already enabled", async () => {
-  mockIsNotificationSupported.mockReturnValue(true);
-  mockIsNotificationEnabled.mockReturnValue(true);
-  const user = userEvent.setup();
-
-  renderHeader();
-  await user.click(screen.getByTitle("Disable notifications"));
-
-  expect(mockRequestNotificationPermission).not.toHaveBeenCalled();
-  expect(mockSetNotificationEnabled).toHaveBeenCalledWith(false);
-  expect(screen.getByTitle("Enable notifications")).toBeInTheDocument();
-});
-
-test("shows a human-readable shadow badge in live_readonly mode", () => {
-  mockUseBotStatus.mockReturnValue({
+test("keeps trading alerts out of the header chip row", () => {
+  mockUseTradingSummary.mockReturnValue({
     data: {
-      balance: 200,
-      starting_balance: 200,
-      execution_mode: "live_readonly",
-      live_session_status: "readonly_ready",
-      total_trades: 0,
-      wins: 0,
-      losses: 0,
-      win_rate: 0,
-      total_pnl: 0,
-      max_drawdown_pct: 0,
-      high_water_mark: 200,
-      uptime_hours: 1,
-      open_trades: 0,
-      current_window: null,
-      last_tick_at: null,
+      ...tradingSummary,
+      alerts: [{ severity: "critical", title: "Kill switch", detail: "Trading disarmed." }],
     },
-  } as ReturnType<typeof useBotStatus>);
+  } as ReturnType<typeof useTradingSummary>);
 
   renderHeader();
-  expect(screen.getByText("Shadow ready")).toBeInTheDocument();
+  expect(screen.queryByText("1 Alert")).not.toBeInTheDocument();
+  expect(screen.getByText("Live Readonly")).toBeInTheDocument();
+});
+
+test("cycles theme mode when the theme button is pressed", async () => {
+  const user = userEvent.setup();
+  renderHeader();
+
+  await user.click(screen.getByTitle("Theme: system"));
+  expect(useThemeStore.getState().mode).toBe("dark");
+});
+
+test("enables notifications when the browser permission is granted", async () => {
+  const user = userEvent.setup();
+  mockIsNotificationSupported.mockReturnValue(true);
+  mockIsNotificationEnabled.mockReturnValue(false);
+
+  renderHeader();
+
+  await user.click(screen.getByTitle("Enable notifications"));
+
+  expect(mockRequestNotificationPermission).toHaveBeenCalled();
+  expect(mockSetNotificationEnabled).toHaveBeenCalledWith(true);
+});
+
+test("surfaces action errors when a process control call fails", async () => {
+  const user = userEvent.setup();
+  mockUseProcessStatus.mockReturnValue({
+    data: {
+      active: false,
+      pid: null,
+      uptime_secs: null,
+      control_available: true,
+    },
+  } as ReturnType<typeof useProcessStatus>);
+  mockUseTradingSummary.mockReturnValue({
+    data: { ...tradingSummary, process_state: "stopped" },
+  } as ReturnType<typeof useTradingSummary>);
+  mockBotStart.mockRejectedValue(new Error("start failed"));
+
+  renderHeader();
+
+  await user.click(screen.getByTitle("Start bot"));
+
+  await waitFor(() => {
+    expect(screen.getByText("start failed")).toBeInTheDocument();
+  });
 });

@@ -75,6 +75,13 @@ pub struct BalanceResponse {
     pub entries: Vec<BalanceEntry>,
 }
 
+/// Chart-safe equity response with invalid baseline rows separated from plotted points.
+#[derive(Debug, Clone, Serialize)]
+pub struct EquitySeriesResponse {
+    pub baseline: Option<BalanceEntry>,
+    pub points: Vec<BalanceEntry>,
+}
+
 /// A single signal row.
 #[derive(Debug, Clone, Serialize)]
 pub struct SignalRow {
@@ -95,6 +102,33 @@ pub struct SignalRow {
 #[derive(Debug, Clone, Serialize)]
 pub struct SignalsResponse {
     pub signals: Vec<SignalRow>,
+}
+
+/// One operator-level signal burst collapsed from consecutive raw signal rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct SignalGroupRow {
+    pub id: String,
+    pub strategy: String,
+    pub direction: String,
+    pub market_id: Option<String>,
+    pub start_timestamp: u64,
+    pub end_timestamp: u64,
+    pub count: u64,
+    pub first_signal_id: i64,
+    pub last_signal_id: i64,
+    pub binance_price: Option<f64>,
+    pub chainlink_price: Option<f64>,
+    pub up_ask: Option<f64>,
+    pub down_ask: Option<f64>,
+    pub execution_fidelity: Option<String>,
+}
+
+/// Grouped signal response used by the dashboard default Signals view.
+#[derive(Debug, Clone, Serialize)]
+pub struct SignalGroupsResponse {
+    pub groups: Vec<SignalGroupRow>,
+    pub raw_rows_scanned: u64,
+    pub quiet_gap_ms: u64,
 }
 
 /// Per-strategy stats.
@@ -138,8 +172,6 @@ pub enum WsMessage {
     Balance(BalanceEntry),
     #[serde(rename = "signal")]
     Signal(SignalRow),
-    #[serde(rename = "status")]
-    Status(BotStatus),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -272,4 +304,94 @@ pub struct LiveRedemptionsResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct LiveReconciliationResponse {
     pub events: Vec<LiveReconciliationRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TradingHealth {
+    pub state: String,
+    pub label: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TradingControlCapability {
+    pub enabled: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TradingCapabilities {
+    pub preflight: TradingControlCapability,
+    pub arm: TradingControlCapability,
+    pub disarm: TradingControlCapability,
+    pub cancel_all: TradingControlCapability,
+    pub stop_after_flat: TradingControlCapability,
+    pub redeem: TradingControlCapability,
+    pub kill_switch: TradingControlCapability,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TradingAlert {
+    pub severity: String,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ShadowSummary {
+    pub balance: f64,
+    pub starting_balance: f64,
+    pub total_pnl: f64,
+    pub total_trades: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub win_rate: f64,
+    pub open_trades: u64,
+    pub uptime_hours: f64,
+    pub high_water_mark: f64,
+    pub max_drawdown_pct: f64,
+    pub live_session_status: Option<String>,
+    pub last_tick_at: Option<u64>,
+    pub current_window: Option<WindowInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RealAccountSummary {
+    pub available_cash: Option<f64>,
+    pub reserved_cash: Option<f64>,
+    pub inventory_mark_value: Option<f64>,
+    pub redeemable_value: Option<f64>,
+    pub pending_redeem_value: Option<f64>,
+    pub total_equity: Option<f64>,
+    pub allowance_available: Option<f64>,
+    pub latest_snapshot_at_ms: Option<u64>,
+    pub session_id: Option<i64>,
+    pub session_status: Option<String>,
+    pub session_started_at_ms: Option<u64>,
+    pub wallet_address: Option<String>,
+    pub proxy_wallet: Option<String>,
+    pub cash_cap_usd: Option<f64>,
+    pub enabled_strategies: Vec<String>,
+    pub provider: Option<String>,
+    pub user_stream_status: Option<String>,
+    pub last_user_stream_connected_at_ms: Option<u64>,
+    pub last_user_stream_event_at_ms: Option<u64>,
+    pub last_account_refresh_at_ms: Option<u64>,
+    pub open_orders: u64,
+    pub pending_redemptions: u64,
+    pub critical_reconciliation_events: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TradingSummary {
+    pub runtime_mode: String,
+    pub trading_state: String,
+    pub process_state: String,
+    pub venue_health: TradingHealth,
+    pub account_health: TradingHealth,
+    pub reconciliation_health: TradingHealth,
+    pub shadow_summary: ShadowSummary,
+    pub real_account_summary: RealAccountSummary,
+    pub capabilities: TradingCapabilities,
+    pub alerts: Vec<TradingAlert>,
 }

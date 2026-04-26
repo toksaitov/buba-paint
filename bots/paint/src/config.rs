@@ -57,6 +57,7 @@ fn validate_absolute_url(name: &str, raw: &str) -> anyhow::Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedEventStorageProfile {
     Compact,
+    ReplayGrade,
     FullDebug,
 }
 
@@ -66,6 +67,7 @@ impl FeedEventStorageProfile {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Compact => "compact",
+            Self::ReplayGrade => "replay_grade",
             Self::FullDebug => "full_debug",
         }
     }
@@ -75,7 +77,8 @@ impl FeedEventStorageProfile {
     pub fn from_env_value(raw: Option<&str>) -> Self {
         match raw {
             Some("full_debug") => Self::FullDebug,
-            _ => Self::Compact,
+            Some("compact") => Self::Compact,
+            _ => Self::ReplayGrade,
         }
     }
 }
@@ -672,6 +675,10 @@ impl Config {
             "GAMMA_API_URL" => self.gamma_api_url = value.to_string(),
             "DB_PATH" => self.db_path = value.to_string(),
             "LOG_LEVEL" => self.log_level = value.to_string(),
+            "FEED_EVENT_STORAGE_PROFILE" => {
+                self.feed_event_storage_profile =
+                    FeedEventStorageProfile::from_env_value(Some(value));
+            }
             _ => return false,
         }
         true
@@ -998,7 +1005,7 @@ impl Default for Config {
             live_max_daily_loss_usd: 15.0,
             live_max_session_drawdown_usd: 20.0,
             live_min_required_cash_usd: 25.0,
-            feed_event_storage_profile: FeedEventStorageProfile::Compact,
+            feed_event_storage_profile: FeedEventStorageProfile::ReplayGrade,
             sim_order_latency_ms: 250,
             max_book_staleness_ms: 1_000,
             max_signal_feed_age_ms: 1_000,

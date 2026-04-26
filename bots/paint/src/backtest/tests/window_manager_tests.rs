@@ -47,6 +47,33 @@ fn insert_market(
     .unwrap();
 }
 
+/// Insert one sampled Binance tick into the test DB.
+fn insert_binance_tick(conn: &rusqlite::Connection, timestamp: i64, price: f64) {
+    conn.execute(
+        "INSERT INTO tick_data (timestamp, source, price) VALUES (?1, 'binance', ?2)",
+        params![timestamp, price],
+    )
+    .unwrap();
+}
+
+/// Insert one raw Binance trade event into the test DB.
+fn insert_binance_feed_event(conn: &rusqlite::Connection, timestamp: i64, price: f64) {
+    conn.execute(
+        "INSERT INTO feed_events (
+            received_at_ms,
+            event_at_ms,
+            received_at_us,
+            event_at_us,
+            source,
+            event_type,
+            price,
+            fidelity
+         ) VALUES (?1, ?1, ?1 * 1000, ?1 * 1000, 'binance', 'aggTrade', ?2, 'raw_event')",
+        params![timestamp, price],
+    )
+    .unwrap();
+}
+
 /// Helper: build a `MarketSettlement` for in-memory tests.
 fn settlement(id: &str, start: u64, end: u64, outcome: SignalDirection) -> MarketSettlement {
     MarketSettlement {
@@ -292,4 +319,34 @@ fn db_down_outcome_parsed() {
     let ev = wm.advance(1000);
     let opened = ev.opened.unwrap();
     assert_eq!(opened.outcome, SignalDirection::Down);
+}
+
+/// Verifies that sampled Binance ticks override stored Chainlink open prices.
+#[test]
+fn db_prefers_sampled_binance_open_price() {
+    let conn = setup_test_db();
+    insert_market(&conn, "m1", 1000, 2000, 42_000.0, 42_100.0, "UP");
+    insert_binance_tick(&conn, 1500, 42_050.0);
+    insert_binance_tick(&conn, 1600, 42_075.0);
+
+    let mut wm = WindowManager::new(&conn, 0, 3000).unwrap();
+    let ev = wm.advance(1000);
+    let opened = ev.opened.unwrap();
+
+    assert!((opened.open_price - 42_050.0).abs() < f64::EPSILON);
+}
+
+/// Verifies that raw Binance trades are used when sampled ticks are absent.
+#[test]
+fn db_uses_raw_binance_open_price_when_tick_data_missing() {
+    let conn = setup_test_db();
+    insert_market(&conn, "m1", 1000, 2000, 42_000.0, 42_100.0, "UP");
+    insert_binance_feed_event(&conn, 1200, 42_025.0);
+    insert_binance_feed_event(&conn, 1300, 42_050.0);
+
+    let mut wm = WindowManager::new(&conn, 0, 3000).unwrap();
+    let ev = wm.advance(1000);
+    let opened = ev.opened.unwrap();
+
+    assert!((opened.open_price - 42_025.0).abs() < f64::EPSILON);
 }

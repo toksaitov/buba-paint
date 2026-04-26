@@ -1,17 +1,37 @@
 import http from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../server.js";
-import { StubSidecarProvider } from "../provider.js";
+import {
+  ProviderStageError,
+  StubSidecarProvider,
+  type SidecarProvider,
+} from "../provider.js";
 import { loadConfig } from "../config.js";
+import type {
+  LiveAccountState,
+  LiveCancellationResponse,
+  LiveOrderIntentRequest,
+  LiveOrderIntentResponse,
+  LivePreflightRequest,
+  LivePreflightResponse,
+  LiveRedemptionResponse,
+} from "../types.js";
 
 const servers: http.Server[] = [];
 
-async function startServer(): Promise<{ url: string; close: () => Promise<void> }> {
+async function startServer(
+  provider: SidecarProvider = new StubSidecarProvider(
+    loadConfig({
+      SIDECAR_PORT: "0",
+      POLYMARKET_PROXY_WALLET: "0xproxy",
+    }),
+  ),
+): Promise<{ url: string; close: () => Promise<void> }> {
   const config = loadConfig({
     SIDECAR_PORT: "0",
     POLYMARKET_PROXY_WALLET: "0xproxy",
   });
-  const server = createServer(new StubSidecarProvider(config), config);
+  const server = createServer(provider, config);
   servers.push(server);
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
@@ -44,13 +64,22 @@ afterEach(async () => {
 });
 
 describe("sidecar server", () => {
-  it("returns health", async () => {
+  it("returns health with additive readiness fields", async () => {
     const { url } = await startServer();
     const response = await fetch(`${url}/health`);
-    const json = (await response.json()) as { ok: boolean; proxy_wallet: string | null };
+    const json = (await response.json()) as {
+      ok: boolean;
+      proxy_wallet: string | null;
+      ready: boolean;
+      readiness_status: string;
+      last_account_refresh_error: string | null;
+    };
     expect(response.ok).toBe(true);
     expect(json.ok).toBe(true);
     expect(json.proxy_wallet).toBe("0xproxy");
+    expect(json.ready).toBe(false);
+    expect(json.readiness_status).toBe("failed");
+    expect(json.last_account_refresh_error).toBe("stub provider");
   });
 
   it("runs preflight through the stub provider", async () => {
@@ -84,6 +113,60 @@ describe("sidecar server", () => {
     expect(json.geoblock_status).toBe("failed");
     expect(json.auth_status).toBe("failed");
     expect(json.errors.length).toBeGreaterThan(0);
+  });
+
+  it("maps provider stage failures to 503", async () => {
+    const provider: SidecarProvider = {
+      health: async () => ({
+        ok: true,
+        ready: true,
+        readiness_status: "ready" as const,
+        mode: "local-sidecar",
+        provider: "test",
+        signature_type: 1,
+        wallet_address: null,
+        proxy_wallet: null,
+        auth_configured: true,
+        relayer_api_key_present: false,
+        user_stream_status: "ok" as const,
+        last_user_stream_connected_at_ms: null,
+        last_user_stream_event_at_ms: null,
+        last_user_stream_error: null,
+        last_successful_account_refresh_at_ms: null,
+        last_account_refresh_error: null,
+        last_user_stream_disconnect_at_ms: null,
+        last_user_stream_disconnect_reason: null,
+        consecutive_user_stream_failures: 0,
+      }),
+      accountState: async (): Promise<LiveAccountState> => {
+        throw new ProviderStageError("positions", "timed out");
+      },
+      preflight: async (_request: LivePreflightRequest): Promise<LivePreflightResponse> => {
+        throw new Error("unexpected");
+      },
+      submitOrderIntent: async (
+        _request: LiveOrderIntentRequest,
+      ): Promise<LiveOrderIntentResponse> => {
+        throw new Error("unexpected");
+      },
+      cancelOrder: async (_orderId: string): Promise<LiveCancellationResponse> => {
+        throw new Error("unexpected");
+      },
+      cancelAll: async (): Promise<LiveCancellationResponse> => {
+        throw new Error("unexpected");
+      },
+      redeemAll: async (): Promise<LiveRedemptionResponse> => {
+        throw new Error("unexpected");
+      },
+      close: async () => undefined,
+    };
+
+    const { url } = await startServer(provider);
+    const response = await fetch(`${url}/account`);
+    const json = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(503);
+    expect(json.error).toBe("positions: timed out");
   });
 
   it("rejects malformed preflight requests", async () => {
@@ -151,5 +234,59 @@ describe("sidecar server", () => {
     expect(redeemJson.ok).toBe(false);
     expect(redeemJson.submitted).toBe(0);
     expect(redeemJson.details_json).toContain("not implemented");
+  });
+
+  it("closes the provider exactly once when the server shuts down", async () => {
+    const close = vi.fn(async () => undefined);
+    const provider: SidecarProvider = {
+      health: async () => ({
+        ok: true,
+        ready: true,
+        readiness_status: "ready" as const,
+        mode: "local-sidecar",
+        provider: "test",
+        signature_type: 1,
+        wallet_address: null,
+        proxy_wallet: null,
+        auth_configured: true,
+        relayer_api_key_present: false,
+        user_stream_status: "ok" as const,
+        last_user_stream_connected_at_ms: null,
+        last_user_stream_event_at_ms: null,
+        last_user_stream_error: null,
+        last_successful_account_refresh_at_ms: null,
+        last_account_refresh_error: null,
+        last_user_stream_disconnect_at_ms: null,
+        last_user_stream_disconnect_reason: null,
+        consecutive_user_stream_failures: 0,
+      }),
+      accountState: async (): Promise<LiveAccountState> => {
+        throw new Error("unexpected");
+      },
+      preflight: async (_request: LivePreflightRequest): Promise<LivePreflightResponse> => {
+        throw new Error("unexpected");
+      },
+      submitOrderIntent: async (
+        _request: LiveOrderIntentRequest,
+      ): Promise<LiveOrderIntentResponse> => {
+        throw new Error("unexpected");
+      },
+      cancelOrder: async (_orderId: string): Promise<LiveCancellationResponse> => {
+        throw new Error("unexpected");
+      },
+      cancelAll: async (): Promise<LiveCancellationResponse> => {
+        throw new Error("unexpected");
+      },
+      redeemAll: async (): Promise<LiveRedemptionResponse> => {
+        throw new Error("unexpected");
+      },
+      close,
+    };
+
+    const { close: stop } = await startServer(provider);
+    await stop();
+    await Promise.resolve();
+
+    expect(close).toHaveBeenCalledTimes(1);
   });
 });

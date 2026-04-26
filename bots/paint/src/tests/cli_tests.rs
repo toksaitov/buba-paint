@@ -204,6 +204,27 @@ fn cli_sweep_command_parses() {
     }
 }
 
+/// Verifies that cli validate replay data command parses.
+#[test]
+fn cli_validate_replay_data_command_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "validate-replay-data",
+        "--data",
+        "data.db",
+        "--start",
+        "2026-02-20",
+        "--end",
+        "2026-02-28",
+    ]);
+    match cli.command {
+        Commands::ValidateReplayData { data, .. } => {
+            assert_eq!(data, "data.db");
+        }
+        _ => panic!("expected ValidateReplayData command"),
+    }
+}
+
 /// Verifies that cli live command parses.
 #[test]
 fn cli_live_command_parses() {

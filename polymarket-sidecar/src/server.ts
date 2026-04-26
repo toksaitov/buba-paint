@@ -1,6 +1,10 @@
 import http from "node:http";
 import { loadConfig, type SidecarConfig } from "./config.js";
-import { createDefaultProvider, type SidecarProvider } from "./provider.js";
+import {
+  ProviderStageError,
+  createDefaultProvider,
+  type SidecarProvider,
+} from "./provider.js";
 import type {
   LiveOrderIntentRequest,
   LivePreflightRequest,
@@ -87,7 +91,15 @@ export function createServer(
   provider: SidecarProvider = createDefaultProvider(loadConfig()),
   config: SidecarConfig = loadConfig(),
 ): http.Server {
-  return http.createServer(async (req, res) => {
+  let providerClosePromise: Promise<void> | null = null;
+  const closeProvider = async (): Promise<void> => {
+    if (!providerClosePromise) {
+      providerClosePromise = Promise.resolve(provider.close()).then(() => undefined);
+    }
+    return providerClosePromise;
+  };
+
+  const server = http.createServer(async (req, res) => {
     try {
       if (!req.url || !req.method) {
         json(res, 400, { error: "invalid request" });
@@ -151,7 +163,15 @@ export function createServer(
         badRequest(res, message);
         return;
       }
+      if (error instanceof ProviderStageError) {
+        json(res, 503, { error: error.message });
+        return;
+      }
       json(res, 500, { error: message });
     }
   });
+  server.once("close", () => {
+    void closeProvider();
+  });
+  return server;
 }

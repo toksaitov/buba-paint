@@ -53,6 +53,7 @@ export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
 
     const byTime = new Map<number, number>();
     for (const e of entries) {
+      if (e.timestamp <= 0) continue;
       const t = Math.round(e.timestamp / 1000);
       byTime.set(t, e.balance);
     }

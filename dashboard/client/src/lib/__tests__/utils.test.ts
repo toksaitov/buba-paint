@@ -1,5 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { cn, formatUsd, formatPct, formatTime, formatDateTime, pnlColor } from "../utils";
+import {
+  cn,
+  formatDateTime,
+  formatDurationShort,
+  formatPct,
+  formatTime,
+  formatUsd,
+  pnlColor,
+} from "../utils";
 
 describe("cn", () => {
   test("joins truthy classes", () => {
@@ -65,6 +73,25 @@ describe("formatDateTime", () => {
 
     expect(result).toMatch(/\w{3}/);
     expect(result).toMatch(/\d{2}:\d{2}:\d{2}/);
+  });
+});
+
+describe("formatDurationShort", () => {
+  test("seconds only under a minute", () => {
+    expect(formatDurationShort(42_000)).toBe("42s");
+  });
+
+  test("minutes and seconds under an hour", () => {
+    expect(formatDurationShort(75_000)).toBe("1m 15s");
+  });
+
+  test("hours and minutes above an hour", () => {
+    expect(formatDurationShort(3_800_000)).toBe("1h 3m");
+  });
+
+  test("guards against negative and non-finite inputs", () => {
+    expect(formatDurationShort(-1)).toBe("0s");
+    expect(formatDurationShort(Number.NaN)).toBe("0s");
   });
 });
 

@@ -12,8 +12,10 @@ What is ready locally:
 - real `live_readonly` runtime inside `buba-paint live`
 - live session and reconciliation tables
 - agent and dashboard live-readiness surfaces
-- compact live telemetry schema
-- shadow paper charts/trades/signals/stats during readonly sessions
+- replay-grade public feed capture for research runs
+- compact live account telemetry schema
+- shadow paper analysis pages during readonly sessions
+- sidecar readiness and crash diagnostics on `/health`
 
 What is still intentionally gated:
 
@@ -39,7 +41,8 @@ Before any future live-money session:
 4. confirm venue min order size, tick size, and fee metadata for the active market set
 5. confirm configured cash caps permit at least one legal order
 6. confirm live mode is latency-arb only for the first pilot
-7. confirm dashboard Live page and agent live endpoints show healthy readiness state
+7. confirm dashboard Execution page and agent live endpoints show healthy readiness state
+8. confirm the sidecar is supervised and auto-restart capable on the host
 
 ## Recommended first pilot envelope
 
@@ -63,7 +66,7 @@ Intended operator lifecycle once live trading is actually enabled:
 1. start in `live_readonly`
 2. pass preflight
 3. inspect budget preview, strategy set, geoblock, auth, account state, and user-stream health
-4. arm live trading explicitly from the dedicated Live page
+4. arm live trading explicitly from the dedicated Execution page
 5. monitor open orders, fills, reconciliation warnings, and redeemable inventory
 6. if drawdown or divergence persists too long, disarm and stop after flat
 7. redeem winning resolved positions
@@ -74,7 +77,7 @@ Intended operator lifecycle once live trading is actually enabled:
 
 Keep these artifacts:
 
-- local SQLite DB with compact live telemetry
+- local SQLite DB with replay-grade public feed capture and compact live telemetry
 - bot log
 - agent/dashboard logs if relevant
 - official Polymarket accounting and activity exports
@@ -84,7 +87,7 @@ Do not bloat SQLite with full raw private websocket traffic unless a short foren
 
 ## UI safety rules
 
-The dedicated Live page should enforce:
+The dedicated Execution page should enforce:
 
 - process control separated from trading control
 - typed confirmation before arming
@@ -109,6 +112,9 @@ Before the live venue runtime is considered ready:
 - Rust tests pass
 - dashboard client tests and build pass
 - sidecar lint, tests, and build pass
+- sidecar supervision artifact and stable env or log layout are in place on the deployment plan
+- `ops/` service templates have been reviewed for sidecar, bot, agent, and dashboard
+- replay-data quality is checked before any parameter sweep with `validate-replay-data`
 - docs are updated and internally consistent
 - comments and rustdoc are current
 - agent and dashboard live surfaces are verified against real readonly session data

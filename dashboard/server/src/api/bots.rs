@@ -75,6 +75,19 @@ pub async fn bot_balance(
     Ok(Json(data))
 }
 
+/// `GET /api/bots/:id/equity/series`
+#[allow(clippy::implicit_hasher)]
+pub async fn bot_equity_series(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let qs = build_query(&params);
+    let data = proxy::proxy_get(agent, "/api/equity/series", qs.as_deref()).await?;
+    Ok(Json(data))
+}
+
 /// `GET /api/bots/:id/signals`
 #[allow(clippy::implicit_hasher)]
 pub async fn bot_signals(
@@ -88,6 +101,19 @@ pub async fn bot_signals(
     Ok(Json(data))
 }
 
+/// `GET /api/bots/:id/signals/groups`
+#[allow(clippy::implicit_hasher)]
+pub async fn bot_signal_groups(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let qs = build_query(&params);
+    let data = proxy::proxy_get(agent, "/api/signals/groups", qs.as_deref()).await?;
+    Ok(Json(data))
+}
+
 /// `GET /api/bots/:id/stats`
 pub async fn bot_stats(
     State(state): State<AppState>,
@@ -95,6 +121,16 @@ pub async fn bot_stats(
 ) -> Result<impl IntoResponse, DashboardError> {
     let agent = find_agent(&state, &bot_id)?;
     let data = proxy::proxy_get(agent, "/api/stats", None).await?;
+    Ok(Json(data))
+}
+
+/// `GET /api/bots/:id/trading/summary`
+pub async fn bot_trading_summary(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let data = proxy::proxy_get(agent, "/api/trading/summary", None).await?;
     Ok(Json(data))
 }
 

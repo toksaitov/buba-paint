@@ -18,24 +18,39 @@ pub struct RawTick {
     pub timestamp_us: Option<u64>,
     pub source: String,
     pub event_type: String,
+    pub sequence_key: Option<String>,
     pub market_id: Option<String>,
     pub asset_id: Option<String>,
     pub price: Option<f64>,
+    pub trade_size: Option<f64>,
+    pub signed_quantity: Option<f64>,
     pub bid: Option<f64>,
     pub ask: Option<f64>,
     pub bid_size: Option<f64>,
     pub ask_size: Option<f64>,
+    pub depth_bid_notional: Option<f64>,
+    pub depth_ask_notional: Option<f64>,
+    pub depth_imbalance: Option<f64>,
+    pub microprice: Option<f64>,
     pub fidelity: ReplayFidelity,
 }
 
 /// One source's snapshot at a given timestamp.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TickSample {
+    pub event_type: String,
+    pub sequence_key: Option<String>,
     pub price: Option<f64>,
+    pub trade_size: Option<f64>,
+    pub signed_quantity: Option<f64>,
     pub bid: Option<f64>,
     pub ask: Option<f64>,
     pub bid_size: Option<f64>,
     pub ask_size: Option<f64>,
+    pub depth_bid_notional: Option<f64>,
+    pub depth_ask_notional: Option<f64>,
+    pub depth_imbalance: Option<f64>,
+    pub microprice: Option<f64>,
 }
 
 /// All sources sampled at (approximately) the same timestamp.
@@ -51,6 +66,27 @@ pub struct TickGroup {
 }
 
 pub type SharedTicks = Arc<Vec<RawTick>>;
+
+/// Return whether a table exposes the requested column.
+fn has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    let pragma = format!("PRAGMA table_info({table})");
+    let Ok(mut stmt) = conn.prepare(&pragma) else {
+        return false;
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) else {
+        return false;
+    };
+    rows.flatten().any(|name| name == column)
+}
+
+/// Return a safe `SELECT` expression for an optional `feed_events` column.
+fn optional_feed_event_column(conn: &rusqlite::Connection, column: &str) -> String {
+    if has_column(conn, "feed_events", column) {
+        column.to_string()
+    } else {
+        format!("NULL AS {column}")
+    }
+}
 
 /// Replays ticks from a shared in-memory tick buffer.
 pub struct TickReplay {
@@ -83,6 +119,7 @@ impl TickReplay {
     /// Static helper: load ticks from a database connection without
     /// constructing a replay instance.  Useful for caching the tick vector
     /// across multiple sweep iterations.
+    #[allow(clippy::too_many_lines)]
     pub fn load_ticks(
         conn: &rusqlite::Connection,
         start_time: u64,
@@ -98,13 +135,21 @@ impl TickReplay {
             )?;
             if feed_event_count > 0 {
                 let mut stmt = conn
-                    .prepare(
+                    .prepare(&format!(
                         "SELECT received_at_ms, source, event_type, market_id, asset_id, price,
-                            best_bid, best_ask, bid_size, ask_size, fidelity, received_at_us
+                            best_bid, best_ask, bid_size, ask_size, fidelity, received_at_us,
+                            {}, {}, {}, {}, {}, {}, {}
                      FROM feed_events
                      WHERE received_at_ms >= ?1 AND received_at_ms <= ?2
                      ORDER BY COALESCE(received_at_us, received_at_ms * 1000), id",
-                    )
+                        optional_feed_event_column(conn, "sequence_key"),
+                        optional_feed_event_column(conn, "trade_size"),
+                        optional_feed_event_column(conn, "signed_quantity"),
+                        optional_feed_event_column(conn, "depth_bid_notional"),
+                        optional_feed_event_column(conn, "depth_ask_notional"),
+                        optional_feed_event_column(conn, "depth_imbalance"),
+                        optional_feed_event_column(conn, "microprice"),
+                    ))
                     .context("preparing feed_events query")?;
 
                 let rows = stmt
@@ -123,13 +168,20 @@ impl TickReplay {
                             timestamp_us: row.get(11)?,
                             source: row.get(1)?,
                             event_type: row.get(2)?,
+                            sequence_key: row.get(12)?,
                             market_id: row.get(3)?,
                             asset_id: row.get(4)?,
                             price: row.get(5)?,
+                            trade_size: row.get(13)?,
+                            signed_quantity: row.get(14)?,
                             bid: row.get(6)?,
                             ask: row.get(7)?,
                             bid_size: row.get(8)?,
                             ask_size: row.get(9)?,
+                            depth_bid_notional: row.get(15)?,
+                            depth_ask_notional: row.get(16)?,
+                            depth_imbalance: row.get(17)?,
+                            microprice: row.get(18)?,
                             fidelity,
                         })
                     })
@@ -159,13 +211,20 @@ impl TickReplay {
                     timestamp_us: Some((ts_i64 as u64).saturating_mul(1_000)),
                     source: row.get(1)?,
                     event_type: "legacy_snapshot".to_string(),
+                    sequence_key: None,
                     market_id: None,
                     asset_id: None,
                     price: row.get(2)?,
+                    trade_size: None,
+                    signed_quantity: None,
                     bid: row.get(3)?,
                     ask: row.get(4)?,
                     bid_size: row.get(5)?,
                     ask_size: row.get(6)?,
+                    depth_bid_notional: None,
+                    depth_ask_notional: None,
+                    depth_imbalance: None,
+                    microprice: None,
                     fidelity: ReplayFidelity::LegacySnapshot,
                 })
             })
@@ -219,12 +278,10 @@ impl TickReplay {
             ReplayFidelity::LegacySnapshot => 10,
         };
 
+        let start_cursor = self.cursor;
         while self.cursor < self.ticks.len() {
-            let tick_ts_us = self.ticks[self.cursor]
-                .timestamp_us
-                .unwrap_or_else(|| self.ticks[self.cursor].timestamp.saturating_mul(1_000));
             let within_window = match self.ticks[self.cursor].fidelity {
-                ReplayFidelity::RawEvent => tick_ts_us == ts_us,
+                ReplayFidelity::RawEvent => self.cursor == start_cursor,
                 ReplayFidelity::LegacySnapshot => {
                     self.ticks[self.cursor].timestamp.saturating_sub(ts) <= group_window_ms
                 }
@@ -234,11 +291,19 @@ impl TickReplay {
             }
             let tick = &self.ticks[self.cursor];
             let sample = TickSample {
+                event_type: tick.event_type.clone(),
+                sequence_key: tick.sequence_key.clone(),
                 price: tick.price,
+                trade_size: tick.trade_size,
+                signed_quantity: tick.signed_quantity,
                 bid: tick.bid,
                 ask: tick.ask,
                 bid_size: tick.bid_size,
                 ask_size: tick.ask_size,
+                depth_bid_notional: tick.depth_bid_notional,
+                depth_ask_notional: tick.depth_ask_notional,
+                depth_imbalance: tick.depth_imbalance,
+                microprice: tick.microprice,
             };
 
             match tick.source.as_str() {

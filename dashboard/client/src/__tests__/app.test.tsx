@@ -1,10 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, it, vi } from "vitest";
 
 vi.mock("../components/common/protected-route", () => ({
-  ProtectedRoute: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
+  ProtectedRoute: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 vi.mock("../components/layout/app-shell", async () => {
@@ -46,8 +44,8 @@ vi.mock("../pages/stats", () => ({
   StatsPage: () => <div data-testid="stats-page">stats</div>,
 }));
 
-vi.mock("../pages/live", () => ({
-  LivePage: () => <div data-testid="live-page">live</div>,
+vi.mock("../pages/execution", () => ({
+  ExecutionPage: () => <div data-testid="execution-page">execution</div>,
 }));
 
 import App from "../App";
@@ -68,6 +66,22 @@ it("renders protected pages inside the app shell", () => {
 
   expect(screen.getByTestId("app-shell")).toBeInTheDocument();
   expect(screen.getByTestId("signals-page")).toBeInTheDocument();
+});
+
+it("redirects /live to /execution", async () => {
+  window.history.pushState({}, "", "/live");
+
+  render(<App />);
+
+  expect(await screen.findByTestId("execution-page")).toBeInTheDocument();
+});
+
+it("redirects /stats to /strategies", async () => {
+  window.history.pushState({}, "", "/stats");
+
+  render(<App />);
+
+  expect(await screen.findByTestId("stats-page")).toBeInTheDocument();
 });
 
 beforeEach(() => {
