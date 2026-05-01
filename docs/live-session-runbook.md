@@ -19,12 +19,13 @@ What is ready locally:
 - sidecar FOK/FAK order, cancel, cancel-all, and pUSD CTF redemption boundary
 - sidecar sanitized activity recovery on `/activity`
 - local disarmed `live_trading` runtime and audited `live-control` command queue for mocked verification
+- admin dashboard Execution controls that queue audited bot-applied control commands
 
 What is still intentionally gated:
 
 - `EXECUTION_MODE=live_trading` is not deployed or operator-approved for real money
-- dashboard arming, disarming, kill-switch, and redemption controls are not enabled yet
-- host rollout, funded canary checks, and dashboard control UX are unfinished
+- dashboard controls are local-verification only and must not be used to arm real money yet
+- host rollout, funded canary checks, and final live-money verification are unfinished
 - readonly monitoring uses live account reads, user-stream health, and sanitized activity recovery, but the funded operating procedure is not complete yet
 
 Do not deploy real-money trading from this state. Use it to finish implementation and validate readiness safely.
@@ -68,7 +69,7 @@ Intended operator lifecycle once live trading is actually enabled:
 1. start in `live_readonly`
 2. pass preflight
 3. inspect budget preview, strategy set, geoblock, auth, account state, and user-stream health
-4. arm live trading explicitly from the approved control surface
+4. arm live trading explicitly from the approved control surface after audited preflight
 5. monitor open orders, fills, reconciliation warnings, and redeemable inventory
 6. if drawdown or divergence persists too long, disarm and stop after flat
 7. redeem winning resolved positions
@@ -97,6 +98,7 @@ The dedicated Execution page should enforce:
 - mobile restricted to observe and disarm only
 - immediate disarm availability
 - clear `cancel all`, `redeem all`, and `stop after flat` actions
+- admin-only mutation controls that queue commands through the bot ledger, never directly through the sidecar
 
 Any of these should block or disarm trading automatically:
 

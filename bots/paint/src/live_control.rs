@@ -9,6 +9,7 @@ use crate::types::{ControlAuditEntry, LiveControlCommand, LiveControlState};
 /// Durable live-control actions accepted by the local operator CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveControlAction {
+    Preflight,
     Arm,
     Disarm,
     StopAfterFlat,
@@ -22,6 +23,7 @@ impl LiveControlAction {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Preflight => "preflight",
             Self::Arm => "arm",
             Self::Disarm => "disarm",
             Self::StopAfterFlat => "stop-after-flat",
@@ -38,6 +40,7 @@ impl FromStr for LiveControlAction {
     /// Parse one operator action from the CLI spelling.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "preflight" => Ok(Self::Preflight),
             "arm" => Ok(Self::Arm),
             "disarm" => Ok(Self::Disarm),
             "stop-after-flat" => Ok(Self::StopAfterFlat),
@@ -45,7 +48,7 @@ impl FromStr for LiveControlAction {
             "cancel-all" => Ok(Self::CancelAll),
             "redeem-all" => Ok(Self::RedeemAll),
             _ => bail!(
-                "invalid live-control action {value}; expected arm, disarm, stop-after-flat, kill-switch, cancel-all, or redeem-all"
+                "invalid live-control action {value}; expected preflight, arm, disarm, stop-after-flat, kill-switch, cancel-all, or redeem-all"
             ),
         }
     }

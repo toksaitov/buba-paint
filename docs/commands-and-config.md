@@ -120,11 +120,11 @@ Important groups:
 
 The sidecar CLOB boundary uses `@polymarket/clob-client-v2`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted. Gasless redemption uses the builder relayer SDK path and stays fail-closed unless the configured credentials are complete.
 
-`live_trading` starts disarmed and is local-verification only until deployment and dashboard-control phases are complete. Do not treat the presence of live caps, sidecar credentials, callable sidecar write endpoints, or queued `live-control` commands as permission to deploy real money.
+`live_trading` starts disarmed and is local-verification only until deployment and final canary phases are complete. Do not treat the presence of live caps, sidecar credentials, callable sidecar write endpoints, or queued `live-control` commands as permission to deploy real money.
 
 ## Live Control CLI
 
-Phase 3 uses a local audited CLI control surface instead of dashboard mutation endpoints:
+The local CLI queues the same audited bot-applied commands as the dashboard Execution controls:
 
 ```bash
 cargo run -p buba-paint --release -- live-control \
@@ -134,7 +134,9 @@ cargo run -p buba-paint --release -- live-control \
   --reason "preflight gates passed"
 ```
 
-Supported actions are `arm`, `disarm`, `stop-after-flat`, `kill-switch`, `cancel-all`, and `redeem-all`. Commands are written into the bot DB and applied by a running `EXECUTION_MODE=live_trading` process. The command is rejected if there is no active live-trading session.
+Supported actions are `preflight`, `arm`, `disarm`, `stop-after-flat`, `kill-switch`, `cancel-all`, and `redeem-all`. Commands are written into the bot DB and applied by a running `EXECUTION_MODE=live_trading` process. The command is rejected if there is no active live-trading session.
+
+The dashboard route `POST /api/bots/:id/live/control` proxies to the agent route `POST /api/live/control`. Only dashboard admins may submit it. The server injects the authenticated actor, and the bot remains the only process that applies controls or touches the sidecar.
 
 ## Strategy Defaults
 

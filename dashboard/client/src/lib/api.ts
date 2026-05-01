@@ -5,6 +5,9 @@ import type {
   BotStatus,
   EquitySeriesResponse,
   LiveFillsResponse,
+  LiveControlAuditResponse,
+  LiveControlRequest,
+  LiveControlResponse,
   LiveOrdersResponse,
   LiveReconciliationResponse,
   LiveRedemptionsResponse,
@@ -183,6 +186,20 @@ export async function getLiveReconciliation(
   limit = 50,
 ): Promise<LiveReconciliationResponse> {
   return get(`/api/bots/${botId}/live/reconciliation?limit=${limit}`);
+}
+
+export async function getLiveControlAudit(
+  botId: string,
+  limit = 50,
+): Promise<LiveControlAuditResponse> {
+  return get(`/api/bots/${botId}/live/control-audit?limit=${limit}`);
+}
+
+export async function sendLiveControl(
+  botId: string,
+  request: LiveControlRequest,
+): Promise<LiveControlResponse> {
+  return post(`/api/bots/${botId}/live/control`, request);
 }
 
 export async function botStart(botId: string): Promise<BotProcessStatus> {

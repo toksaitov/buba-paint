@@ -228,7 +228,15 @@ pub async fn get_trading_summary(
         live_status.open_orders,
         live_status.pending_redemptions,
     );
-    let capabilities = build_trading_capabilities(&shadow_status.execution_mode);
+    let capabilities = build_trading_capabilities(
+        &shadow_status.execution_mode,
+        &trading_state,
+        &process_state,
+        &venue_health,
+        &account_health,
+        &reconciliation_health,
+        &live_status,
+    );
     let alerts = build_trading_alerts(
         &shadow_status.execution_mode,
         provider.as_deref(),
@@ -388,6 +396,40 @@ pub async fn get_live_reconciliation(
     Ok(Json(events))
 }
 
+/// Returns recent live-control audit events.
+pub async fn get_live_control_audit(
+    State(state): State<AppState>,
+    Query(q): Query<LiveLimitQuery>,
+) -> Result<impl IntoResponse, AgentError> {
+    let entries = state.db.get_live_control_audit(q.limit).await?;
+    Ok(Json(entries))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LiveControlRequest {
+    pub action: String,
+    pub actor: String,
+    pub reason: String,
+    pub confirmation: Option<String>,
+    pub bot_id: String,
+}
+
+/// Queues one audited live-control command for the running bot.
+#[allow(clippy::unused_async)]
+pub async fn post_live_control(
+    State(state): State<AppState>,
+    Json(req): Json<LiveControlRequest>,
+) -> Result<impl IntoResponse, AgentError> {
+    let response = state.db.queue_live_control_command(
+        &req.action,
+        &req.actor,
+        &req.reason,
+        req.confirmation.as_deref(),
+        &req.bot_id,
+    )?;
+    Ok(Json(response))
+}
+
 /// Parses a JSON object payload from a nullable string field.
 fn parse_details(details_json: Option<&str>) -> Option<serde_json::Map<String, serde_json::Value>> {
     let raw = details_json?;
@@ -462,7 +504,8 @@ fn derive_trading_state(runtime_mode: &str, live_session_status: Option<&str>) -
             Some("armed") => "armed".to_string(),
             Some("halted") => "halted".to_string(),
             Some("unknown_order") => "unknown_order".to_string(),
-            Some("stop_after_flat" | "disarmed") | None => "disarmed".to_string(),
+            Some("stop_after_flat") => "stop_after_flat".to_string(),
+            Some("disarmed") | None => "disarmed".to_string(),
             Some(status) if status.contains("degraded") || status.contains("failed") => {
                 "degraded".to_string()
             }
@@ -591,33 +634,123 @@ fn build_reconciliation_health(
 
 /// Builds one disabled control capability entry with a reason.
 fn disabled_capability(reason: &str) -> TradingControlCapability {
+    capability(false, reason)
+}
+
+/// Builds one control capability entry.
+fn capability(enabled: bool, reason: &str) -> TradingControlCapability {
     TradingControlCapability {
-        enabled: false,
+        enabled,
         reason: reason.to_string(),
     }
 }
 
 /// Builds the control-capability map for the dashboard trading surface.
-fn build_trading_capabilities(runtime_mode: &str) -> TradingCapabilities {
-    let preflight_reason = if runtime_mode == "paper" {
-        "Paper mode has no live venue boundary to preflight."
+fn build_trading_capabilities(
+    runtime_mode: &str,
+    trading_state: &str,
+    process_state: &str,
+    venue_health: &TradingHealth,
+    account_health: &TradingHealth,
+    reconciliation_health: &TradingHealth,
+    live_status: &crate::types::LiveStatusResponse,
+) -> TradingCapabilities {
+    if runtime_mode == "paper" {
+        let reason = "Paper mode has no live venue boundary.";
+        return TradingCapabilities {
+            preflight: disabled_capability(reason),
+            arm: disabled_capability(reason),
+            disarm: disabled_capability(reason),
+            cancel_all: disabled_capability(reason),
+            stop_after_flat: disabled_capability(reason),
+            redeem: disabled_capability(reason),
+            kill_switch: disabled_capability(reason),
+        };
+    }
+    if runtime_mode == "live_readonly" {
+        let reason =
+            "live_readonly is observation-only; start a live_trading session to queue controls.";
+        return TradingCapabilities {
+            preflight: disabled_capability(reason),
+            arm: disabled_capability(reason),
+            disarm: disabled_capability(reason),
+            cancel_all: disabled_capability(reason),
+            stop_after_flat: disabled_capability(reason),
+            redeem: disabled_capability(reason),
+            kill_switch: disabled_capability(reason),
+        };
+    }
+
+    let arm_ready = trading_state == "disarmed"
+        && process_state == "running"
+        && venue_health.state == "healthy"
+        && account_health.state == "healthy"
+        && reconciliation_health.state == "healthy";
+    let arm_reason = if trading_state == "halted" {
+        "This live session is halted. Export and analyze it before starting a new session."
+    } else if trading_state == "unknown_order" {
+        "Order state is unknown. Reconcile venue orders and fills before arming."
+    } else if trading_state != "disarmed" {
+        "Arming is only available from a disarmed live_trading session."
+    } else if process_state != "running" {
+        "The bot process must be running before arming."
+    } else if venue_health.state != "healthy" {
+        "Venue health is not green."
+    } else if account_health.state != "healthy" {
+        "Account health is not green."
+    } else if reconciliation_health.state != "healthy" {
+        "Reconciliation health is not green."
     } else {
-        "Dashboard preflight actions are not wired in this pass."
+        "All system gates are green. Admin confirmation is still required."
     };
-    let arm_reason = if runtime_mode == "live_trading" {
-        "Use buba-paint live-control arm on the host; dashboard arming is disabled in Phase 3."
-    } else {
-        "Dashboard arming is only available in a later live-trading UI phase."
-    };
-    let control_reason = "Use buba-paint live-control on the host; dashboard mutation endpoints are disabled in Phase 3.";
+    let open_orders = live_status.open_orders;
+    let redeemable = live_status
+        .latest_account_snapshot
+        .as_ref()
+        .map_or(0.0, |snapshot| snapshot.redeemable_value);
     TradingCapabilities {
-        preflight: disabled_capability(preflight_reason),
-        arm: disabled_capability(arm_reason),
-        disarm: disabled_capability(control_reason),
-        cancel_all: disabled_capability(control_reason),
-        stop_after_flat: disabled_capability(control_reason),
-        redeem: disabled_capability(control_reason),
-        kill_switch: disabled_capability(control_reason),
+        preflight: capability(true, "Queue an audited preflight refresh."),
+        arm: capability(arm_ready, arm_reason),
+        disarm: capability(
+            matches!(trading_state, "armed" | "stop_after_flat"),
+            if matches!(trading_state, "armed" | "stop_after_flat") {
+                "Disarm live submissions without clearing unresolved critical states."
+            } else {
+                "Disarm is only available while armed or stopping after flat."
+            },
+        ),
+        cancel_all: capability(
+            open_orders > 0,
+            if open_orders > 0 {
+                "Cancel all tracked open venue orders."
+            } else {
+                "No open venue orders are currently tracked."
+            },
+        ),
+        stop_after_flat: capability(
+            trading_state == "armed",
+            if trading_state == "armed" {
+                "Stop submitting new orders after exposure is flat."
+            } else {
+                "Stop-after-flat is only available while armed."
+            },
+        ),
+        redeem: capability(
+            redeemable > 0.0,
+            if redeemable > 0.0 {
+                "Redeem all currently detected redeemable positions."
+            } else {
+                "No redeemable positions are currently detected."
+            },
+        ),
+        kill_switch: capability(
+            trading_state != "halted",
+            if trading_state == "halted" {
+                "The live session is already halted."
+            } else {
+                "Halt this session, attempt cancel-all, and block re-arming."
+            },
+        ),
     }
 }
 
@@ -666,7 +799,7 @@ fn build_trading_alerts(
             Some("disarmed") => alerts.push(TradingAlert {
                 severity: "info".to_string(),
                 title: "Live trading disarmed".to_string(),
-                detail: "Use buba-paint live-control from the host to arm after preflight gates pass.".to_string(),
+                detail: "Use the dashboard Execution controls or buba-paint live-control from the host after preflight gates pass.".to_string(),
             }),
             _ => {}
         },

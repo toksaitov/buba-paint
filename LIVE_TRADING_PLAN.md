@@ -45,8 +45,9 @@ Issue-resolution discipline for every phase:
 - Phase 0, Documentation IA Reset: complete in commit `398da37` on 2026-05-01.
 - Phase 1, Polymarket CLOB V2 Venue Contract Reset: complete in commit `6c2f2d5` on 2026-05-01.
 - Phase 2, Sidecar Write Boundary: complete in commit `e8c223d` on 2026-05-01.
-- Phase 3, Live Ledger and Bot Runtime: complete in current local work on 2026-05-01, pending commit.
-- Phase 4 and later: unfinished. Dashboard execution controls and deployment remain gated until those phases are implemented and verified.
+- Phase 3, Live Ledger and Bot Runtime: complete in commit `359393f` on 2026-05-02.
+- Phase 4, Dashboard Execution Controls: complete in current local work on 2026-05-02, pending commit. Chosen defaults are admin-only dashboard controls and audited preflight commands queued through the bot control ledger.
+- Phase 5 and later: unfinished. Risk/halt/cooldown policy, replay-grade funded capture review, host rollout, and real-money canary remain gated until those phases are implemented and verified.
 
 ## Current Decision
 
@@ -387,6 +388,14 @@ Acceptance gates:
 - `cd dashboard/client && npm test`
 - `cd dashboard/client && npm run build`
 - `make test-e2e`
+
+Phase 4 closeout:
+
+- Implemented dashboard-to-agent live-control routing, agent command queueing, control audit reads, audited `preflight`, admin-only dashboard mutations, actor injection, typed confirmations, state-specific Execution controls, control audit rendering, halted/unknown-order dominant states, and mobile arm blocking.
+- Blockers found and fixed: dashboard controls initially rendered every live action in every live-trading state; agent control write path needed stricter input/confirmation/session validation; dashboard control submission needed a fresh DB role check in addition to JWT role claims; bot preflight command application needed direct test coverage; E2E nav selectors were ambiguous after Overview shortcut links; Clippy flagged the agent control write path.
+- Accepted low-risk debt: Vite still emits the existing chunk-size warning above 500 kB, Vitest/Playwright still print existing localstorage and `NO_COLOR` warnings, and Playwright keeps the existing intentional viewport skips.
+- Gates run: `cargo test -p buba-agent live_control`, `cargo test -p buba-dashboard`, `cargo test -p buba-paint live_control`, `cargo test -p buba-paint live`, `cargo test -p buba-paint live_system`, `cd dashboard/client && npm test`, `cd dashboard/client && npm run build`, `make test-e2e`, `make lint`, `make docs-audit`, `make comment-audit`, `cargo build --release -p buba-paint`, and `git diff --check`.
+- Gates intentionally skipped: none from the Phase 4 plan.
 
 ## Phase 5: Risk, Halt, and Human Cooldown Policy
 

@@ -33,12 +33,12 @@ test("mobile drawer opens and closes", async ({ page, browserName }) => {
   await expect(hamburger).toBeEnabled();
 
   await hamburger.click({ force: true });
-  await expect(page.getByRole("link", { name: "Trades" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Trades", exact: true })).toBeVisible();
 
-  await page.getByRole("link", { name: "Trades" }).click();
+  await page.getByRole("link", { name: "Trades", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Trade history" })).toBeVisible();
 
-  await expect(page.getByRole("link", { name: "Trades" })).not.toBeVisible();
+  await expect(page.getByRole("link", { name: "Trades", exact: true })).not.toBeVisible();
 });
 
 test("mobile shows trade cards instead of table", async ({ page }) => {
@@ -53,7 +53,7 @@ test("mobile shows trade cards instead of table", async ({ page }) => {
 
   const hamburger = page.getByRole("button", { name: "Expand navigation" });
   await hamburger.click({ force: true });
-  await page.getByRole("link", { name: "Trades" }).click();
+  await page.getByRole("link", { name: "Trades", exact: true }).click();
 
   await expect(
     page.locator("span:visible").filter({ hasText: /^latency-arb$/ }).first(),

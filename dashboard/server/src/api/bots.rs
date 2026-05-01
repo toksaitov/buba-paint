@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
+use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 
 use crate::api::auth_routes::AppState;
+use crate::auth::Claims;
 use crate::error::DashboardError;
 use crate::proxy;
 
@@ -209,6 +211,51 @@ pub async fn bot_live_reconciliation(
     Ok(Json(data))
 }
 
+/// `GET /api/bots/:id/live/control-audit`
+#[allow(clippy::implicit_hasher)]
+pub async fn bot_live_control_audit(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let qs = build_query(&params);
+    let data = proxy::proxy_get(agent, "/api/live/control-audit", qs.as_deref()).await?;
+    Ok(Json(data))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LiveControlRequest {
+    pub action: String,
+    pub reason: String,
+    pub confirmation: Option<String>,
+}
+
+/// `POST /api/bots/:id/live/control`
+pub async fn bot_live_control(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(bot_id): Path<String>,
+    Json(req): Json<LiveControlRequest>,
+) -> Result<impl IntoResponse, DashboardError> {
+    if claims.role != "admin" {
+        return Err(DashboardError::Forbidden(
+            "live execution controls require admin role".to_string(),
+        ));
+    }
+    let agent = find_agent(&state, &bot_id)?;
+    let actor = actor_label(&state, &claims).await?;
+    let body = serde_json::json!({
+        "action": req.action,
+        "actor": actor,
+        "reason": req.reason,
+        "confirmation": req.confirmation,
+        "bot_id": bot_id,
+    });
+    let data = proxy::proxy_post_json(agent, "/api/live/control", &body).await?;
+    Ok(Json(data))
+}
+
 /// `GET /api/bots/:id/logs`
 #[allow(clippy::implicit_hasher)]
 pub async fn bot_logs(
@@ -272,6 +319,19 @@ fn find_agent<'a>(
         .iter()
         .find(|a| a.id == bot_id)
         .ok_or_else(|| DashboardError::NotFound(format!("bot '{bot_id}' not found")))
+}
+
+/// Return a stable human-readable actor label for the control ledger.
+async fn actor_label(state: &AppState, claims: &Claims) -> Result<String, DashboardError> {
+    let user = state.db.get_user_by_id(&claims.sub).await?.ok_or_else(|| {
+        DashboardError::Unauthorized("authenticated user no longer exists".to_string())
+    })?;
+    if user.role != "admin" {
+        return Err(DashboardError::Forbidden(
+            "live execution controls require current admin role".to_string(),
+        ));
+    }
+    Ok(user.username)
 }
 
 #[cfg(test)]

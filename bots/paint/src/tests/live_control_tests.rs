@@ -94,5 +94,9 @@ fn parses_known_actions() {
         LiveControlAction::from_str("stop-after-flat").unwrap(),
         LiveControlAction::StopAfterFlat
     );
+    assert_eq!(
+        LiveControlAction::from_str("preflight").unwrap(),
+        LiveControlAction::Preflight
+    );
     assert!(LiveControlAction::from_str("restart").is_err());
 }

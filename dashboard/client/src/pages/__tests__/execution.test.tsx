@@ -19,6 +19,11 @@ vi.mock("../../hooks/use-live-status", () => ({
   useLiveFills: vi.fn(),
   useLiveRedemptions: vi.fn(),
   useLiveReconciliation: vi.fn(),
+  useLiveControlAudit: vi.fn(),
+}));
+
+vi.mock("../../lib/api", () => ({
+  sendLiveControl: vi.fn(),
 }));
 
 vi.mock("../../components/common/loading", () => ({
@@ -27,6 +32,7 @@ vi.mock("../../components/common/loading", () => ({
 
 import { ExecutionPage } from "../execution";
 import {
+  useLiveControlAudit,
   useLiveFills,
   useLiveOrders,
   useLiveReconciliation,
@@ -34,8 +40,13 @@ import {
   useLiveSessions,
 } from "../../hooks/use-live-status";
 import { useTradingSummary } from "../../hooks/use-trading-summary";
+import { sendLiveControl } from "../../lib/api";
+import { useAuthStore } from "../../stores/auth-store";
+import type { TradingSummary } from "../../lib/types";
 
 const mockUseTradingSummary = vi.mocked(useTradingSummary);
+const mockSendLiveControl = vi.mocked(sendLiveControl);
+const mockUseLiveControlAudit = vi.mocked(useLiveControlAudit);
 const mockUseLiveSessions = vi.mocked(useLiveSessions);
 const mockUseLiveOrders = vi.mocked(useLiveOrders);
 const mockUseLiveFills = vi.mocked(useLiveFills);
@@ -51,12 +62,116 @@ function createWrapper() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useAuthStore.setState({ token: "token", user: { id: "1", username: "admin", role: "admin" } });
+  mockSendLiveControl.mockResolvedValue({
+    ok: true,
+    command_id: 123,
+    action: "preflight",
+    status: "pending",
+  });
   mockUseLiveSessions.mockReturnValue({ data: { sessions: [] } } as ReturnType<typeof useLiveSessions>);
   mockUseLiveOrders.mockReturnValue({ data: { orders: [] } } as ReturnType<typeof useLiveOrders>);
   mockUseLiveFills.mockReturnValue({ data: { fills: [] } } as ReturnType<typeof useLiveFills>);
   mockUseLiveRedemptions.mockReturnValue({ data: { redemptions: [] } } as ReturnType<typeof useLiveRedemptions>);
   mockUseLiveReconciliation.mockReturnValue({ data: { events: [] } } as ReturnType<typeof useLiveReconciliation>);
+  mockUseLiveControlAudit.mockReturnValue({ data: { entries: [] } } as ReturnType<typeof useLiveControlAudit>);
 });
+
+function baseTradingSummary(overrides: Partial<TradingSummary> = {}): TradingSummary {
+  return {
+    runtime_mode: "live_trading",
+    trading_state: "disarmed",
+    process_state: "running",
+    venue_health: { state: "healthy", label: "Venue connected", detail: null },
+    account_health: { state: "healthy", label: "Account tracked", detail: null },
+    reconciliation_health: {
+      state: "healthy",
+      label: "Reconciliation clean",
+      detail: null,
+    },
+    shadow_summary: {
+      balance: 120,
+      starting_balance: 100,
+      total_pnl: 20,
+      total_trades: 3,
+      wins: 2,
+      losses: 1,
+      win_rate: 0.66,
+      open_trades: 0,
+      uptime_hours: 1,
+      high_water_mark: 125,
+      max_drawdown_pct: 0.1,
+      live_session_status: "disarmed",
+      last_tick_at: null,
+      current_window: null,
+    },
+    real_account_summary: {
+      available_cash: 96,
+      reserved_cash: 0,
+      inventory_mark_value: 2,
+      redeemable_value: 0,
+      pending_redeem_value: 0,
+      total_equity: 99,
+      allowance_available: 96,
+      latest_snapshot_at_ms: 1100,
+      session_id: 1,
+      session_status: "disarmed",
+      session_started_at_ms: 1000,
+      wallet_address: "0xwallet",
+      proxy_wallet: "0xproxy",
+      cash_cap_usd: 100,
+      enabled_strategies: ["latency-arb"],
+      provider: "polymarket",
+      user_stream_status: "ok",
+      last_user_stream_connected_at_ms: 1200,
+      last_user_stream_event_at_ms: 1250,
+      last_account_refresh_at_ms: 1300,
+      open_orders: 0,
+      pending_redemptions: 0,
+      critical_reconciliation_events: 0,
+    },
+    capabilities: {
+      preflight: { enabled: true, reason: "Queue an audited preflight refresh." },
+      arm: { enabled: true, reason: "All system gates are green." },
+      disarm: { enabled: false, reason: "Not armed." },
+      cancel_all: { enabled: false, reason: "No open venue orders." },
+      stop_after_flat: { enabled: false, reason: "Not armed." },
+      redeem: { enabled: false, reason: "No redeemable positions." },
+      kill_switch: { enabled: true, reason: "Halt this session." },
+    },
+    alerts: [],
+    ...overrides,
+  };
+}
+
+function mockExecutionSummary(summary: TradingSummary) {
+  mockUseTradingSummary.mockReturnValue({
+    isLoading: false,
+    data: summary,
+  } as ReturnType<typeof useTradingSummary>);
+}
+
+function mockLatestSession() {
+  mockUseLiveSessions.mockReturnValue({
+    data: {
+      sessions: [
+        {
+          id: 1,
+          started_at_ms: 1000,
+          ended_at_ms: null,
+          status: "disarmed",
+          execution_mode: "live_trading",
+          wallet_address: "0xwallet",
+          proxy_wallet: "0xproxy",
+          enabled_strategies_json: "[\"latency-arb\"]",
+          config_fingerprint: "fingerprint-value",
+          cash_cap_usd: 100,
+          details_json: null,
+        },
+      ],
+    },
+  } as ReturnType<typeof useLiveSessions>);
+}
 
 test("shows loading state", () => {
   mockUseTradingSummary.mockReturnValue({
@@ -162,6 +277,217 @@ test("renders the execution cockpit", () => {
   expect(screen.getByText("Venue activity")).toBeInTheDocument();
   expect(screen.getByText("Session and wallet")).toBeInTheDocument();
   expect(screen.getByText("Live Readonly")).toBeInTheDocument();
+});
+
+test("queues an audited preflight command from live trading controls", async () => {
+  const user = userEvent.setup();
+  mockUseTradingSummary.mockReturnValue({
+    isLoading: false,
+    data: {
+      runtime_mode: "live_trading",
+      trading_state: "disarmed",
+      process_state: "running",
+      venue_health: { state: "healthy", label: "Venue connected", detail: null },
+      account_health: { state: "healthy", label: "Account tracked", detail: null },
+      reconciliation_health: {
+        state: "healthy",
+        label: "Reconciliation clean",
+        detail: null,
+      },
+      shadow_summary: {
+        balance: 120,
+        starting_balance: 100,
+        total_pnl: 20,
+        total_trades: 3,
+        wins: 2,
+        losses: 1,
+        win_rate: 0.66,
+        open_trades: 0,
+        uptime_hours: 1,
+        high_water_mark: 125,
+        max_drawdown_pct: 0.1,
+        live_session_status: "disarmed",
+        last_tick_at: null,
+        current_window: null,
+      },
+      real_account_summary: {
+        available_cash: 96,
+        reserved_cash: 0,
+        inventory_mark_value: 2,
+        redeemable_value: 0,
+        pending_redeem_value: 0,
+        total_equity: 99,
+        allowance_available: 96,
+        latest_snapshot_at_ms: 1100,
+        session_id: 1,
+        session_status: "disarmed",
+        session_started_at_ms: 1000,
+        wallet_address: "0xwallet",
+        proxy_wallet: "0xproxy",
+        cash_cap_usd: 100,
+        enabled_strategies: ["latency-arb"],
+        provider: "polymarket",
+        user_stream_status: "ok",
+        last_user_stream_connected_at_ms: 1200,
+        last_user_stream_event_at_ms: 1250,
+        last_account_refresh_at_ms: 1300,
+        open_orders: 0,
+        pending_redemptions: 0,
+        critical_reconciliation_events: 0,
+      },
+      capabilities: {
+        preflight: { enabled: true, reason: "Queue an audited preflight refresh." },
+        arm: { enabled: true, reason: "All system gates are green." },
+        disarm: { enabled: false, reason: "Not armed." },
+        cancel_all: { enabled: false, reason: "No open venue orders." },
+        stop_after_flat: { enabled: false, reason: "Not armed." },
+        redeem: { enabled: false, reason: "No redeemable positions." },
+        kill_switch: { enabled: true, reason: "Halt this session." },
+      },
+      alerts: [],
+    },
+  } as ReturnType<typeof useTradingSummary>);
+  mockUseLiveSessions.mockReturnValue({
+    data: {
+      sessions: [
+        {
+          id: 1,
+          started_at_ms: 1000,
+          ended_at_ms: null,
+          status: "disarmed",
+          execution_mode: "live_trading",
+          wallet_address: "0xwallet",
+          proxy_wallet: "0xproxy",
+          enabled_strategies_json: "[\"latency-arb\"]",
+          config_fingerprint: "fingerprint-value",
+          cash_cap_usd: 100,
+          details_json: null,
+        },
+      ],
+    },
+  } as ReturnType<typeof useLiveSessions>);
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  await user.type(screen.getAllByPlaceholderText("Reason")[0], "manual gate refresh");
+  await user.click(screen.getByRole("button", { name: "Preflight" }));
+
+  expect(mockSendLiveControl).toHaveBeenCalledWith("paint", {
+    action: "preflight",
+    reason: "manual gate refresh",
+    confirmation: undefined,
+  });
+  expect(await screen.findByText(/Command #123 queued as pending/)).toBeInTheDocument();
+});
+
+test("limits disarmed controls to preflight and arm", () => {
+  mockExecutionSummary(baseTradingSummary());
+  mockLatestSession();
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  expect(screen.getByRole("button", { name: "Preflight" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Arm" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Kill switch" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cancel all" })).toBeNull();
+});
+
+test("blocks live-control mutations for observers", () => {
+  useAuthStore.setState({
+    token: "token",
+    user: { id: "2", username: "observer", role: "observer" },
+  });
+  mockExecutionSummary(baseTradingSummary());
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  expect(screen.getAllByText("Admin role required.").length).toBeGreaterThan(0);
+  expect(screen.getByRole("button", { name: "Preflight" })).toBeDisabled();
+  expect(mockSendLiveControl).not.toHaveBeenCalled();
+});
+
+test("does not expose arm controls after a live session halt", () => {
+  mockExecutionSummary(
+    baseTradingSummary({
+      trading_state: "halted",
+      real_account_summary: {
+        ...baseTradingSummary().real_account_summary,
+        session_status: "halted",
+      },
+      capabilities: {
+        ...baseTradingSummary().capabilities,
+        preflight: { enabled: true, reason: "Queue an audited preflight refresh." },
+        arm: { enabled: false, reason: "Session halted." },
+        kill_switch: { enabled: false, reason: "Already halted." },
+      },
+    }),
+  );
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  expect(screen.getByText("Session halted")).toBeInTheDocument();
+  expect(screen.getByText("No dashboard controls are available for this session state.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Arm" })).toBeNull();
+});
+
+test("keeps unknown-order controls focused on reconciliation actions", () => {
+  mockExecutionSummary(
+    baseTradingSummary({
+      trading_state: "unknown_order",
+      real_account_summary: {
+        ...baseTradingSummary().real_account_summary,
+        open_orders: 1,
+        session_status: "unknown_order",
+      },
+      capabilities: {
+        ...baseTradingSummary().capabilities,
+        arm: { enabled: false, reason: "Order state is unknown." },
+        cancel_all: { enabled: true, reason: "Cancel tracked venue orders." },
+      },
+    }),
+  );
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  expect(screen.getByText("Unknown order state")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Preflight" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Cancel all" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Kill switch" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Arm" })).toBeNull();
+});
+
+test("blocks arming from mobile even with valid reason and confirmation", async () => {
+  const user = userEvent.setup();
+  const originalMatchMedia = window.matchMedia;
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockReturnValue({
+      matches: true,
+      media: "(max-width: 767px)",
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }),
+  });
+  mockExecutionSummary(baseTradingSummary());
+  mockLatestSession();
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  await user.type(screen.getAllByPlaceholderText("Reason")[1], "ready from phone");
+  await user.type(screen.getAllByRole("textbox")[2], "ARM paint fingerprint-v");
+
+  expect(screen.getByText("Desktop confirmation required.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Arm" })).toBeDisabled();
+  expect(mockSendLiveControl).not.toHaveBeenCalled();
+
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: originalMatchMedia,
+  });
 });
 
 test("renders non-empty trading activity, alerts, and advanced details", async () => {

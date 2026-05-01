@@ -27,24 +27,24 @@ test("login, navigate, and persist the active session", async ({ page }) => {
   await expect(page.getByText("Balance", { exact: true })).toBeVisible();
   await expect(page.getByText("PnL", { exact: true })).toBeVisible();
 
-  await page.getByRole("link", { name: "Execution" }).click();
+  await page.getByRole("link", { name: "Execution", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Controls" })).toBeVisible();
   await expect(page.getByText("Cash available")).toBeVisible();
 
-  await page.getByRole("link", { name: "Trades" }).click();
+  await page.getByRole("link", { name: "Trades", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Trade history" })).toBeVisible();
   await expect(
     page.locator("table").getByRole("cell", { name: "latency-arb" }),
   ).toBeVisible();
 
-  await page.getByRole("link", { name: "Signals" }).click();
+  await page.getByRole("link", { name: "Signals", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Signals" })).toBeVisible();
 
-  await page.getByRole("link", { name: "Logs" }).click();
+  await page.getByRole("link", { name: "Logs", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Logs" })).toBeVisible();
   await expect(page.getByText("connected to feeds")).toBeVisible();
 
-  await page.getByRole("link", { name: "Strategies" }).click();
+  await page.getByRole("link", { name: "Strategies", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Strategies" })).toBeVisible();
   await expect(page.getByText("latency-arb", { exact: true }).first()).toBeVisible();
 

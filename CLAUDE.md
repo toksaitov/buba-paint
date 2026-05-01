@@ -20,9 +20,9 @@ Current safety state:
 
 - `paper` is the production research mode.
 - `live_readonly` is real authenticated venue/account monitoring plus shadow paper trading.
-- `live_trading` starts disarmed, requires local `live-control` commands, and is not deployed or armed.
+- `live_trading` starts disarmed, requires audited live-control commands from the CLI or admin dashboard, and is not deployed or armed.
 - Sidecar `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` are real venue-boundary surfaces.
-- Bot runtime order submission, live ledger persistence, reconciliation, and CLI control are under Phase 3 local verification. Dashboard mutation controls and deployment remain unfinished phases.
+- Bot runtime order submission, live ledger persistence, reconciliation, CLI control, and admin dashboard control queueing are local-verification surfaces only. Deployment and real arming remain unfinished phases.
 
 ## Build and Test
 

@@ -307,6 +307,29 @@ pub struct LiveReconciliationResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct LiveControlAuditRow {
+    pub id: i64,
+    pub timestamp_ms: u64,
+    pub actor: String,
+    pub action: String,
+    pub target: Option<String>,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveControlAuditResponse {
+    pub entries: Vec<LiveControlAuditRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveControlCommandResponse {
+    pub ok: bool,
+    pub command_id: i64,
+    pub action: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TradingHealth {
     pub state: String,
     pub label: String,

@@ -113,6 +113,8 @@ async fn main() -> anyhow::Result<()> {
             "/api/live/reconciliation",
             get(api::get_live_reconciliation),
         )
+        .route("/api/live/control-audit", get(api::get_live_control_audit))
+        .route("/api/live/control", post(api::post_live_control))
         .route("/api/bot/logs", get(api::get_logs))
         .route("/api/bot/start", post(api::bot_start))
         .route("/api/bot/stop", post(api::bot_stop))

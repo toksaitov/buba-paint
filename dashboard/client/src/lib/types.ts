@@ -230,6 +230,15 @@ export interface LiveReconciliationRow {
   details_json: string | null;
 }
 
+export interface LiveControlAuditRow {
+  id: number;
+  timestamp_ms: number;
+  actor: string;
+  action: string;
+  target: string | null;
+  details_json: string | null;
+}
+
 export interface LiveSessionsResponse {
   sessions: LiveSessionRow[];
 }
@@ -248,6 +257,32 @@ export interface LiveRedemptionsResponse {
 
 export interface LiveReconciliationResponse {
   events: LiveReconciliationRow[];
+}
+
+export interface LiveControlAuditResponse {
+  entries: LiveControlAuditRow[];
+}
+
+export type LiveControlAction =
+  | "preflight"
+  | "arm"
+  | "disarm"
+  | "stop_after_flat"
+  | "kill_switch"
+  | "cancel_all"
+  | "redeem_all";
+
+export interface LiveControlRequest {
+  action: LiveControlAction;
+  reason: string;
+  confirmation?: string;
+}
+
+export interface LiveControlResponse {
+  ok: boolean;
+  command_id: number;
+  action: string;
+  status: string;
 }
 
 export interface TradingHealth {

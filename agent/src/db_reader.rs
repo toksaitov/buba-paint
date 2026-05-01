@@ -8,7 +8,8 @@ use tokio::sync::Mutex;
 use crate::error::AgentError;
 use crate::types::{
     BalanceEntry, BalanceResponse, BotStatus, EquitySeriesResponse, LiveAccountSnapshotRow,
-    LiveFillRow, LiveFillsResponse, LiveOrderRow, LiveOrdersResponse, LiveReconciliationResponse,
+    LiveControlAuditResponse, LiveControlAuditRow, LiveControlCommandResponse, LiveFillRow,
+    LiveFillsResponse, LiveOrderRow, LiveOrdersResponse, LiveReconciliationResponse,
     LiveReconciliationRow, LiveRedemptionRow, LiveRedemptionsResponse, LiveSessionRow,
     LiveSessionsResponse, LiveStatusResponse, SignalGroupRow, SignalGroupsResponse, SignalRow,
     SignalsResponse, StatsResponse, StrategyStats, TradeRow, TradesResponse, WindowInfo,
@@ -152,6 +153,7 @@ fn current_execution_mode_and_session_status(conn: &Connection) -> (String, Opti
 
 /// Read-only database reader for the bot's `SQLite` database.
 pub struct DbReader {
+    db_path: Option<String>,
     conn: Arc<Mutex<Connection>>,
 }
 
@@ -168,6 +170,7 @@ impl DbReader {
             .map_err(|e| AgentError::Internal(format!("failed to set query_only: {e}")))?;
 
         Ok(Self {
+            db_path: Some(db_path.to_string()),
             conn: Arc::new(Mutex::new(conn)),
         })
     }
@@ -176,6 +179,7 @@ impl DbReader {
     #[cfg(test)]
     pub fn from_connection(conn: Connection) -> Self {
         Self {
+            db_path: None,
             conn: Arc::new(Mutex::new(conn)),
         }
     }
@@ -910,6 +914,128 @@ impl DbReader {
         Ok(LiveReconciliationResponse { events })
     }
 
+    /// Queue one audited live-control command for the running bot to apply.
+    pub fn queue_live_control_command(
+        &self,
+        action: &str,
+        actor: &str,
+        reason: &str,
+        confirmation: Option<&str>,
+        bot_id: &str,
+    ) -> Result<LiveControlCommandResponse, AgentError> {
+        let actor = validated_operator_text("actor", actor)?;
+        let reason = validated_operator_text("reason", reason)?;
+        let bot_id = validated_operator_text("bot_id", bot_id)?;
+        let action = normalized_live_control_action(action)?;
+        let mut conn = self.open_write_connection()?;
+        if !has_table(&conn, "live_control_commands") || !has_table(&conn, "control_audit") {
+            return Err(AgentError::BotControlUnavailable(
+                "live-control tables are not present in this database".to_string(),
+            ));
+        }
+        let tx = conn.transaction()?;
+        let (session_id, execution_mode, config_fingerprint) = tx
+            .query_row(
+                "SELECT id, execution_mode, config_fingerprint
+                 FROM live_sessions
+                 WHERE ended_at_ms IS NULL
+                 ORDER BY started_at_ms DESC, id DESC
+                 LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| {
+                AgentError::BotControlUnavailable(
+                    "no active live session found for live-control command".to_string(),
+                )
+            })?;
+        if execution_mode != "live_trading" {
+            return Err(AgentError::BotControlUnavailable(format!(
+                "active live session is {execution_mode}; live-control requires live_trading"
+            )));
+        }
+        validate_confirmation(action, confirmation, bot_id, &config_fingerprint)?;
+        let now = now_ms();
+        let details_json = serde_json::json!({
+            "source": "dashboard",
+            "action": action,
+            "api_action": action.replace('-', "_"),
+            "bot_id": bot_id,
+            "confirmation_required": confirmation_is_required(action),
+        })
+        .to_string();
+        tx.execute(
+            "INSERT INTO live_control_commands (
+                session_id, action, actor, reason, requested_at_ms, applied_at_ms, status,
+                details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'pending', ?6)",
+            params![session_id, action, actor, reason, now, details_json],
+        )?;
+        let command_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO control_audit (timestamp_ms, actor, action, target, details_json)
+             VALUES (?1, ?2, 'live_control_requested', ?3, ?4)",
+            params![
+                now,
+                actor,
+                format!("live_control_commands:{command_id}"),
+                serde_json::json!({
+                    "session_id": session_id,
+                    "command_id": command_id,
+                    "action": action,
+                    "reason": reason,
+                    "source": "dashboard",
+                    "bot_id": bot_id,
+                })
+                .to_string(),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(LiveControlCommandResponse {
+            ok: true,
+            command_id,
+            action: action.to_string(),
+            status: "pending".to_string(),
+        })
+    }
+
+    /// Get recent live-control audit events.
+    pub async fn get_live_control_audit(
+        &self,
+        limit: u64,
+    ) -> Result<LiveControlAuditResponse, AgentError> {
+        let conn = self.conn.lock().await;
+        if !has_table(&conn, "control_audit") {
+            return Ok(LiveControlAuditResponse { entries: vec![] });
+        }
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, timestamp_ms, actor, action, target, details_json
+             FROM control_audit
+             ORDER BY timestamp_ms DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let entries = stmt
+            .query_map(params![limit], |row| {
+                Ok(LiveControlAuditRow {
+                    id: row.get(0)?,
+                    timestamp_ms: row.get(1)?,
+                    actor: row.get(2)?,
+                    action: row.get(3)?,
+                    target: row.get(4)?,
+                    details_json: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LiveControlAuditResponse { entries })
+    }
+
     /// Get the latest trade ID (for WS polling).
     pub async fn get_latest_trade_id(&self) -> Result<i64, AgentError> {
         let conn = self.conn.lock().await;
@@ -1076,6 +1202,90 @@ impl DbReader {
 
         Ok(signals)
     }
+
+    /// Open a short-lived write connection for the control-command queue.
+    fn open_write_connection(&self) -> Result<Connection, AgentError> {
+        let Some(db_path) = &self.db_path else {
+            return Err(AgentError::BotControlUnavailable(
+                "live-control writes require a database path".to_string(),
+            ));
+        };
+        Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| {
+            AgentError::Internal(format!("failed to open database for control write: {e}"))
+        })
+    }
+}
+
+/// Return current unix time in milliseconds for control ledger rows.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Validate and trim an operator-supplied text field.
+fn validated_operator_text<'a>(field: &str, value: &'a str) -> Result<&'a str, AgentError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AgentError::BadRequest(format!("{field} must not be empty")));
+    }
+    Ok(trimmed)
+}
+
+/// Normalize the dashboard API spelling into the stored CLI command spelling.
+fn normalized_live_control_action(action: &str) -> Result<&'static str, AgentError> {
+    match action {
+        "preflight" => Ok("preflight"),
+        "arm" => Ok("arm"),
+        "disarm" => Ok("disarm"),
+        "stop_after_flat" | "stop-after-flat" => Ok("stop-after-flat"),
+        "kill_switch" | "kill-switch" => Ok("kill-switch"),
+        "cancel_all" | "cancel-all" => Ok("cancel-all"),
+        "redeem_all" | "redeem-all" => Ok("redeem-all"),
+        other => Err(AgentError::BadRequest(format!(
+            "invalid live-control action {other}"
+        ))),
+    }
+}
+
+/// Return whether a dashboard action needs an exact typed confirmation.
+fn confirmation_is_required(action: &str) -> bool {
+    matches!(action, "arm" | "kill-switch" | "cancel-all" | "redeem-all")
+}
+
+/// Validate dangerous dashboard confirmations without persisting the typed phrase.
+fn validate_confirmation(
+    action: &str,
+    confirmation: Option<&str>,
+    bot_id: &str,
+    config_fingerprint: &str,
+) -> Result<(), AgentError> {
+    if !confirmation_is_required(action) {
+        return Ok(());
+    }
+    let expected = match action {
+        "arm" => format!("ARM {bot_id} {}", fingerprint_prefix(config_fingerprint)),
+        "kill-switch" => format!("KILL {bot_id}"),
+        "cancel-all" => format!("CANCEL ALL {bot_id}"),
+        "redeem-all" => format!("REDEEM ALL {bot_id}"),
+        _ => String::new(),
+    };
+    if confirmation != Some(expected.as_str()) {
+        return Err(AgentError::BadRequest(format!(
+            "confirmation must exactly match {expected}"
+        )));
+    }
+    Ok(())
+}
+
+/// Return the stable fingerprint prefix used in arming confirmations.
+fn fingerprint_prefix(config_fingerprint: &str) -> String {
+    config_fingerprint.chars().take(12).collect()
 }
 
 /// Compute the maximum historical drawdown from the balance log.

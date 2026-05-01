@@ -6,7 +6,7 @@ Current state:
 
 - `paper` is the production research mode.
 - `live_readonly` is real authenticated venue/account monitoring plus the shared shadow paper runtime.
-- `live_trading` starts disarmed and is local-verification only. It requires explicit `live-control` commands and is not deployed or dashboard-armed yet.
+- `live_trading` starts disarmed and is local-verification only. It requires audited live-control commands from the CLI or admin dashboard and is not deployed or armed yet.
 - Replay-grade public feed capture is the default for new research runs.
 - Active live-money implementation planning lives in [LIVE_TRADING_PLAN.md](./LIVE_TRADING_PLAN.md), not in `docs/`.
 
@@ -42,7 +42,7 @@ Requires Rust 1.94+ and Node 22+ for local frontend and sidecar work. Docker Com
 
 ## Safety State
 
-The sidecar implements the authenticated venue boundary for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, `/redeem-all`, and `/activity`. The bot now has a local disarmed `live_trading` runtime with ledger and CLI-control wiring under verification. Dashboard mutation controls, deployment, and real arming remain unfinished phases.
+The sidecar implements the authenticated venue boundary for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, `/redeem-all`, and `/activity`. The bot now has a local disarmed `live_trading` runtime with ledger, CLI-control, and admin dashboard control queueing under verification. Deployment and real arming remain unfinished phases.
 
 New runs intended for research should keep:
 

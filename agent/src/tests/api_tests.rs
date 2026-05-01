@@ -60,6 +60,61 @@ fn authed_post(path: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// Authed post with a JSON body.
+fn authed_json_post(path: &str, body: serde_json::Value) -> Request<Body> {
+    Request::post(path)
+        .header("authorization", "Bearer test-secret")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// Create a file-backed DB with only the live-control tables needed for write tests.
+fn live_control_db_file(execution_mode: &str) -> tempfile::NamedTempFile {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let conn = Connection::open(file.path()).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE live_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER, status TEXT NOT NULL, execution_mode TEXT NOT NULL, wallet_address TEXT, proxy_wallet TEXT, enabled_strategies_json TEXT NOT NULL, config_fingerprint TEXT NOT NULL, cash_cap_usd REAL NOT NULL, details_json TEXT);
+         CREATE TABLE live_control_commands (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT NOT NULL, requested_at_ms INTEGER NOT NULL, applied_at_ms INTEGER, status TEXT NOT NULL, details_json TEXT);
+         CREATE TABLE control_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp_ms INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT, details_json TEXT);
+         INSERT INTO live_sessions (started_at_ms, ended_at_ms, status, execution_mode, wallet_address, proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd, details_json)
+         VALUES (1000, NULL, 'disarmed', 'live_trading', '0xwallet', '0xproxy', '[\"latency-arb\"]', 'fingerprint-abcdef', 100.0, '{}');",
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE live_sessions SET execution_mode = ?1",
+        [execution_mode],
+    )
+    .unwrap();
+    drop(conn);
+    file
+}
+
+/// Create a file-backed live-control DB with no active session.
+fn live_control_db_file_without_session() -> tempfile::NamedTempFile {
+    let file = live_control_db_file("live_trading");
+    let conn = Connection::open(file.path()).unwrap();
+    conn.execute("DELETE FROM live_sessions", []).unwrap();
+    drop(conn);
+    file
+}
+
+/// Test app backed by a file DB so control endpoints can write commands.
+fn control_test_app(db_path: &str) -> Router {
+    let db = Arc::new(DbReader::new(db_path).unwrap());
+    let bot: Arc<dyn crate::process_manager::ProcessManager> =
+        Arc::new(NoopProcessManager::new(None));
+    let (ws_tx, _) = broadcast::channel::<WsMessage>(16);
+    let state = AppState { db, bot, ws_tx };
+
+    Router::new()
+        .route("/api/live/control-audit", get(api::get_live_control_audit))
+        .route("/api/live/control", post(api::post_live_control))
+        .layer(middleware::from_fn(require_secret))
+        .layer(Extension(SharedSecret("test-secret".to_string())))
+        .with_state(state)
+}
+
 /// Test app.
 fn test_app(conn: Connection) -> Router {
     test_app_with_bot(conn, None)
@@ -92,6 +147,8 @@ fn test_app_with_bot(conn: Connection, log_path: Option<&str>) -> Router {
             "/api/live/reconciliation",
             get(api::get_live_reconciliation),
         )
+        .route("/api/live/control-audit", get(api::get_live_control_audit))
+        .route("/api/live/control", post(api::post_live_control))
         .route("/api/bot/logs", get(api::get_logs))
         .route("/api/bot/status", get(api::bot_status))
         .route("/api/bot/start", post(api::bot_start))
@@ -421,6 +478,163 @@ async fn live_table_endpoints_return_rows() {
     assert_eq!(reconciliation["events"].as_array().unwrap().len(), 1);
 }
 
+/// Verifies that dashboard live-control requests queue audited commands.
+#[tokio::test]
+async fn live_control_preflight_queues_command() {
+    let file = live_control_db_file("live_trading");
+    let app = control_test_app(file.path().to_str().unwrap());
+
+    let resp = app
+        .clone()
+        .oneshot(authed_json_post(
+            "/api/live/control",
+            serde_json::json!({
+                "action": "preflight",
+                "actor": "admin",
+                "reason": "refresh gates before arming",
+                "bot_id": "paint"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["action"], "preflight");
+    assert_eq!(body["status"], "pending");
+
+    let audit = json_body(
+        app.oneshot(authed_get("/api/live/control-audit?limit=5"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(audit["entries"][0]["actor"], "admin");
+    assert_eq!(audit["entries"][0]["action"], "live_control_requested");
+}
+
+/// Verifies that dangerous dashboard live-control requests require exact confirmation.
+#[tokio::test]
+async fn live_control_arm_requires_confirmation() {
+    let file = live_control_db_file("live_trading");
+    let app = control_test_app(file.path().to_str().unwrap());
+
+    let bad = app
+        .clone()
+        .oneshot(authed_json_post(
+            "/api/live/control",
+            serde_json::json!({
+                "action": "arm",
+                "actor": "admin",
+                "reason": "all gates green",
+                "bot_id": "paint",
+                "confirmation": "ARM paint wrong"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+    let good = app
+        .oneshot(authed_json_post(
+            "/api/live/control",
+            serde_json::json!({
+                "action": "arm",
+                "actor": "admin",
+                "reason": "all gates green",
+                "bot_id": "paint",
+                "confirmation": "ARM paint fingerprint-"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(good.status(), StatusCode::OK);
+}
+
+/// Verifies that live-control mutation is blocked outside live_trading sessions.
+#[tokio::test]
+async fn live_control_rejects_readonly_session() {
+    let file = live_control_db_file("live_readonly");
+    let app = control_test_app(file.path().to_str().unwrap());
+
+    let resp = app
+        .oneshot(authed_json_post(
+            "/api/live/control",
+            serde_json::json!({
+                "action": "preflight",
+                "actor": "admin",
+                "reason": "wrong mode",
+                "bot_id": "paint"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+/// Verifies that live-control rejects blank operator reasons.
+#[tokio::test]
+async fn live_control_rejects_blank_reason() {
+    let file = live_control_db_file("live_trading");
+    let app = control_test_app(file.path().to_str().unwrap());
+
+    let resp = app
+        .oneshot(authed_json_post(
+            "/api/live/control",
+            serde_json::json!({
+                "action": "preflight",
+                "actor": "admin",
+                "reason": " ",
+                "bot_id": "paint"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Verifies that live-control rejects actions outside the fixed control vocabulary.
+#[tokio::test]
+async fn live_control_rejects_unknown_action() {
+    let file = live_control_db_file("live_trading");
+    let app = control_test_app(file.path().to_str().unwrap());
+
+    let resp = app
+        .oneshot(authed_json_post(
+            "/api/live/control",
+            serde_json::json!({
+                "action": "restart",
+                "actor": "admin",
+                "reason": "not allowed",
+                "bot_id": "paint"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Verifies that live-control rejects commands when no active live session exists.
+#[tokio::test]
+async fn live_control_rejects_without_active_session() {
+    let file = live_control_db_file_without_session();
+    let app = control_test_app(file.path().to_str().unwrap());
+
+    let resp = app
+        .oneshot(authed_json_post(
+            "/api/live/control",
+            serde_json::json!({
+                "action": "preflight",
+                "actor": "admin",
+                "reason": "no session",
+                "bot_id": "paint"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
 /// Verifies that empty db returns defaults.
 #[tokio::test]
 async fn empty_db_returns_defaults() {
@@ -675,17 +889,43 @@ fn trading_health_helpers_cover_branches() {
 /// Verifies that capability and alert helpers expose the expected gating reasons.
 #[test]
 fn trading_capabilities_and_alerts_cover_branches() {
-    let paper_capabilities = super::build_trading_capabilities("paper");
+    let healthy = crate::types::TradingHealth {
+        state: "healthy".to_string(),
+        label: "ok".to_string(),
+        detail: None,
+    };
+    let paper_capabilities = super::build_trading_capabilities(
+        "paper",
+        "paper",
+        "running",
+        &healthy,
+        &healthy,
+        &healthy,
+        &empty_live_status(),
+    );
     assert!(paper_capabilities.preflight.reason.contains("Paper mode"));
     assert!(!paper_capabilities.arm.enabled);
 
-    let live_capabilities = super::build_trading_capabilities("live_readonly");
-    assert!(live_capabilities.preflight.reason.contains("not wired"));
+    let live_capabilities = super::build_trading_capabilities(
+        "live_readonly",
+        "readonly",
+        "running",
+        &healthy,
+        &healthy,
+        &healthy,
+        &empty_live_status(),
+    );
+    assert!(
+        live_capabilities
+            .preflight
+            .reason
+            .contains("observation-only")
+    );
     assert!(
         live_capabilities
             .kill_switch
             .reason
-            .contains("dashboard mutation endpoints are disabled")
+            .contains("observation-only")
     );
 
     let mut missing_allowance = empty_live_status();

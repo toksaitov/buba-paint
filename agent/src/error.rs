@@ -15,6 +15,9 @@ pub enum AgentError {
     #[error("bot control unavailable: {0}")]
     BotControlUnavailable(String),
 
+    #[error("bad request: {0}")]
+    BadRequest(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -29,6 +32,7 @@ impl IntoResponse for AgentError {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
             }
             Self::BotControlUnavailable(msg) => (StatusCode::CONFLICT, msg.clone()),
+            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
         };
 
         let body = serde_json::json!({ "error": message });

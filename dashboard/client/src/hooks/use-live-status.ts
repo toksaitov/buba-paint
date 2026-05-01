@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  getLiveControlAudit,
   getLiveFills,
   getLiveOrders,
   getLiveReconciliation,
@@ -47,6 +48,15 @@ export function useLiveReconciliation(botId: string, limit = 50, enabled = true)
   return useQuery({
     queryKey: ["live-reconciliation", botId, limit],
     queryFn: () => getLiveReconciliation(botId, limit),
+    refetchInterval: 10000,
+    enabled: !!botId && enabled,
+  });
+}
+
+export function useLiveControlAudit(botId: string, limit = 50, enabled = true) {
+  return useQuery({
+    queryKey: ["live-control-audit", botId, limit],
+    queryFn: () => getLiveControlAudit(botId, limit),
     refetchInterval: 10000,
     enabled: !!botId && enabled,
   });

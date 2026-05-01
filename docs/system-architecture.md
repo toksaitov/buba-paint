@@ -20,9 +20,9 @@ The bot has three explicit execution modes:
 
 - `paper`: shared strategy runtime with simulated execution.
 - `live_readonly`: authenticated account and venue monitoring plus the shared shadow paper runtime. It does not place orders.
-- `live_trading`: local disarmed real-order runtime. It can start, persist live ledger state, and accept audited local control commands, but it is not deployed or dashboard-armed yet.
+- `live_trading`: local disarmed real-order runtime. It can start, persist live ledger state, and accept audited CLI or admin dashboard control commands, but it is not deployed or armed yet.
 
-The sidecar has real venue-boundary endpoints for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, `/redeem-all`, and `/activity`. The bot-side live runtime starts disarmed and uses the local `live-control` CLI for Phase 3 verification. Dashboard mutation controls and deployment are later phases.
+The sidecar has real venue-boundary endpoints for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, `/redeem-all`, and `/activity`. The bot-side live runtime starts disarmed and accepts live-control commands through the local CLI or admin dashboard. Dashboard commands are queued through the agent and bot ledger; they do not bypass the bot by calling the sidecar directly.
 
 ## Strategy Runtime
 
@@ -73,7 +73,7 @@ Backtesting lives under `bots/paint/src/backtest/`. Database ownership lives und
 The dashboard is split into Monitor and Analysis:
 
 - Overview: operator triage page with performance summary, current market, open trades, execution snapshot, and recent outcomes.
-- Execution: process, mode, account readiness, reconciliation, live detail surfaces, and future controls.
+- Execution: process, mode, account readiness, reconciliation, live detail surfaces, and admin live-control queueing.
 - Logs: operator event stream with search and filters.
 - Equity, Trades, Signals, Strategies: shadow-performance analysis pages.
 
@@ -103,4 +103,4 @@ The normal flow is:
 5. The agent reads SQLite and serves dashboard APIs.
 6. The dashboard visualizes operator state and analysis.
 
-In `live_readonly`, the bot also records live sessions, account snapshots, and reconciliation state from the sidecar while continuing the shadow paper track. In local `live_trading` verification, the bot starts disarmed, applies audited `live-control` commands, persists live intents before sidecar submission, records venue responses and fills, and blocks on unknown order or account state.
+In `live_readonly`, the bot also records live sessions, account snapshots, and reconciliation state from the sidecar while continuing the shadow paper track. In local `live_trading` verification, the bot starts disarmed, applies audited CLI or dashboard `live-control` commands, persists live intents before sidecar submission, records venue responses and fills, and blocks on unknown order or account state.

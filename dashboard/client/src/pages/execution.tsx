@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useOutletContext } from "react-router-dom";
 import { Loading } from "../components/common/loading";
 import {
@@ -12,14 +14,15 @@ import {
 } from "../components/ui/dashboard-primitives";
 import {
   useLiveFills,
+  useLiveControlAudit,
   useLiveOrders,
   useLiveReconciliation,
   useLiveRedemptions,
   useLiveSessions,
 } from "../hooks/use-live-status";
 import { useTradingSummary } from "../hooks/use-trading-summary";
+import { sendLiveControl } from "../lib/api";
 import {
-  capabilityEntries,
   healthTone,
   processStateLabel,
   processStateTone,
@@ -28,14 +31,19 @@ import {
   tradingStateTone,
 } from "../lib/trading-summary";
 import { empty, help } from "../lib/copy";
+import { useAuthStore } from "../stores/auth-store";
 import { cn, formatDateTime, formatDurationShort, formatUsd, truncateMiddle } from "../lib/utils";
 import type {
+  LiveControlAction,
+  LiveControlAuditRow,
   LiveFillRow,
   LiveOrderRow,
   LiveReconciliationRow,
   LiveRedemptionRow,
   RealAccountSummary,
+  TradingControlCapability,
   TradingCapabilities,
+  TradingSummary,
 } from "../lib/types";
 
 function capabilityTone(enabled: boolean) {
@@ -217,19 +225,6 @@ function renderReconciliationRow(event: LiveReconciliationRow) {
   );
 }
 
-function humanizeCapabilityReason(reason: string): string | null {
-  const lowered = reason.toLowerCase();
-  if (
-    lowered.includes("no dashboard action endpoint") ||
-    lowered.includes("dashboard mutation endpoints") ||
-    lowered.includes("not wired") ||
-    lowered.includes("designed in the ui")
-  ) {
-    return "Read-only for now.";
-  }
-  return null;
-}
-
 const capabilityHelp: Record<string, string> = {
   preflight: help.preflight,
   arm: help.arm,
@@ -238,39 +233,274 @@ const capabilityHelp: Record<string, string> = {
   kill_switch: help.killSwitch,
 };
 
-function ControlsList({ capabilities }: { capabilities: TradingCapabilities }) {
+interface ControlActionConfig {
+  action: LiveControlAction;
+  label: string;
+  tone: "neutral" | "danger";
+  confirmation?: (botId: string, fingerprintPrefix: string) => string;
+  desktopOnly?: boolean;
+}
+
+interface ControlDraft {
+  reason: string;
+  confirmation: string;
+}
+
+const controlActions: ControlActionConfig[] = [
+  { action: "preflight", label: "Preflight", tone: "neutral" },
+  {
+    action: "arm",
+    label: "Arm",
+    tone: "danger",
+    desktopOnly: true,
+    confirmation: (botId, fingerprintPrefix) => `ARM ${botId} ${fingerprintPrefix}`,
+  },
+  { action: "disarm", label: "Disarm", tone: "neutral" },
+  { action: "stop_after_flat", label: "Stop after flat", tone: "neutral" },
+  {
+    action: "cancel_all",
+    label: "Cancel all",
+    tone: "danger",
+    confirmation: (botId) => `CANCEL ALL ${botId}`,
+  },
+  {
+    action: "redeem_all",
+    label: "Redeem all",
+    tone: "danger",
+    desktopOnly: true,
+    confirmation: (botId) => `REDEEM ALL ${botId}`,
+  },
+  {
+    action: "kill_switch",
+    label: "Kill switch",
+    tone: "danger",
+    confirmation: (botId) => `KILL ${botId}`,
+  },
+];
+
+function visibleControlActions(tradingState: string): ControlActionConfig[] {
+  const actions = new Set<LiveControlAction>(
+    tradingState === "disarmed"
+      ? ["preflight", "arm"]
+      : tradingState === "armed"
+        ? ["disarm", "stop_after_flat", "cancel_all", "redeem_all", "kill_switch"]
+        : tradingState === "stop_after_flat"
+          ? ["disarm", "cancel_all", "redeem_all", "kill_switch"]
+          : tradingState === "unknown_order"
+            ? ["preflight", "cancel_all", "kill_switch"]
+            : tradingState === "halted"
+              ? []
+              : ["preflight", "kill_switch"],
+  );
+  return controlActions.filter((config) => actions.has(config.action));
+}
+
+function capabilityForAction(capabilities: TradingCapabilities, action: LiveControlAction) {
+  if (action === "redeem_all") return capabilities.redeem;
+  return capabilities[action];
+}
+
+function fingerprintPrefix(session: { config_fingerprint: string } | null): string {
+  return (session?.config_fingerprint ?? "").slice(0, 12);
+}
+
+function isMobileViewport() {
+  return typeof window !== "undefined" && window.matchMedia?.("(max-width: 767px)").matches;
+}
+
+function ActionGate({
+  capability,
+  isAdmin,
+  mobileBlocked,
+}: {
+  capability: TradingControlCapability;
+  isAdmin: boolean;
+  mobileBlocked: boolean;
+}) {
+  if (!isAdmin) {
+    return <p className="text-[11px] text-accent-blue">Admin role required.</p>;
+  }
+  if (mobileBlocked) {
+    return <p className="text-[11px] text-accent-blue">Desktop confirmation required.</p>;
+  }
+  if (!capability.enabled) {
+    return <p className="text-[11px] text-muted">{capability.reason}</p>;
+  }
+  return <p className="text-[11px] text-muted">{capability.reason}</p>;
+}
+
+function ControlCommandPanel({
+  botId,
+  summary,
+  latestSession,
+  isAdmin,
+}: {
+  botId: string;
+  summary: TradingSummary;
+  latestSession: { config_fingerprint: string } | null;
+  isAdmin: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [drafts, setDrafts] = useState<Record<LiveControlAction, ControlDraft>>({
+    preflight: { reason: "", confirmation: "" },
+    arm: { reason: "", confirmation: "" },
+    disarm: { reason: "", confirmation: "" },
+    stop_after_flat: { reason: "", confirmation: "" },
+    cancel_all: { reason: "", confirmation: "" },
+    redeem_all: { reason: "", confirmation: "" },
+    kill_switch: { reason: "", confirmation: "" },
+  });
+  const mutation = useMutation({
+    mutationFn: ({
+      action,
+      draft,
+    }: {
+      action: LiveControlAction;
+      draft: ControlDraft;
+    }) =>
+      sendLiveControl(botId, {
+        action,
+        reason: draft.reason,
+        confirmation: draft.confirmation || undefined,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["trading-summary", botId] });
+      void queryClient.invalidateQueries({ queryKey: ["live-control-audit", botId] });
+      void queryClient.invalidateQueries({ queryKey: ["live-sessions", botId] });
+      void queryClient.invalidateQueries({ queryKey: ["live-orders", botId] });
+      void queryClient.invalidateQueries({ queryKey: ["live-fills", botId] });
+      void queryClient.invalidateQueries({ queryKey: ["live-redemptions", botId] });
+      void queryClient.invalidateQueries({ queryKey: ["live-reconciliation", botId] });
+    },
+  });
+
+  if (summary.runtime_mode === "live_readonly") {
+    return <StateEmpty message="Readonly mode observes venue truth but cannot queue controls." />;
+  }
+
+  const fpPrefix = fingerprintPrefix(latestSession);
+  const mobile = isMobileViewport();
+  const visibleActions = visibleControlActions(summary.trading_state);
+
+  if (visibleActions.length === 0) {
+    return <StateEmpty message="No dashboard controls are available for this session state." />;
+  }
+
   return (
     <div className="divide-y divide-surface">
-      {capabilityEntries(capabilities).map(({ key, label, capability }) => {
-        const humanized = humanizeCapabilityReason(capability.reason);
-        const termHelp = capabilityHelp[key];
+      {visibleActions.map((config) => {
+        const capability = capabilityForAction(summary.capabilities, config.action);
+        const draft = drafts[config.action];
+        const expected = config.confirmation?.(botId, fpPrefix);
+        const needsConfirmation = expected != null;
+        const reasonOk = draft.reason.trim().length > 0;
+        const confirmationOk = !needsConfirmation || draft.confirmation === expected;
+        const mobileBlocked = Boolean(config.desktopOnly && mobile);
+        const disabled =
+          !isAdmin ||
+          !capability.enabled ||
+          !reasonOk ||
+          !confirmationOk ||
+          mobileBlocked ||
+          mutation.isPending;
+        const termHelp = capabilityHelp[config.action];
         return (
-          <div key={key} className="flex flex-col gap-1 py-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1 text-[13px] font-semibold tracking-tight">
-                <span>{label}</span>
-                {termHelp && <InfoHint label={label} text={termHelp} />}
+          <div key={config.action} className="grid gap-3 py-3 lg:grid-cols-[1fr_220px]">
+            <div className="min-w-0 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1 text-[13px] font-semibold tracking-tight">
+                  <span>{config.label}</span>
+                  {termHelp && <InfoHint label={config.label} text={termHelp} />}
+                </div>
+                <StatusChip
+                  label={capability.enabled ? "Available" : "Unavailable"}
+                  tone={capabilityTone(capability.enabled)}
+                  compact
+                  help={capability.enabled ? undefined : help.unavailable}
+                />
               </div>
-              <StatusChip
-                label={capability.enabled ? "Available" : "Unavailable"}
-                tone={capabilityTone(capability.enabled)}
-                compact
-                help={capability.enabled ? undefined : help.unavailable}
+              <ActionGate
+                capability={capability}
+                isAdmin={isAdmin}
+                mobileBlocked={mobileBlocked}
               />
+              <input
+                className="w-full border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text"
+                placeholder="Reason"
+                value={draft.reason}
+                onChange={(event) =>
+                  setDrafts((current) => ({
+                    ...current,
+                    [config.action]: { ...current[config.action], reason: event.target.value },
+                  }))
+                }
+              />
+              {expected && (
+                <div className="space-y-1">
+                  <div className="text-[11px] text-muted">
+                    Type <span className="text-text">{expected}</span>
+                  </div>
+                  <input
+                    className="w-full border border-border bg-bg px-2 py-1.5 text-[12px] outline-none focus:border-text"
+                    value={draft.confirmation}
+                    onChange={(event) =>
+                      setDrafts((current) => ({
+                        ...current,
+                        [config.action]: {
+                          ...current[config.action],
+                          confirmation: event.target.value,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+              )}
             </div>
-            <p className="text-[11px] text-muted">
-              {capability.reason}
-              {humanized && <span className="ml-1">({humanized})</span>}
-            </p>
+            <div className="flex items-end justify-start lg:justify-end">
+              <button
+                className={cn(
+                  "border px-3 py-2 text-[12px] font-semibold tracking-tight disabled:cursor-not-allowed disabled:opacity-40",
+                  config.tone === "danger"
+                    ? "border-accent-red text-accent-red"
+                    : "border-border text-text",
+                )}
+                disabled={disabled}
+                onClick={() => mutation.mutate({ action: config.action, draft })}
+              >
+                {config.label}
+              </button>
+            </div>
           </div>
         );
       })}
+      {mutation.isError && (
+        <div className="py-3 text-[12px] text-accent-red">
+          {mutation.error instanceof Error ? mutation.error.message : "Control request failed"}
+        </div>
+      )}
+      {mutation.isSuccess && (
+        <div className="py-3 text-[12px] text-accent-green">
+          Command #{mutation.data.command_id} queued as {mutation.data.status}.
+        </div>
+      )}
     </div>
+  );
+}
+
+function renderAuditRow(entry: LiveControlAuditRow) {
+  return (
+    <ActivityRow
+      key={entry.id}
+      title={entry.action}
+      subtitle={entry.target ?? "control audit"}
+      right={formatDateTime(entry.timestamp_ms)}
+    />
   );
 }
 
 export function ExecutionPage() {
   const { botId } = useOutletContext<{ botId: string }>();
+  const user = useAuthStore((state) => state.user);
   const { data: summary, isLoading } = useTradingSummary(botId);
   const isPaper = summary?.runtime_mode === "paper";
   const liveDetailsEnabled = !!summary && !isPaper;
@@ -279,12 +509,14 @@ export function ExecutionPage() {
   const fillsQuery = useLiveFills(botId, 6, liveDetailsEnabled);
   const redemptionsQuery = useLiveRedemptions(botId, 6, liveDetailsEnabled);
   const reconciliationQuery = useLiveReconciliation(botId, 6, liveDetailsEnabled);
+  const controlAuditQuery = useLiveControlAudit(botId, 8, liveDetailsEnabled);
 
   if (isLoading || !summary) return <Loading label="Loading execution" />;
 
   const shadow = summary.shadow_summary;
   const account = summary.real_account_summary;
   const latestSession = sessionsQuery.data?.sessions[0] ?? null;
+  const isAdmin = user?.role === "admin";
   const hasAccountSnapshot = account.latest_snapshot_at_ms != null;
   const detailQueryFailures = liveDetailsEnabled
     ? [
@@ -293,6 +525,7 @@ export function ExecutionPage() {
         fillsQuery.isError ? "Fills" : null,
         redemptionsQuery.isError ? "Redemptions" : null,
         reconciliationQuery.isError ? "Reconciliation" : null,
+        controlAuditQuery.isError ? "Control audit" : null,
       ].filter((panel): panel is string => panel != null)
     : [];
   const detailPanelsDegraded = detailQueryFailures.length > 0;
@@ -346,6 +579,26 @@ export function ExecutionPage() {
         <SectionCard title="Alerts">
           <AlertList alerts={summary.alerts} />
         </SectionCard>
+      )}
+
+      {summary.trading_state === "halted" && (
+        <Surface className="border-accent-red/70 p-3">
+          <StatusChip label="Session halted" tone="danger" compact />
+          <p className="mt-2 text-[12px] text-muted">
+            This session cannot be re-armed from the dashboard. Export the run, analyze the halt,
+            and start a new session only after a separate operator decision.
+          </p>
+        </Surface>
+      )}
+
+      {summary.trading_state === "unknown_order" && (
+        <Surface className="border-accent-red/70 p-3">
+          <StatusChip label="Unknown order state" tone="danger" compact />
+          <p className="mt-2 text-[12px] text-muted">
+            New submissions stay blocked until venue orders, fills, and account state are
+            reconciled.
+          </p>
+        </Surface>
       )}
 
       <Surface className="p-3">
@@ -493,11 +746,27 @@ export function ExecutionPage() {
       </Surface>
 
       <SectionCard title="Controls">
-        <ControlsList capabilities={summary.capabilities} />
+        <ControlCommandPanel
+          botId={botId}
+          summary={summary}
+          latestSession={latestSession}
+          isAdmin={isAdmin}
+        />
       </SectionCard>
 
       <SectionCard title="Venue activity">
         <div className="grid gap-4 xl:grid-cols-2">
+          <ActivityPanel
+            title="Control audit"
+            loading={controlAuditQuery.isLoading}
+            error={controlAuditQuery.isError ? controlAuditQuery.error : null}
+            loadingMessage="Loading control audit..."
+            errorMessage="Control audit is currently unavailable"
+            emptyMessage="No control commands recorded."
+            count={controlAuditQuery.data?.entries.length ?? 0}
+          >
+            {controlAuditQuery.data?.entries.map(renderAuditRow)}
+          </ActivityPanel>
           <ActivityPanel
             title="Orders"
             loading={ordersQuery.isLoading}

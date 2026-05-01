@@ -1696,14 +1696,20 @@ impl LiveTradingMonitor {
         reason: &str,
     ) -> anyhow::Result<serde_json::Value> {
         match action {
+            LiveControlAction::Preflight => {
+                let issues = self.refresh_remote_state(db_path, config, clock).await?;
+                Ok(json!({ "state": self.state, "issues": issues }))
+            }
             LiveControlAction::Arm => self.arm(db_path, config, clock, actor, reason).await,
             LiveControlAction::Disarm => {
+                ensure_state_allows_disarm(&self.state)?;
                 let db = Database::new(db_path)?;
                 self.set_state(&db, "disarmed", actor, reason, clock.now(), None)?;
                 db.close();
                 Ok(json!({ "state": self.state }))
             }
             LiveControlAction::StopAfterFlat => {
+                ensure_state_is(&self.state, "armed", "stop-after-flat")?;
                 let db = Database::new(db_path)?;
                 self.set_state(&db, "stop_after_flat", actor, reason, clock.now(), None)?;
                 db.close();
@@ -1724,6 +1730,7 @@ impl LiveTradingMonitor {
         actor: &str,
         reason: &str,
     ) -> anyhow::Result<serde_json::Value> {
+        ensure_state_is(&self.state, "disarmed", "arm")?;
         let issues = self.refresh_remote_state(db_path, config, clock).await?;
         if !issues.is_empty() {
             bail!("live arming blocked: {}", issues.join("; "));
@@ -2192,6 +2199,24 @@ impl LiveTradingMonitor {
             proxy,
             Some(&live_session_details_json(self)),
         )
+    }
+}
+
+/// Reject arming or stop-after-flat when the live-control state is not eligible.
+fn ensure_state_is(state: &str, expected: &str, action: &str) -> anyhow::Result<()> {
+    if state != expected {
+        bail!("{action} requires state {expected}; current state is {state}");
+    }
+    Ok(())
+}
+
+/// Reject disarm commands that would hide a terminal or unresolved critical state.
+fn ensure_state_allows_disarm(state: &str) -> anyhow::Result<()> {
+    match state {
+        "armed" | "stop_after_flat" => Ok(()),
+        "halted" => bail!("disarm cannot clear a halted live session"),
+        "unknown_order" => bail!("disarm cannot clear unknown order state; reconcile first"),
+        _ => bail!("disarm requires state armed or stop_after_flat; current state is {state}"),
     }
 }
 
@@ -3344,8 +3369,11 @@ fn handle_authoritative_resolution(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::BacktestClock;
     use crate::config::ExecutionMode;
     use tempfile::NamedTempFile;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Verifies that persisted Binance ticks take precedence when recovering a window open.
     #[test]
@@ -3621,6 +3649,124 @@ mod tests {
         };
 
         assert!(live_order_response_is_blocking(&response));
+    }
+
+    /// Verifies that a queued preflight command refreshes sidecar state without arming.
+    #[tokio::test]
+    async fn preflight_control_refreshes_remote_state() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/preflight"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::to_value(test_preflight_response()).unwrap()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/account"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::to_value(test_account_state()).unwrap()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/activity"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::to_value(test_activity_response()).unwrap()),
+            )
+            .mount(&server)
+            .await;
+
+        let mut config = Config::default();
+        config.execution_mode = ExecutionMode::LiveTrading;
+        config.live_sidecar_url = server.uri();
+        config.feed_event_storage_profile = FeedEventStorageProfile::ReplayGrade;
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let session_id = db
+            .insert_live_session(&LiveSession {
+                id: None,
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                status: "disarmed".to_string(),
+                execution_mode: "live_trading".to_string(),
+                wallet_address: Some("0xwallet".to_string()),
+                proxy_wallet: Some("0xproxy".to_string()),
+                enabled_strategies_json: "[\"latency-arb\"]".to_string(),
+                config_fingerprint: "{}".to_string(),
+                cash_cap_usd: 100.0,
+                details_json: Some("{}".to_string()),
+            })
+            .unwrap();
+        db.insert_live_control_command(&crate::types::LiveControlCommand {
+            id: None,
+            session_id,
+            action: "preflight".to_string(),
+            actor: "admin".to_string(),
+            reason: "refresh gates".to_string(),
+            requested_at_ms: 1_100,
+            applied_at_ms: None,
+            status: "pending".to_string(),
+            details_json: None,
+        })
+        .unwrap();
+        db.close();
+
+        let clock = BacktestClock::new();
+        clock.set(2_000);
+        let mut monitor = LiveTradingMonitor {
+            sidecar: LiveSidecarClient::new(&server.uri()),
+            session_id,
+            state: "disarmed".to_string(),
+            preflight: None,
+            account: None,
+            activity: None,
+            blocked_reason: None,
+            finished: false,
+        };
+        monitor
+            .apply_pending_controls(db_path, &config, &clock)
+            .await
+            .unwrap();
+
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM live_control_commands ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let snapshot_count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM live_account_snapshots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "applied");
+        assert_eq!(snapshot_count, 1);
+        assert_eq!(monitor.state, "disarmed");
+        assert!(monitor.blocked_reason.is_none());
+    }
+
+    /// Verifies that terminal live-control states cannot be cleared by disarm.
+    #[test]
+    fn disarm_rejects_terminal_or_unknown_state() {
+        assert!(ensure_state_allows_disarm("armed").is_ok());
+        assert!(ensure_state_allows_disarm("stop_after_flat").is_ok());
+        assert!(ensure_state_allows_disarm("unknown_order").is_err());
+        assert!(ensure_state_allows_disarm("halted").is_err());
+    }
+
+    /// Verifies that arming is limited to the disarmed state.
+    #[test]
+    fn arm_state_gate_requires_disarmed() {
+        assert!(ensure_state_is("disarmed", "disarmed", "arm").is_ok());
+        assert!(ensure_state_is("halted", "disarmed", "arm").is_err());
+        assert!(ensure_state_is("unknown_order", "disarmed", "arm").is_err());
     }
 
     /// Build one passing preflight fixture for live gate tests.

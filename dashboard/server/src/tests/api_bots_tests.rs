@@ -72,6 +72,11 @@ fn test_app_with_agent(agent_url: &str) -> (Router, Arc<DashboardDb>) {
             "/api/bots/{id}/live/reconciliation",
             get(bots::bot_live_reconciliation),
         )
+        .route(
+            "/api/bots/{id}/live/control-audit",
+            get(bots::bot_live_control_audit),
+        )
+        .route("/api/bots/{id}/live/control", post(bots::bot_live_control))
         .route("/api/bots/{id}/logs", get(bots::bot_logs))
         .route("/api/bots/{id}/process", get(bots::bot_process_status))
         .route("/api/bots/{id}/start", post(bots::bot_start))
@@ -119,6 +124,14 @@ async fn admin_token(db: &DashboardDb) -> String {
     auth::create_jwt(&user.id, "admin", "test-jwt-secret", 3600)
 }
 
+/// Observer token.
+async fn observer_token(db: &DashboardDb) -> String {
+    let hash = hash_password("pass").unwrap();
+    db.create_user("observer", &hash, "observer").await.unwrap();
+    let user = db.get_user_by_username("observer").await.unwrap().unwrap();
+    auth::create_jwt(&user.id, "observer", "test-jwt-secret", 3600)
+}
+
 /// Auth get.
 fn auth_get(path: &str, token: &str) -> Request<Body> {
     Request::get(path)
@@ -132,6 +145,15 @@ fn auth_post(path: &str, token: &str) -> Request<Body> {
     Request::post(path)
         .header("authorization", format!("Bearer {token}"))
         .body(Body::empty())
+        .unwrap()
+}
+
+/// Auth post with json.
+fn auth_json_post(path: &str, token: &str, body: serde_json::Value) -> Request<Body> {
+    Request::post(path)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
         .unwrap()
 }
 
@@ -448,6 +470,165 @@ async fn bot_live_list_proxies_forward_limit() {
             "unexpected status for {path}"
         );
     }
+}
+
+/// Verifies that live control audit proxies to the agent.
+#[tokio::test]
+async fn bot_live_control_audit_forwards_limit_param() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/live/control-audit"))
+        .and(query_param("limit", "10"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "entries": []
+        })))
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get(
+            "/api/bots/paint/live/control-audit?limit=10",
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Verifies that admin live-control requests proxy with dashboard actor context.
+#[tokio::test]
+async fn bot_live_control_admin_posts_to_agent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/live/control"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "command_id": 7,
+            "action": "preflight",
+            "status": "pending"
+        })))
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_json_post(
+            "/api/bots/paint/live/control",
+            &token,
+            serde_json::json!({
+                "action": "preflight",
+                "reason": "refresh gates"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["command_id"], 7);
+
+    let requests = server.received_requests().await.unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(sent["actor"], "admin");
+    assert_eq!(sent["bot_id"], "paint");
+    assert_eq!(sent["action"], "preflight");
+}
+
+/// Verifies that observers cannot submit live-control mutations.
+#[tokio::test]
+async fn bot_live_control_observer_forbidden() {
+    let server = MockServer::start().await;
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = observer_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_json_post(
+            "/api/bots/paint/live/control",
+            &token,
+            serde_json::json!({
+                "action": "preflight",
+                "reason": "observer should not mutate"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// Verifies that a stale admin claim is rejected when the current user role is observer.
+#[tokio::test]
+async fn bot_live_control_rechecks_current_user_role() {
+    let server = MockServer::start().await;
+    let (app, db) = test_app_with_agent(&server.uri());
+    let hash = hash_password("pass").unwrap();
+    db.create_user("demoted", &hash, "observer").await.unwrap();
+    let user = db.get_user_by_username("demoted").await.unwrap().unwrap();
+    let token = auth::create_jwt(&user.id, "admin", "test-jwt-secret", 3600);
+
+    let resp = app
+        .oneshot(auth_json_post(
+            "/api/bots/paint/live/control",
+            &token,
+            serde_json::json!({
+                "action": "preflight",
+                "reason": "stale role should not mutate"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// Verifies that malformed live-control JSON is rejected before proxying.
+#[tokio::test]
+async fn bot_live_control_malformed_body_returns_bad_request() {
+    let server = MockServer::start().await;
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let req = Request::post("/api/bots/paint/live/control")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from("{bad-json"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Verifies that live-control preserves agent-side proxy failures.
+#[tokio::test]
+async fn bot_live_control_agent_failure_is_returned() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/live/control"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .set_body_json(serde_json::json!({"error": "no active live session"})),
+        )
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_json_post(
+            "/api/bots/paint/live/control",
+            &token,
+            serde_json::json!({
+                "action": "preflight",
+                "reason": "refresh gates"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"], "no active live session");
 }
 
 /// Verifies that bot logs forwards lines param.

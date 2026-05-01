@@ -6,7 +6,7 @@ The system has three execution modes:
 
 - `paper`: the current production-quality paper trading and backtest environment
 - `live_readonly`: authenticated venue/account monitoring plus the shared shadow paper runtime, still without order placement
-- `live_trading`: local disarmed real venue runtime for ledger, reconciliation, and CLI-control verification
+- `live_trading`: local disarmed real venue runtime for ledger, reconciliation, CLI-control, and admin dashboard-control verification
 
 The mode boundary is explicit in `Config::execution_mode`. The goal is to keep the strategy core shared while isolating venue-specific risk.
 
@@ -34,7 +34,7 @@ The venue boundary is intentionally narrow:
 - `LiveReadonlyVenue`: authenticated account and venue state, but no order placement
 - `LiveVenue`: real order submission, fills, redemption, and reconciliation behind explicit local arming
 
-In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` can start locally, but it starts disarmed, requires audited `buba-paint live-control` commands, and blocks on unhealthy preflight, stale account state, missing replay-grade capture, or unresolved reconciliation.
+In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` can start locally, but it starts disarmed, requires audited live-control commands from the CLI or admin dashboard, and blocks on unhealthy preflight, stale account state, missing replay-grade capture, or unresolved reconciliation.
 
 ## Authenticated sidecar
 
@@ -82,7 +82,7 @@ The Rust bot talks to the sidecar over a private local HTTP contract:
 - `POST /redeem-all`
 - `GET /activity`
 
-The sidecar now implements the authenticated venue boundary for health, account, preflight, FOK/FAK order submission, single-order cancellation, cancel-all, pUSD CTF redemption, and sanitized activity recovery. The bot live runtime can call these surfaces only after local CLI arming and fail-closed checks. Dashboard mutation controls are still disabled.
+The sidecar now implements the authenticated venue boundary for health, account, preflight, FOK/FAK order submission, single-order cancellation, cancel-all, pUSD CTF redemption, and sanitized activity recovery. The bot live runtime can call these surfaces only after audited arming and fail-closed checks. Dashboard controls queue bot-applied live-control commands through the agent and control ledger; they never call the sidecar or venue directly.
 
 The active CLOB client package is `@polymarket/clob-client-v2`. The sidecar uses the V2 constructor shape, V2 signature types, and `createOrDeriveApiKey` for L1-to-L2 auth bootstrap. It no longer depends on V1 CLOB or order-utils packages. Gasless redemption uses `@polymarket/builder-relayer-client` and `@polymarket/builder-signing-sdk`; redemption stays fail-closed unless the required builder relayer credentials are configured.
 
@@ -158,8 +158,8 @@ Local-only safe workflow:
 2. run `live-preflight` with `EXECUTION_MODE=live_readonly` against the sidecar
 3. run `buba-paint live` with `EXECUTION_MODE=live_readonly` for an authenticated readonly soak
 4. run `EXECUTION_MODE=live_trading buba-paint live` only in local or mocked verification until deployment is explicitly planned
-5. use `buba-paint live-control --db-path <db> arm|disarm|stop-after-flat|kill-switch|cancel-all|redeem-all --actor <name> --reason <text>` for local live-control state
-6. inspect live readiness in the dashboard Execution page and agent live endpoints
-7. do not deploy or arm real trading until dashboard controls, host rollout, manual canary checks, and final verification phases pass
+5. use `buba-paint live-control --db-path <db> arm|disarm|stop-after-flat|kill-switch|cancel-all|redeem-all --actor <name> --reason <text>` or the admin dashboard Execution controls for local live-control state
+6. inspect live readiness, control audit, and reconciliation state in the dashboard Execution page and agent live endpoints
+7. do not deploy or arm real trading until risk/halt policy, host rollout, manual canary checks, and final verification phases pass
 
 This repository state is intentionally staged for correctness. It exposes real sidecar venue actions and a local disarmed bot runtime without pretending that deployed live-money operation is ready.
