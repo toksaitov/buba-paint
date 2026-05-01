@@ -19,10 +19,23 @@ For this account type, the relayer and gasless path is the supported operational
 Official client coverage is uneven:
 
 - CLOB client support exists in Rust, TypeScript, and Python
-- builder-signing SDK support exists in TypeScript and Python
 - relayer SDK support exists in TypeScript and Python
 
-Because of that split, the repo uses a TypeScript sidecar for the full authenticated venue boundary instead of trying to mix Rust CLOB calls with ad hoc redemption code.
+Because of that split, the repo uses a TypeScript sidecar for the full authenticated venue boundary instead of trying to mix Rust CLOB calls with ad hoc redemption code. The active sidecar CLOB dependency is `@polymarket/clob-client-v2`. Legacy V1 CLOB, order-utils, and builder-signing packages are not part of the readonly CLOB boundary.
+
+## CLOB V2 and collateral
+
+Polymarket CLOB V2 is the production venue contract. V1-signed orders are not accepted. The sidecar must use the V2 client shape, `createOrDeriveApiKey`, V2 signature types, and the current proxy-wallet funder model.
+
+Trading collateral is pUSD. The code still stores account values as USD-denominated numbers with 6-decimal collateral units, but docs and UI should not imply USDC.e is the current trading collateral.
+
+Implications:
+
+- no signed `feeRateBps` field in new live order logic
+- no bot-managed order nonce in new live order logic
+- no V1 taker-field signing assumptions
+- account diagnostics should identify the collateral model as pUSD
+- balance and allowance checks must use the current CLOB collateral contract path exposed by the V2 client
 
 ## Geoblock and hosting
 
@@ -35,6 +48,8 @@ Current official guidance:
 - `eu-west-1` is the recommended nearby non-georestricted region
 
 The host must pass the official geoblock endpoint at startup and again before any future live arming step.
+
+The `2026-05-01` no-order host check returned `blocked=false` from the geoblock endpoint, but Gamma BTC 5-minute event discovery returned HTTP `403` with body `error code: 1010` from the same host. Treat host-safe market discovery as unresolved until a later check proves Gamma or an approved fallback works from the deployment environment.
 
 ## Matching-engine restart window
 
@@ -73,6 +88,7 @@ Implications:
 - do not assume the order book clears on start
 - do not assume discovery only matters immediately before the slot
 - live budgeting must respect venue min size and tick size before arming
+- before arming real money, revalidate these values from the deployment host because local Gamma requests may be geoblocked
 
 ## Fee ambiguity
 
@@ -84,7 +100,7 @@ Current venue observations are internally inconsistent:
 Implication:
 
 - fees must be modeled as runtime venue truth plus reconciliation
-- the bot should store both market fee metadata and fee-rate endpoint responses at intent time
+- the bot should store market fee metadata from the V2 CLOB surface and any explicit fee-rate endpoint responses at intent time
 - paper and backtest parity should use the same fee-resolution path, not hardcoded historical constants only
 
 ## Redemption and cash availability
@@ -107,6 +123,7 @@ Implications:
 - live mode needs a clock-drift preflight
 - cash budgeting in v1 should use only observed `cash_available`
 - expected redemption proceeds must stay non-spendable until the account state confirms credit
+- Bridge withdrawal automation is out of the first live-money implementation unless it receives a separate implementation and test plan
 
 ## First pilot operating rules
 

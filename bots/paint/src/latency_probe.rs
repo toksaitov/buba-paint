@@ -23,7 +23,7 @@ pub struct ProbeResult {
 /// Run the end-to-end latency probe against the configured endpoints.
 pub async fn run_latency_probe(config: &Config, timeout_ms: u64) -> anyhow::Result<()> {
     let timeout_duration = Duration::from_millis(timeout_ms);
-    let gamma_client = reqwest::Client::builder()
+    let gamma_client = crate::http::polymarket_http_client_builder()
         .timeout(timeout_duration)
         .build()
         .context("building HTTP client for latency probe")?;

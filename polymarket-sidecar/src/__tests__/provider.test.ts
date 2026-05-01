@@ -69,13 +69,15 @@ describe("PolymarketReadonlyProvider", () => {
     ensureConnectedError?: { value: string | null };
     openOrders?: Array<Record<string, string>>;
     positions?: Array<Record<string, number | string | boolean>>;
-    createApiKeyError?: { value: string | null };
-    createApiKeyCalls?: { value: number };
+    authBootstrapError?: { value: string | null };
+    authBootstrapCalls?: { value: number };
     balance?: string;
     allowance?: string | null;
     openOrdersError?: { value: string | null };
+    clobMarketInfoError?: { value: unknown | null };
     discoveryMode?: "ok" | "partial_failure";
     httpTimeoutOnPositions?: boolean;
+    observedUserAgents?: string[];
   }) {
     const config = loadConfig({
       POLYMARKET_PRIVATE_KEY:
@@ -91,7 +93,9 @@ describe("PolymarketReadonlyProvider", () => {
       nowMs: () => nowMs,
       fetchImpl: async (input, init) => {
         const url = typeof input === "string" ? input : input.toString();
-        void init;
+        options?.observedUserAgents?.push(
+          new Headers(init?.headers).get("user-agent") ?? "",
+        );
         if (url === "https://polymarket.com/api/geoblock") {
           return new Response(
             JSON.stringify({ blocked: false, country: "IE", ip: "1.2.3.4" }),
@@ -130,12 +134,12 @@ describe("PolymarketReadonlyProvider", () => {
         throw new Error(`unexpected fetch ${url}`);
       },
       createClobClient: () => ({
-        createApiKey: async () => {
-          if (options?.createApiKeyCalls) {
-            options.createApiKeyCalls.value += 1;
+        createOrDeriveApiKey: async () => {
+          if (options?.authBootstrapCalls) {
+            options.authBootstrapCalls.value += 1;
           }
-          if (options?.createApiKeyError?.value) {
-            throw new Error(options.createApiKeyError.value);
+          if (options?.authBootstrapError?.value) {
+            throw new Error(options.authBootstrapError.value);
           }
           return {
             key: "key",
@@ -143,11 +147,6 @@ describe("PolymarketReadonlyProvider", () => {
             passphrase: "passphrase",
           };
         },
-        deriveApiKey: async () => ({
-          key: "derived-key",
-          secret: "derived-secret",
-          passphrase: "derived-passphrase",
-        }),
         getServerTime: async () => Math.floor(nowMs / 1000),
         getBalanceAllowance: async () => {
           const allowances =
@@ -187,6 +186,23 @@ describe("PolymarketReadonlyProvider", () => {
               },
             ]
           );
+        },
+        getClobMarketInfo: async (_conditionId: string) => {
+          if (options?.clobMarketInfoError?.value) {
+            throw options.clobMarketInfoError.value;
+          }
+          return {
+            c: "0xcondition",
+            t: [
+              { t: "up-token", o: "Up" },
+              { t: "down-token", o: "Down" },
+            ],
+            mts: 0.01,
+            nr: false,
+            fd: { r: 0.072, e: 1, to: true },
+            mbf: 0,
+            tbf: 0,
+          };
         },
       }),
       createUserStreamMonitor: () => ({
@@ -230,22 +246,43 @@ describe("PolymarketReadonlyProvider", () => {
     expect(response.available_cash_usd).toBe(95);
     expect(response.legal_order_min_usd).toBe(5);
     expect(response.details_json).toContain("\"provider\":\"polymarket\"");
+    expect(response.details_json).toContain("\"clob_contract_version\":\"v2\"");
+    expect(response.details_json).toContain("\"collateral_token\":\"pUSD\"");
+    expect(response.details_json).toContain("\"metadataSource\":\"clob_v2\"");
+    expect(response.details_json).toContain("\"tokenId\":\"up-token\"");
+    expect(response.details_json).not.toContain("secret");
+    expect(response.details_json).not.toContain("passphrase");
     expect(health.ready).toBe(true);
     expect(health.readiness_status).toBe("ready");
     expect(health.last_successful_account_refresh_at_ms).toBe(nowMs);
     expect(health.last_account_refresh_error).toBeNull();
   });
 
+  it("sends a stable user agent on public Polymarket HTTP checks", async () => {
+    const observedUserAgents: string[] = [];
+    const provider = createProvider({ observedUserAgents });
+
+    await provider.preflight(request);
+    await provider.accountState();
+
+    expect(observedUserAgents).not.toHaveLength(0);
+    expect(
+      observedUserAgents.every(
+        (value) => value === "buba-polymarket-sidecar/0.1.0",
+      ),
+    ).toBe(true);
+  });
+
   it("does not permanently cache a rejected auth bootstrap", async () => {
     const calls = { value: 0 };
-    const createApiKeyError: { value: string | null } = { value: "boom" };
-    const provider = createProvider({ createApiKeyCalls: calls, createApiKeyError });
+    const authBootstrapError: { value: string | null } = { value: "boom" };
+    const provider = createProvider({ authBootstrapCalls: calls, authBootstrapError });
 
     const first = await provider.preflight(request);
     expect(first.ok).toBe(false);
     expect(first.errors.join(" ")).toContain("auth_bootstrap: boom");
 
-    createApiKeyError.value = null;
+    authBootstrapError.value = null;
     const second = await provider.preflight(request);
 
     expect(second.ok).toBe(true);
@@ -255,7 +292,7 @@ describe("PolymarketReadonlyProvider", () => {
   it("invalidates cached auth state on downstream auth-like failures", async () => {
     const calls = { value: 0 };
     const openOrdersError = { value: null as string | null };
-    const provider = createProvider({ createApiKeyCalls: calls, openOrdersError });
+    const provider = createProvider({ authBootstrapCalls: calls, openOrdersError });
 
     await provider.accountState();
     expect(calls.value).toBe(1);
@@ -270,15 +307,15 @@ describe("PolymarketReadonlyProvider", () => {
     expect(calls.value).toBe(2);
   });
 
-  it("falls back to derive-api-key when create-api-key is unavailable", async () => {
-    const provider = createProvider({
-      createApiKeyError: { value: "Could not create api key" },
-    });
+  it("uses the CLOB V2 create-or-derive API-key bootstrap", async () => {
+    const calls = { value: 0 };
+    const provider = createProvider({ authBootstrapCalls: calls });
     const response = await provider.preflight(request);
 
     expect(response.ok).toBe(true);
     expect(response.auth_status).toBe("ok");
     expect(response.user_stream_status).toBe("ok");
+    expect(calls.value).toBe(1);
   });
 
   it("surfaces authenticated user-stream failures without enabling trading", async () => {
@@ -358,6 +395,8 @@ describe("PolymarketReadonlyProvider", () => {
     expect(account.total_equity).toBe(119);
     expect(account.allowance_available).toBe(75);
     expect(account.details_json).toContain("\"open_order_count\":1");
+    expect(account.details_json).toContain("\"collateral_token\":\"pUSD\"");
+    expect(account.details_json).toContain("\"metadataSource\":\"clob_v2\"");
     expect(order.status).toBe("not_implemented");
   });
 
@@ -375,6 +414,42 @@ describe("PolymarketReadonlyProvider", () => {
     expect(details.discovery_error).toContain("market_discovery");
     expect(details.active_markets).toHaveLength(1);
     expect(health.readiness_status).toBe("degraded");
+  });
+
+  it("classifies CLOB V2 market metadata failures without faking readiness", async () => {
+    const provider = createProvider({
+      clobMarketInfoError: { value: new Error("clob metadata unavailable") },
+    });
+    const response = await provider.preflight(request);
+    const health = await provider.health();
+    const details = JSON.parse(response.details_json ?? "{}") as {
+      discovery_degraded: boolean;
+      discovery_error: string | null;
+      active_markets: Array<{ metadataError: string | null; metadataSource: string }>;
+    };
+
+    expect(response.ok).toBe(false);
+    expect(response.errors.join(" ")).toContain("market_metadata");
+    expect(details.discovery_degraded).toBe(true);
+    expect(details.discovery_error).toContain("market_metadata");
+    expect(details.active_markets[0]?.metadataError).toContain(
+      "clob metadata unavailable",
+    );
+    expect(details.active_markets[0]?.metadataSource).toBe("gamma");
+    expect(health.readiness_status).toBe("degraded");
+  });
+
+  it("surfaces matching-engine restart responses as retryable venue degradation", async () => {
+    const provider = createProvider({
+      clobMarketInfoError: {
+        value: Object.assign(new Error("venue unavailable"), { status: 425 }),
+      },
+    });
+    const response = await provider.preflight(request);
+
+    expect(response.ok).toBe(false);
+    expect(response.errors.join(" ")).toContain("425");
+    expect(response.errors.join(" ")).toContain("matching engine restart");
   });
 
   it("fails closed when core account decomposition cannot be read", async () => {

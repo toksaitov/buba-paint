@@ -48,7 +48,7 @@ Reason:
 
 The sidecar owns:
 
-- CLOB auth material
+- CLOB V2 auth material
 - relayer auth
 - private user-stream connectivity
 - allowance and account checks
@@ -61,7 +61,7 @@ In the current local tree, the sidecar has a real readonly provider for:
 - `GET /account`
 - `POST /preflight`
 
-These endpoints use real proxy-wallet auth, host geoblock checks, account-state reads, active-market discovery, and authenticated user-stream connectivity. The write endpoints still return explicit not-implemented responses in this pass.
+These endpoints use real proxy-wallet auth, host geoblock checks, account-state reads, active-market discovery, CLOB V2 market metadata, pUSD collateral diagnostics, and authenticated user-stream connectivity. The write endpoints still return explicit not-implemented responses in this pass.
 
 The sidecar now also carries its own crash-resistance and readiness model:
 
@@ -83,6 +83,8 @@ The Rust bot talks to the sidecar over a private local HTTP contract:
 
 The sidecar now implements real readonly-safe venue checks on the health, account, and preflight routes. It does not place real orders yet, and the write-path endpoints still return explicit not-implemented responses.
 
+The active CLOB client package is `@polymarket/clob-client-v2`. The sidecar uses the V2 constructor shape, V2 signature types, and `createOrDeriveApiKey` for L1-to-L2 auth bootstrap. It no longer depends on V1 CLOB, order-utils, or builder-signing packages for readonly venue access.
+
 The preferred host process model is no longer an unsupervised `nohup node` process. The target deployment shape is:
 
 - sidecar code from `~/buba-paint-live/current/polymarket-sidecar`
@@ -102,15 +104,13 @@ The first real-money pilot is designed for a Polymarket email or Magic Link acco
 
 The sidecar config reflects that account model directly.
 
+The current collateral model is pUSD. Internal account values remain USD-denominated numbers derived from 6-decimal collateral units. User-facing copy should say pUSD or collateral where the venue-specific distinction matters.
+
 ## Strategy readiness
 
-The architecture is ready for all strategy families, but the initial live rollout policy is intentionally narrow:
+The implementation target is live capability for all strategy families. The initial funded rollout policy is intentionally narrower: enable `latency-arb` only by runtime config and keep `calm-persistence` and `spread-capture` disabled until real-money data and residual-exposure handling justify enabling them.
 
-- `latency-arb`: `live_ready_v1`
-- `calm-persistence`: `live_supported_but_disabled`
-- `spread-capture`: `not_live_v1`
-
-This readiness matrix is surfaced in the sidecar preflight request and should stay aligned with the actual rollout policy.
+The readiness matrix is surfaced in the sidecar preflight request and should stay aligned with actual rollout policy. Spread capture is not atomic because each leg is an independent order, so it needs explicit residual-exposure handling before it can be enabled with real money.
 
 ## Live ledger and telemetry
 
@@ -147,7 +147,7 @@ Private live-account SQLite capture must stay compact. Public market feed captur
 
 Fee handling can no longer be hardcoded safely.
 
-The bot now persists market-level fee metadata and per-token fee-rate responses when discovery loads a market. Paper mode and backtests use the same fee-resolution path as the live-readiness surfaces. This is necessary because live venue data currently shows a fee-surface inconsistency between market objects and the `fee-rate` endpoint for BTC 5-minute markets.
+The sidecar readonly preflight now includes CLOB V2 market fee metadata where available. The live order path must persist fee metadata at intent time before real order placement is enabled. Paper mode and backtests should use the same fee-resolution path as the live-readiness surfaces. This is necessary because live venue data has shown fee-surface inconsistency between market objects and the `fee-rate` endpoint for BTC 5-minute markets.
 
 ## Current safe workflow
 

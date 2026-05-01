@@ -3,9 +3,11 @@ import {
   AssetType,
   Chain,
   ClobClient,
+  SignatureTypeV2,
   type ApiKeyCreds,
+  type MarketDetails,
   type OpenOrder,
-} from "@polymarket/clob-client";
+} from "@polymarket/clob-client-v2";
 import WebSocket, { type RawData } from "ws";
 import type {
   LiveAccountState,
@@ -24,6 +26,7 @@ const DEFAULT_DATA_API_URL = "https://data-api.polymarket.com";
 const USER_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
 const CHAIN_ID = Chain.POLYGON;
 const COLLATERAL_DECIMALS = 1_000_000;
+const POLYMARKET_HTTP_USER_AGENT = "buba-polymarket-sidecar/0.1.0";
 
 type LiveCheckStatus = "ok" | "failed";
 type ReadinessStatus = "ready" | "degraded" | "failed";
@@ -32,6 +35,7 @@ type SidecarErrorStage =
   | "auth_bootstrap"
   | "clock_check"
   | "market_discovery"
+  | "market_metadata"
   | "user_stream_connect"
   | "balance_allowance"
   | "open_orders"
@@ -99,12 +103,30 @@ interface BalanceAllowanceView {
   allowances?: Record<string, string>;
 }
 
+interface ActiveMarketToken {
+  tokenId: string;
+  outcome: string;
+}
+
+interface ActiveMarketFeeDetails {
+  rate: number | null;
+  exponent: number | null;
+  takerOnly: boolean | null;
+  makerBaseFee: number | null;
+  takerBaseFee: number | null;
+}
+
 interface ActiveMarket {
   slug: string;
   conditionId: string;
   minOrderSize: number | null;
   tickSize: number | null;
   acceptingOrders: boolean;
+  tokens: ActiveMarketToken[];
+  feeDetails: ActiveMarketFeeDetails | null;
+  negRisk: boolean | null;
+  metadataSource: "gamma" | "clob_v2";
+  metadataError: string | null;
 }
 
 interface ActiveMarketDiscovery {
@@ -134,11 +156,11 @@ interface UserStreamMonitor {
 }
 
 interface ClobReadonlyClient {
-  createApiKey(): Promise<ApiKeyCreds>;
-  deriveApiKey(): Promise<ApiKeyCreds>;
+  createOrDeriveApiKey(): Promise<ApiKeyCreds>;
   getServerTime(): Promise<number>;
   getBalanceAllowance(): Promise<BalanceAllowanceView>;
   getOpenOrders(): Promise<OpenOrder[]>;
+  getClobMarketInfo(conditionId: string): Promise<MarketDetails>;
 }
 
 interface AuthState {
@@ -238,6 +260,21 @@ function walletAddress(config: SidecarConfig): string | null {
   return config.funder ?? config.proxyWallet;
 }
 
+function signatureTypeFromConfig(value: number): SignatureTypeV2 {
+  switch (value) {
+    case SignatureTypeV2.EOA:
+      return SignatureTypeV2.EOA;
+    case SignatureTypeV2.POLY_PROXY:
+      return SignatureTypeV2.POLY_PROXY;
+    case SignatureTypeV2.POLY_GNOSIS_SAFE:
+      return SignatureTypeV2.POLY_GNOSIS_SAFE;
+    case SignatureTypeV2.POLY_1271:
+      return SignatureTypeV2.POLY_1271;
+    default:
+      throw new Error(`unsupported POLYMARKET_SIGNATURE_TYPE ${value}`);
+  }
+}
+
 function hasAuthCredentials(config: SidecarConfig): boolean {
   return Boolean(config.privateKey && config.proxyWallet && config.funder);
 }
@@ -288,7 +325,7 @@ function parseActiveMarkets(body: unknown): ActiveMarket[] {
   const slug = typeof event.slug === "string" ? event.slug : "";
   const markets = Array.isArray(event.markets) ? event.markets : [];
   return markets
-    .map((market) => {
+    .map((market): ActiveMarket | null => {
       const conditionId =
         typeof market.conditionId === "string"
           ? market.conditionId
@@ -304,9 +341,53 @@ function parseActiveMarkets(body: unknown): ActiveMarket[] {
         minOrderSize: parseNumber(market.orderMinSize),
         tickSize: parseNumber(market.orderPriceMinTickSize),
         acceptingOrders: market.acceptingOrders !== false,
+        tokens: [],
+        feeDetails: null,
+        negRisk: null,
+        metadataSource: "gamma",
+        metadataError: null,
       } satisfies ActiveMarket;
     })
     .filter((market): market is ActiveMarket => market !== null);
+}
+
+function normalizeClobMarketInfo(
+  market: ActiveMarket,
+  info: MarketDetails,
+): ActiveMarket {
+  const raw = info as MarketDetails & {
+    mos?: unknown;
+    fd?: { r?: unknown; e?: unknown; to?: unknown };
+    mbf?: unknown;
+    tbf?: unknown;
+  };
+  const tokens = Array.isArray(raw.t)
+    ? raw.t
+        .filter((token): token is NonNullable<(typeof raw.t)[number]> => token != null)
+        .map((token) => ({
+          tokenId: token.t,
+          outcome: token.o,
+        }))
+    : [];
+  const feeDetails = raw.fd
+    ? {
+        rate: parseNumber(raw.fd.r),
+        exponent: parseNumber(raw.fd.e),
+        takerOnly: typeof raw.fd.to === "boolean" ? raw.fd.to : null,
+        makerBaseFee: parseNumber(raw.mbf),
+        takerBaseFee: parseNumber(raw.tbf),
+      }
+    : null;
+  return {
+    ...market,
+    minOrderSize: parseNumber(raw.mos) ?? market.minOrderSize,
+    tickSize: parseNumber(raw.mts) ?? market.tickSize,
+    tokens,
+    feeDetails,
+    negRisk: typeof raw.nr === "boolean" ? raw.nr : market.negRisk,
+    metadataSource: "clob_v2",
+    metadataError: null,
+  };
 }
 
 function dedupeStrings(values: string[]): string[] {
@@ -353,7 +434,33 @@ function stringError(error: unknown): string {
   if (error instanceof ProviderStageError) {
     return error.message;
   }
-  return error instanceof Error ? error.message : String(error);
+  const status = errorStatus(error);
+  const message = error instanceof Error ? error.message : String(error);
+  if (status === 425 && !message.includes("425")) {
+    return `${message} (HTTP 425 matching engine restart)`;
+  }
+  return message;
+}
+
+function errorStatus(error: unknown): number | null {
+  if (error === null || typeof error !== "object") {
+    return null;
+  }
+  const record = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    response?: { status?: unknown };
+  };
+  if (typeof record.status === "number") {
+    return record.status;
+  }
+  if (typeof record.statusCode === "number") {
+    return record.statusCode;
+  }
+  if (typeof record.response?.status === "number") {
+    return record.response.status;
+  }
+  return null;
 }
 
 function isAuthLikeError(error: unknown): boolean {
@@ -790,28 +897,25 @@ function defaultProviderDeps(): ProviderDeps {
         );
       }
       const signer = new Wallet(config.privateKey);
-      const client = new ClobClient(
-        config.clobHost,
-        CHAIN_ID,
+      const client = new ClobClient({
+        host: config.clobHost,
+        chain: CHAIN_ID,
         signer,
         creds,
-        config.signatureType,
-        walletAddress(config) ?? undefined,
-        undefined,
-        true,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        true,
-      );
+        signatureType: signatureTypeFromConfig(config.signatureType),
+        funderAddress: walletAddress(config) ?? undefined,
+        useServerTime: true,
+        retryOnError: true,
+        throwOnError: true,
+      });
       return {
-        createApiKey: async () => client.createApiKey(),
-        deriveApiKey: async () => client.deriveApiKey(),
+        createOrDeriveApiKey: async () => client.createOrDeriveApiKey(),
         getServerTime: async () => client.getServerTime(),
         getBalanceAllowance: async () =>
           client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL }),
         getOpenOrders: async () => client.getOpenOrders(),
+        getClobMarketInfo: async (conditionId) =>
+          client.getClobMarketInfo(conditionId),
       };
     },
     createUserStreamMonitor: (config, clock, log) =>
@@ -828,6 +932,17 @@ function defaultProviderDeps(): ProviderDeps {
         reconnectMaxMs: config.userStreamReconnectMaxMs,
       }),
   };
+}
+
+function withPolymarketHttpHeaders(init: RequestInit): RequestInit {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "application/json");
+  }
+  if (!headers.has("User-Agent")) {
+    headers.set("User-Agent", POLYMARKET_HTTP_USER_AGENT);
+  }
+  return { ...init, headers };
 }
 
 export interface SidecarProvider {
@@ -902,6 +1017,9 @@ export class StubSidecarProvider implements SidecarProvider {
       legal_order_min_usd: legalOrderMinUsd,
       details_json: JSON.stringify({
         provider: "stub",
+        clob_contract_version: "v2",
+        collateral_token: "pUSD",
+        collateral_decimals: 6,
         strategy_readiness: request.strategy_readiness,
         relayer_host: this.config.relayerHost,
         wallet_address_source: this.config.funder ? "funder" : "proxy_wallet",
@@ -924,6 +1042,9 @@ export class StubSidecarProvider implements SidecarProvider {
       allowance_available: 0,
       details_json: JSON.stringify({
         provider: "stub",
+        clob_contract_version: "v2",
+        collateral_token: "pUSD",
+        collateral_decimals: 6,
         account_state_not_verified: true,
         relayer_api_key_present: Boolean(this.config.relayerApiKey),
       }),
@@ -1086,6 +1207,10 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
 
       try {
         discovery = await this.discoverActiveMarkets(request.gamma_api_url);
+        discovery = await this.enrichActiveMarkets(
+          authState.client,
+          discovery,
+        );
         this.lastDiscovery = discovery.markets;
         legalOrderMinUsd = discovery.legalOrderMinUsd;
         if (discovery.markets.length === 0) {
@@ -1174,6 +1299,9 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       legal_order_min_usd: legalOrderMinUsd,
       details_json: JSON.stringify({
         provider: "polymarket",
+        clob_contract_version: "v2",
+        collateral_token: "pUSD",
+        collateral_decimals: 6,
         strategy_readiness: request.strategy_readiness,
         relayer_api_key_present: Boolean(this.config.relayerApiKey),
         geoblock,
@@ -1201,6 +1329,7 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       let discovery: ActiveMarketDiscovery;
       try {
         discovery = await this.discoverActiveMarkets(gammaApiUrl);
+        discovery = await this.enrichActiveMarkets(authState.client, discovery);
       } catch (error) {
         if (this.lastDiscovery.length === 0) {
           throw error;
@@ -1334,26 +1463,9 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       }
       this.log("info", "auth_bootstrap_start");
       const bootstrapClient = this.deps.createClobClient(this.config);
-      const createdCreds = await this.runClobCall("auth_bootstrap", async () => {
-        try {
-          return await bootstrapClient.createApiKey();
-        } catch (error) {
-          const message = stringError(error);
-          if (message.includes("Could not create api key")) {
-            return {
-              key: "",
-              secret: "",
-              passphrase: "",
-            } satisfies ApiKeyCreds;
-          }
-          throw error;
-        }
-      });
-      const creds = createdCreds.key
-        ? createdCreds
-        : await this.runClobCall("auth_bootstrap", async () =>
-            bootstrapClient.deriveApiKey(),
-          );
+      const creds = await this.runClobCall("auth_bootstrap", async () =>
+        bootstrapClient.createOrDeriveApiKey(),
+      );
       const state = {
         creds,
         client: this.deps.createClobClient(this.config, creds),
@@ -1394,15 +1506,23 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
     const timer = setTimeout(() => controller.abort(), this.config.httpTimeoutMs);
     try {
       const response = await withTimeout(
-        this.deps.fetchImpl(url, {
-          signal: controller.signal,
-        }),
+        this.deps.fetchImpl(
+          url,
+          withPolymarketHttpHeaders({
+            signal: controller.signal,
+          }),
+        ),
         this.config.httpTimeoutMs,
         stage,
         "request",
       );
       if (!response.ok) {
-        throw new ProviderStageError(stage, `endpoint returned ${response.status}`);
+        const suffix =
+          response.status === 425 ? " (matching engine restart)" : "";
+        throw new ProviderStageError(
+          stage,
+          `endpoint returned ${response.status}${suffix}`,
+        );
       }
       return (await response.json()) as T;
     } catch (error) {
@@ -1436,9 +1556,12 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         const timer = setTimeout(() => controller.abort(), this.config.httpTimeoutMs);
       try {
         const response = await withTimeout(
-          this.deps.fetchImpl(url, {
-            signal: controller.signal,
-          }),
+          this.deps.fetchImpl(
+            url,
+            withPolymarketHttpHeaders({
+              signal: controller.signal,
+            }),
+          ),
           this.config.httpTimeoutMs,
           "market_discovery",
           `gamma discovery for ${slug}`,
@@ -1498,6 +1621,62 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       error: message,
     });
     throw new ProviderStageError("market_discovery", message);
+  }
+
+  private async enrichActiveMarkets(
+    client: ClobReadonlyClient,
+    discovery: ActiveMarketDiscovery,
+  ): Promise<ActiveMarketDiscovery> {
+    if (discovery.markets.length === 0) {
+      return discovery;
+    }
+
+    const errors: string[] = [];
+    const enriched = await Promise.all(
+      discovery.markets.map(async (market) => {
+        try {
+          const info = await this.runClobCall("market_metadata", async () =>
+            client.getClobMarketInfo(market.conditionId),
+          );
+          return normalizeClobMarketInfo(market, info);
+        } catch (error) {
+          const failure = stageError("market_metadata", error);
+          errors.push(failure.message);
+          return {
+            ...market,
+            metadataError: failure.message,
+          };
+        }
+      }),
+    );
+
+    if (errors.length === 0) {
+      this.healthState.lastDiscoveryError = discovery.error;
+      return {
+        ...discovery,
+        markets: enriched,
+        legalOrderMinUsd: legalOrderMinUsd(enriched),
+      };
+    }
+
+    const message = errors.join("; ");
+    this.healthState.lastDiscoveryError = discovery.error
+      ? `${discovery.error}; ${message}`
+      : message;
+    this.log("warn", "market_metadata_degraded", {
+      error: message,
+      discovered_market_count: enriched.length,
+      clob_v2_metadata_count: enriched.filter(
+        (market) => market.metadataSource === "clob_v2",
+      ).length,
+    });
+    return {
+      ...discovery,
+      markets: enriched,
+      legalOrderMinUsd: legalOrderMinUsd(enriched),
+      degraded: true,
+      error: this.healthState.lastDiscoveryError,
+    };
   }
 
   private async fetchPositions(
@@ -1590,6 +1769,9 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         allowance_available: allowanceAvailable,
         details_json: JSON.stringify({
           provider: "polymarket",
+          clob_contract_version: "v2",
+          collateral_token: "pUSD",
+          collateral_decimals: 6,
           relayer_api_key_present: Boolean(this.config.relayerApiKey),
           user_stream_status: stream.status,
           last_user_stream_connected_at_ms: stream.lastConnectedAtMs,

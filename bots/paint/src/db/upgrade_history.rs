@@ -42,7 +42,7 @@ pub async fn run_upgrade_history(options: UpgradeHistoryOptions) -> anyhow::Resu
     fs::create_dir_all(cache_root.join("gamma"))?;
     fs::create_dir_all(cache_root.join("clob"))?;
 
-    let client = reqwest::Client::builder()
+    let client = crate::http::polymarket_http_client_builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .context("building HTTP client for history upgrade")?;

@@ -6,7 +6,7 @@ Root-level scripts are active automation or setup entry points. Manual charting 
 
 ## Active Automation
 
-- `audit-docs.py`: checks repo-owned `Readme.md` casing, local Markdown links, `data/` directory notes, stale file references, and transient derived SQLite WAL/SHM files. Run through `make docs-audit`.
+- `audit-docs.py`: checks repo-owned `Readme.md` casing, local Markdown links, `data/` directory notes, stale file references, active-plan files under `docs/`, root scratch files, and transient derived SQLite WAL/SHM files. Run through `make docs-audit`.
 - `check_coverage.py`: enforces component coverage floors for `make coverage-gate`.
 - `ts_comment_audit.mjs`: enforces the TypeScript comment policy used by `make lint` and `make comment-audit`.
 

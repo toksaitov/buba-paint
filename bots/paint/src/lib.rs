@@ -9,6 +9,7 @@ pub mod errors;
 pub mod executor;
 pub mod feeds;
 pub mod fees;
+pub mod http;
 pub mod latency_probe;
 pub mod live;
 mod live_readonly;

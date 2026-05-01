@@ -31,6 +31,7 @@ DOC_MARKERS = {
 
 STALE_REFERENCES = {
     "dashboard/client/README.md": "Use dashboard/client/Readme.md.",
+    "docs/live-trading-next-pass.md": "Active plans now live in the repository root.",
     "pages/trading.tsx": "Execution aliases are route redirects, not page files.",
     "pages/live.tsx": "Execution aliases are route redirects, not page files.",
     "hooks/use-bot-status.ts": "This hook has been removed.",
@@ -41,6 +42,9 @@ STALE_REFERENCES = {
 }
 
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+
+ACTIVE_PLAN_NAMES = {"todo.md", "next.md", "blocked.md"}
+ACTIVE_PLAN_PATTERNS = (re.compile(r".*plan.*\.md$"), re.compile(r".*next-pass.*\.md$"))
 
 
 def should_skip(path: Path) -> bool:
@@ -75,6 +79,25 @@ def audit_forbidden_root_files(errors: list[str]) -> None:
     for name in ["PLAN.md"]:
         if (ROOT / name).exists():
             errors.append(f"{name} should not exist at repository root")
+
+
+def audit_active_docs_plans(errors: list[str]) -> None:
+    """Reject active implementation plans under stable documentation."""
+    docs_root = ROOT / "docs"
+    if not docs_root.exists():
+        return
+    archive_root = docs_root / "archive"
+    for path in docs_root.rglob("*.md"):
+        try:
+            path.relative_to(archive_root)
+            continue
+        except ValueError:
+            pass
+        name = path.name.lower()
+        if name in ACTIVE_PLAN_NAMES or any(pattern.fullmatch(name) for pattern in ACTIVE_PLAN_PATTERNS):
+            errors.append(
+                f"{display(path)} looks like active work; keep active plans in the repository root"
+            )
 
 
 def normalize_link_target(source: Path, raw: str) -> Path | None:
@@ -173,6 +196,7 @@ def main() -> int:
     errors: list[str] = []
     audit_readme_case(errors)
     audit_forbidden_root_files(errors)
+    audit_active_docs_plans(errors)
     audit_markdown_links(errors)
     audit_data_docs(errors)
     audit_stale_references(errors)

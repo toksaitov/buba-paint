@@ -43,18 +43,16 @@ CALM_PERSISTENCE_ENABLED=false
 
 The live execution layer must still be architecture-ready for spread and calm. Spread is especially risky because its two legs are not atomic. It needs explicit residual-exposure handling before it can be enabled with real money.
 
-## Hard External Blocker
+## Current External Contract State
 
-Polymarket CLOB V2 is now production. The local sidecar still depends on legacy packages:
+Polymarket CLOB V2 is now production. The sidecar readonly CLOB boundary uses:
 
-- `@polymarket/clob-client`
-- `@polymarket/order-utils`
-- `@polymarket/relayer-client`
-- `@polymarket/builder-signing-sdk`
+- `@polymarket/clob-client-v2`
+- `@polymarket/relayer-client` retained only for future redemption work
 
 Official Polymarket docs say CLOB V2 went live on production on April 28, 2026, legacy V1 SDKs and V1-signed orders are no longer supported, pUSD replaced USDC.e as trading collateral, and V2 order signing removed fields such as `feeRateBps`, `nonce`, and `taker`.
 
-This means the first implementation phase cannot be real order routing. It must be a venue-contract reset against current official docs and current production metadata.
+This means live order routing still cannot be implemented through any V1 order assumptions. The readonly sidecar contract has been reset to CLOB V2 and pUSD diagnostics, but real order placement still requires the dedicated sidecar write-boundary phase.
 
 Official sources checked on 2026-05-01. Re-check them at the start of the relevant phase because these docs are live operational dependencies:
 
@@ -72,7 +70,7 @@ Official sources checked on 2026-05-01. Re-check them at the start of the releva
 - https://docs.polymarket.com/trading/bridge/withdraw
 - https://docs.polymarket.com/api-reference/introduction
 
-Local Gamma probes from this development machine returned `403`. Do not infer current BTC 5-minute market constraints from this machine. Before arming real money, revalidate geoblock and BTC 5-minute metadata from the actual deployment host.
+Local Gamma probes from this development machine returned `403`. A no-order deployment-host check on `2026-05-01` passed the Polymarket geoblock endpoint but Gamma BTC 5-minute discovery returned HTTP `403` with body `error code: 1010`. Before arming real money, resolve host-safe market discovery and revalidate BTC 5-minute metadata from the actual deployment host.
 
 ## Non-Negotiable Safety Rules
 
@@ -101,7 +99,7 @@ Rules:
 
 Tasks:
 
-- Replace `docs/live-trading-next-pass.md` with this root active plan as the active source of work.
+- Remove stale active handoff docs from `docs/` and keep this root file as the active source of work.
 - Keep only durable live-trading facts in `docs/live-trading-architecture.md`, `docs/live-session-runbook.md`, and `docs/polymarket-live-constraints.md`.
 - Add or update a docs map that clearly says which docs are current, archived, and historical.
 - Split oversized `Readme.md` content into focused stable docs if needed.
@@ -161,7 +159,7 @@ Acceptance gates:
 - `cd polymarket-sidecar && npm run build`
 - `make lint`
 - `make docs-audit`
-- A deployment-host readonly preflight report saved under `data/experiments/...`
+- A deployment-host readonly preflight report saved under `data/experiments/venue-contract-v2-001/`
 
 ## Phase 2: Sidecar Write Boundary
 

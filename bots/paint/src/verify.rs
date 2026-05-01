@@ -195,7 +195,7 @@ pub async fn run_verify_settlements(
     println!("[verify] Loaded {total} markets from {db_path}");
     println!("[verify] Fetching resolutions from Gamma API (concurrency={concurrency})...");
 
-    let client = reqwest::Client::builder()
+    let client = crate::http::polymarket_http_client_builder()
         .timeout(Duration::from_secs(10))
         .build()
         .context("building HTTP client")?;

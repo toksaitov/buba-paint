@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use anyhow::Context;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -55,7 +56,13 @@ async fn discovery_loop(
     tx: mpsc::Sender<MarketDiscoveryEvent>,
 ) {
     let mut seen_slugs: HashSet<String> = HashSet::new();
-    let client = reqwest::Client::new();
+    let client = match crate::http::polymarket_http_client() {
+        Ok(client) => client,
+        Err(error) => {
+            warn!("market discovery cannot start: {error:#}");
+            return;
+        }
+    };
     let mut interval = tokio::time::interval(Duration::from_millis(poll_interval_ms));
 
     loop {
@@ -418,11 +425,11 @@ pub async fn fetch_resolution_once(
     gamma_api_url: &str,
     slug: &str,
 ) -> anyhow::Result<Option<crate::types::SignalDirection>> {
-    let client = reqwest::Client::builder()
+    let client = crate::http::polymarket_http_client_builder()
         .timeout(std::time::Duration::from_millis(10_000))
         .connect_timeout(std::time::Duration::from_millis(5_000))
         .build()
-        .unwrap_or_default();
+        .context("building HTTP client for resolution polling")?;
     let url = format!("{gamma_api_url}/events/slug/{slug}");
 
     let resp = client.get(&url).send().await?;

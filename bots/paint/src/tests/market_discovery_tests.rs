@@ -1,4 +1,6 @@
 use super::*;
+use wiremock::matchers::{header, method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Verifies that parse string or array json array.
 #[test]
@@ -393,4 +395,56 @@ fn parse_gamma_all_markets_fail_validation_returns_none() {
     });
 
     assert!(parse_gamma_event_response(&body).is_none());
+}
+
+/// Verifies that market discovery sends the stable user agent to Gamma and CLOB.
+#[tokio::test]
+async fn fetch_market_sends_stable_user_agent() {
+    let server = MockServer::start().await;
+    let user_agent = crate::http::POLYMARKET_HTTP_USER_AGENT;
+
+    Mock::given(method("GET"))
+        .and(path("/events/slug/btc-test"))
+        .and(header("user-agent", user_agent))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "slug": "btc-test",
+            "markets": [{
+                "id": "mkt-1",
+                "question": "Will BTC go up?",
+                "conditionId": "cond-1",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-up", "tok-down"],
+                "endDate": "2024-01-01T00:05:00Z"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    for token_id in ["tok-up", "tok-down"] {
+        Mock::given(method("GET"))
+            .and(path("/fee-rate"))
+            .and(query_param("token_id", token_id))
+            .and(header("user-agent", user_agent))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rate": 0.072,
+                "exponent": 1
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let client = crate::http::polymarket_http_client().unwrap();
+    let window = fetch_market(
+        &client,
+        &format!("{}/events/slug/btc-test", server.uri()),
+        &server.uri(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(window.market_id, "mkt-1");
+    assert!(window.token_fee_rates_json.is_some());
 }
