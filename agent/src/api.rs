@@ -9,7 +9,7 @@ use crate::error::AgentError;
 use crate::process_manager::ProcessManager;
 use crate::types::{
     RealAccountSummary, ShadowSummary, TradingAlert, TradingCapabilities, TradingControlCapability,
-    TradingHealth, TradingSummary, WsMessage,
+    TradingHealth, TradingRiskSummary, TradingSummary, WsMessage,
 };
 use crate::ws;
 
@@ -244,6 +244,7 @@ pub async fn get_trading_summary(
         &live_status,
         &process_state,
     );
+    let risk_summary = build_risk_summary(session_details.as_ref());
     let summary = TradingSummary {
         runtime_mode: shadow_status.execution_mode.clone(),
         trading_state,
@@ -334,6 +335,7 @@ pub async fn get_trading_summary(
             pending_redemptions: live_status.pending_redemptions,
             critical_reconciliation_events: live_status.critical_reconciliation_events,
         },
+        risk_summary,
         capabilities,
         alerts,
     };
@@ -453,6 +455,66 @@ fn detail_u64(
     key: &str,
 ) -> Option<u64> {
     details?.get(key)?.as_u64()
+}
+
+/// Reads one nested object from a parsed details object.
+fn nested_detail_object<'a>(
+    details: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+    details?.get(key)?.as_object()
+}
+
+/// Reads a string field from one nested details object.
+fn nested_detail_string(
+    details: Option<&serde_json::Map<String, serde_json::Value>>,
+    object_key: &str,
+    value_key: &str,
+) -> Option<String> {
+    nested_detail_object(details, object_key)?
+        .get(value_key)?
+        .as_str()
+        .map(ToString::to_string)
+}
+
+/// Reads an unsigned integer from one nested details object.
+fn nested_detail_u64(
+    details: Option<&serde_json::Map<String, serde_json::Value>>,
+    object_key: &str,
+    value_key: &str,
+) -> Option<u64> {
+    nested_detail_object(details, object_key)?
+        .get(value_key)?
+        .as_u64()
+}
+
+/// Reads a float from one nested details object.
+fn nested_detail_f64(
+    details: Option<&serde_json::Map<String, serde_json::Value>>,
+    object_key: &str,
+    value_key: &str,
+) -> Option<f64> {
+    nested_detail_object(details, object_key)?
+        .get(value_key)?
+        .as_f64()
+}
+
+/// Builds the live risk summary exposed to the dashboard.
+fn build_risk_summary(
+    session_details: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> TradingRiskSummary {
+    TradingRiskSummary {
+        halt_reason: nested_detail_string(session_details, "risk", "terminal_reason")
+            .or_else(|| detail_string(session_details, "reason")),
+        halt_at_ms: nested_detail_u64(session_details, "risk", "terminal_at_ms")
+            .or_else(|| detail_u64(session_details, "halt_at_ms")),
+        high_water_mark: nested_detail_f64(session_details, "risk", "high_water_mark"),
+        trough_equity: nested_detail_f64(session_details, "risk", "trough_equity"),
+        current_equity: nested_detail_f64(session_details, "risk", "current_equity"),
+        daily_loss_usd: nested_detail_f64(session_details, "risk", "daily_loss_usd"),
+        session_drawdown_usd: nested_detail_f64(session_details, "risk", "session_drawdown_usd"),
+        closeout_exported_at_ms: nested_detail_u64(session_details, "closeout", "exported_at_ms"),
+    }
 }
 
 /// Parses the enabled-strategy JSON list stored in the live session row.

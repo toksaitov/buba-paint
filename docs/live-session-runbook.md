@@ -20,6 +20,8 @@ What is ready locally:
 - sidecar sanitized activity recovery on `/activity`
 - local disarmed `live_trading` runtime and audited `live-control` command queue for mocked verification
 - admin dashboard Execution controls that queue audited bot-applied control commands
+- live risk monitoring for daily loss, session drawdown, percentage drawdown, terminal degradation, unknown orders, and critical reconciliation
+- `live-closeout` evidence export with required postmortem stub
 
 What is still intentionally gated:
 
@@ -73,8 +75,25 @@ Intended operator lifecycle once live trading is actually enabled:
 5. monitor open orders, fills, reconciliation warnings, and redeemable inventory
 6. if drawdown or divergence persists too long, disarm and stop after flat
 7. redeem winning resolved positions
-8. export official accounting/activity data after the session
-9. feed the collected live data back into paper and backtest parity improvements
+8. if a terminal halt occurs, queue only cleanup controls that are safe (`cancel-all` and `redeem-all`) and do not re-arm
+9. run `live-closeout`, complete the postmortem, and start any future funded attempt with a new run DB
+10. feed the collected live data back into paper and backtest parity improvements
+
+## Terminal halt and cooldown
+
+Terminal halt is a session boundary, not a pause button. The current policy is postmortem-only cooldown: no fixed wall-clock timer, but no new funded session until the closeout package and written postmortem exist.
+
+Terminal triggers include:
+
+- session drawdown above `LIVE_MAX_SESSION_DRAWDOWN_USD`
+- UTC-day loss above `LIVE_MAX_DAILY_LOSS_USD`
+- existing percentage drawdown cap
+- geoblock or auth failure while armed
+- replay-grade storage-quality failure while armed
+- critical reconciliation or unresolved unknown order state
+- account refresh, user-stream, or venue restart degradation lasting more than 2 minutes while armed
+
+A halted DB must not be re-armed. Restarting `EXECUTION_MODE=live_trading` against a DB that contains `halted` or `unknown_order` live state fails fast. The next funded attempt uses a new run DB after analysis.
 
 ## Data to retain after each session
 
@@ -107,6 +126,10 @@ Any of these should block or disarm trading automatically:
 - user-stream outage
 - reconciliation red state
 - configured risk cap trip
+- user-stream/account/venue degradation that persists beyond the terminal threshold
+- unknown order outcome
+
+When halted, the UI should make the halt state dominant, hide arm/restart paths, show the risk facts, and allow only cleanup controls that are safe from the current ledger/account state.
 
 ## Release checklist before enabling real money
 

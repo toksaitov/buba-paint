@@ -119,6 +119,19 @@ fn cooldown_blocks_repeated_signals() {
     assert!(matches!(result3, StrategyResult::Single(_)));
 }
 
+/// Verifies that cooldown uses saturating elapsed time when a test or replay clock moves backward.
+#[test]
+fn cooldown_handles_backward_time_without_panic() {
+    let config = test_config();
+    let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
+    strat.last_signal_time = 10_000;
+    let ctx = ctx_with(0.0020, book(0.45, 0.50, 0.45, 0.50), 120_000);
+
+    let result = strat.evaluate(&ctx, &config, 5_000);
+
+    assert_rejected(result, StrategyRejectionReason::CooldownActive);
+}
+
 /// Verifies that adaptive threshold with enough samples.
 #[test]
 fn adaptive_threshold_with_enough_samples() {
@@ -381,6 +394,19 @@ fn adaptive_threshold_cached_within_10s() {
         t3 > t1,
         "threshold should be recalculated and higher with large momentum data"
     );
+}
+
+/// Verifies that adaptive-threshold caching is stable when a replay clock moves backward.
+#[test]
+fn adaptive_threshold_handles_backward_time_without_panic() {
+    let config = test_config();
+    let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
+    strat.last_threshold_calc = 10_000;
+    strat.adaptive_threshold = 0.004;
+
+    let threshold = strat.get_adaptive_threshold(5_000, config.latency_arb_momentum_threshold);
+
+    assert!((threshold - 0.004).abs() < f64::EPSILON);
 }
 
 /// Verifies that momentum buffer eviction at capacity.

@@ -406,6 +406,18 @@ pub struct RealAccountSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TradingRiskSummary {
+    pub halt_reason: Option<String>,
+    pub halt_at_ms: Option<u64>,
+    pub high_water_mark: Option<f64>,
+    pub trough_equity: Option<f64>,
+    pub current_equity: Option<f64>,
+    pub daily_loss_usd: Option<f64>,
+    pub session_drawdown_usd: Option<f64>,
+    pub closeout_exported_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TradingSummary {
     pub runtime_mode: String,
     pub trading_state: String,
@@ -415,6 +427,7 @@ pub struct TradingSummary {
     pub reconciliation_health: TradingHealth,
     pub shadow_summary: ShadowSummary,
     pub real_account_summary: RealAccountSummary,
+    pub risk_summary: TradingRiskSummary,
     pub capabilities: TradingCapabilities,
     pub alerts: Vec<TradingAlert>,
 }

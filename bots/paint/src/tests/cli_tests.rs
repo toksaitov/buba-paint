@@ -302,6 +302,37 @@ fn cli_live_control_command_parses() {
     }
 }
 
+/// Verifies that cli live-closeout command parses required evidence fields.
+#[test]
+fn cli_live_closeout_command_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "live-closeout",
+        "--db-path",
+        "/tmp/live.db",
+        "--output-dir",
+        "/tmp/closeout",
+        "--actor",
+        "operator",
+        "--reason",
+        "terminal halt",
+    ]);
+    match cli.command {
+        Commands::LiveCloseout {
+            db_path,
+            output_dir,
+            actor,
+            reason,
+        } => {
+            assert_eq!(db_path, "/tmp/live.db");
+            assert_eq!(output_dir, "/tmp/closeout");
+            assert_eq!(actor, "operator");
+            assert_eq!(reason, "terminal halt");
+        }
+        _ => panic!("expected LiveCloseout command"),
+    }
+}
+
 /// Verifies that cli db footprint command parses.
 #[test]
 fn cli_db_footprint_command_parses() {

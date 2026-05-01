@@ -1342,6 +1342,71 @@ impl Database {
         .context("querying latest live control state")
     }
 
+    /// Return whether this DB contains a terminal live-trading state.
+    pub fn terminal_live_trading_halt_exists(&self) -> anyhow::Result<bool> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM live_sessions s
+                WHERE s.execution_mode = 'live_trading'
+                  AND (
+                    s.status IN ('halted', 'unknown_order')
+                    OR EXISTS (
+                        SELECT 1
+                        FROM live_control_state st
+                        WHERE st.session_id = s.id
+                          AND st.state IN ('halted', 'unknown_order')
+                    )
+                  )
+             )",
+        )?;
+        let exists: i64 = stmt.query_row([], |row| row.get(0))?;
+        Ok(exists != 0)
+    }
+
+    /// Count critical reconciliation events for one live session.
+    pub fn critical_live_reconciliation_count(&self, session_id: i64) -> anyhow::Result<u64> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT COUNT(*)
+             FROM live_reconciliation_events
+             WHERE session_id = ?1
+               AND severity = 'critical'
+               AND event_type != 'user_stream_unhealthy'",
+        )?;
+        stmt.query_row(params![session_id], |row| row.get(0))
+            .context("counting critical live reconciliation events")
+    }
+
+    /// Return the latest live-trading session, finished or unfinished.
+    pub fn latest_live_trading_session(&self) -> anyhow::Result<Option<LiveSession>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, started_at_ms, ended_at_ms, status, execution_mode, wallet_address,
+                    proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd,
+                    details_json
+             FROM live_sessions
+             WHERE execution_mode = 'live_trading'
+             ORDER BY started_at_ms DESC, id DESC
+             LIMIT 1",
+        )?;
+        stmt.query_row([], |row| {
+            Ok(LiveSession {
+                id: row.get(0)?,
+                started_at_ms: row.get(1)?,
+                ended_at_ms: row.get(2)?,
+                status: row.get(3)?,
+                execution_mode: row.get(4)?,
+                wallet_address: row.get(5)?,
+                proxy_wallet: row.get(6)?,
+                enabled_strategies_json: row.get(7)?,
+                config_fingerprint: row.get(8)?,
+                cash_cap_usd: row.get(9)?,
+                details_json: row.get(10)?,
+            })
+        })
+        .optional()
+        .context("querying latest live-trading session")
+    }
+
     /// Insert one operator live-control command and return its row ID.
     pub fn insert_live_control_command(&self, command: &LiveControlCommand) -> anyhow::Result<i64> {
         let mut stmt = self.conn.prepare_cached(

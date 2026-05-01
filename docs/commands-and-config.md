@@ -138,6 +138,28 @@ Supported actions are `preflight`, `arm`, `disarm`, `stop-after-flat`, `kill-swi
 
 The dashboard route `POST /api/bots/:id/live/control` proxies to the agent route `POST /api/live/control`. Only dashboard admins may submit it. The server injects the authenticated actor, and the bot remains the only process that applies controls or touches the sidecar.
 
+## Live Closeout CLI
+
+Terminal live sessions require an evidence package before a new funded run DB is started:
+
+```bash
+cargo run -p buba-paint --release -- live-closeout \
+  --db-path /path/to/live-run/paint.db \
+  --output-dir /path/to/closeout \
+  --actor operator \
+  --reason "session drawdown halt"
+```
+
+`live-closeout` writes `summary.json`, `manifest.json`, `db_integrity.txt`, `replay_quality.txt`, live ledger exports, control audit, and a `postmortem.md` stub. It records `live_closeout_exported` in the DB audit ledger. It does not make a halted DB re-armable; the next funded attempt must use a new run DB.
+
+Live-money risk defaults are:
+
+- `LIVE_MAX_DAILY_LOSS_USD=15`
+- `LIVE_MAX_SESSION_DRAWDOWN_USD=20`
+- existing `MAX_DRAWDOWN_PCT`
+
+An armed live session treats unresolved unknown order state, critical reconciliation, auth/geoblock/storage failure, or persistent account/user-stream/venue degradation as terminal blockers. `cancel-all` and `redeem-all` may still be queued for cleanup when their capability data says they are safe.
+
 ## Strategy Defaults
 
 The current candidate settings live in [.env.example](../.env.example). Do not promote historical run settings without fresh replay-grade evidence.

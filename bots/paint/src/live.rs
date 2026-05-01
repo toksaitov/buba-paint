@@ -67,8 +67,50 @@ struct LiveTradingMonitor {
     preflight: Option<LivePreflightResponse>,
     account: Option<LiveAccountState>,
     activity: Option<LiveActivityResponse>,
+    risk: Option<LiveRiskMonitor>,
+    degradation: LiveDegradationTracker,
     blocked_reason: Option<String>,
     finished: bool,
+}
+
+#[derive(Debug, Clone)]
+struct LiveRiskMonitor {
+    session_start_equity: f64,
+    day_index: u64,
+    day_baseline_equity: f64,
+    high_water_mark: f64,
+    trough_equity: f64,
+    current_equity: f64,
+    session_drawdown_usd: f64,
+    daily_loss_usd: f64,
+    terminal_reason: Option<String>,
+    terminal_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveRiskBreach {
+    event_type: &'static str,
+    reason: String,
+    details: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+struct LiveDegradation {
+    kind: String,
+    started_at_ms: u64,
+    latest_detail: String,
+}
+
+#[derive(Debug, Clone)]
+struct LiveDegradationBreach {
+    kind: String,
+    duration_ms: u64,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LiveDegradationTracker {
+    active: Option<LiveDegradation>,
 }
 
 /// Build the enabled live strategy list for the current configuration.
@@ -124,6 +166,7 @@ struct FeedHealthLogEvent<'a> {
 const FEED_HEALTH_ROLLUP_INTERVAL_SECS: u64 = 5 * 60;
 const LIVE_TRADING_CONTROL_POLL_INTERVAL_SECS: u64 = 1;
 const LIVE_TRADING_POLL_INTERVAL_SECS: u64 = 15;
+const LIVE_TERMINAL_DEGRADATION_MS: u64 = 120_000;
 const CASH_CHANGE_EPSILON_USD: f64 = 0.01;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -224,6 +267,154 @@ impl FeedHealthTracker {
     }
 }
 
+impl LiveRiskMonitor {
+    /// Build live risk state from the first authoritative account snapshot.
+    fn new(account: &LiveAccountState) -> Self {
+        let equity = account.total_equity;
+        Self {
+            session_start_equity: equity,
+            day_index: utc_day_index(account.timestamp_ms),
+            day_baseline_equity: equity,
+            high_water_mark: equity,
+            trough_equity: equity,
+            current_equity: equity,
+            session_drawdown_usd: 0.0,
+            daily_loss_usd: 0.0,
+            terminal_reason: None,
+            terminal_at_ms: None,
+        }
+    }
+
+    /// Update risk state from one fresh account snapshot and return any terminal breach.
+    fn update_from_account(
+        &mut self,
+        account: &LiveAccountState,
+        config: &Config,
+    ) -> Option<LiveRiskBreach> {
+        let equity = account.total_equity;
+        let day_index = utc_day_index(account.timestamp_ms);
+        if day_index != self.day_index {
+            self.day_index = day_index;
+            self.day_baseline_equity = equity;
+        }
+        self.current_equity = equity;
+        self.high_water_mark = self.high_water_mark.max(equity);
+        self.trough_equity = self.trough_equity.min(equity);
+        self.session_drawdown_usd = (self.high_water_mark - equity).max(0.0);
+        self.daily_loss_usd = (self.day_baseline_equity - equity).max(0.0);
+
+        if self.session_drawdown_usd + CASH_CHANGE_EPSILON_USD
+            >= config.live_max_session_drawdown_usd
+        {
+            return Some(self.breach(
+                "live_session_drawdown_halt",
+                "live session drawdown cap breached",
+                config,
+            ));
+        }
+        if self.daily_loss_usd + CASH_CHANGE_EPSILON_USD >= config.live_max_daily_loss_usd {
+            return Some(self.breach(
+                "live_daily_loss_halt",
+                "live daily loss cap breached",
+                config,
+            ));
+        }
+        if self.high_water_mark > 0.0
+            && self.session_drawdown_usd / self.high_water_mark + f64::EPSILON
+                >= config.max_drawdown_pct
+        {
+            return Some(self.breach(
+                "live_percent_drawdown_halt",
+                "live percentage drawdown cap breached",
+                config,
+            ));
+        }
+        None
+    }
+
+    /// Mark this risk monitor as terminal for presentation and closeout.
+    fn mark_terminal(&mut self, now_ms: u64, reason: &str) {
+        self.terminal_reason = Some(reason.to_string());
+        self.terminal_at_ms = Some(now_ms);
+    }
+
+    /// Return compact JSON persisted into the live session details.
+    fn to_json(&self) -> serde_json::Value {
+        json!({
+            "session_start_equity": self.session_start_equity,
+            "day_baseline_equity": self.day_baseline_equity,
+            "high_water_mark": self.high_water_mark,
+            "trough_equity": self.trough_equity,
+            "current_equity": self.current_equity,
+            "session_drawdown_usd": self.session_drawdown_usd,
+            "daily_loss_usd": self.daily_loss_usd,
+            "terminal_reason": self.terminal_reason,
+            "terminal_at_ms": self.terminal_at_ms,
+        })
+    }
+
+    /// Build one terminal breach payload from the current risk state.
+    fn breach(&self, event_type: &'static str, reason: &str, config: &Config) -> LiveRiskBreach {
+        LiveRiskBreach {
+            event_type,
+            reason: reason.to_string(),
+            details: json!({
+                "reason": reason,
+                "session_start_equity": self.session_start_equity,
+                "day_baseline_equity": self.day_baseline_equity,
+                "high_water_mark": self.high_water_mark,
+                "trough_equity": self.trough_equity,
+                "current_equity": self.current_equity,
+                "session_drawdown_usd": self.session_drawdown_usd,
+                "daily_loss_usd": self.daily_loss_usd,
+                "max_session_drawdown_usd": config.live_max_session_drawdown_usd,
+                "max_daily_loss_usd": config.live_max_daily_loss_usd,
+                "max_drawdown_pct": config.max_drawdown_pct,
+            }),
+        }
+    }
+}
+
+impl LiveDegradationTracker {
+    /// Record one active degradation and return a breach once it exceeds the terminal threshold.
+    fn note(
+        &mut self,
+        kind: &str,
+        detail: &str,
+        now_ms: u64,
+        threshold_ms: u64,
+    ) -> Option<LiveDegradationBreach> {
+        match self.active.as_mut() {
+            Some(active) if active.kind == kind => {
+                active.latest_detail = detail.to_string();
+                let duration_ms = now_ms.saturating_sub(active.started_at_ms);
+                if duration_ms >= threshold_ms {
+                    Some(LiveDegradationBreach {
+                        kind: active.kind.clone(),
+                        duration_ms,
+                        detail: active.latest_detail.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => {
+                self.active = Some(LiveDegradation {
+                    kind: kind.to_string(),
+                    started_at_ms: now_ms,
+                    latest_detail: detail.to_string(),
+                });
+                None
+            }
+        }
+    }
+
+    /// Clear active degradation after a fully healthy refresh.
+    fn clear(&mut self) {
+        self.active = None;
+    }
+}
+
 impl LiveState {
     /// Creates a new `LiveState`.
     fn new() -> Self {
@@ -234,6 +425,11 @@ impl LiveState {
             known_windows: std::collections::HashMap::new(),
         }
     }
+}
+
+/// Return the UTC day index for one millisecond timestamp.
+fn utc_day_index(timestamp_ms: u64) -> u64 {
+    timestamp_ms / 86_400_000
 }
 
 /// Capture the current local receive timestamps for one incoming live event.
@@ -1483,6 +1679,11 @@ impl LiveTradingMonitor {
         self.state == "armed" && self.blocked_reason.is_none()
     }
 
+    /// Return whether live risk/degradation checks are terminal right now.
+    fn terminal_risk_is_active(&self) -> bool {
+        matches!(self.state.as_str(), "armed" | "stop_after_flat")
+    }
+
     /// Apply every queued operator command in durable request order.
     async fn apply_pending_controls(
         &mut self,
@@ -1562,9 +1763,40 @@ impl LiveTradingMonitor {
         config: &Config,
         clock: &dyn Clock,
     ) -> anyhow::Result<Vec<String>> {
-        let preflight = self.sidecar.preflight(config).await?;
-        let account = self.sidecar.account_state().await?;
-        let activity = self.sidecar.activity().await?;
+        let preflight = match self.sidecar.preflight(config).await {
+            Ok(preflight) => preflight,
+            Err(error) => {
+                return self
+                    .record_remote_refresh_failure(
+                        db_path,
+                        clock,
+                        "preflight_refresh_failure",
+                        error,
+                    )
+                    .await;
+            }
+        };
+        let account = match self.sidecar.account_state().await {
+            Ok(account) => account,
+            Err(error) => {
+                return self
+                    .record_remote_refresh_failure(db_path, clock, "account_refresh_failure", error)
+                    .await;
+            }
+        };
+        let activity = match self.sidecar.activity().await {
+            Ok(activity) => activity,
+            Err(error) => {
+                return self
+                    .record_remote_refresh_failure(
+                        db_path,
+                        clock,
+                        "activity_refresh_failure",
+                        error,
+                    )
+                    .await;
+            }
+        };
         let db = Database::new(db_path)?;
         db.log_live_account_snapshot(&live_account_snapshot(self.session_id, &account))?;
         self.persist_activity_recovery(&db, &activity)?;
@@ -1573,21 +1805,149 @@ impl LiveTradingMonitor {
         self.account = Some(account);
         self.activity = Some(activity);
         self.blocked_reason = issues.first().cloned();
-        if self.state == "armed" && self.blocked_reason.is_some() {
-            let details = json!({ "issues": issues }).to_string();
-            self.set_state(
-                &db,
-                "unknown_order",
-                "system",
-                "remote state degraded while armed",
-                clock.now(),
-                Some(&details),
-            )?;
-        } else {
-            self.update_session_metadata(&db)?;
+        let mut breach = None;
+        if self.terminal_risk_is_active() {
+            breach = self.evaluate_terminal_remote_state(&db, clock.now(), &issues)?;
+            if breach.is_none() {
+                if let Some(risk) = self.risk.as_mut() {
+                    breach = risk.update_from_account(
+                        self.account
+                            .as_ref()
+                            .context("missing refreshed live account")?,
+                        config,
+                    );
+                } else {
+                    let account = self
+                        .account
+                        .as_ref()
+                        .context("missing refreshed live account")?;
+                    let mut risk = LiveRiskMonitor::new(account);
+                    breach = risk.update_from_account(account, config);
+                    self.risk = Some(risk);
+                }
+            }
+            if breach.is_none() && db.critical_live_reconciliation_count(self.session_id)? > 0 {
+                breach = Some(live_terminal_breach(
+                    "critical_reconciliation_halt",
+                    "critical live reconciliation event present",
+                    json!({ "session_id": self.session_id }),
+                ));
+            }
+        } else if self.risk.is_none() {
+            self.risk = self.account.as_ref().map(LiveRiskMonitor::new);
         }
+        self.update_session_metadata(&db)?;
         db.close();
+        if let Some(breach) = breach {
+            self.terminal_halt(
+                db_path,
+                clock,
+                "system",
+                &breach.reason,
+                breach.event_type,
+                breach.details,
+            )
+            .await?;
+        }
         Ok(issues)
+    }
+
+    /// Record one failed remote-state refresh and maybe escalate to terminal halt.
+    async fn record_remote_refresh_failure(
+        &mut self,
+        db_path: &str,
+        clock: &dyn Clock,
+        kind: &str,
+        error: anyhow::Error,
+    ) -> anyhow::Result<Vec<String>> {
+        let now_ms = clock.now();
+        let detail = error.to_string();
+        self.blocked_reason = Some(format!("{kind}: {detail}"));
+        let breach = if self.terminal_risk_is_active() {
+            self.degradation
+                .note(kind, &detail, now_ms, LIVE_TERMINAL_DEGRADATION_MS)
+        } else {
+            None
+        };
+        let db = Database::new(db_path)?;
+        self.update_session_metadata(&db)?;
+        db.close();
+        if let Some(breach) = breach {
+            let reason = format!("{} persisted for {}ms", breach.kind, breach.duration_ms);
+            self.terminal_halt(
+                db_path,
+                clock,
+                "system",
+                &reason,
+                "live_remote_degradation_halt",
+                json!({
+                    "kind": breach.kind,
+                    "duration_ms": breach.duration_ms,
+                    "detail": breach.detail,
+                }),
+            )
+            .await?;
+        }
+        bail!("{kind}: {detail}")
+    }
+
+    /// Evaluate refreshed sidecar state for terminal live-money blockers.
+    fn evaluate_terminal_remote_state(
+        &mut self,
+        db: &Database,
+        now_ms: u64,
+        issues: &[String],
+    ) -> anyhow::Result<Option<LiveRiskBreach>> {
+        if issues.iter().any(|issue| {
+            issue.contains("geoblock")
+                || issue.contains("auth")
+                || issue.contains("replay-grade")
+                || issue.contains("clock drift")
+        }) {
+            return Ok(Some(live_terminal_breach(
+                "live_gate_terminal_halt",
+                "terminal live gate failed while armed",
+                json!({ "issues": issues }),
+            )));
+        }
+        let degraded = issues.iter().any(|issue| issue.contains("user stream"))
+            || self
+                .preflight
+                .as_ref()
+                .is_some_and(|preflight| !preflight.ok);
+        if degraded {
+            let detail = if issues.is_empty() {
+                "preflight failed without structured issue".to_string()
+            } else {
+                issues.join("; ")
+            };
+            if let Some(breach) = self.degradation.note(
+                "venue_or_user_stream_degraded",
+                &detail,
+                now_ms,
+                LIVE_TERMINAL_DEGRADATION_MS,
+            ) {
+                return Ok(Some(live_terminal_breach(
+                    "live_remote_degradation_halt",
+                    "live remote state stayed degraded past terminal threshold",
+                    json!({
+                        "kind": breach.kind,
+                        "duration_ms": breach.duration_ms,
+                        "detail": breach.detail,
+                    }),
+                )));
+            }
+        } else {
+            self.degradation.clear();
+        }
+        if db.critical_live_reconciliation_count(self.session_id)? > 0 {
+            return Ok(Some(live_terminal_breach(
+                "critical_reconciliation_halt",
+                "critical live reconciliation event present",
+                json!({ "session_id": self.session_id }),
+            )));
+        }
+        Ok(None)
     }
 
     /// Submit a batch of live orders through the authenticated sidecar boundary.
@@ -1669,18 +2029,19 @@ impl LiveTradingMonitor {
         } else {
             self.state.as_str()
         };
-        db.finish_live_session(
-            self.session_id,
-            now,
-            "live_stopped",
-            Some(
-                &json!({
-                    "previous_state": status,
-                    "reason": "process_shutdown",
-                })
-                .to_string(),
-            ),
-        )?;
+        let finish_status = if matches!(status, "halted" | "unknown_order") {
+            status
+        } else {
+            "live_stopped"
+        };
+        let details_json = (!matches!(status, "halted" | "unknown_order")).then(|| {
+            json!({
+                "previous_state": status,
+                "reason": "process_shutdown",
+            })
+            .to_string()
+        });
+        db.finish_live_session(self.session_id, now, finish_status, details_json.as_deref())?;
         self.finished = true;
         Ok(())
     }
@@ -1749,16 +2110,44 @@ impl LiveTradingMonitor {
         actor: &str,
         reason: &str,
     ) -> anyhow::Result<serde_json::Value> {
+        self.terminal_halt(
+            db_path,
+            clock,
+            actor,
+            reason,
+            "kill_switch_activated",
+            json!({ "reason": reason }),
+        )
+        .await
+    }
+
+    /// Persist a terminal halt, attempt cancel-all, and block future submissions.
+    async fn terminal_halt(
+        &mut self,
+        db_path: &str,
+        clock: &dyn Clock,
+        actor: &str,
+        reason: &str,
+        event_type: &'static str,
+        details: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
         let now = clock.now();
         let cancel_result = self.sidecar.cancel_all().await;
-        let details = match cancel_result {
-            Ok(response) => json!({
-                "cancel_all": response,
-            }),
-            Err(error) => json!({
-                "cancel_all_error": error.to_string(),
-            }),
+        let cancel_details = match cancel_result {
+            Ok(response) => json!({ "ok": true, "response": response }),
+            Err(error) => json!({ "ok": false, "error": error.to_string() }),
         };
+        if let Some(risk) = self.risk.as_mut() {
+            risk.mark_terminal(now, reason);
+        }
+        let details = json!({
+            "event_type": event_type,
+            "reason": reason,
+            "halt_at_ms": now,
+            "details": details,
+            "risk": self.risk.as_ref().map(LiveRiskMonitor::to_json),
+            "cancel_all": cancel_details,
+        });
         let db = Database::new(db_path)?;
         let details_json = details.to_string();
         self.set_state(&db, "halted", actor, reason, now, Some(&details_json))?;
@@ -1767,10 +2156,18 @@ impl LiveTradingMonitor {
             session_id: self.session_id,
             timestamp_ms: now,
             severity: "critical".to_string(),
-            event_type: "kill_switch_activated".to_string(),
+            event_type: event_type.to_string(),
             local_value: None,
             remote_value: None,
-            details_json: Some(details.to_string()),
+            details_json: Some(details_json.clone()),
+        })?;
+        db.log_control_audit(&crate::types::ControlAuditEntry {
+            id: None,
+            timestamp_ms: now,
+            actor: actor.to_string(),
+            action: "live_terminal_halt".to_string(),
+            target: Some(self.session_id.to_string()),
+            details_json: Some(details_json),
         })?;
         db.close();
         Ok(json!({ "state": self.state, "details": details }))
@@ -1878,6 +2275,7 @@ impl LiveTradingMonitor {
                 .handle_live_order_response(db_path, bankroll, order, intent_id, now_ms, &response),
             Err(error) => {
                 self.handle_live_order_error(db_path, order, &request, intent_id, now_ms, error)
+                    .await
             }
         }
     }
@@ -2021,7 +2419,7 @@ impl LiveTradingMonitor {
     }
 
     /// Persist an unknown sidecar submission outcome and block further trading.
-    fn handle_live_order_error(
+    async fn handle_live_order_error(
         &mut self,
         db_path: &str,
         order: &QueuedOrderIntent,
@@ -2062,6 +2460,45 @@ impl LiveTradingMonitor {
             now_ms,
             Some(&details),
         )?;
+        db.log_live_reconciliation_event(&LiveReconciliationEvent {
+            id: None,
+            session_id: self.session_id,
+            timestamp_ms: now_ms,
+            severity: "critical".to_string(),
+            event_type: "unknown_submission".to_string(),
+            local_value: None,
+            remote_value: None,
+            details_json: Some(
+                json!({
+                    "intent_id": intent_id,
+                    "client_order_id": request.client_order_id.clone(),
+                    "market_id": order.market_id.clone(),
+                    "error": error_message,
+                })
+                .to_string(),
+            ),
+        })?;
+        db.close();
+        let cancel_result = self.sidecar.cancel_all().await;
+        let db = Database::new(db_path)?;
+        db.log_control_audit(&crate::types::ControlAuditEntry {
+            id: None,
+            timestamp_ms: now_ms,
+            actor: "system".to_string(),
+            action: "live_unknown_order_cancel_all_attempt".to_string(),
+            target: Some(self.session_id.to_string()),
+            details_json: Some(
+                json!({
+                    "intent_id": intent_id,
+                    "client_order_id": request.client_order_id.clone(),
+                    "cancel_all": match cancel_result {
+                        Ok(response) => json!({ "ok": true, "response": response }),
+                        Err(error) => json!({ "ok": false, "error": error.to_string() }),
+                    },
+                })
+                .to_string(),
+            ),
+        })?;
         db.close();
         Err(error)
     }
@@ -2257,6 +2694,11 @@ async fn bootstrap_live_trading_runtime(
     clock: &dyn Clock,
 ) -> anyhow::Result<(Database, LiveTradingRuntimeBootstrap)> {
     let started_at_ms = clock.now();
+    if db.terminal_live_trading_halt_exists()? {
+        bail!(
+            "live_trading cannot start against a DB with a halted or unknown-order live session; run live-closeout and start a new run DB"
+        );
+    }
     let enabled_strategies = serde_json::to_string(&config.enabled_strategy_names())
         .context("serializing strategies")?;
     let session_id = db.insert_live_session(&LiveSession {
@@ -2288,6 +2730,8 @@ async fn bootstrap_live_trading_runtime(
         preflight: None,
         account: None,
         activity: None,
+        risk: None,
+        degradation: LiveDegradationTracker::default(),
         blocked_reason: None,
         finished: false,
     };
@@ -2408,8 +2852,32 @@ fn live_session_details_json(monitor: &LiveTradingMonitor) -> String {
         "preflight": monitor.preflight.as_ref().map(live_preflight_summary_json),
         "account": monitor.account.as_ref().map(live_account_summary_json),
         "activity": monitor.activity.as_ref().map(live_activity_summary_json),
+        "risk": monitor.risk.as_ref().map(LiveRiskMonitor::to_json),
+        "degradation": monitor.degradation.active.as_ref().map(live_degradation_json),
     })
     .to_string()
+}
+
+/// Build one terminal breach without coupling it to account risk arithmetic.
+fn live_terminal_breach(
+    event_type: &'static str,
+    reason: &str,
+    details: serde_json::Value,
+) -> LiveRiskBreach {
+    LiveRiskBreach {
+        event_type,
+        reason: reason.to_string(),
+        details,
+    }
+}
+
+/// Build compact degradation JSON for live session details.
+fn live_degradation_json(degradation: &LiveDegradation) -> serde_json::Value {
+    json!({
+        "kind": degradation.kind,
+        "started_at_ms": degradation.started_at_ms,
+        "latest_detail": degradation.latest_detail,
+    })
 }
 
 /// Build a compact preflight summary for live session details.
@@ -3635,6 +4103,94 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.contains("replay-grade")));
     }
 
+    /// Verifies that live risk state halts on session drawdown.
+    #[test]
+    fn live_risk_monitor_detects_session_drawdown_halt() {
+        let mut config = Config::default();
+        config.live_max_session_drawdown_usd = 20.0;
+        config.live_max_daily_loss_usd = 50.0;
+        config.max_drawdown_pct = 1.0;
+        let mut risk = LiveRiskMonitor::new(&test_account_state());
+        let mut account = test_account_state();
+        account.total_equity = 79.9;
+
+        let breach = risk.update_from_account(&account, &config).unwrap();
+
+        assert_eq!(breach.event_type, "live_session_drawdown_halt");
+        assert!(breach.details["session_drawdown_usd"].as_f64().unwrap() >= 20.0);
+    }
+
+    /// Verifies that live risk state halts on UTC-day loss.
+    #[test]
+    fn live_risk_monitor_detects_daily_loss_halt() {
+        let mut config = Config::default();
+        config.live_max_session_drawdown_usd = 50.0;
+        config.live_max_daily_loss_usd = 15.0;
+        config.max_drawdown_pct = 1.0;
+        let mut risk = LiveRiskMonitor::new(&test_account_state());
+        let mut account = test_account_state();
+        account.total_equity = 84.9;
+
+        let breach = risk.update_from_account(&account, &config).unwrap();
+
+        assert_eq!(breach.event_type, "live_daily_loss_halt");
+        assert!(breach.details["daily_loss_usd"].as_f64().unwrap() >= 15.0);
+    }
+
+    /// Verifies that remote degradation becomes terminal only after the threshold.
+    #[test]
+    fn live_degradation_tracker_requires_terminal_threshold() {
+        let mut tracker = LiveDegradationTracker::default();
+
+        assert!(
+            tracker
+                .note("user_stream", "down", 1_000, LIVE_TERMINAL_DEGRADATION_MS)
+                .is_none()
+        );
+        let breach = tracker
+            .note(
+                "user_stream",
+                "still down",
+                1_000 + LIVE_TERMINAL_DEGRADATION_MS,
+                LIVE_TERMINAL_DEGRADATION_MS,
+            )
+            .unwrap();
+
+        assert_eq!(breach.kind, "user_stream");
+        assert_eq!(breach.duration_ms, LIVE_TERMINAL_DEGRADATION_MS);
+    }
+
+    /// Verifies that a halted live-trading DB cannot bootstrap a new live session.
+    #[tokio::test]
+    async fn halted_live_trading_db_rejects_bootstrap() {
+        let mut config = Config::default();
+        config.execution_mode = ExecutionMode::LiveTrading;
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        db.insert_live_session(&LiveSession {
+            id: None,
+            started_at_ms: 1_000,
+            ended_at_ms: None,
+            status: "halted".to_string(),
+            execution_mode: "live_trading".to_string(),
+            wallet_address: None,
+            proxy_wallet: None,
+            enabled_strategies_json: "[]".to_string(),
+            config_fingerprint: "{}".to_string(),
+            cash_cap_usd: 100.0,
+            details_json: Some("{}".to_string()),
+        })
+        .unwrap();
+        let clock = BacktestClock::new();
+
+        let result = bootstrap_live_trading_runtime(&config, db, db_path, 100.0, &clock).await;
+
+        assert!(result.is_err());
+        let error = result.err().unwrap();
+        assert!(error.to_string().contains("halted"));
+    }
+
     /// Verifies that unknown venue outcomes block future live submissions.
     #[test]
     fn live_order_response_blocking_statuses_are_terminal() {
@@ -3725,6 +4281,8 @@ mod tests {
             preflight: None,
             account: None,
             activity: None,
+            risk: None,
+            degradation: LiveDegradationTracker::default(),
             blocked_reason: None,
             finished: false,
         };

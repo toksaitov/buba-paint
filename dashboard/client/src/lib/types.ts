@@ -355,6 +355,17 @@ export interface RealAccountSummary {
   critical_reconciliation_events: number;
 }
 
+export interface TradingRiskSummary {
+  halt_reason: string | null;
+  halt_at_ms: number | null;
+  high_water_mark: number | null;
+  trough_equity: number | null;
+  current_equity: number | null;
+  daily_loss_usd: number | null;
+  session_drawdown_usd: number | null;
+  closeout_exported_at_ms: number | null;
+}
+
 export interface TradingSummary {
   runtime_mode: string;
   trading_state: string;
@@ -364,6 +375,7 @@ export interface TradingSummary {
   reconciliation_health: TradingHealth;
   shadow_summary: ShadowSummary;
   real_account_summary: RealAccountSummary;
+  risk_summary?: TradingRiskSummary;
   capabilities: TradingCapabilities;
   alerts: TradingAlert[];
 }

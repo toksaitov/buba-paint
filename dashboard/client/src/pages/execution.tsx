@@ -64,6 +64,17 @@ function userStreamSummary(account: RealAccountSummary): string {
   return `${status} (${formatDurationShort(age)} ago)`;
 }
 
+const emptyRiskSummary = {
+  halt_reason: null,
+  halt_at_ms: null,
+  high_water_mark: null,
+  trough_equity: null,
+  current_equity: null,
+  daily_loss_usd: null,
+  session_drawdown_usd: null,
+  closeout_exported_at_ms: null,
+};
+
 function ValueLine({
   label,
   value,
@@ -289,7 +300,7 @@ function visibleControlActions(tradingState: string): ControlActionConfig[] {
           : tradingState === "unknown_order"
             ? ["preflight", "cancel_all", "kill_switch"]
             : tradingState === "halted"
-              ? []
+              ? ["cancel_all", "redeem_all"]
               : ["preflight", "kill_switch"],
   );
   return controlActions.filter((config) => actions.has(config.action));
@@ -515,6 +526,7 @@ export function ExecutionPage() {
 
   const shadow = summary.shadow_summary;
   const account = summary.real_account_summary;
+  const risk = summary.risk_summary ?? emptyRiskSummary;
   const latestSession = sessionsQuery.data?.sessions[0] ?? null;
   const isAdmin = user?.role === "admin";
   const hasAccountSnapshot = account.latest_snapshot_at_ms != null;
@@ -588,6 +600,43 @@ export function ExecutionPage() {
             This session cannot be re-armed from the dashboard. Export the run, analyze the halt,
             and start a new session only after a separate operator decision.
           </p>
+          <div className="mt-3 grid gap-x-6 gap-y-2 text-[12px] md:grid-cols-2">
+            <ValueLine
+              label="Halt reason"
+              value={risk.halt_reason ?? "n/a"}
+              tone="danger"
+            />
+            <ValueLine
+              label="Halt time"
+              value={risk.halt_at_ms != null ? formatDateTime(risk.halt_at_ms) : "n/a"}
+            />
+            <ValueLine
+              label="Current equity"
+              value={risk.current_equity != null ? formatUsd(risk.current_equity) : "n/a"}
+            />
+            <ValueLine
+              label="Session drawdown"
+              value={
+                risk.session_drawdown_usd != null
+                  ? formatUsd(risk.session_drawdown_usd)
+                  : "n/a"
+              }
+              tone="danger"
+            />
+            <ValueLine
+              label="Daily loss"
+              value={risk.daily_loss_usd != null ? formatUsd(risk.daily_loss_usd) : "n/a"}
+              tone="danger"
+            />
+            <ValueLine
+              label="Closeout"
+              value={
+                risk.closeout_exported_at_ms != null
+                  ? formatDateTime(risk.closeout_exported_at_ms)
+                  : "not exported"
+              }
+            />
+          </div>
         </Surface>
       )}
 

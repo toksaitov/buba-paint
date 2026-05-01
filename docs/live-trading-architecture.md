@@ -34,7 +34,7 @@ The venue boundary is intentionally narrow:
 - `LiveReadonlyVenue`: authenticated account and venue state, but no order placement
 - `LiveVenue`: real order submission, fills, redemption, and reconciliation behind explicit local arming
 
-In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` can start locally, but it starts disarmed, requires audited live-control commands from the CLI or admin dashboard, and blocks on unhealthy preflight, stale account state, missing replay-grade capture, or unresolved reconciliation.
+In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` can start locally, but it starts disarmed, requires audited live-control commands from the CLI or admin dashboard, and blocks on unhealthy preflight, stale account state, missing replay-grade capture, terminal halt state, or unresolved reconciliation.
 
 ## Authenticated sidecar
 
@@ -137,6 +137,22 @@ The intended cash model is:
 
 The first real-money pilot may spend only `cash_available`.
 
+## Live risk and terminal halt policy
+
+Live risk is enforced from authoritative account snapshots and the local live ledger. The bot tracks session start equity, UTC-day baseline equity, high-water mark, trough, current equity, daily loss, and session drawdown. Current defaults are `LIVE_MAX_DAILY_LOSS_USD=15` and `LIVE_MAX_SESSION_DRAWDOWN_USD=20`, with the existing `MAX_DRAWDOWN_PCT` still enforced where applicable.
+
+Terminal halt is persistent. Session drawdown, daily loss, geoblock/auth failure, storage-quality failure, critical reconciliation, unresolved unknown order state, or account/user-stream/venue degradation beyond 2 minutes sets the live session to `halted` or `unknown_order`, blocks new submissions, attempts cancel-all, and records audit/reconciliation evidence. Restarting `live_trading` against a DB that contains terminal live state fails fast. The next funded attempt must use a new run DB.
+
+The `live-closeout` CLI exports the evidence package for postmortem:
+
+- summary and manifest JSON
+- SQLite quick-check result
+- replay-quality report
+- live session, intent, order, fill, account, redemption, reconciliation, control-state, command, and audit exports
+- postmortem stub
+
+Closeout records `live_closeout_exported` but does not clear halted state. The dashboard Execution summary surfaces halt reason, halt time, high-water mark, trough/current equity, daily loss, session drawdown, and closeout status when present.
+
 Private live-account SQLite capture must stay compact. Public market feed capture for research runs should use `FEED_EVENT_STORAGE_PROFILE=replay_grade` so future sweeps have the Binance book state needed for parity:
 
 - one row per state transition
@@ -159,7 +175,8 @@ Local-only safe workflow:
 3. run `buba-paint live` with `EXECUTION_MODE=live_readonly` for an authenticated readonly soak
 4. run `EXECUTION_MODE=live_trading buba-paint live` only in local or mocked verification until deployment is explicitly planned
 5. use `buba-paint live-control --db-path <db> arm|disarm|stop-after-flat|kill-switch|cancel-all|redeem-all --actor <name> --reason <text>` or the admin dashboard Execution controls for local live-control state
-6. inspect live readiness, control audit, and reconciliation state in the dashboard Execution page and agent live endpoints
-7. do not deploy or arm real trading until risk/halt policy, host rollout, manual canary checks, and final verification phases pass
+6. use `buba-paint live-closeout --db-path <db> --output-dir <dir> --actor <name> --reason <text>` after a terminal halt or funded-session shutdown
+7. inspect live readiness, control audit, risk/halt facts, and reconciliation state in the dashboard Execution page and agent live endpoints
+8. do not deploy or arm real trading until host rollout, manual canary checks, and final verification phases pass
 
 This repository state is intentionally staged for correctness. It exposes real sidecar venue actions and a local disarmed bot runtime without pretending that deployed live-money operation is ready.

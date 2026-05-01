@@ -43,7 +43,7 @@ impl LatencyArbStrategy {
 
     /// Returns adaptive threshold.
     fn get_adaptive_threshold(&mut self, now: u64, base_threshold: f64) -> f64 {
-        if now - self.last_threshold_calc < 10_000 {
+        if now.saturating_sub(self.last_threshold_calc) < 10_000 {
             return self.adaptive_threshold;
         }
         self.last_threshold_calc = now;
@@ -354,7 +354,7 @@ impl LatencyArbStrategy {
             ));
         }
 
-        if now - self.last_signal_time < config.latency_arb_cooldown_ms {
+        if now.saturating_sub(self.last_signal_time) < config.latency_arb_cooldown_ms {
             return Err(Self::reject(
                 StrategyRejectionReason::CooldownActive,
                 StrategyRejectionSample::from_ctx(ctx),

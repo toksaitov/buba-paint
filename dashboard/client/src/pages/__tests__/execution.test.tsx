@@ -426,7 +426,9 @@ test("does not expose arm controls after a live session halt", () => {
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
   expect(screen.getByText("Session halted")).toBeInTheDocument();
-  expect(screen.getByText("No dashboard controls are available for this session state.")).toBeInTheDocument();
+  expect(screen.getByText("not exported")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Cancel all" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Redeem all" })).toBeDisabled();
   expect(screen.queryByRole("button", { name: "Arm" })).toBeNull();
 });
 

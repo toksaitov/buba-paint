@@ -993,3 +993,45 @@ fn trading_capabilities_and_alerts_cover_branches() {
         super::build_trading_alerts("paper", None, None, &empty_live_status(), "running");
     assert!(paper_alerts.is_empty());
 }
+
+/// Verifies that risk summary fields are derived from live session details.
+#[test]
+fn trading_risk_summary_parses_session_details() {
+    let details = serde_json::json!({
+        "risk": {
+            "terminal_reason": "drawdown cap",
+            "terminal_at_ms": 2_000,
+            "high_water_mark": 120.0,
+            "trough_equity": 90.0,
+            "current_equity": 95.0,
+            "daily_loss_usd": 15.0,
+            "session_drawdown_usd": 25.0
+        },
+        "closeout": {
+            "exported_at_ms": 3_000
+        }
+    });
+    let map = details.as_object().unwrap();
+
+    let summary = super::build_risk_summary(Some(map));
+
+    assert_eq!(summary.halt_reason.as_deref(), Some("drawdown cap"));
+    assert_eq!(summary.halt_at_ms, Some(2_000));
+    assert_eq!(summary.closeout_exported_at_ms, Some(3_000));
+    assert_eq!(summary.session_drawdown_usd, Some(25.0));
+}
+
+/// Verifies that terminal halt summary falls back to top-level halt metadata.
+#[test]
+fn trading_risk_summary_parses_non_risk_halt_details() {
+    let details = serde_json::json!({
+        "reason": "geoblock failed",
+        "halt_at_ms": 4_000
+    });
+    let map = details.as_object().unwrap();
+
+    let summary = super::build_risk_summary(Some(map));
+
+    assert_eq!(summary.halt_reason.as_deref(), Some("geoblock failed"));
+    assert_eq!(summary.halt_at_ms, Some(4_000));
+}

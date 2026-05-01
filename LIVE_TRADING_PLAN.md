@@ -46,8 +46,9 @@ Issue-resolution discipline for every phase:
 - Phase 1, Polymarket CLOB V2 Venue Contract Reset: complete in commit `6c2f2d5` on 2026-05-01.
 - Phase 2, Sidecar Write Boundary: complete in commit `e8c223d` on 2026-05-01.
 - Phase 3, Live Ledger and Bot Runtime: complete in commit `359393f` on 2026-05-02.
-- Phase 4, Dashboard Execution Controls: complete in current local work on 2026-05-02, pending commit. Chosen defaults are admin-only dashboard controls and audited preflight commands queued through the bot control ledger.
-- Phase 5 and later: unfinished. Risk/halt/cooldown policy, replay-grade funded capture review, host rollout, and real-money canary remain gated until those phases are implemented and verified.
+- Phase 4, Dashboard Execution Controls: complete in commit `53a1fe9` on 2026-05-02. Chosen defaults are admin-only dashboard controls and audited preflight commands queued through the bot control ledger.
+- Phase 5, Risk, Halt, and Human Cooldown Policy: complete in current local work on 2026-05-02, pending commit. Chosen defaults are postmortem-only cooldown, new run DB after terminal halt, current loss caps, 2-minute terminal degradation threshold, and cancel/redeem still available from halted sessions.
+- Phase 6 and later: unfinished. Replay-grade funded capture review, host rollout, and real-money canary remain gated until those phases are implemented and verified.
 
 ## Current Decision
 
@@ -434,7 +435,7 @@ Operator artifacts:
 Tests:
 
 - Drawdown halt blocks orders immediately.
-- Restart over a halted DB remains halted unless a new session is explicitly created.
+- Restarting `live_trading` over a halted or unknown-order DB fails fast. The next funded attempt must use a new run DB after closeout and postmortem.
 - Dashboard shows halt reason without exposing a quick arm path.
 - Control audit records who did what and when.
 
@@ -443,6 +444,18 @@ Acceptance gates:
 - Rust live-system tests for halt persistence.
 - Dashboard tests for halted-state UX.
 - Runbook updated after implementation, not before.
+
+Phase 5 closeout:
+
+- Implemented live risk monitoring for session drawdown, daily loss, percentage drawdown, terminal gate failures, critical reconciliation, unknown submissions, and prolonged remote degradation.
+- Implemented terminal halt behavior: block new submissions, attempt cancel-all, persist critical reconciliation/control-audit evidence, preserve halted or unknown-order state on shutdown, and reject `live_trading` restart against halted or unknown-order DBs.
+- Implemented `live-closeout` export with DB integrity, replay-quality report, live ledger exports, control audit, summary, manifest, and postmortem stub.
+- Exposed risk and closeout summary fields through the agent trading summary and dashboard Execution halted state.
+- Blockers found: lint surfaced closeout helper quality issues, and concurrent validation exposed a `latency-arb` timestamp subtraction overflow when test/replay clocks moved backward.
+- Blockers fixed: closeout helpers now pass lint without suppressions, and latency-arb cooldown/adaptive-threshold elapsed calculations use saturating arithmetic with regression tests.
+- Accepted low-risk debt: dashboard production build still emits the existing Vite chunk-size warning; Playwright E2E still has the existing skipped viewport cases.
+- Validation gates run: `cargo test -p buba-paint live -- --nocapture`, `cargo test -p buba-paint --test live_system_test -- --nocapture`, `cargo test -p buba-paint latency_arb -- --nocapture`, `cargo test -p buba-paint live_control -- --nocapture`, `cargo test -p buba-agent live -- --nocapture`, `cargo test -p buba-dashboard -- --nocapture`, `cd dashboard/client && npm test`, `cd dashboard/client && npm run build`, `cd polymarket-sidecar && npm test`, `cd polymarket-sidecar && npm run build`, `make test-e2e`, `make lint`, `make docs-audit`, `make comment-audit`, `cargo build --release -p buba-paint`, and `git diff --check`.
+- Gates intentionally skipped: none from the Phase 5 plan.
 
 ## Phase 6: Replay-Grade Real-Money Capture
 

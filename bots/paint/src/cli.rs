@@ -79,6 +79,17 @@ pub enum Commands {
         #[arg(long)]
         reason: String,
     },
+    /// Export a live-trading closeout package after halt or operator shutdown
+    LiveCloseout {
+        #[arg(long)]
+        db_path: String,
+        #[arg(long)]
+        output_dir: String,
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        reason: String,
+    },
     /// Run live sidecar preflight for readonly or trading execution modes
     LivePreflight {
         #[arg(long = "set")]
@@ -287,6 +298,23 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 command_id,
                 action.as_str()
             );
+        }
+        Commands::LiveCloseout {
+            db_path,
+            output_dir,
+            actor,
+            reason,
+        } => {
+            let clock = SystemClock;
+            let options = crate::live_closeout::LiveCloseoutOptions {
+                db_path,
+                output_dir,
+                actor,
+                reason,
+                generated_at_ms: clock.now(),
+            };
+            crate::live_closeout::run_live_closeout(&options)?;
+            println!("live closeout exported");
         }
         Commands::LivePreflight { sets } => {
             let mut config = Config::from_env();
