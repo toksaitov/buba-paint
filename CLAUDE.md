@@ -10,10 +10,10 @@ Canonical reserve-mode and exact-run parity guidance lives in [docs/pending-sett
 
 Real-money readiness documentation is split across:
 
+- [docs/Readme.md](./docs/Readme.md)
 - [docs/live-trading-architecture.md](./docs/live-trading-architecture.md)
 - [docs/polymarket-live-constraints.md](./docs/polymarket-live-constraints.md)
 - [docs/live-session-runbook.md](./docs/live-session-runbook.md)
-- [docs/live-readiness-review.md](./docs/live-readiness-review.md)
 
 The current local tree now supports a real authenticated `live_readonly` runtime inside `buba-paint live`. It reuses the shared paper runtime, creates readonly live sessions, persists live account snapshots, reconciles remote venue state, and keeps the shadow analysis pages useful via a paper track without placing real orders.
 `EXECUTION_MODE=live_trading` is still intentionally gated. The sidecar now implements real readonly-safe surfaces (`/health`, `/account`, `/preflight`), while `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` remain intentionally not implemented.

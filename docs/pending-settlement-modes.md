@@ -78,7 +78,7 @@ Use `conservative` for normal live paper runs and exact-run calibration:
 
 - best current live baseline
 - safest way to stop Gamma lag from clogging family sleeves
-- default recommendation for the next deployment
+- default reserve recommendation for the next research deployment
 
 Use `risky` only as an explicit experiment:
 
@@ -126,9 +126,9 @@ PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false \
 cargo run -p buba-paint --release -- backtest ...
 ```
 
-## Current Release-Candidate Live Block
+## Historical Run-018 Candidate Block
 
-After the exact `run-018` parity work and the parity-aware sweep, the current release-candidate live block is:
+After the exact `run-018` parity work and the parity-aware sweep, this candidate block was useful historical evidence:
 
 ```bash
 LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008
@@ -140,11 +140,13 @@ PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0
 PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false
 ```
 
-That is the balanced row from the parity-aware `run-018` frontier:
+That was the balanced row from the parity-aware `run-018` frontier:
 
 - better than the currently deployed row on exact-run replay
 - below the `20%` drawdown line on that run
 - preferred over the more aggressive `0.10` latency sleeve row unless a later exact-run rerun moves the frontier
+
+Do not treat this as a current live-money promotion by itself. The next trusted parameter decision should come after a fresh replay-grade run passes `validate-replay-data` and is analyzed against the current code path.
 
 ## Operational Notes
 

@@ -10,12 +10,11 @@ The reserve model and exact-run parity workflow are documented in [docs/pending-
 
 Current release note: the latest point release hardens live websocket transport without changing trading semantics. All three feeds now share a bounded websocket connect timeout, Binance and CLOB reconnect if the socket stays open but no text market data arrives for too long, and CLOB reconnects coalesce stale resubscribe requests down to the newest market-token pair. The stale-data gates are unchanged, so the bot still blocks trading rather than trading blind.
 
-For live-money readiness details, use:
+For durable docs and future-work status, start with [docs/Readme.md](./docs/Readme.md). For live-money readiness details, use:
 
 - [docs/live-trading-architecture.md](./docs/live-trading-architecture.md)
 - [docs/polymarket-live-constraints.md](./docs/polymarket-live-constraints.md)
 - [docs/live-session-runbook.md](./docs/live-session-runbook.md)
-- [docs/live-readiness-review.md](./docs/live-readiness-review.md)
 
 The current local tree is ready for authenticated readonly venue verification, replay-grade research capture, compact live-session telemetry, and pre-live review work. It is not ready for real-money deployment. `live_readonly` is a real venue/account monitor plus a shared shadow paper runtime. `live_trading` is still gated and cannot place orders.
 

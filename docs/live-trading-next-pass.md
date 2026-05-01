@@ -1,6 +1,6 @@
-# Next Pass: Real `live_trading`
+# Future Pass: Real `live_trading`
 
-This note exists to preserve context after the `live_readonly` soak.
+This note preserves context for the eventual real-money implementation. It is not the immediate next task. The immediate research step is to collect a new replay-grade paper or `live_readonly` run, validate it with `validate-replay-data`, and only then use it for sweeps or live-trading readiness decisions.
 
 ## Current state
 
@@ -16,9 +16,10 @@ This note exists to preserve context after the `live_readonly` soak.
 
 - proxy-wallet auth and sidecar readonly integration work on the server
 - real venue/account health can be monitored safely
-- the old dashboard pages remain useful through the shadow-paper track
+- the shadow analysis pages remain useful through the paper track
 - the Execution page remains the real venue/account diagnostics surface
 - the rejection telemetry is meaningful enough to explain inactive periods
+- the dashboard IA and UX have already been rebuilt around Overview, Execution, Logs, and analysis pages
 
 ## What still blocks real money
 
@@ -31,7 +32,7 @@ This note exists to preserve context after the `live_readonly` soak.
 
 ## Exact next implementation scope
 
-The next code pass should implement the minimum safe `live_trading` slice:
+When the project returns to real-money implementation, the code pass should implement the minimum safe `live_trading` slice:
 
 1. Real order placement in the sidecar.
 2. Real order and fill ingestion into the live tables.
@@ -54,27 +55,21 @@ The first real-money canary should stay narrow:
 
 `calm-persistence` and `spread-capture` stay disabled for the first live-money run even if they remain available in paper and readonly.
 
-## UI and UX work that can proceed in parallel
+## UI boundary
 
-UI work is reasonable now, but keep it operational:
-
-- make mode/state easier to understand
-- keep the old pages clearly labeled as shadow-paper output in `live_readonly`
-- keep the Execution page clearly labeled as real venue/account truth
-- improve readonly and future live control/status clarity
-
-Do not design destructive live controls until the real trading path exists end to end.
+The major dashboard IA cleanup is complete enough for the next research run. Future UI work should be limited to problems discovered during operation unless the real trading path introduces new safety requirements. Do not design destructive live controls beyond their gated presentation until the order path exists end to end.
 
 ## Operational notes to carry forward
 
 - The readonly soak is healthy, but long runs grow SQLite materially because of feed capture.
-- Before long future soaks or live-money sessions, tighten storage policy or add pruning/export discipline.
+- Future long runs should use replay-grade public capture and validate early, then manage storage by pruning/export discipline rather than downgrading capture quality.
 - The Polymarket private key and relayer API key were exposed during development and must be rotated before any real-money use.
 
 ## Ready-to-start checklist for the next pass
 
+- new replay-grade research run collected and validated as `sweep_grade`
+- new run analyzed, including drawdown/halt behavior and strategy attribution
 - readonly soak reviewed and accepted
-- storage-growth decision made
 - live wallet and relayer credentials rotated
 - next pass scoped to the minimum live-trading path above
 - full tests, docs, review, and gates required again before any funded deployment

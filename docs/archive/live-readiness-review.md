@@ -64,4 +64,4 @@ The main remaining work is:
 
 The current hardening pass does not deploy supervision automatically, but the repository now carries the intended supervised sidecar process model and service artifact for `buba-paint`.
 
-See also [Next Pass: Real `live_trading`](./live-trading-next-pass.md) for the compact handoff note that should be used to recover context before starting that work.
+See also [Future Pass: Real `live_trading`](../live-trading-next-pass.md) for the compact handoff note that should be used to recover context before starting that work.
