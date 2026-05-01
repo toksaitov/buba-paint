@@ -83,6 +83,7 @@ function validateOrderIntent(value: unknown): value is LiveOrderIntentRequest {
     isNonEmptyString(value.order_type) &&
     isFiniteNumber(value.limit_price) &&
     isFiniteNumber(value.size) &&
+    (value.amount_usd == null || isFiniteNumber(value.amount_usd)) &&
     isNonEmptyString(value.client_order_id)
   );
 }

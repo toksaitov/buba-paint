@@ -20,6 +20,8 @@ Required behavior for every implementation pass:
 - Keep secrets out of logs, DB rows, test fixtures, and docs.
 - Use small, separately reviewable phases. Do not combine docs cleanup, SDK migration, order routing, dashboard controls, and deployment in one pass.
 - Run the planned validation gates. If a gate is too slow or unavailable, record that explicitly and do not silently skip it.
+- Resolve newly discovered issues before closing a phase. Do not leave correctness, safety, security, or contract problems as casual residual risk.
+- Prefer system correctness over plan completion. If implementation reveals that the current phase plan is incomplete or wrong, update the plan and fix the discovered issue before advancing.
 
 Research discipline for every phase:
 
@@ -28,6 +30,22 @@ Research discipline for every phase:
 - Check the official changelog before touching sidecar, CLOB, relayer, user-stream, fee, collateral, or market metadata logic.
 - When official docs conflict with existing local assumptions, treat local assumptions as stale until proven otherwise.
 - Save durable findings in stable docs only after the implementation is complete. Keep active work in root while it is still active.
+
+Issue-resolution discipline for every phase:
+
+- Treat any failing validation gate, security audit finding at moderate severity or above, venue contract mismatch, secret-handling issue, stale account/order ambiguity, misleading UI state, or untested money path as blocking by default.
+- A blocker must be fixed in the current phase or the phase must stop explicitly as blocked. Do not call the phase complete while the blocker remains.
+- Low-severity upstream dependency advisories may be accepted only when there is no available patched version, the dependency is required by the official/current venue SDK, and the acceptance is documented in the phase result.
+- If a new finding changes assumptions for later phases, edit this plan before continuing so future plan-mode runs inherit the corrected understanding.
+- Every phase closeout must state: blockers found, blockers fixed, accepted low-risk debt if any, validation gates run, and gates intentionally skipped if any.
+- Do not optimize for checking off all phases. A phase that discovers the plan is unsafe has succeeded if it prevents bad live-money behavior.
+
+## Phase Status
+
+- Phase 0, Documentation IA Reset: complete in commit `398da37` on 2026-05-01.
+- Phase 1, Polymarket CLOB V2 Venue Contract Reset: complete in commit `6c2f2d5` on 2026-05-01.
+- Phase 2, Sidecar Write Boundary: complete in the current uncommitted local work on 2026-05-01; commit after review.
+- Phase 3 and later: unfinished. `live_trading` remains gated until those phases are implemented and verified.
 
 ## Current Decision
 
@@ -48,11 +66,13 @@ The live execution layer must still be architecture-ready for spread and calm. S
 Polymarket CLOB V2 is now production. The sidecar readonly CLOB boundary uses:
 
 - `@polymarket/clob-client-v2`
-- `@polymarket/relayer-client` retained only for future redemption work
+- `@polymarket/builder-relayer-client` plus `@polymarket/builder-signing-sdk` for gasless redemption submission
 
 Official Polymarket docs say CLOB V2 went live on production on April 28, 2026, legacy V1 SDKs and V1-signed orders are no longer supported, pUSD replaced USDC.e as trading collateral, and V2 order signing removed fields such as `feeRateBps`, `nonce`, and `taker`.
 
-This means live order routing still cannot be implemented through any V1 order assumptions. The readonly sidecar contract has been reset to CLOB V2 and pUSD diagnostics, but real order placement still requires the dedicated sidecar write-boundary phase.
+This means live order routing cannot use any V1 order assumptions. The sidecar contract has been reset to CLOB V2, pUSD diagnostics, FOK/FAK market-order submission, cancellation, and gasless CTF redemption. Bot runtime arming and dashboard control enablement are still intentionally gated for later phases.
+
+The installed `@polymarket/builder-relayer-client@0.0.8` TypeScript package exposes the constructor and auth shape used by the builder signing SDK. The sidecar therefore fails redemption closed unless `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, and `POLYMARKET_BUILDER_PASSPHRASE` are configured. Plain relayer API key fields remain recorded in config for observability, but they are not treated as sufficient for redemption with the installed SDK.
 
 Official sources checked on 2026-05-01. Re-check them at the start of the relevant phase because these docs are live operational dependencies:
 
@@ -225,6 +245,7 @@ Acceptance gates:
 
 - `cd polymarket-sidecar && npm test`
 - `cd polymarket-sidecar && npm run build`
+- `cd polymarket-sidecar && npm run audit:security`
 - sidecar manual dry-run against mocked provider
 - no bot `live_trading` enablement yet
 

@@ -3,12 +3,30 @@ import {
   AssetType,
   Chain,
   ClobClient,
+  OrderType,
   SignatureTypeV2,
+  Side,
   type ApiKeyCreds,
   type MarketDetails,
   type OpenOrder,
+  type OrderResponse,
+  type TickSize,
+  type UserMarketOrderV2,
 } from "@polymarket/clob-client-v2";
+import builderRelayerClient from "@polymarket/builder-relayer-client";
+import { BuilderConfig } from "@polymarket/builder-signing-sdk";
+import {
+  encodeFunctionData,
+  zeroHash,
+  type Hex,
+} from "viem";
 import WebSocket, { type RawData } from "ws";
+import type {
+  RelayerTransaction,
+  RelayerTransactionResponse,
+  RelayerTxType as RelayerTxTypeValue,
+  Transaction,
+} from "@polymarket/builder-relayer-client";
 import type {
   LiveAccountState,
   LiveCancellationResponse,
@@ -27,6 +45,15 @@ const USER_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
 const CHAIN_ID = Chain.POLYGON;
 const COLLATERAL_DECIMALS = 1_000_000;
 const POLYMARKET_HTTP_USER_AGENT = "buba-polymarket-sidecar/0.1.0";
+const PUSD_COLLATERAL_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
+const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
+const ZERO_BYTES32 = zeroHash;
+
+const {
+  RelayClient,
+  RelayerTxType,
+  RelayerTransactionState,
+} = builderRelayerClient as typeof import("@polymarket/builder-relayer-client");
 
 type LiveCheckStatus = "ok" | "failed";
 type ReadinessStatus = "ready" | "degraded" | "failed";
@@ -39,7 +66,11 @@ type SidecarErrorStage =
   | "user_stream_connect"
   | "balance_allowance"
   | "open_orders"
-  | "positions";
+  | "positions"
+  | "order_submission"
+  | "cancel_order"
+  | "cancel_all"
+  | "redemption";
 type UserStreamLifecycle =
   | "idle"
   | "connecting"
@@ -93,8 +124,14 @@ interface GammaEventResponse {
 
 interface PositionResponse {
   proxyWallet?: string;
+  asset?: string;
+  conditionId?: string;
+  condition_id?: string;
+  size?: number | string;
   currentValue?: number | string;
   redeemable?: boolean;
+  negativeRisk?: boolean;
+  outcomeIndex?: number;
 }
 
 interface BalanceAllowanceView {
@@ -155,17 +192,43 @@ interface UserStreamMonitor {
   close(): void;
 }
 
-interface ClobReadonlyClient {
+interface ClobVenueClient {
   createOrDeriveApiKey(): Promise<ApiKeyCreds>;
   getServerTime(): Promise<number>;
   getBalanceAllowance(): Promise<BalanceAllowanceView>;
   getOpenOrders(): Promise<OpenOrder[]>;
   getClobMarketInfo(conditionId: string): Promise<MarketDetails>;
+  createAndPostMarketOrder(
+    order: UserMarketOrderV2,
+    options: { tickSize: TickSize; negRisk: boolean },
+    orderType: OrderType.FOK | OrderType.FAK,
+  ): Promise<OrderResponse>;
+  cancelOrder(payload: { orderID: string }): Promise<CancelResult>;
+  cancelAll(): Promise<CancelResult>;
+}
+
+interface CancelResult {
+  canceled?: string[];
+  not_canceled?: Record<string, string>;
+}
+
+interface RelayerClientLike {
+  execute(
+    txns: Transaction[],
+    metadata?: string,
+  ): Promise<RelayerTransactionResponse>;
+  pollUntilState?(
+    transactionId: string,
+    states: string[],
+    failState?: string,
+    maxPolls?: number,
+    pollFrequency?: number,
+  ): Promise<RelayerTransaction | undefined>;
 }
 
 interface AuthState {
   creds: ApiKeyCreds;
-  client: ClobReadonlyClient;
+  client: ClobVenueClient;
   walletAddress: string | null;
   proxyWallet: string | null;
 }
@@ -192,7 +255,8 @@ interface ProviderDeps {
   createClobClient: (
     config: SidecarConfig,
     creds?: ApiKeyCreds,
-  ) => ClobReadonlyClient;
+  ) => ClobVenueClient;
+  createRelayerClient: (config: SidecarConfig) => RelayerClientLike;
   createUserStreamMonitor: (
     config: SidecarConfig,
     nowMs: () => number,
@@ -430,6 +494,155 @@ function legalOrderMinUsd(markets: ActiveMarket[]): number | null {
   return Math.min(...values);
 }
 
+function orderTypeFromRequest(value: string): OrderType.FOK | OrderType.FAK | null {
+  const normalized = value.trim().toUpperCase();
+  if (normalized === OrderType.FOK) return OrderType.FOK;
+  if (normalized === OrderType.FAK) return OrderType.FAK;
+  return null;
+}
+
+function sideFromRequest(value: string): Side | null {
+  const normalized = value.trim().toUpperCase();
+  if (normalized === Side.BUY) return Side.BUY;
+  if (normalized === Side.SELL) return Side.SELL;
+  return null;
+}
+
+function isPositiveFinite(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isTickAligned(price: number, tickSize: number): boolean {
+  if (!Number.isFinite(price) || !Number.isFinite(tickSize) || tickSize <= 0) {
+    return false;
+  }
+  const units = Math.round(price / tickSize);
+  return Math.abs(price - units * tickSize) < 1e-9;
+}
+
+function clobTickSize(tickSize: number): TickSize {
+  const normalized = tickSize.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  if (
+    normalized === "0.1" ||
+    normalized === "0.01" ||
+    normalized === "0.001" ||
+    normalized === "0.0001"
+  ) {
+    return normalized;
+  }
+  throw new ProviderStageError(
+    "order_submission",
+    `Unsupported CLOB V2 tick size ${tickSize}.`,
+  );
+}
+
+function safeDetails(value: Record<string, unknown>): string {
+  return JSON.stringify(value);
+}
+
+function safeNumber(value: unknown): number | null {
+  const parsed = parseNumber(value);
+  return parsed == null || !Number.isFinite(parsed) ? null : parsed;
+}
+
+function normalizeAcceptedSize(
+  side: Side,
+  response: Partial<OrderResponse>,
+): number | null {
+  const raw =
+    side === Side.BUY
+      ? safeNumber(response.takingAmount)
+      : safeNumber(response.makingAmount);
+  return raw == null ? null : collateralUnitsToUsd(raw);
+}
+
+function normalizeOrderStatus(response: Partial<OrderResponse>): string {
+  if (typeof response.status === "string" && response.status.trim().length > 0) {
+    return response.status;
+  }
+  return response.success === true ? "submitted" : "rejected";
+}
+
+function redactOrderResponse(response: Partial<OrderResponse>): Record<string, unknown> {
+  return {
+    success: response.success,
+    errorMsg: response.errorMsg,
+    orderID: response.orderID,
+    transactionsHashes: response.transactionsHashes,
+    status: response.status,
+    takingAmount: response.takingAmount,
+    makingAmount: response.makingAmount,
+  };
+}
+
+function redeemableConditionIds(positions: PositionResponse[]): {
+  conditionIds: string[];
+  unsupported: PositionResponse[];
+  missingConditionId: PositionResponse[];
+} {
+  const redeemable = positions.filter((position) => position.redeemable === true);
+  const unsupported = redeemable.filter(
+    (position) => position.negativeRisk === true,
+  );
+  const missingConditionId = redeemable.filter((position) => {
+    const conditionId = position.conditionId ?? position.condition_id;
+    return typeof conditionId !== "string" || conditionId.trim().length === 0;
+  });
+  const conditionIds = dedupeStrings(
+    redeemable
+      .filter((position) => position.negativeRisk !== true)
+      .map((position) => position.conditionId ?? position.condition_id ?? "")
+      .filter((conditionId) => conditionId.trim().length > 0),
+  );
+  return { conditionIds, unsupported, missingConditionId };
+}
+
+const ctfRedeemAbi = [
+  {
+    name: "redeemPositions",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "collateralToken", type: "address" },
+      { name: "parentCollectionId", type: "bytes32" },
+      { name: "conditionId", type: "bytes32" },
+      { name: "indexSets", type: "uint256[]" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+function createRedeemTransaction(conditionId: string): Transaction {
+  return {
+    to: CTF_ADDRESS,
+    data: encodeFunctionData({
+      abi: ctfRedeemAbi,
+      functionName: "redeemPositions",
+      args: [
+        PUSD_COLLATERAL_ADDRESS as Hex,
+        ZERO_BYTES32,
+        conditionId as Hex,
+        [1n, 2n],
+      ],
+    }),
+    value: "0",
+  };
+}
+
+function hasBuilderRelayerCredentials(config: SidecarConfig): boolean {
+  return Boolean(
+    config.builderApiKey &&
+      config.builderSecret &&
+      config.builderPassphrase,
+  );
+}
+
+function relayerTxTypeFromConfig(config: SidecarConfig): typeof RelayerTxType.PROXY | typeof RelayerTxType.SAFE {
+  return config.signatureType === SignatureTypeV2.POLY_GNOSIS_SAFE
+    ? RelayerTxType.SAFE
+    : RelayerTxType.PROXY;
+}
+
 function stringError(error: unknown): string {
   if (error instanceof ProviderStageError) {
     return error.message;
@@ -461,6 +674,10 @@ function errorStatus(error: unknown): number | null {
     return record.response.status;
   }
   return null;
+}
+
+function isVenueRestart(error: unknown): boolean {
+  return errorStatus(error) === 425 || stringError(error).includes("HTTP 425");
 }
 
 function isAuthLikeError(error: unknown): boolean {
@@ -916,7 +1133,35 @@ function defaultProviderDeps(): ProviderDeps {
         getOpenOrders: async () => client.getOpenOrders(),
         getClobMarketInfo: async (conditionId) =>
           client.getClobMarketInfo(conditionId),
+        createAndPostMarketOrder: async (order, options, orderType) =>
+          client.createAndPostMarketOrder(order, options, orderType),
+        cancelOrder: async (payload) => client.cancelOrder(payload),
+        cancelAll: async () => client.cancelAll(),
       };
+    },
+    createRelayerClient: (config) => {
+      if (!config.privateKey) {
+        throw new Error(
+          "POLYMARKET_PRIVATE_KEY is required for Polymarket relayer redemption",
+        );
+      }
+      const signer = new Wallet(config.privateKey);
+      const builderConfig = hasBuilderRelayerCredentials(config)
+        ? new BuilderConfig({
+            localBuilderCreds: {
+              key: config.builderApiKey as string,
+              secret: config.builderSecret as string,
+              passphrase: config.builderPassphrase as string,
+            },
+          })
+        : undefined;
+      return new RelayClient(
+        config.relayerHost,
+        CHAIN_ID,
+        signer,
+        builderConfig,
+        relayerTxTypeFromConfig(config),
+      );
     },
     createUserStreamMonitor: (config, clock, log) =>
       new WsUserStreamMonitor({
@@ -1102,6 +1347,10 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
   private authStatePromise: Promise<AuthState> | null = null;
   private lastGammaApiUrl: string = DEFAULT_GAMMA_API_URL;
   private lastDiscovery: ActiveMarket[] = [];
+  private readonly submittedOrderResponses = new Map<
+    string,
+    LiveOrderIntentResponse
+  >();
   private readonly healthState: ProviderHealthState = {
     lastSuccessfulAccountRefreshAtMs: null,
     lastAccountRefreshError: null,
@@ -1118,6 +1367,7 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       fetchImpl: deps.fetchImpl ?? defaults.fetchImpl,
       nowMs: deps.nowMs ?? defaults.nowMs,
       createClobClient: deps.createClobClient ?? defaults.createClobClient,
+      createRelayerClient: deps.createRelayerClient ?? defaults.createRelayerClient,
       createUserStreamMonitor:
         deps.createUserStreamMonitor ?? defaults.createUserStreamMonitor,
     };
@@ -1379,46 +1629,465 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
   async submitOrderIntent(
     request: LiveOrderIntentRequest,
   ): Promise<LiveOrderIntentResponse> {
+    const prior = this.submittedOrderResponses.get(request.client_order_id);
+    if (prior) {
+      return {
+        ...prior,
+        status_reason: prior.status_reason ?? "Duplicate client order id.",
+        details_json: safeDetails({
+          provider: "polymarket",
+          duplicate_client_order_id: true,
+          original: JSON.parse(prior.details_json ?? "{}") as unknown,
+        }),
+      };
+    }
+
+    const receivedAtMs = this.deps.nowMs();
+    const orderType = orderTypeFromRequest(request.order_type);
+    const side = sideFromRequest(request.side);
+    if (!orderType || !side) {
+      return this.rejectedOrder(request, "validation_failed", "Only FOK/FAK BUY/SELL orders are supported.", {
+        received_at_ms: receivedAtMs,
+      });
+    }
+    if (!isPositiveFinite(request.limit_price) || request.limit_price >= 1) {
+      return this.rejectedOrder(request, "validation_failed", "limit_price must be between 0 and 1.", {
+        received_at_ms: receivedAtMs,
+      });
+    }
+    const orderAmount =
+      side === Side.BUY ? request.amount_usd : request.size;
+    if (!isPositiveFinite(orderAmount)) {
+      return this.rejectedOrder(
+        request,
+        "validation_failed",
+        side === Side.BUY
+          ? "BUY market orders require positive amount_usd."
+          : "SELL market orders require positive size.",
+        { received_at_ms: receivedAtMs },
+      );
+    }
+
+    try {
+      const authState = await this.getAuthState();
+      const discovery = await this.enrichActiveMarkets(
+        authState.client,
+        await this.discoverActiveMarkets(this.lastGammaApiUrl || DEFAULT_GAMMA_API_URL),
+      );
+      this.lastDiscovery = discovery.markets;
+      const market = discovery.markets.find(
+        (candidate) => candidate.conditionId === request.market_id,
+      );
+      const validationFailure = this.validateOrderMarket(request, market, orderAmount);
+      if (validationFailure) {
+        return this.rejectedOrder(
+          request,
+          "validation_failed",
+          validationFailure,
+          {
+            received_at_ms: receivedAtMs,
+            active_markets: discovery.markets,
+          },
+        );
+      }
+      const orderMarket = market as ActiveMarket;
+
+      const account = await this.observeAccountState(
+        authState,
+        discovery.markets,
+        this.lastGammaApiUrl || DEFAULT_GAMMA_API_URL,
+        discovery,
+      );
+      const accountFailure = await this.validateOrderAccount(
+        authState,
+        request,
+        side,
+        orderAmount,
+        account.state,
+      );
+      if (accountFailure) {
+        return this.rejectedOrder(
+          request,
+          "account_unavailable",
+          accountFailure,
+          {
+            received_at_ms: receivedAtMs,
+            cash_available: account.state.cash_available,
+            allowance_available: account.state.allowance_available,
+          },
+        );
+      }
+
+      const submitStartedAtMs = this.deps.nowMs();
+      const response = await this.runClobCall("order_submission", async () =>
+        authState.client.createAndPostMarketOrder(
+          {
+            tokenID: request.token_id,
+            side,
+            amount: orderAmount,
+            price: request.limit_price,
+            orderType,
+          },
+          {
+            tickSize: clobTickSize(orderMarket.tickSize as number),
+            negRisk: orderMarket.negRisk === true,
+          },
+          orderType,
+        ),
+      );
+      const acceptedSize = normalizeAcceptedSize(side, response);
+      const status = normalizeOrderStatus(response);
+      const result: LiveOrderIntentResponse = {
+        ok: response.success === true,
+        venue_order_id:
+          typeof response.orderID === "string" && response.orderID.length > 0
+            ? response.orderID
+            : null,
+        client_order_id: request.client_order_id,
+        status,
+        status_reason:
+          response.success === true ? null : response.errorMsg || "CLOB rejected order.",
+        accepted_size: acceptedSize,
+        details_json: safeDetails({
+          provider: "polymarket",
+          clob_contract_version: "v2",
+          collateral_token: "pUSD",
+          client_order_id: request.client_order_id,
+          condition_id: request.market_id,
+          token_id: request.token_id,
+          side,
+          order_type: orderType,
+          amount: orderAmount,
+          amount_semantics: side === Side.BUY ? "usd" : "shares",
+          limit_price: request.limit_price,
+          tick_size: orderMarket.tickSize ?? null,
+          min_order_size: orderMarket.minOrderSize ?? null,
+          fee_details: orderMarket.feeDetails ?? null,
+          neg_risk: orderMarket.negRisk ?? null,
+          received_at_ms: receivedAtMs,
+          submit_started_at_ms: submitStartedAtMs,
+          submit_finished_at_ms: this.deps.nowMs(),
+          raw_response: redactOrderResponse(response),
+        }),
+      };
+      this.submittedOrderResponses.set(request.client_order_id, result);
+      this.log(result.ok ? "info" : "warn", "live_order_submit_result", {
+        client_order_id: request.client_order_id,
+        venue_order_id: result.venue_order_id,
+        status: result.status,
+        ok: result.ok,
+      });
+      return result;
+    } catch (error) {
+      const failure = stageError("order_submission", error);
+      const status = isVenueRestart(failure) ? "venue_restart" : "unknown_submission";
+      const result: LiveOrderIntentResponse = {
+        ok: false,
+        venue_order_id: null,
+        client_order_id: request.client_order_id,
+        status,
+        status_reason: failure.message,
+        accepted_size: null,
+        details_json: safeDetails({
+          provider: "polymarket",
+          client_order_id: request.client_order_id,
+          condition_id: request.market_id,
+          token_id: request.token_id,
+          received_at_ms: receivedAtMs,
+          failed_at_ms: this.deps.nowMs(),
+          dangerous_unknown_submission: status === "unknown_submission",
+          error: failure.message,
+        }),
+      };
+      this.submittedOrderResponses.set(request.client_order_id, result);
+      this.log("error", "live_order_submit_failed", {
+        client_order_id: request.client_order_id,
+        status,
+        error: failure.message,
+      });
+      return result;
+    }
+  }
+
+  async cancelOrder(orderId: string): Promise<LiveCancellationResponse> {
+    try {
+      const authState = await this.getAuthState();
+      const response = await this.runClobCall("cancel_order", async () =>
+        authState.client.cancelOrder({ orderID: orderId }),
+      );
+      return this.normalizeCancelResponse("cancel_order", response);
+    } catch (error) {
+      const failure = stageError("cancel_order", error);
+      return {
+        ok: false,
+        cancelled: 0,
+        details_json: safeDetails({
+          provider: "polymarket",
+          action: "cancel_order",
+          order_id: orderId,
+          venue_restart: isVenueRestart(failure),
+          error: failure.message,
+        }),
+      };
+    }
+  }
+
+  async cancelAll(): Promise<LiveCancellationResponse> {
+    try {
+      const authState = await this.getAuthState();
+      const response = await this.runClobCall("cancel_all", async () =>
+        authState.client.cancelAll(),
+      );
+      return this.normalizeCancelResponse("cancel_all", response);
+    } catch (error) {
+      const failure = stageError("cancel_all", error);
+      return {
+        ok: false,
+        cancelled: 0,
+        details_json: safeDetails({
+          provider: "polymarket",
+          action: "cancel_all",
+          venue_restart: isVenueRestart(failure),
+          error: failure.message,
+        }),
+      };
+    }
+  }
+
+  async redeemAll(): Promise<LiveRedemptionResponse> {
+    try {
+      const authState = await this.getAuthState();
+      if (!authState.walletAddress) {
+        throw new ProviderStageError("redemption", "wallet address is missing");
+      }
+      const positions = await this.fetchPositions(
+        authState.walletAddress,
+        this.lastGammaApiUrl || DEFAULT_GAMMA_API_URL,
+      );
+      const { conditionIds, unsupported, missingConditionId } =
+        redeemableConditionIds(positions);
+      if (unsupported.length > 0 || missingConditionId.length > 0) {
+        return {
+          ok: false,
+          submitted: 0,
+          details_json: safeDetails({
+            provider: "polymarket",
+            action: "redeem_all",
+            unsupported_negative_risk_count: unsupported.length,
+            missing_condition_id_count: missingConditionId.length,
+            reason:
+              "Redeem-all is fail-closed until every redeemable position has a supported condition id.",
+          }),
+        };
+      }
+      if (conditionIds.length === 0) {
+        return {
+          ok: true,
+          submitted: 0,
+          details_json: safeDetails({
+            provider: "polymarket",
+            action: "redeem_all",
+            redeemable_condition_ids: [],
+          }),
+        };
+      }
+      if (!hasBuilderRelayerCredentials(this.config)) {
+        return {
+          ok: false,
+          submitted: 0,
+          details_json: safeDetails({
+            provider: "polymarket",
+            action: "redeem_all",
+            redeemable_condition_ids: conditionIds,
+            relayer_api_key_present: Boolean(this.config.relayerApiKey),
+            relayer_api_key_address_present: Boolean(
+              this.config.relayerApiKeyAddress,
+            ),
+            reason:
+              "Current installed relayer SDK exposes builder-credential auth for execute(); configure POLYMARKET_BUILDER_API_KEY, POLYMARKET_BUILDER_SECRET, and POLYMARKET_BUILDER_PASSPHRASE or update the SDK before redeeming.",
+          }),
+        };
+      }
+
+      const relayer = this.deps.createRelayerClient(this.config);
+      const transactions = conditionIds.map(createRedeemTransaction);
+      const response = await withTimeout(
+        relayer.execute(transactions, "buba-paint redeem positions"),
+        this.config.sdkTimeoutMs,
+        "redemption",
+        "submit redemption",
+      );
+      const pollTimeoutMs =
+        this.config.redemptionPollIntervalMs * this.config.redemptionMaxPolls +
+        this.config.sdkTimeoutMs;
+      const terminal = await withTimeout(
+        relayer.pollUntilState
+          ? relayer.pollUntilState(
+              response.transactionID,
+              [
+                RelayerTransactionState.STATE_MINED,
+                RelayerTransactionState.STATE_CONFIRMED,
+              ],
+              RelayerTransactionState.STATE_FAILED,
+              this.config.redemptionMaxPolls,
+              this.config.redemptionPollIntervalMs,
+            )
+          : response.wait(),
+        pollTimeoutMs,
+        "redemption",
+        "poll redemption",
+      );
+      const terminalState = terminal?.state ?? response.state;
+      const ok =
+        terminalState === RelayerTransactionState.STATE_MINED ||
+        terminalState === RelayerTransactionState.STATE_CONFIRMED;
+      return {
+        ok,
+        submitted: ok ? conditionIds.length : 0,
+        details_json: safeDetails({
+          provider: "polymarket",
+          action: "redeem_all",
+          redeemable_condition_ids: conditionIds,
+          transaction_id: response.transactionID,
+          initial_state: response.state,
+          terminal_state: terminalState,
+          transaction_hash:
+            terminal?.transactionHash || response.transactionHash || response.hash || null,
+          submitted_count: conditionIds.length,
+          collateral_token: PUSD_COLLATERAL_ADDRESS,
+          ctf_address: CTF_ADDRESS,
+          relayer_tx_type: relayerTxTypeFromConfig(this.config),
+          proceeds_counted_spendable: false,
+          requires_account_refresh: ok,
+        }),
+      };
+    } catch (error) {
+      const failure = stageError("redemption", error);
+      return {
+        ok: false,
+        submitted: 0,
+        details_json: safeDetails({
+          provider: "polymarket",
+          action: "redeem_all",
+          error: failure.message,
+        }),
+      };
+    }
+  }
+
+  private rejectedOrder(
+    request: LiveOrderIntentRequest,
+    status: string,
+    reason: string,
+    details: Record<string, unknown>,
+  ): LiveOrderIntentResponse {
     return {
       ok: false,
       venue_order_id: null,
       client_order_id: request.client_order_id,
-      status: "not_implemented",
-      status_reason: "Live order routing remains intentionally disabled in this pass.",
+      status,
+      status_reason: reason,
       accepted_size: null,
-      details_json: JSON.stringify({ provider: "polymarket", mode: "readonly_only" }),
-    };
-  }
-
-  async cancelOrder(_orderId: string): Promise<LiveCancellationResponse> {
-    return {
-      ok: false,
-      cancelled: 0,
-      details_json: JSON.stringify({
+      details_json: safeDetails({
         provider: "polymarket",
-        reason: "cancel not implemented",
+        client_order_id: request.client_order_id,
+        condition_id: request.market_id,
+        token_id: request.token_id,
+        reason,
+        ...details,
       }),
     };
   }
 
-  async cancelAll(): Promise<LiveCancellationResponse> {
-    return {
-      ok: false,
-      cancelled: 0,
-      details_json: JSON.stringify({
-        provider: "polymarket",
-        reason: "cancel not implemented",
-      }),
-    };
+  private validateOrderMarket(
+    request: LiveOrderIntentRequest,
+    market: ActiveMarket | undefined,
+    orderAmount: number,
+  ): string | null {
+    if (!market) {
+      return "Order market was not found in current active BTC 5-minute discovery.";
+    }
+    if (market.acceptingOrders !== true) {
+      return "Order market is not accepting orders.";
+    }
+    if (market.metadataSource !== "clob_v2" || market.metadataError) {
+      return "CLOB V2 market metadata is unavailable.";
+    }
+    if (!isPositiveFinite(market.tickSize)) {
+      return "CLOB V2 market tick size is unavailable.";
+    }
+    if (!isTickAligned(request.limit_price, market.tickSize)) {
+      return `limit_price is not aligned to tick size ${market.tickSize}.`;
+    }
+    if (!isPositiveFinite(market.minOrderSize)) {
+      return "CLOB V2 market min order size is unavailable.";
+    }
+    if (orderAmount < market.minOrderSize) {
+      return `Order amount ${orderAmount} is below market min size ${market.minOrderSize}.`;
+    }
+    if (
+      market.tokens.length > 0 &&
+      !market.tokens.some((token) => token.tokenId === request.token_id)
+    ) {
+      return "Order token_id is not one of the active market tokens.";
+    }
+    return null;
   }
 
-  async redeemAll(): Promise<LiveRedemptionResponse> {
+  private async validateOrderAccount(
+    authState: AuthState,
+    request: LiveOrderIntentRequest,
+    side: Side,
+    orderAmount: number,
+    account: LiveAccountState,
+  ): Promise<string | null> {
+    if (side === Side.BUY) {
+      if (account.cash_available < orderAmount) {
+        return `Available pUSD cash ${account.cash_available.toFixed(2)} is below order amount ${orderAmount.toFixed(2)}.`;
+      }
+      if (account.allowance_available == null) {
+        return "Allowance state is unavailable.";
+      }
+      if (account.allowance_available < orderAmount) {
+        return `Available pUSD allowance ${account.allowance_available.toFixed(2)} is below order amount ${orderAmount.toFixed(2)}.`;
+      }
+      return null;
+    }
+
+    if (!authState.walletAddress) {
+      return "Wallet address is unavailable for SELL inventory validation.";
+    }
+    const positions = await this.fetchPositions(
+      authState.walletAddress,
+      this.lastGammaApiUrl || DEFAULT_GAMMA_API_URL,
+    );
+    const tokenPosition = positions.find(
+      (position) => position.asset === request.token_id,
+    );
+    const tokenSize = parseNumber(tokenPosition?.size) ?? 0;
+    if (tokenSize < orderAmount) {
+      return `Token inventory ${tokenSize.toFixed(4)} is below SELL size ${orderAmount.toFixed(4)}.`;
+    }
+    return null;
+  }
+
+  private normalizeCancelResponse(
+    action: "cancel_order" | "cancel_all",
+    response: CancelResult,
+  ): LiveCancellationResponse {
+    const canceled = Array.isArray(response.canceled) ? response.canceled : [];
+    const notCanceled =
+      response.not_canceled && typeof response.not_canceled === "object"
+        ? response.not_canceled
+        : {};
     return {
-      ok: false,
-      submitted: 0,
-      details_json: JSON.stringify({
+      ok: Object.keys(notCanceled).length === 0,
+      cancelled: canceled.length,
+      details_json: safeDetails({
         provider: "polymarket",
-        reason: "redemption not implemented",
+        action,
+        canceled,
+        not_canceled: notCanceled,
       }),
     };
   }
@@ -1624,7 +2293,7 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
   }
 
   private async enrichActiveMarkets(
-    client: ClobReadonlyClient,
+    client: ClobVenueClient,
     discovery: ActiveMarketDiscovery,
   ): Promise<ActiveMarketDiscovery> {
     if (discovery.markets.length === 0) {

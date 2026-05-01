@@ -96,6 +96,8 @@ pub struct LiveOrderIntentRequest {
     pub order_type: String,
     pub limit_price: f64,
     pub size: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount_usd: Option<f64>,
     pub client_order_id: String,
     pub details_json: Option<String>,
 }
@@ -169,7 +171,7 @@ impl LiveSidecarClient {
         self.post_json("/orders", request).await
     }
 
-    /// Cancel one live venue order by client or venue order ID.
+    /// Cancel one live venue order by venue order ID.
     pub async fn cancel_order(&self, order_id: &str) -> anyhow::Result<LiveCancellationResponse> {
         self.post_json(
             "/cancel",

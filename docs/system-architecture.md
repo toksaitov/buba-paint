@@ -10,7 +10,7 @@ The workspace has five major components:
 - `agent`: a monitoring service that reads a bot SQLite database in read-only WAL mode and exposes REST plus WebSocket APIs.
 - `dashboard/server`: the authenticated dashboard backend. It manages users, JWT sessions, static frontend serving, and proxying to one or more agents.
 - `dashboard/client`: the React dashboard. It exposes Overview, Execution, Logs, Equity, Trades, Signals, and Strategies.
-- `polymarket-sidecar`: the TypeScript authenticated Polymarket boundary. It owns proxy-wallet auth, readonly account/preflight checks, user-stream health, and future order/cancel/redeem routing.
+- `polymarket-sidecar`: the TypeScript authenticated Polymarket boundary. It owns proxy-wallet auth, readonly account/preflight checks, user-stream health, FOK/FAK order submission, cancellation, and redemption routing.
 
 The bot writes SQLite. The agent reads the bot DB. The dashboard server proxies authenticated frontend requests to agents. The dashboard client consumes REST data and WebSocket cache invalidations. The sidecar is local-only and private to the bot runtime.
 
@@ -20,9 +20,9 @@ The bot has three explicit execution modes:
 
 - `paper`: shared strategy runtime with simulated execution.
 - `live_readonly`: authenticated account and venue monitoring plus the shared shadow paper runtime. It does not place orders.
-- `live_trading`: reserved for future real order flow. It is intentionally gated in the current tree.
+- `live_trading`: reserved for future real order flow from the bot runtime. It is intentionally gated in the current tree.
 
-The sidecar has real readonly-safe endpoints for `/health`, `/account`, and `/preflight`. The write endpoints `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` still return explicit not-implemented responses.
+The sidecar has real venue-boundary endpoints for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all`. The bot still cannot arm `live_trading`; runtime order submission, persistence, reconciliation, and dashboard controls are later phases.
 
 ## Strategy Runtime
 

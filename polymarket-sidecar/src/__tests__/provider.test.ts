@@ -78,6 +78,16 @@ describe("PolymarketReadonlyProvider", () => {
     discoveryMode?: "ok" | "partial_failure";
     httpTimeoutOnPositions?: boolean;
     observedUserAgents?: string[];
+    postedOrders?: Array<Record<string, unknown>>;
+    orderResponse?: Record<string, unknown>;
+    orderError?: { value: unknown | null };
+    cancelResponse?: Record<string, unknown>;
+    cancelAllResponse?: Record<string, unknown>;
+    cancelError?: { value: unknown | null };
+    cancelAllError?: { value: unknown | null };
+    relayerExecuteCalls?: Array<Record<string, unknown>>;
+    relayerTerminalState?: string;
+    builderCredentials?: boolean;
   }) {
     const config = loadConfig({
       POLYMARKET_PRIVATE_KEY:
@@ -86,6 +96,15 @@ describe("PolymarketReadonlyProvider", () => {
       POLYMARKET_FUNDER: "0xfunder",
       POLYMARKET_HTTP_TIMEOUT_MS: options?.httpTimeoutOnPositions ? "10" : "5000",
       POLYMARKET_SDK_TIMEOUT_MS: "50",
+      POLYMARKET_BUILDER_API_KEY: options?.builderCredentials
+        ? "builder-key"
+        : undefined,
+      POLYMARKET_BUILDER_SECRET: options?.builderCredentials
+        ? "builder-secret"
+        : undefined,
+      POLYMARKET_BUILDER_PASSPHRASE: options?.builderCredentials
+        ? "builder-passphrase"
+        : undefined,
     });
     let connectedMarkets: string[] = [];
 
@@ -204,6 +223,67 @@ describe("PolymarketReadonlyProvider", () => {
             tbf: 0,
           };
         },
+        createAndPostMarketOrder: async (order, marketOptions, orderType) => {
+          options?.postedOrders?.push({ order, marketOptions, orderType });
+          if (options?.orderError?.value) {
+            throw options.orderError.value;
+          }
+          return {
+            success: true,
+            errorMsg: "",
+            orderID: "0xvenue-order",
+            transactionsHashes: [],
+            status: "matched",
+            takingAmount: "10000000",
+            makingAmount: "5000000",
+            ...(options?.orderResponse ?? {}),
+          };
+        },
+        cancelOrder: async (_payload) => {
+          if (options?.cancelError?.value) {
+            throw options.cancelError.value;
+          }
+          return options?.cancelResponse ?? { canceled: ["0xorder"], not_canceled: {} };
+        },
+        cancelAll: async () => {
+          if (options?.cancelAllError?.value) {
+            throw options.cancelAllError.value;
+          }
+          return (
+            options?.cancelAllResponse ?? {
+              canceled: ["0xorder-1", "0xorder-2"],
+              not_canceled: {},
+            }
+          );
+        },
+      }),
+      createRelayerClient: () => ({
+        execute: async (txns, metadata) => {
+          options?.relayerExecuteCalls?.push({ txns, metadata });
+          return {
+            transactionID: "tx-1",
+            state: "STATE_NEW",
+            hash: "",
+            transactionHash: "",
+            getTransaction: async () => [],
+            wait: async () => undefined,
+          };
+        },
+        pollUntilState: async () => ({
+          transactionID: "tx-1",
+          transactionHash: "0xhash",
+          from: "0xfunder",
+          to: "0xctf",
+          proxyAddress: "0xproxy",
+          data: "0x",
+          nonce: "1",
+          value: "0",
+          state: options?.relayerTerminalState ?? "STATE_CONFIRMED",
+          type: "PROXY",
+          metadata: "buba-paint redeem positions",
+          createdAt: new Date(nowMs),
+          updatedAt: new Date(nowMs),
+        }),
       }),
       createUserStreamMonitor: () => ({
         ensureConnected: async (_auth, markets) => {
@@ -366,8 +446,10 @@ describe("PolymarketReadonlyProvider", () => {
     expect(details.observed_allowance_approval_usd).toBeGreaterThan(1e60);
   });
 
-  it("returns a real account decomposition while keeping order flow disabled", async () => {
+  it("returns a real account decomposition and submits immediate CLOB V2 orders", async () => {
+    const postedOrders: Array<Record<string, unknown>> = [];
     const provider = createProvider({
+      postedOrders,
       positions: [
         { currentValue: 12, redeemable: false },
         { currentValue: 7, redeemable: true },
@@ -378,12 +460,13 @@ describe("PolymarketReadonlyProvider", () => {
     const order = await provider.submitOrderIntent({
       session_id: 1,
       intent_id: 2,
-      market_id: "mkt-1",
-      token_id: "tok-1",
+      market_id: "0xcondition",
+      token_id: "up-token",
       side: "BUY",
       order_type: "FOK",
       limit_price: 0.51,
       size: 5,
+      amount_usd: 5,
       client_order_id: "client-1",
       details_json: null,
     });
@@ -397,7 +480,353 @@ describe("PolymarketReadonlyProvider", () => {
     expect(account.details_json).toContain("\"open_order_count\":1");
     expect(account.details_json).toContain("\"collateral_token\":\"pUSD\"");
     expect(account.details_json).toContain("\"metadataSource\":\"clob_v2\"");
-    expect(order.status).toBe("not_implemented");
+    expect(order.ok).toBe(true);
+    expect(order.status).toBe("matched");
+    expect(order.venue_order_id).toBe("0xvenue-order");
+    expect(order.accepted_size).toBe(10);
+    expect(order.details_json).toContain("\"client_order_id\":\"client-1\"");
+    expect(order.details_json).not.toContain("secret");
+    expect(postedOrders).toHaveLength(1);
+  });
+
+  it("rejects BUY market orders without dollar amount before reaching CLOB", async () => {
+    const postedOrders: Array<Record<string, unknown>> = [];
+    const provider = createProvider({ postedOrders });
+
+    const order = await provider.submitOrderIntent({
+      session_id: 1,
+      intent_id: 2,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "BUY",
+      order_type: "FOK",
+      limit_price: 0.51,
+      size: 5,
+      client_order_id: "client-missing-amount",
+      details_json: null,
+    });
+
+    expect(order.ok).toBe(false);
+    expect(order.status).toBe("validation_failed");
+    expect(order.status_reason).toContain("amount_usd");
+    expect(postedOrders).toHaveLength(0);
+  });
+
+  it("rejects resting and unticked orders before reaching CLOB", async () => {
+    const provider = createProvider();
+    const resting = await provider.submitOrderIntent({
+      session_id: 1,
+      intent_id: 2,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "BUY",
+      order_type: "GTC",
+      limit_price: 0.51,
+      size: 5,
+      amount_usd: 5,
+      client_order_id: "client-gtc",
+      details_json: null,
+    });
+    const unticked = await provider.submitOrderIntent({
+      session_id: 1,
+      intent_id: 3,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "BUY",
+      order_type: "FOK",
+      limit_price: 0.515,
+      size: 5,
+      amount_usd: 5,
+      client_order_id: "client-unticked",
+      details_json: null,
+    });
+
+    expect(resting.status).toBe("validation_failed");
+    expect(resting.status_reason).toContain("FOK/FAK");
+    expect(unticked.status).toBe("validation_failed");
+    expect(unticked.status_reason).toContain("tick size");
+  });
+
+  it("rejects orders below venue min size before reaching CLOB", async () => {
+    const postedOrders: Array<Record<string, unknown>> = [];
+    const provider = createProvider({ postedOrders });
+
+    const order = await provider.submitOrderIntent({
+      session_id: 1,
+      intent_id: 2,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "BUY",
+      order_type: "FOK",
+      limit_price: 0.5,
+      size: 4,
+      amount_usd: 4,
+      client_order_id: "client-below-min",
+      details_json: null,
+    });
+
+    expect(order.ok).toBe(false);
+    expect(order.status).toBe("validation_failed");
+    expect(order.status_reason).toContain("below market min size");
+    expect(postedOrders).toHaveLength(0);
+  });
+
+  it("returns CLOB rejections without treating them as transport success", async () => {
+    const provider = createProvider({
+      orderResponse: {
+        success: false,
+        status: "unmatched",
+        errorMsg: "FOK_ORDER_NOT_FILLED_ERROR",
+        orderID: "",
+        takingAmount: "0",
+        makingAmount: "0",
+      },
+    });
+
+    const order = await provider.submitOrderIntent({
+      session_id: 1,
+      intent_id: 2,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "BUY",
+      order_type: "FOK",
+      limit_price: 0.5,
+      size: 10,
+      amount_usd: 5,
+      client_order_id: "client-clob-reject",
+      details_json: null,
+    });
+
+    expect(order.ok).toBe(false);
+    expect(order.status).toBe("unmatched");
+    expect(order.status_reason).toBe("FOK_ORDER_NOT_FILLED_ERROR");
+    expect(order.venue_order_id).toBeNull();
+    expect(order.accepted_size).toBe(0);
+  });
+
+  it("fails SELL orders closed when token inventory is insufficient", async () => {
+    const postedOrders: Array<Record<string, unknown>> = [];
+    const provider = createProvider({
+      postedOrders,
+      positions: [{ asset: "up-token", size: "1", currentValue: 1 }],
+    });
+
+    const order = await provider.submitOrderIntent({
+      session_id: 1,
+      intent_id: 2,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "SELL",
+      order_type: "FAK",
+      limit_price: 0.5,
+      size: 5,
+      client_order_id: "client-sell-too-large",
+      details_json: null,
+    });
+
+    expect(order.ok).toBe(false);
+    expect(order.status).toBe("account_unavailable");
+    expect(order.status_reason).toContain("Token inventory");
+    expect(postedOrders).toHaveLength(0);
+  });
+
+  it("supports FAK partial fills and prevents duplicate client order submissions", async () => {
+    const postedOrders: Array<Record<string, unknown>> = [];
+    const provider = createProvider({
+      postedOrders,
+      orderResponse: {
+        success: true,
+        status: "partially_matched",
+        takingAmount: "4000000",
+        makingAmount: "2000000",
+      },
+    });
+    const requestBody = {
+      session_id: 1,
+      intent_id: 2,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "BUY",
+      order_type: "FAK",
+      limit_price: 0.5,
+      size: 10,
+      amount_usd: 5,
+      client_order_id: "client-partial",
+      details_json: null,
+    };
+
+    const first = await provider.submitOrderIntent(requestBody);
+    const second = await provider.submitOrderIntent(requestBody);
+
+    expect(first.ok).toBe(true);
+    expect(first.status).toBe("partially_matched");
+    expect(first.accepted_size).toBe(4);
+    expect(second.details_json).toContain("duplicate_client_order_id");
+    expect(postedOrders).toHaveLength(1);
+  });
+
+  it("classifies matching-engine restart during order submission without faking success", async () => {
+    const provider = createProvider({
+      orderError: {
+        value: Object.assign(new Error("engine restarting"), { status: 425 }),
+      },
+    });
+
+    const order = await provider.submitOrderIntent({
+      session_id: 1,
+      intent_id: 2,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "BUY",
+      order_type: "FOK",
+      limit_price: 0.5,
+      size: 10,
+      amount_usd: 5,
+      client_order_id: "client-425",
+      details_json: null,
+    });
+
+    expect(order.ok).toBe(false);
+    expect(order.status).toBe("venue_restart");
+    expect(order.status_reason).toContain("425");
+  });
+
+  it("normalizes CLOB cancel responses including not-canceled reasons", async () => {
+    const provider = createProvider({
+      cancelResponse: {
+        canceled: ["0xorder-a"],
+        not_canceled: { "0xorder-b": "already filled" },
+      },
+      cancelAllResponse: {
+        canceled: ["0xorder-a", "0xorder-b"],
+        not_canceled: {},
+      },
+    });
+
+    const single = await provider.cancelOrder("0xorder-a");
+    const all = await provider.cancelAll();
+
+    expect(single.ok).toBe(false);
+    expect(single.cancelled).toBe(1);
+    expect(single.details_json).toContain("already filled");
+    expect(all.ok).toBe(true);
+    expect(all.cancelled).toBe(2);
+  });
+
+  it("classifies matching-engine restart during cancellation", async () => {
+    const provider = createProvider({
+      cancelError: {
+        value: Object.assign(new Error("engine restarting"), { status: 425 }),
+      },
+      cancelAllError: {
+        value: Object.assign(new Error("engine restarting"), { status: 425 }),
+      },
+    });
+
+    const single = await provider.cancelOrder("0xorder-a");
+    const all = await provider.cancelAll();
+
+    expect(single.ok).toBe(false);
+    expect(single.details_json).toContain("\"venue_restart\":true");
+    expect(all.ok).toBe(false);
+    expect(all.details_json).toContain("\"venue_restart\":true");
+  });
+
+  it("treats no redeemable positions as a safe no-op", async () => {
+    const provider = createProvider({
+      positions: [{ currentValue: 7, redeemable: false }],
+    });
+
+    const redemption = await provider.redeemAll();
+
+    expect(redemption.ok).toBe(true);
+    expect(redemption.submitted).toBe(0);
+    expect(redemption.details_json).toContain("redeemable_condition_ids");
+  });
+
+  it("keeps redemption fail-closed when relayer auth cannot be used", async () => {
+    const provider = createProvider({
+      positions: [
+        {
+          currentValue: 7,
+          redeemable: true,
+          conditionId: "0xcondition",
+          negativeRisk: false,
+        },
+      ],
+    });
+
+    const redemption = await provider.redeemAll();
+
+    expect(redemption.ok).toBe(false);
+    expect(redemption.submitted).toBe(0);
+    expect(redemption.details_json).toContain("POLYMARKET_BUILDER_API_KEY");
+  });
+
+  it("returns failed redemption states without counting proceeds spendable", async () => {
+    const provider = createProvider({
+      builderCredentials: true,
+      relayerTerminalState: "STATE_FAILED",
+      positions: [
+        {
+          currentValue: 7,
+          redeemable: true,
+          conditionId: "0x00000000000000000000000000000000000000000000000000000000000000aa",
+          negativeRisk: false,
+        },
+      ],
+    });
+
+    const redemption = await provider.redeemAll();
+
+    expect(redemption.ok).toBe(false);
+    expect(redemption.submitted).toBe(0);
+    expect(redemption.details_json).toContain("STATE_FAILED");
+  });
+
+  it("returns unknown redemption states without counting proceeds spendable", async () => {
+    const provider = createProvider({
+      builderCredentials: true,
+      relayerTerminalState: "STATE_NEW",
+      positions: [
+        {
+          currentValue: 7,
+          redeemable: true,
+          conditionId: "0x00000000000000000000000000000000000000000000000000000000000000aa",
+          negativeRisk: false,
+        },
+      ],
+    });
+
+    const redemption = await provider.redeemAll();
+
+    expect(redemption.ok).toBe(false);
+    expect(redemption.submitted).toBe(0);
+    expect(redemption.details_json).toContain("STATE_NEW");
+  });
+
+  it("submits pUSD CTF redemptions when builder relayer credentials are configured", async () => {
+    const relayerExecuteCalls: Array<Record<string, unknown>> = [];
+    const provider = createProvider({
+      builderCredentials: true,
+      relayerExecuteCalls,
+      positions: [
+        {
+          currentValue: 7,
+          redeemable: true,
+          conditionId: "0x00000000000000000000000000000000000000000000000000000000000000aa",
+          negativeRisk: false,
+        },
+      ],
+    });
+
+    const redemption = await provider.redeemAll();
+
+    expect(redemption.ok).toBe(true);
+    expect(redemption.submitted).toBe(1);
+    expect(redemption.details_json).toContain("STATE_CONFIRMED");
+    expect(redemption.details_json).toContain("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB");
+    expect(relayerExecuteCalls).toHaveLength(1);
   });
 
   it("returns degraded discovery details when one market lookup fails", async () => {

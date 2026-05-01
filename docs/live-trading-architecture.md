@@ -52,8 +52,8 @@ The sidecar owns:
 - relayer auth
 - private user-stream connectivity
 - allowance and account checks
-- future real order placement
-- future redemption submission
+- real venue order placement through the sidecar boundary
+- cancellation and redemption submission through the sidecar boundary
 
 In the current local tree, the sidecar has a real readonly provider for:
 
@@ -61,7 +61,7 @@ In the current local tree, the sidecar has a real readonly provider for:
 - `GET /account`
 - `POST /preflight`
 
-These endpoints use real proxy-wallet auth, host geoblock checks, account-state reads, active-market discovery, CLOB V2 market metadata, pUSD collateral diagnostics, and authenticated user-stream connectivity. The write endpoints still return explicit not-implemented responses in this pass.
+These endpoints use real proxy-wallet auth, host geoblock checks, account-state reads, active-market discovery, CLOB V2 market metadata, pUSD collateral diagnostics, and authenticated user-stream connectivity.
 
 The sidecar now also carries its own crash-resistance and readiness model:
 
@@ -81,9 +81,9 @@ The Rust bot talks to the sidecar over a private local HTTP contract:
 - `POST /cancel-all`
 - `POST /redeem-all`
 
-The sidecar now implements real readonly-safe venue checks on the health, account, and preflight routes. It does not place real orders yet, and the write-path endpoints still return explicit not-implemented responses.
+The sidecar now implements the authenticated venue boundary for health, account, preflight, FOK/FAK order submission, single-order cancellation, cancel-all, and pUSD CTF redemption. The bot runtime still gates `live_trading`, so these write endpoints are not reachable from an armed strategy loop until later phases deliberately wire arming, persistence, reconciliation, and dashboard controls.
 
-The active CLOB client package is `@polymarket/clob-client-v2`. The sidecar uses the V2 constructor shape, V2 signature types, and `createOrDeriveApiKey` for L1-to-L2 auth bootstrap. It no longer depends on V1 CLOB, order-utils, or builder-signing packages for readonly venue access.
+The active CLOB client package is `@polymarket/clob-client-v2`. The sidecar uses the V2 constructor shape, V2 signature types, and `createOrDeriveApiKey` for L1-to-L2 auth bootstrap. It no longer depends on V1 CLOB or order-utils packages. Gasless redemption uses `@polymarket/builder-relayer-client` and `@polymarket/builder-signing-sdk`; redemption stays fail-closed unless the required builder relayer credentials are configured.
 
 The preferred host process model is no longer an unsupervised `nohup node` process. The target deployment shape is:
 
@@ -100,7 +100,7 @@ The first real-money pilot is designed for a Polymarket email or Magic Link acco
 - signature type: `1`
 - credentials: exported Polymarket private key
 - wallet/funder: the proxy wallet shown by Polymarket (the local sidecar config defaults `POLYMARKET_FUNDER` to `POLYMARKET_PROXY_WALLET` when it is omitted)
-- gasless path: relayer API key
+- gasless path: builder relayer credentials for the currently installed relayer SDK
 
 The sidecar config reflects that account model directly.
 
@@ -147,7 +147,7 @@ Private live-account SQLite capture must stay compact. Public market feed captur
 
 Fee handling can no longer be hardcoded safely.
 
-The sidecar readonly preflight now includes CLOB V2 market fee metadata where available. The live order path must persist fee metadata at intent time before real order placement is enabled. Paper mode and backtests should use the same fee-resolution path as the live-readiness surfaces. This is necessary because live venue data has shown fee-surface inconsistency between market objects and the `fee-rate` endpoint for BTC 5-minute markets.
+The sidecar readonly preflight includes CLOB V2 market fee metadata where available. The write boundary returns fee metadata, tick size, min size, submit timing, CLOB status, and raw-safe response fragments in `details_json`. Later bot-runtime work must persist those summaries into the live ledger before `live_trading` can be armed. Paper mode and backtests should use the same fee-resolution path as the live-readiness surfaces. This is necessary because live venue data has shown fee-surface inconsistency between market objects and the `fee-rate` endpoint for BTC 5-minute markets.
 
 ## Current safe workflow
 
@@ -157,6 +157,6 @@ Local-only safe workflow:
 2. run `live-preflight` with `EXECUTION_MODE=live_readonly` against the sidecar
 3. run `buba-paint live` with `EXECUTION_MODE=live_readonly` for an authenticated readonly soak
 4. inspect live readiness in the dashboard Execution page and agent live endpoints
-5. do not arm or deploy real trading until the dedicated live venue runtime and redemption path are fully wired
+5. do not arm or deploy real trading until the bot runtime, live ledger persistence, reconciliation, arming controls, and dashboard controls are fully wired
 
 This repository state is intentionally staged for correctness. It exposes a real readonly venue boundary without pretending that live order flow is ready before the live trading runtime exists.

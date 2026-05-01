@@ -7,18 +7,29 @@ describe("loadConfig", () => {
       POLYMARKET_PRIVATE_KEY: "pk",
       POLYMARKET_PROXY_WALLET: "0xproxy",
       POLYMARKET_RELAYER_API_KEY: "relayer",
+      POLYMARKET_RELAYER_API_KEY_ADDRESS: "0xrelayer",
+      POLYMARKET_BUILDER_API_KEY: "builder-key",
+      POLYMARKET_BUILDER_SECRET: "builder-secret",
+      POLYMARKET_BUILDER_PASSPHRASE: "builder-passphrase",
     });
 
     expect(config.signatureType).toBe(1);
     expect(config.proxyWallet).toBe("0xproxy");
     expect(config.funder).toBe("0xproxy");
+    expect(config.relayerHost).toBe("https://relayer-v2.polymarket.com");
     expect(config.relayerApiKey).toBe("relayer");
+    expect(config.relayerApiKeyAddress).toBe("0xrelayer");
+    expect(config.builderApiKey).toBe("builder-key");
+    expect(config.builderSecret).toBe("builder-secret");
+    expect(config.builderPassphrase).toBe("builder-passphrase");
     expect(config.httpTimeoutMs).toBe(5000);
     expect(config.sdkTimeoutMs).toBe(5000);
     expect(config.userStreamConnectTimeoutMs).toBe(5000);
     expect(config.userStreamStableGraceMs).toBe(1000);
     expect(config.userStreamReconnectBaseMs).toBe(1000);
     expect(config.userStreamReconnectMaxMs).toBe(30000);
+    expect(config.redemptionPollIntervalMs).toBe(3000);
+    expect(config.redemptionMaxPolls).toBe(20);
   });
 
   it("ignores blank string overrides", () => {
@@ -39,6 +50,8 @@ describe("loadConfig", () => {
       POLYMARKET_USER_STREAM_STABLE_GRACE_MS: "1100",
       POLYMARKET_USER_STREAM_RECONNECT_BASE_MS: "1200",
       POLYMARKET_USER_STREAM_RECONNECT_MAX_MS: "25000",
+      POLYMARKET_REDEMPTION_POLL_INTERVAL_MS: "1300",
+      POLYMARKET_REDEMPTION_MAX_POLLS: "14",
     });
 
     expect(config.httpTimeoutMs).toBe(7000);
@@ -47,5 +60,7 @@ describe("loadConfig", () => {
     expect(config.userStreamStableGraceMs).toBe(1100);
     expect(config.userStreamReconnectBaseMs).toBe(1200);
     expect(config.userStreamReconnectMaxMs).toBe(25000);
+    expect(config.redemptionPollIntervalMs).toBe(1300);
+    expect(config.redemptionMaxPolls).toBe(14);
   });
 });

@@ -116,11 +116,11 @@ Important groups:
 - Pending settlement: `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION`, `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION`, `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION`, `BACKTEST_SETTLEMENT_MODE`.
 - Live caps: `LIVE_SESSION_CASH_CAP_USD`, `LIVE_MAX_SINGLE_ORDER_USD`, `LIVE_MAX_OPEN_NOTIONAL_USD`, `LIVE_MAX_DAILY_LOSS_USD`, `LIVE_MAX_SESSION_DRAWDOWN_USD`, `LIVE_MIN_REQUIRED_CASH_USD`.
 - Strategy toggles: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, `CALM_PERSISTENCE_ENABLED`.
-- Sidecar: `LIVE_SIDECAR_URL`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_PROXY_WALLET`, `POLYMARKET_FUNDER`, `POLYMARKET_RELAYER_API_KEY`.
+- Sidecar: `LIVE_SIDECAR_URL`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_PROXY_WALLET`, `POLYMARKET_FUNDER`, `POLYMARKET_RELAYER_HOST`, `POLYMARKET_RELAYER_API_KEY`, `POLYMARKET_RELAYER_API_KEY_ADDRESS`, `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, `POLYMARKET_BUILDER_PASSPHRASE`.
 
-The sidecar CLOB boundary uses `@polymarket/clob-client-v2`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted.
+The sidecar CLOB boundary uses `@polymarket/clob-client-v2`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted. Gasless redemption uses the builder relayer SDK path and stays fail-closed unless the configured credentials are complete.
 
-`live_trading` remains gated. Do not treat the presence of live caps or sidecar credentials as permission to trade real money.
+`live_trading` remains gated in the bot. Do not treat the presence of live caps, sidecar credentials, or callable sidecar write endpoints as permission to trade real money.
 
 ## Strategy Defaults
 

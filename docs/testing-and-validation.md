@@ -25,6 +25,7 @@ Sidecar and dashboard commands:
 ```bash
 cd polymarket-sidecar && npm test
 cd polymarket-sidecar && npm run build
+cd polymarket-sidecar && npm run audit:security
 cd dashboard/client && npm test
 cd dashboard/client && npm run test:e2e
 cd dashboard/client && npm run test:coverage
@@ -53,9 +54,9 @@ Playwright lives under `dashboard/client/e2e/` and covers desktop and mobile vie
 
 ## Sidecar Tests
 
-The TypeScript sidecar tests cover provider behavior, lifecycle, server routes, auth/account/preflight handling, user-stream resilience, and failure classification.
+The TypeScript sidecar tests cover provider behavior, lifecycle, server routes, auth/account/preflight handling, user-stream resilience, FOK/FAK order submission validation, cancellation, redemption state handling, and failure classification. The sidecar security audit gate fails on moderate-or-higher npm advisories; current upstream Polymarket SDK dependencies still carry low-severity ethers/elliptic advisories with no available fix.
 
-Before live-money work touches the sidecar, re-check current official Polymarket docs and update tests to the current venue contract. The current sidecar write endpoints are intentionally non-live.
+Before live-money work touches the sidecar or bot runtime, re-check current official Polymarket docs and update tests to the current venue contract. The sidecar write boundary is implemented, but the bot `live_trading` runtime and dashboard arming controls remain gated until later phases.
 
 ## Comment and Docs Policy
 

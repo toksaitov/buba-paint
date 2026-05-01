@@ -2,7 +2,9 @@ use wiremock::matchers::{body_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::config::{Config, ExecutionMode};
-use crate::live_sidecar::{LivePreflightRequest, LiveSidecarClient, strategy_readiness_matrix};
+use crate::live_sidecar::{
+    LiveOrderIntentRequest, LivePreflightRequest, LiveSidecarClient, strategy_readiness_matrix,
+};
 
 /// Verifies that readiness matrix reflects the configured strategy flags.
 #[test]
@@ -79,9 +81,9 @@ async fn live_sidecar_client_preflight_round_trip() {
     assert_eq!(response.available_cash_usd, Some(88.0));
 }
 
-/// Verifies that sidecar client surfaces not-implemented endpoints explicitly.
+/// Verifies that sidecar client surfaces write endpoint transport failures.
 #[tokio::test]
-async fn live_sidecar_client_reports_not_implemented_endpoints() {
+async fn live_sidecar_client_reports_write_endpoint_transport_failures() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/redeem-all"))
@@ -93,6 +95,57 @@ async fn live_sidecar_client_reports_not_implemented_endpoints() {
     let error = client.redeem_all().await.unwrap_err().to_string();
     assert!(error.contains("not implemented"));
     assert!(error.contains("/redeem-all"));
+}
+
+/// Verifies that live order intents serialize the CLOB V2 market-order dollar amount.
+#[tokio::test]
+async fn live_sidecar_client_serializes_amount_usd_for_buy_orders() {
+    let server = MockServer::start().await;
+    let request = LiveOrderIntentRequest {
+        session_id: 1,
+        intent_id: 2,
+        market_id: "0xcondition".to_string(),
+        token_id: "up-token".to_string(),
+        side: "BUY".to_string(),
+        order_type: "FOK".to_string(),
+        limit_price: 0.5,
+        size: 5.0,
+        amount_usd: Some(5.0),
+        client_order_id: "client-1".to_string(),
+        details_json: None,
+    };
+
+    Mock::given(method("POST"))
+        .and(path("/orders"))
+        .and(body_json(serde_json::json!({
+            "session_id": 1,
+            "intent_id": 2,
+            "market_id": "0xcondition",
+            "token_id": "up-token",
+            "side": "BUY",
+            "order_type": "FOK",
+            "limit_price": 0.5,
+            "size": 5.0,
+            "amount_usd": 5.0,
+            "client_order_id": "client-1",
+            "details_json": null
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "venue_order_id": "0xvenue",
+            "client_order_id": "client-1",
+            "status": "matched",
+            "status_reason": null,
+            "accepted_size": 5.0,
+            "details_json": "{\"provider\":\"test\"}"
+        })))
+        .mount(&server)
+        .await;
+
+    let client = LiveSidecarClient::new(&server.uri());
+    let response = client.submit_order_intent(&request).await.unwrap();
+    assert!(response.ok);
+    assert_eq!(response.client_order_id, "client-1");
 }
 
 /// Verifies that sidecar client preserves generic transport failures.

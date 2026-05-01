@@ -23,6 +23,8 @@ Official client coverage is uneven:
 
 Because of that split, the repo uses a TypeScript sidecar for the full authenticated venue boundary instead of trying to mix Rust CLOB calls with ad hoc redemption code. The active sidecar CLOB dependency is `@polymarket/clob-client-v2`. Legacy V1 CLOB, order-utils, and builder-signing packages are not part of the readonly CLOB boundary.
 
+Gasless CTF redemption uses `@polymarket/builder-relayer-client` with `@polymarket/builder-signing-sdk`. The current sidecar fails closed unless builder relayer credentials are configured; plain relayer API key fields are tracked as config but are not treated as sufficient for redemption with the installed TypeScript SDK.
+
 ## CLOB V2 and collateral
 
 Polymarket CLOB V2 is the production venue contract. V1-signed orders are not accepted. The sidecar must use the V2 client shape, `createOrDeriveApiKey`, V2 signature types, and the current proxy-wallet funder model.
@@ -34,6 +36,9 @@ Implications:
 - no signed `feeRateBps` field in new live order logic
 - no bot-managed order nonce in new live order logic
 - no V1 taker-field signing assumptions
+- FOK/FAK market orders are the only supported write-boundary order types in the current sidecar
+- BUY market order amount is specified in dollars through `amount_usd`; SELL market order amount is specified in shares through `size`
+- GTC/GTD, post-only, unticked prices, below-min-size orders, missing CLOB metadata, unknown collateral, and insufficient account state must fail closed before submission
 - account diagnostics should identify the collateral model as pUSD
 - balance and allowance checks must use the current CLOB collateral contract path exposed by the V2 client
 

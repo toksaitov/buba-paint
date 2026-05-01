@@ -236,6 +236,108 @@ describe("sidecar server", () => {
     expect(redeemJson.details_json).toContain("not implemented");
   });
 
+  it("routes write endpoints through the configured provider", async () => {
+    let seenAmountUsd: number | null | undefined = null;
+    const provider: SidecarProvider = {
+      health: async () => ({
+        ok: true,
+        ready: true,
+        readiness_status: "ready" as const,
+        mode: "local-sidecar",
+        provider: "test",
+        signature_type: 1,
+        wallet_address: null,
+        proxy_wallet: null,
+        auth_configured: true,
+        relayer_api_key_present: false,
+        user_stream_status: "ok" as const,
+        last_user_stream_connected_at_ms: null,
+        last_user_stream_event_at_ms: null,
+        last_user_stream_error: null,
+        last_successful_account_refresh_at_ms: null,
+        last_account_refresh_error: null,
+        last_user_stream_disconnect_at_ms: null,
+        last_user_stream_disconnect_reason: null,
+        consecutive_user_stream_failures: 0,
+      }),
+      accountState: async (): Promise<LiveAccountState> => {
+        throw new Error("unexpected");
+      },
+      preflight: async (_request: LivePreflightRequest): Promise<LivePreflightResponse> => {
+        throw new Error("unexpected");
+      },
+      submitOrderIntent: async (
+        request: LiveOrderIntentRequest,
+      ): Promise<LiveOrderIntentResponse> => {
+        seenAmountUsd = request.amount_usd;
+        return {
+          ok: true,
+          venue_order_id: "0xvenue",
+          client_order_id: request.client_order_id,
+          status: "matched",
+          status_reason: null,
+          accepted_size: 4,
+          details_json: "{\"provider\":\"test\"}",
+        };
+      },
+      cancelOrder: async (_orderId: string): Promise<LiveCancellationResponse> => ({
+        ok: true,
+        cancelled: 1,
+        details_json: "{\"provider\":\"test\"}",
+      }),
+      cancelAll: async (): Promise<LiveCancellationResponse> => ({
+        ok: true,
+        cancelled: 2,
+        details_json: "{\"provider\":\"test\"}",
+      }),
+      redeemAll: async (): Promise<LiveRedemptionResponse> => ({
+        ok: true,
+        submitted: 3,
+        details_json: "{\"provider\":\"test\"}",
+      }),
+      close: async () => undefined,
+    };
+    const { url } = await startServer(provider);
+
+    const orderResponse = await fetch(`${url}/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: 1,
+        intent_id: 2,
+        market_id: "0xcondition",
+        token_id: "up-token",
+        side: "BUY",
+        order_type: "FOK",
+        limit_price: 0.5,
+        size: 5,
+        amount_usd: 5,
+        client_order_id: "client-1",
+        details_json: null,
+      }),
+    });
+    const cancelResponse = await fetch(`${url}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order_id: "0xvenue" }),
+    });
+    const cancelAllResponse = await fetch(`${url}/cancel-all`, { method: "POST" });
+    const redeemResponse = await fetch(`${url}/redeem-all`, { method: "POST" });
+
+    expect(orderResponse.ok).toBe(true);
+    expect(await orderResponse.json()).toMatchObject({ ok: true });
+    expect(seenAmountUsd).toBe(5);
+    expect((await cancelResponse.json()) as { cancelled: number }).toMatchObject({
+      cancelled: 1,
+    });
+    expect((await cancelAllResponse.json()) as { cancelled: number }).toMatchObject({
+      cancelled: 2,
+    });
+    expect((await redeemResponse.json()) as { submitted: number }).toMatchObject({
+      submitted: 3,
+    });
+  });
+
   it("closes the provider exactly once when the server shuts down", async () => {
     const close = vi.fn(async () => undefined);
     const provider: SidecarProvider = {

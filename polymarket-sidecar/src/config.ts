@@ -11,11 +11,17 @@ export interface SidecarConfig {
   userStreamStableGraceMs: number;
   userStreamReconnectBaseMs: number;
   userStreamReconnectMaxMs: number;
+  redemptionPollIntervalMs: number;
+  redemptionMaxPolls: number;
   signatureType: number;
   privateKey: string | null;
   proxyWallet: string | null;
   funder: string | null;
   relayerApiKey: string | null;
+  relayerApiKeyAddress: string | null;
+  builderApiKey: string | null;
+  builderSecret: string | null;
+  builderPassphrase: string | null;
 }
 
 /// Parse one integer environment variable with a fallback.
@@ -45,7 +51,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     host: env.SIDECAR_HOST ?? "127.0.0.1",
     geoblockUrl: env.POLYMARKET_GEOBLOCK_URL ?? "https://polymarket.com/api/geoblock",
     clobHost: env.POLYMARKET_CLOB_HOST ?? "https://clob.polymarket.com",
-    relayerHost: env.POLYMARKET_RELAYER_HOST ?? "https://relayer.polymarket.com",
+    relayerHost: env.POLYMARKET_RELAYER_HOST ?? "https://relayer-v2.polymarket.com",
     clockDriftMaxMs: envInt(env, "POLYMARKET_CLOCK_DRIFT_MAX_MS", 1500),
     httpTimeoutMs: envInt(env, "POLYMARKET_HTTP_TIMEOUT_MS", 5000),
     sdkTimeoutMs: envInt(env, "POLYMARKET_SDK_TIMEOUT_MS", 5000),
@@ -69,10 +75,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
       "POLYMARKET_USER_STREAM_RECONNECT_MAX_MS",
       30000,
     ),
+    redemptionPollIntervalMs: envInt(
+      env,
+      "POLYMARKET_REDEMPTION_POLL_INTERVAL_MS",
+      3000,
+    ),
+    redemptionMaxPolls: envInt(env, "POLYMARKET_REDEMPTION_MAX_POLLS", 20),
     signatureType: envInt(env, "POLYMARKET_SIGNATURE_TYPE", 1),
     privateKey: envStr(env, "POLYMARKET_PRIVATE_KEY"),
     proxyWallet,
     funder: envStr(env, "POLYMARKET_FUNDER", proxyWallet),
     relayerApiKey: envStr(env, "POLYMARKET_RELAYER_API_KEY"),
+    relayerApiKeyAddress: envStr(env, "POLYMARKET_RELAYER_API_KEY_ADDRESS"),
+    builderApiKey: envStr(env, "POLYMARKET_BUILDER_API_KEY"),
+    builderSecret: envStr(env, "POLYMARKET_BUILDER_SECRET"),
+    builderPassphrase: envStr(env, "POLYMARKET_BUILDER_PASSPHRASE"),
   };
 }

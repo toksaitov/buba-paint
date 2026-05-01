@@ -42,7 +42,7 @@ Requires Rust 1.94+ and Node 22+ for local frontend and sidecar work. Docker Com
 
 ## Safety State
 
-The sidecar implements real readonly-safe endpoints: `/health`, `/account`, and `/preflight`. Write endpoints remain intentionally non-live. The dashboard Execution page is an operator cockpit for process, mode, account, readiness, and future controls, but those controls remain gated until the live venue runtime exists.
+The sidecar implements the authenticated venue boundary for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all`. The bot still gates `live_trading`; real-money order submission from strategy runtime, live ledger persistence, reconciliation, and dashboard controls remain unfinished phases.
 
 New runs intended for research should keep:
 

@@ -16,13 +16,14 @@ What is ready locally:
 - compact live account telemetry schema
 - shadow paper analysis pages during readonly sessions
 - sidecar readiness and crash diagnostics on `/health`
+- sidecar FOK/FAK order, cancel, cancel-all, and pUSD CTF redemption boundary
 
 What is still intentionally gated:
 
 - `EXECUTION_MODE=live_trading` is still rejected by `buba-paint live`
-- sidecar order placement, cancel, and redemption endpoints are still explicit not-implemented stubs
-- the readonly runtime does not place real orders
-- redemption is not wired yet
+- the bot runtime does not submit real orders
+- dashboard arming, disarming, kill-switch, and redemption controls are not enabled yet
+- live order persistence and reconciliation are not wired into an armed strategy loop yet
 - readonly monitoring uses live account reads and user-stream health, but not full event-driven order or fill ingestion yet
 
 Do not deploy real-money trading from this state. Use it to finish implementation and validate readiness safely.
@@ -35,7 +36,7 @@ Before any future live-money session:
 2. confirm `POLY_PROXY` credentials are present:
    - exported Polymarket private key
    - proxy wallet address
-   - relayer API key
+   - builder relayer credentials required for redemption
    - optional funder override only if it must differ from the proxy wallet
 3. confirm local clock drift is below the configured threshold
 4. confirm venue min order size, tick size, and fee metadata for the active market set

@@ -4,7 +4,7 @@ AI development guidelines for the buba workspace. [AGENTS.md](./AGENTS.md) is on
 
 ## Project
 
-`buba` is a Rust-first trading research workspace for Polymarket prediction markets. The first bot, `paint`, trades 5-minute BTC Up/Down markets in paper mode and supports authenticated `live_readonly` venue monitoring. Real order placement is not enabled yet.
+`buba` is a Rust-first trading research workspace for Polymarket prediction markets. The first bot, `paint`, trades 5-minute BTC Up/Down markets in paper mode and supports authenticated `live_readonly` venue monitoring. The sidecar venue write boundary exists, but bot `live_trading` arming is not enabled yet.
 
 Primary components:
 
@@ -12,7 +12,7 @@ Primary components:
 - `agent`: read-only DB monitor with REST and WebSocket APIs.
 - `dashboard/server`: authenticated dashboard backend and agent proxy.
 - `dashboard/client`: React dashboard.
-- `polymarket-sidecar`: TypeScript authenticated Polymarket boundary for readonly checks and future write paths.
+- `polymarket-sidecar`: TypeScript authenticated Polymarket boundary for readonly checks, FOK/FAK order submission, cancellation, and redemption.
 
 Durable system docs start at [docs/Readme.md](./docs/Readme.md). Active unfinished live-money work lives in [LIVE_TRADING_PLAN.md](./LIVE_TRADING_PLAN.md), not in `docs/`.
 
@@ -21,8 +21,8 @@ Current safety state:
 - `paper` is the production research mode.
 - `live_readonly` is real authenticated venue/account monitoring plus shadow paper trading.
 - `live_trading` is intentionally gated.
-- Sidecar `/health`, `/account`, and `/preflight` are real readonly-safe surfaces.
-- Sidecar `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` remain intentionally non-live.
+- Sidecar `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` are real venue-boundary surfaces.
+- Bot runtime order submission, live ledger persistence, reconciliation, dashboard controls, and operator arming remain unfinished phases.
 
 ## Build and Test
 

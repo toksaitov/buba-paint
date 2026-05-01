@@ -63,6 +63,7 @@ export interface LiveOrderIntentRequest {
   order_type: string;
   limit_price: number;
   size: number;
+  amount_usd?: number | null;
   client_order_id: string;
   details_json: string | null;
 }
