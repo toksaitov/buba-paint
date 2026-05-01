@@ -272,6 +272,36 @@ fn cli_live_preflight_command_parses() {
     }
 }
 
+/// Verifies that cli live-control command parses durable operator fields.
+#[test]
+fn cli_live_control_command_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "live-control",
+        "--db-path",
+        "/tmp/live.db",
+        "arm",
+        "--actor",
+        "operator",
+        "--reason",
+        "preflight passed",
+    ]);
+    match cli.command {
+        Commands::LiveControl {
+            db_path,
+            action,
+            actor,
+            reason,
+        } => {
+            assert_eq!(db_path, "/tmp/live.db");
+            assert_eq!(action, "arm");
+            assert_eq!(actor, "operator");
+            assert_eq!(reason, "preflight passed");
+        }
+        _ => panic!("expected LiveControl command"),
+    }
+}
+
 /// Verifies that cli db footprint command parses.
 #[test]
 fn cli_db_footprint_command_parses() {

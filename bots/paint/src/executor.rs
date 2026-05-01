@@ -4,7 +4,7 @@ use anyhow::Context;
 
 use crate::bankroll::BankrollManager;
 use crate::clock::Clock;
-use crate::config::Config;
+use crate::config::{Config, ExecutionMode};
 use crate::db::database::Database;
 use crate::fees::{resolve_fee_params, spread_net_edge};
 use crate::portfolio::StrategyFamily;
@@ -96,10 +96,28 @@ impl QueueRejectionReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueuedOrderIntent {
+    pub signal_id: i64,
+    pub signal_timestamp: u64,
+    pub market_id: String,
+    pub strategy: String,
+    pub side: SignalDirection,
+    pub token_id: String,
+    pub arrival_ts: u64,
+    pub requested_price: f64,
+    pub limit_price: f64,
+    pub requested_size: f64,
+    pub reserved_cost: f64,
+    pub execution_group_id: Option<String>,
+    pub execution_fidelity: ReplayFidelity,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SubmissionOutcome {
     Queued {
         signal_ids: Vec<i64>,
+        orders: Vec<QueuedOrderIntent>,
     },
     Rejected {
         signal_ids: Vec<i64>,
@@ -313,7 +331,10 @@ impl ExecutionEngine {
         let Some((up_signal, down_signal, up_signal_id, down_signal_id)) =
             spread_signal_pair(signals, &signal_ids)
         else {
-            return Ok(SubmissionOutcome::Queued { signal_ids });
+            return Ok(SubmissionOutcome::Queued {
+                signal_ids,
+                orders: Vec::new(),
+            });
         };
         let fee_params = resolve_fee_params(config, Some(window), window.end_time);
         if spread_net_edge(
@@ -356,32 +377,20 @@ impl ExecutionEngine {
             bankroll.release_reserved_for_strategy(reserved_spread_cost, &up_signal.strategy);
             return Ok(reject_spread_submission(db, signals, signal_ids, reason));
         }
-        let group_id = format!("spread-{}", self.next_group_id);
-        self.next_group_id += 1;
-        self.queue_order(build_spread_order(
-            up_signal,
-            up_signal_id,
-            SpreadOrderContext {
-                market_id: &window.market_id,
-                token_id: &window.up_token_id,
+        let orders = self.queue_spread_submission_orders(
+            &SpreadQueuePlan {
+                up_signal,
+                down_signal,
+                up_signal_id,
+                down_signal_id,
+                window,
                 arrival_ts,
-                execution_group_id: Some(group_id.clone()),
+                up_tokens,
+                down_tokens,
                 execution_fidelity,
             },
-            up_tokens,
-        ));
-        self.queue_order(build_spread_order(
-            down_signal,
-            down_signal_id,
-            SpreadOrderContext {
-                market_id: &window.market_id,
-                token_id: &window.down_token_id,
-                arrival_ts,
-                execution_group_id: Some(group_id),
-                execution_fidelity,
-            },
-            down_tokens,
-        ));
+            config,
+        );
         update_spread_signal_metrics(
             db,
             signals,
@@ -390,7 +399,52 @@ impl ExecutionEngine {
             "submitted",
             None,
         );
-        Ok(SubmissionOutcome::Queued { signal_ids })
+        Ok(SubmissionOutcome::Queued { signal_ids, orders })
+    }
+
+    /// Queue both legs of an accepted spread submission.
+    fn queue_spread_submission_orders(
+        &mut self,
+        plan: &SpreadQueuePlan<'_>,
+        config: &Config,
+    ) -> Vec<QueuedOrderIntent> {
+        let group_id = format!("spread-{}", self.next_group_id);
+        self.next_group_id += 1;
+        let up_order = build_spread_order(
+            plan.up_signal,
+            plan.up_signal_id,
+            SpreadOrderContext {
+                market_id: &plan.window.market_id,
+                token_id: &plan.window.up_token_id,
+                arrival_ts: plan.arrival_ts,
+                execution_group_id: Some(group_id.clone()),
+                execution_fidelity: plan.execution_fidelity,
+            },
+            plan.up_tokens,
+        );
+        let down_order = build_spread_order(
+            plan.down_signal,
+            plan.down_signal_id,
+            SpreadOrderContext {
+                market_id: &plan.window.market_id,
+                token_id: &plan.window.down_token_id,
+                arrival_ts: plan.arrival_ts,
+                execution_group_id: Some(group_id),
+                execution_fidelity: plan.execution_fidelity,
+            },
+            plan.down_tokens,
+        );
+        let orders = vec![
+            queued_order_intent(&up_order),
+            queued_order_intent(&down_order),
+        ];
+        self.record_submitted_order(&up_order);
+        self.record_submitted_order(&down_order);
+        if config.execution_mode != ExecutionMode::LiveTrading {
+            self.pending_orders.push_back(up_order);
+            self.pending_orders.push_back(down_order);
+        }
+        orders
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -494,11 +548,10 @@ impl ExecutionEngine {
         Ok(None)
     }
 
-    /// Queue a pending order and update aggregate counters.
-    fn queue_order(&mut self, order: PendingOrder) {
+    /// Update aggregate counters for one accepted submission.
+    fn record_submitted_order(&mut self, order: &PendingOrder) {
         self.stats.submitted_orders += 1;
         self.stats.total_requested_size += order.requested_size;
-        self.pending_orders.push_back(order);
     }
 
     /// Attempt to execute one pending order at the current replay timestamp.
@@ -784,7 +837,7 @@ impl ExecutionEngine {
         execution_fidelity: ReplayFidelity,
     ) -> SubmissionOutcome {
         let arrival_ts = signal.timestamp.saturating_add(config.sim_order_latency_ms);
-        self.queue_order(PendingOrder {
+        let order = PendingOrder {
             signal_id,
             signal_timestamp: signal.timestamp,
             market_id: window.market_id.clone(),
@@ -801,7 +854,12 @@ impl ExecutionEngine {
             reserved_cost: requested_size * limit_price,
             execution_group_id: None,
             execution_fidelity,
-        });
+        };
+        let queued = queued_order_intent(&order);
+        self.record_submitted_order(&order);
+        if config.execution_mode != ExecutionMode::LiveTrading {
+            self.pending_orders.push_back(order);
+        }
         if let Some(telemetry) = signal.telemetry.as_ref() {
             let _ = db.upsert_signal_telemetry(
                 signal_id,
@@ -814,7 +872,27 @@ impl ExecutionEngine {
         }
         SubmissionOutcome::Queued {
             signal_ids: vec![signal_id],
+            orders: vec![queued],
         }
+    }
+}
+
+/// Convert one accepted submission into the public intent snapshot.
+fn queued_order_intent(order: &PendingOrder) -> QueuedOrderIntent {
+    QueuedOrderIntent {
+        signal_id: order.signal_id,
+        signal_timestamp: order.signal_timestamp,
+        market_id: order.market_id.clone(),
+        strategy: order.strategy.clone(),
+        side: order.side,
+        token_id: order.token_id.clone(),
+        arrival_ts: order.arrival_ts,
+        requested_price: order.requested_price,
+        limit_price: order.limit_price,
+        requested_size: order.requested_size,
+        reserved_cost: order.reserved_cost,
+        execution_group_id: order.execution_group_id.clone(),
+        execution_fidelity: order.execution_fidelity,
     }
 }
 
@@ -875,6 +953,19 @@ struct SpreadOrderContext<'a> {
     token_id: &'a str,
     arrival_ts: u64,
     execution_group_id: Option<String>,
+    execution_fidelity: ReplayFidelity,
+}
+
+/// Carry both legs and metadata for accepted spread order queueing.
+struct SpreadQueuePlan<'a> {
+    up_signal: &'a Signal,
+    down_signal: &'a Signal,
+    up_signal_id: i64,
+    down_signal_id: i64,
+    window: &'a MarketWindow,
+    arrival_ts: u64,
+    up_tokens: f64,
+    down_tokens: f64,
     execution_fidelity: ReplayFidelity,
 }
 
@@ -1400,7 +1491,7 @@ mod tests {
     /// Unwrap one queued single-order submission and return the persisted signal id.
     fn expect_single_queued(outcome: SubmissionOutcome) -> i64 {
         match outcome {
-            SubmissionOutcome::Queued { signal_ids } => {
+            SubmissionOutcome::Queued { signal_ids, .. } => {
                 assert_eq!(signal_ids.len(), 1);
                 signal_ids[0]
             }
@@ -1413,7 +1504,7 @@ mod tests {
     /// Unwrap one rejected submission and return the persisted rejection reason.
     fn expect_rejected_reason(outcome: SubmissionOutcome) -> String {
         match outcome {
-            SubmissionOutcome::Queued { signal_ids } => {
+            SubmissionOutcome::Queued { signal_ids, .. } => {
                 panic!("expected rejected submission, got queued: {signal_ids:?}")
             }
             SubmissionOutcome::Rejected { reason, .. } => reason,
@@ -1423,7 +1514,7 @@ mod tests {
     /// Unwrap one queued spread submission and return both persisted signal ids.
     fn expect_batch_queued(outcome: SubmissionOutcome) -> Vec<i64> {
         match outcome {
-            SubmissionOutcome::Queued { signal_ids } => signal_ids,
+            SubmissionOutcome::Queued { signal_ids, .. } => signal_ids,
             SubmissionOutcome::Rejected { reason, .. } => {
                 panic!("expected queued spread submission, got rejected: {reason}")
             }
@@ -1658,7 +1749,7 @@ mod tests {
                 assert_eq!(reason, "net_edge");
                 signal_ids
             }
-            SubmissionOutcome::Queued { signal_ids } => {
+            SubmissionOutcome::Queued { signal_ids, .. } => {
                 panic!("expected net-edge rejection, got queued: {signal_ids:?}")
             }
         };

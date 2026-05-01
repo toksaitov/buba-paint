@@ -9,6 +9,7 @@ import {
 import { loadConfig } from "../config.js";
 import type {
   LiveAccountState,
+  LiveActivityResponse,
   LiveCancellationResponse,
   LiveOrderIntentRequest,
   LiveOrderIntentResponse,
@@ -115,6 +116,17 @@ describe("sidecar server", () => {
     expect(json.errors.length).toBeGreaterThan(0);
   });
 
+  it("runs activity through the stub provider", async () => {
+    const { url } = await startServer();
+    const response = await fetch(`${url}/activity`);
+    const json = (await response.json()) as LiveActivityResponse;
+
+    expect(response.ok).toBe(true);
+    expect(json.user_stream_status).toBe("failed");
+    expect(json.user_stream_events).toEqual([]);
+    expect(json.clob_trades).toEqual([]);
+  });
+
   it("maps provider stage failures to 503", async () => {
     const provider: SidecarProvider = {
       health: async () => ({
@@ -140,6 +152,9 @@ describe("sidecar server", () => {
       }),
       accountState: async (): Promise<LiveAccountState> => {
         throw new ProviderStageError("positions", "timed out");
+      },
+      activity: async (): Promise<LiveActivityResponse> => {
+        throw new Error("unexpected");
       },
       preflight: async (_request: LivePreflightRequest): Promise<LivePreflightResponse> => {
         throw new Error("unexpected");
@@ -263,6 +278,13 @@ describe("sidecar server", () => {
       accountState: async (): Promise<LiveAccountState> => {
         throw new Error("unexpected");
       },
+      activity: async (): Promise<LiveActivityResponse> => ({
+        timestamp_ms: 1000,
+        user_stream_status: "ok",
+        user_stream_events: [],
+        clob_trades: [],
+        details_json: "{\"provider\":\"test\"}",
+      }),
       preflight: async (_request: LivePreflightRequest): Promise<LivePreflightResponse> => {
         throw new Error("unexpected");
       },
@@ -363,6 +385,9 @@ describe("sidecar server", () => {
         consecutive_user_stream_failures: 0,
       }),
       accountState: async (): Promise<LiveAccountState> => {
+        throw new Error("unexpected");
+      },
+      activity: async (): Promise<LiveActivityResponse> => {
         throw new Error("unexpected");
       },
       preflight: async (_request: LivePreflightRequest): Promise<LivePreflightResponse> => {

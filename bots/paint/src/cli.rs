@@ -1,9 +1,13 @@
+use std::str::FromStr;
+
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 
 use crate::backtest::runner::{BacktestOptions, TickSource};
 use crate::backtest::sweep::{self, SweepDimension};
+use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, parse_boolish};
+use crate::live_control::{LiveControlAction, enqueue_live_control_command};
 use crate::live_sidecar::LiveSidecarClient;
 
 #[derive(Parser)]
@@ -56,7 +60,7 @@ pub enum Commands {
         #[arg(long)]
         end: String,
     },
-    /// Run the long-lived runtime in paper or `live_readonly` mode
+    /// Run the long-lived runtime in paper, `live_readonly`, or disarmed `live_trading` mode
     Live {
         #[arg(long, default_value = "./data/paint.db")]
         db_path: String,
@@ -64,6 +68,16 @@ pub enum Commands {
         balance: f64,
         #[arg(long = "set")]
         sets: Vec<String>,
+    },
+    /// Queue a durable local live-trading control command
+    LiveControl {
+        #[arg(long)]
+        db_path: String,
+        action: String,
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        reason: String,
     },
     /// Run live sidecar preflight for readonly or trading execution modes
     LivePreflight {
@@ -255,6 +269,24 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             });
 
             crate::live::run_live(config, &db_path, balance, shutdown_rx).await?;
+        }
+        Commands::LiveControl {
+            db_path,
+            action,
+            actor,
+            reason,
+        } => {
+            let action = LiveControlAction::from_str(&action)?;
+            let db = crate::db::database::Database::new(&db_path)?;
+            let clock = SystemClock;
+            let command_id =
+                enqueue_live_control_command(&db, action, &actor, &reason, clock.now())?;
+            db.close();
+            println!(
+                "queued live-control command {} ({})",
+                command_id,
+                action.as_str()
+            );
         }
         Commands::LivePreflight { sets } => {
             let mut config = Config::from_env();

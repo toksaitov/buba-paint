@@ -117,6 +117,11 @@ export function createServer(
         return;
       }
 
+      if (req.method === "GET" && req.url === "/activity") {
+        json(res, 200, await provider.activity());
+        return;
+      }
+
       if (req.method === "POST" && req.url === "/preflight") {
         const body = parseJson<unknown>(await readBody(req));
         if (!validatePreflightRequest(body)) {

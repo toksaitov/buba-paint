@@ -89,3 +89,26 @@ export interface LiveRedemptionResponse {
   submitted: number;
   details_json: string | null;
 }
+
+export interface LiveActivityEvent {
+  timestamp_ms: number;
+  source: "user_stream" | "clob_trades";
+  event_type: string;
+  market_id: string | null;
+  order_id: string | null;
+  trade_id: string | null;
+  asset_id: string | null;
+  side: string | null;
+  price: number | null;
+  size: number | null;
+  status: string | null;
+  details_json: string | null;
+}
+
+export interface LiveActivityResponse {
+  timestamp_ms: number;
+  user_stream_status: LiveCheckStatus;
+  user_stream_events: LiveActivityEvent[];
+  clob_trades: LiveActivityEvent[];
+  details_json: string | null;
+}

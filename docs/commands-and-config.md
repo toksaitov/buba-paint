@@ -120,7 +120,21 @@ Important groups:
 
 The sidecar CLOB boundary uses `@polymarket/clob-client-v2`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted. Gasless redemption uses the builder relayer SDK path and stays fail-closed unless the configured credentials are complete.
 
-`live_trading` remains gated in the bot. Do not treat the presence of live caps, sidecar credentials, or callable sidecar write endpoints as permission to trade real money.
+`live_trading` starts disarmed and is local-verification only until deployment and dashboard-control phases are complete. Do not treat the presence of live caps, sidecar credentials, callable sidecar write endpoints, or queued `live-control` commands as permission to deploy real money.
+
+## Live Control CLI
+
+Phase 3 uses a local audited CLI control surface instead of dashboard mutation endpoints:
+
+```bash
+cargo run -p buba-paint --release -- live-control \
+  --db-path /tmp/paint.db \
+  arm \
+  --actor operator \
+  --reason "preflight gates passed"
+```
+
+Supported actions are `arm`, `disarm`, `stop-after-flat`, `kill-switch`, `cancel-all`, and `redeem-all`. Commands are written into the bot DB and applied by a running `EXECUTION_MODE=live_trading` process. The command is rejected if there is no active live-trading session.
 
 ## Strategy Defaults
 

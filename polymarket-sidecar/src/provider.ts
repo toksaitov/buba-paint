@@ -11,6 +11,7 @@ import {
   type OpenOrder,
   type OrderResponse,
   type TickSize,
+  type Trade,
   type UserMarketOrderV2,
 } from "@polymarket/clob-client-v2";
 import builderRelayerClient from "@polymarket/builder-relayer-client";
@@ -29,6 +30,8 @@ import type {
 } from "@polymarket/builder-relayer-client";
 import type {
   LiveAccountState,
+  LiveActivityEvent,
+  LiveActivityResponse,
   LiveCancellationResponse,
   LiveOrderIntentRequest,
   LiveOrderIntentResponse,
@@ -67,6 +70,7 @@ type SidecarErrorStage =
   | "balance_allowance"
   | "open_orders"
   | "positions"
+  | "activity"
   | "order_submission"
   | "cancel_order"
   | "cancel_all"
@@ -184,6 +188,7 @@ interface UserStreamSnapshot {
   lastDisconnectReason: string | null;
   consecutiveFailures: number;
   subscribedMarkets: string[];
+  recentEvents: LiveActivityEvent[];
 }
 
 interface UserStreamMonitor {
@@ -198,6 +203,7 @@ interface ClobVenueClient {
   getBalanceAllowance(): Promise<BalanceAllowanceView>;
   getOpenOrders(): Promise<OpenOrder[]>;
   getClobMarketInfo(conditionId: string): Promise<MarketDetails>;
+  getTrades(params?: { maker_address?: string }, onlyFirstPage?: boolean): Promise<Trade[]>;
   createAndPostMarketOrder(
     order: UserMarketOrderV2,
     options: { tickSize: TickSize; negRisk: boolean },
@@ -545,6 +551,76 @@ function safeNumber(value: unknown): number | null {
   return parsed == null || !Number.isFinite(parsed) ? null : parsed;
 }
 
+function safeString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    const text = safeString(value);
+    if (text) return text;
+  }
+  return null;
+}
+
+function activityEventFromRecord(
+  source: "user_stream" | "clob_trades",
+  timestampMs: number,
+  record: Record<string, unknown>,
+): LiveActivityEvent {
+  const eventType = firstString(
+    record.event_type,
+    record.type,
+    record.status,
+    "unknown",
+  ) as string;
+  return {
+    timestamp_ms: timestampMs,
+    source,
+    event_type: eventType,
+    market_id: firstString(record.market, record.market_id, record.condition_id),
+    order_id: firstString(record.order_id, record.orderID, record.id),
+    trade_id: firstString(record.trade_id, record.tradeID, record.id),
+    asset_id: firstString(record.asset_id, record.asset, record.token_id),
+    side: firstString(record.side),
+    price: safeNumber(record.price),
+    size: safeNumber(record.size),
+    status: firstString(record.status),
+    details_json: safeDetails({
+      outcome: firstString(record.outcome),
+      liquidity_side: firstString(record.trader_side, record.liquidity_side),
+      transaction_hash: firstString(record.transaction_hash, record.tx_hash),
+      match_time: firstString(record.match_time),
+      last_update: firstString(record.last_update),
+    }),
+  };
+}
+
+function userStreamActivityEvent(
+  message: string,
+  timestampMs: number,
+): LiveActivityEvent | null {
+  try {
+    const parsed = JSON.parse(message) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return activityEventFromRecord(
+      "user_stream",
+      timestampMs,
+      parsed as Record<string, unknown>,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function tradeActivityEvent(trade: Trade): LiveActivityEvent {
+  const matchTime = safeNumber(trade.match_time);
+  const timestampMs = matchTime != null ? Math.round(matchTime * 1000) : nowMs();
+  return activityEventFromRecord("clob_trades", timestampMs, trade as unknown as Record<string, unknown>);
+}
+
 function normalizeAcceptedSize(
   side: Side,
   response: Partial<OrderResponse>,
@@ -777,6 +853,7 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
     lastDisconnectReason: null,
     consecutiveFailures: 0,
     subscribedMarkets: [],
+    recentEvents: [],
   };
   private currentAttempt: ConnectionAttempt | null = null;
   private connectPromise: Promise<void> | null = null;
@@ -818,7 +895,11 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
   }
 
   snapshot(): UserStreamSnapshot {
-    return { ...this.state, subscribedMarkets: [...this.state.subscribedMarkets] };
+    return {
+      ...this.state,
+      subscribedMarkets: [...this.state.subscribedMarkets],
+      recentEvents: [...this.state.recentEvents],
+    };
   }
 
   close(): void {
@@ -956,6 +1037,11 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
         }
         this.state.lastEventAtMs = this.deps.now();
         const message = data.toString();
+        const activity = userStreamActivityEvent(message, this.state.lastEventAtMs);
+        if (activity) {
+          this.state.recentEvents.push(activity);
+          this.state.recentEvents = this.state.recentEvents.slice(-200);
+        }
         try {
           const parsed = JSON.parse(message) as Record<string, unknown>;
           if (
@@ -1133,6 +1219,8 @@ function defaultProviderDeps(): ProviderDeps {
         getOpenOrders: async () => client.getOpenOrders(),
         getClobMarketInfo: async (conditionId) =>
           client.getClobMarketInfo(conditionId),
+        getTrades: async (params, onlyFirstPage) =>
+          client.getTrades(params, onlyFirstPage),
         createAndPostMarketOrder: async (order, options, orderType) =>
           client.createAndPostMarketOrder(order, options, orderType),
         cancelOrder: async (payload) => client.cancelOrder(payload),
@@ -1194,6 +1282,7 @@ export interface SidecarProvider {
   health(): Promise<SidecarHealthResponse>;
   preflight(request: LivePreflightRequest): Promise<LivePreflightResponse>;
   accountState(): Promise<LiveAccountState>;
+  activity(): Promise<LiveActivityResponse>;
   submitOrderIntent(
     request: LiveOrderIntentRequest,
   ): Promise<LiveOrderIntentResponse>;
@@ -1292,6 +1381,19 @@ export class StubSidecarProvider implements SidecarProvider {
         collateral_decimals: 6,
         account_state_not_verified: true,
         relayer_api_key_present: Boolean(this.config.relayerApiKey),
+      }),
+    };
+  }
+
+  async activity(): Promise<LiveActivityResponse> {
+    return {
+      timestamp_ms: nowMs(),
+      user_stream_status: "failed",
+      user_stream_events: [],
+      clob_trades: [],
+      details_json: JSON.stringify({
+        provider: "stub",
+        reason: "activity not available from stub provider",
       }),
     };
   }
@@ -1623,6 +1725,49 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         : new ProviderStageError("balance_allowance", stringError(error));
       this.recordAccountRefreshFailure(failure);
       throw failure;
+    }
+  }
+
+  async activity(): Promise<LiveActivityResponse> {
+    const timestampMs = this.deps.nowMs();
+    const stream = this.userStream.snapshot();
+    try {
+      const authState = await this.getAuthState();
+      const makerAddress = authState.proxyWallet ?? authState.walletAddress ?? undefined;
+      const trades = await this.runClobCall("activity", async () =>
+        authState.client.getTrades(
+          makerAddress ? { maker_address: makerAddress } : undefined,
+          true,
+        ),
+      );
+      return {
+        timestamp_ms: timestampMs,
+        user_stream_status: stream.status,
+        user_stream_events: stream.recentEvents,
+        clob_trades: trades.map(tradeActivityEvent),
+        details_json: safeDetails({
+          provider: "polymarket",
+          clob_contract_version: "v2",
+          collateral_token: "pUSD",
+          user_stream_lifecycle: stream.lifecycle,
+          user_stream_event_count: stream.recentEvents.length,
+          clob_trade_count: trades.length,
+          maker_address: makerAddress ?? null,
+        }),
+      };
+    } catch (error) {
+      const failure = stageError("activity", error);
+      return {
+        timestamp_ms: timestampMs,
+        user_stream_status: stream.status,
+        user_stream_events: stream.recentEvents,
+        clob_trades: [],
+        details_json: safeDetails({
+          provider: "polymarket",
+          action: "activity",
+          error: failure.message,
+        }),
+      };
     }
   }
 

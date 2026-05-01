@@ -7,10 +7,11 @@ use rusqlite::params;
 
 use super::schema;
 use crate::types::{
-    ControlAuditEntry, FeedEvent, FeedHealthEvent, LiveAccountSnapshot, LiveFill, LiveOrder,
-    LiveOrderIntent, LiveReconciliationEvent, LiveRedemption, LiveSession, MarketWindow,
-    ReplayFidelity, Signal, SignalDirection, SignalMetricRecord, SignalTelemetry, SimulatedTrade,
-    StrategyRejectionSummaryRecord, TradeResult, TradeStatus,
+    ControlAuditEntry, FeedEvent, FeedHealthEvent, LiveAccountSnapshot, LiveControlCommand,
+    LiveControlState, LiveFill, LiveOrder, LiveOrderIntent, LiveReconciliationEvent,
+    LiveRedemption, LiveSession, MarketWindow, ReplayFidelity, Signal, SignalDirection,
+    SignalMetricRecord, SignalTelemetry, SimulatedTrade, StrategyRejectionSummaryRecord,
+    TradeResult, TradeStatus,
 };
 
 /// Thin wrapper around a `SQLite` connection that mirrors the `TypeScript` `Database`
@@ -1136,6 +1137,21 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Return whether one recovered venue trade was already persisted.
+    pub fn live_fill_exists(&self, session_id: i64, venue_trade_id: &str) -> anyhow::Result<bool> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT 1
+             FROM live_fills
+             WHERE session_id = ?1 AND venue_trade_id = ?2
+             LIMIT 1",
+        )?;
+        let exists = stmt
+            .query_row(params![session_id, venue_trade_id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        Ok(exists)
+    }
+
     /// Insert one live account snapshot and return its row ID.
     pub fn log_live_account_snapshot(&self, snapshot: &LiveAccountSnapshot) -> anyhow::Result<i64> {
         let mut stmt = self.conn.prepare_cached(
@@ -1249,6 +1265,150 @@ impl Database {
             entry.details_json,
         ])?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Return the latest unfinished live session, if one exists.
+    pub fn latest_active_live_session(&self) -> anyhow::Result<Option<LiveSession>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, started_at_ms, ended_at_ms, status, execution_mode, wallet_address,
+                    proxy_wallet, enabled_strategies_json, config_fingerprint, cash_cap_usd,
+                    details_json
+             FROM live_sessions
+             WHERE ended_at_ms IS NULL
+             ORDER BY started_at_ms DESC, id DESC
+             LIMIT 1",
+        )?;
+        stmt.query_row([], |row| {
+            Ok(LiveSession {
+                id: row.get(0)?,
+                started_at_ms: row.get(1)?,
+                ended_at_ms: row.get(2)?,
+                status: row.get(3)?,
+                execution_mode: row.get(4)?,
+                wallet_address: row.get(5)?,
+                proxy_wallet: row.get(6)?,
+                enabled_strategies_json: row.get(7)?,
+                config_fingerprint: row.get(8)?,
+                cash_cap_usd: row.get(9)?,
+                details_json: row.get(10)?,
+            })
+        })
+        .optional()
+        .context("querying latest active live session")
+    }
+
+    /// Insert one durable live control-state transition.
+    pub fn insert_live_control_state(&self, state: &LiveControlState) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_control_state (
+                session_id, state, updated_at_ms, actor, reason, details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        stmt.execute(params![
+            state.session_id,
+            state.state,
+            state.updated_at_ms,
+            state.actor,
+            state.reason,
+            state.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Return the latest live control state for one session, if any.
+    pub fn latest_live_control_state(
+        &self,
+        session_id: i64,
+    ) -> anyhow::Result<Option<LiveControlState>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, session_id, state, updated_at_ms, actor, reason, details_json
+             FROM live_control_state
+             WHERE session_id = ?1
+             ORDER BY updated_at_ms DESC, id DESC
+             LIMIT 1",
+        )?;
+        stmt.query_row(params![session_id], |row| {
+            Ok(LiveControlState {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                state: row.get(2)?,
+                updated_at_ms: row.get(3)?,
+                actor: row.get(4)?,
+                reason: row.get(5)?,
+                details_json: row.get(6)?,
+            })
+        })
+        .optional()
+        .context("querying latest live control state")
+    }
+
+    /// Insert one operator live-control command and return its row ID.
+    pub fn insert_live_control_command(&self, command: &LiveControlCommand) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO live_control_commands (
+                session_id, action, actor, reason, requested_at_ms, applied_at_ms, status,
+                details_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        stmt.execute(params![
+            command.session_id,
+            command.action,
+            command.actor,
+            command.reason,
+            command.requested_at_ms,
+            command.applied_at_ms,
+            command.status,
+            command.details_json,
+        ])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Return pending live-control commands for one session in request order.
+    pub fn pending_live_control_commands(
+        &self,
+        session_id: i64,
+    ) -> anyhow::Result<Vec<LiveControlCommand>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, session_id, action, actor, reason, requested_at_ms, applied_at_ms,
+                    status, details_json
+             FROM live_control_commands
+             WHERE session_id = ?1 AND status = 'pending'
+             ORDER BY requested_at_ms, id",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(LiveControlCommand {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                action: row.get(2)?,
+                actor: row.get(3)?,
+                reason: row.get(4)?,
+                requested_at_ms: row.get(5)?,
+                applied_at_ms: row.get(6)?,
+                status: row.get(7)?,
+                details_json: row.get(8)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("querying pending live control commands")
+    }
+
+    /// Mark one live-control command as applied or rejected.
+    pub fn update_live_control_command_status(
+        &self,
+        command_id: i64,
+        applied_at_ms: u64,
+        status: &str,
+        details_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE live_control_commands
+             SET applied_at_ms = ?1,
+                 status = ?2,
+                 details_json = COALESCE(?3, details_json)
+             WHERE id = ?4",
+        )?;
+        stmt.execute(params![applied_at_ms, status, details_json, command_id])?;
+        Ok(())
     }
 
     /// Returns latest balance.

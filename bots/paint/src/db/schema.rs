@@ -400,6 +400,29 @@ fn ensure_additive_tables(conn: &rusqlite::Connection) {
             action TEXT NOT NULL,
             target TEXT,
             details_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS live_control_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            actor TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            details_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES live_sessions(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_control_state_session_ts ON live_control_state(session_id, updated_at_ms);
+        CREATE TABLE IF NOT EXISTS live_control_commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            requested_at_ms INTEGER NOT NULL,
+            applied_at_ms INTEGER,
+            status TEXT NOT NULL,
+            details_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES live_sessions(id)
         );",
     );
 }

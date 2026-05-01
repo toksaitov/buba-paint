@@ -6,7 +6,7 @@ The system has three execution modes:
 
 - `paper`: the current production-quality paper trading and backtest environment
 - `live_readonly`: authenticated venue/account monitoring plus the shared shadow paper runtime, still without order placement
-- `live_trading`: reserved for real venue order flow once the dedicated live venue runtime is finished
+- `live_trading`: local disarmed real venue runtime for ledger, reconciliation, and CLI-control verification
 
 The mode boundary is explicit in `Config::execution_mode`. The goal is to keep the strategy core shared while isolating venue-specific risk.
 
@@ -32,9 +32,9 @@ The venue boundary is intentionally narrow:
 
 - `PaperVenue`: current simulated order submission and settlement path
 - `LiveReadonlyVenue`: authenticated account and venue state, but no order placement
-- `LiveVenue`: future real order submission, fills, redemption, and reconciliation
+- `LiveVenue`: real order submission, fills, redemption, and reconciliation behind explicit local arming
 
-In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` is still intentionally gated so real order flow cannot start by accident.
+In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` can start locally, but it starts disarmed, requires audited `buba-paint live-control` commands, and blocks on unhealthy preflight, stale account state, missing replay-grade capture, or unresolved reconciliation.
 
 ## Authenticated sidecar
 
@@ -80,8 +80,9 @@ The Rust bot talks to the sidecar over a private local HTTP contract:
 - `POST /cancel`
 - `POST /cancel-all`
 - `POST /redeem-all`
+- `GET /activity`
 
-The sidecar now implements the authenticated venue boundary for health, account, preflight, FOK/FAK order submission, single-order cancellation, cancel-all, and pUSD CTF redemption. The bot runtime still gates `live_trading`, so these write endpoints are not reachable from an armed strategy loop until later phases deliberately wire arming, persistence, reconciliation, and dashboard controls.
+The sidecar now implements the authenticated venue boundary for health, account, preflight, FOK/FAK order submission, single-order cancellation, cancel-all, pUSD CTF redemption, and sanitized activity recovery. The bot live runtime can call these surfaces only after local CLI arming and fail-closed checks. Dashboard mutation controls are still disabled.
 
 The active CLOB client package is `@polymarket/clob-client-v2`. The sidecar uses the V2 constructor shape, V2 signature types, and `createOrDeriveApiKey` for L1-to-L2 auth bootstrap. It no longer depends on V1 CLOB or order-utils packages. Gasless redemption uses `@polymarket/builder-relayer-client` and `@polymarket/builder-signing-sdk`; redemption stays fail-closed unless the required builder relayer credentials are configured.
 
@@ -147,16 +148,18 @@ Private live-account SQLite capture must stay compact. Public market feed captur
 
 Fee handling can no longer be hardcoded safely.
 
-The sidecar readonly preflight includes CLOB V2 market fee metadata where available. The write boundary returns fee metadata, tick size, min size, submit timing, CLOB status, and raw-safe response fragments in `details_json`. Later bot-runtime work must persist those summaries into the live ledger before `live_trading` can be armed. Paper mode and backtests should use the same fee-resolution path as the live-readiness surfaces. This is necessary because live venue data has shown fee-surface inconsistency between market objects and the `fee-rate` endpoint for BTC 5-minute markets.
+The sidecar readonly preflight includes CLOB V2 market fee metadata where available. The write boundary returns fee metadata, tick size, min size, submit timing, CLOB status, and raw-safe response fragments in `details_json`. The bot runtime persists those summaries into the live ledger before and after sidecar calls. Paper mode and backtests should use the same fee-resolution path as the live-readiness surfaces. This is necessary because live venue data has shown fee-surface inconsistency between market objects and the `fee-rate` endpoint for BTC 5-minute markets.
 
 ## Current safe workflow
 
 Local-only safe workflow:
 
-1. keep `EXECUTION_MODE=paper` for actual trading decisions
+1. keep `EXECUTION_MODE=paper` for ordinary research and dashboard work
 2. run `live-preflight` with `EXECUTION_MODE=live_readonly` against the sidecar
 3. run `buba-paint live` with `EXECUTION_MODE=live_readonly` for an authenticated readonly soak
-4. inspect live readiness in the dashboard Execution page and agent live endpoints
-5. do not arm or deploy real trading until the bot runtime, live ledger persistence, reconciliation, arming controls, and dashboard controls are fully wired
+4. run `EXECUTION_MODE=live_trading buba-paint live` only in local or mocked verification until deployment is explicitly planned
+5. use `buba-paint live-control --db-path <db> arm|disarm|stop-after-flat|kill-switch|cancel-all|redeem-all --actor <name> --reason <text>` for local live-control state
+6. inspect live readiness in the dashboard Execution page and agent live endpoints
+7. do not deploy or arm real trading until dashboard controls, host rollout, manual canary checks, and final verification phases pass
 
-This repository state is intentionally staged for correctness. It exposes a real readonly venue boundary without pretending that live order flow is ready before the live trading runtime exists.
+This repository state is intentionally staged for correctness. It exposes real sidecar venue actions and a local disarmed bot runtime without pretending that deployed live-money operation is ready.

@@ -17,14 +17,15 @@ What is ready locally:
 - shadow paper analysis pages during readonly sessions
 - sidecar readiness and crash diagnostics on `/health`
 - sidecar FOK/FAK order, cancel, cancel-all, and pUSD CTF redemption boundary
+- sidecar sanitized activity recovery on `/activity`
+- local disarmed `live_trading` runtime and audited `live-control` command queue for mocked verification
 
 What is still intentionally gated:
 
-- `EXECUTION_MODE=live_trading` is still rejected by `buba-paint live`
-- the bot runtime does not submit real orders
+- `EXECUTION_MODE=live_trading` is not deployed or operator-approved for real money
 - dashboard arming, disarming, kill-switch, and redemption controls are not enabled yet
-- live order persistence and reconciliation are not wired into an armed strategy loop yet
-- readonly monitoring uses live account reads and user-stream health, but not full event-driven order or fill ingestion yet
+- host rollout, funded canary checks, and dashboard control UX are unfinished
+- readonly monitoring uses live account reads, user-stream health, and sanitized activity recovery, but the funded operating procedure is not complete yet
 
 Do not deploy real-money trading from this state. Use it to finish implementation and validate readiness safely.
 
@@ -67,7 +68,7 @@ Intended operator lifecycle once live trading is actually enabled:
 1. start in `live_readonly`
 2. pass preflight
 3. inspect budget preview, strategy set, geoblock, auth, account state, and user-stream health
-4. arm live trading explicitly from the dedicated Execution page
+4. arm live trading explicitly from the approved control surface
 5. monitor open orders, fills, reconciliation warnings, and redeemable inventory
 6. if drawdown or divergence persists too long, disarm and stop after flat
 7. redeem winning resolved positions

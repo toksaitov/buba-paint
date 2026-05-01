@@ -6,7 +6,7 @@ Current state:
 
 - `paper` is the production research mode.
 - `live_readonly` is real authenticated venue/account monitoring plus the shared shadow paper runtime.
-- `live_trading` is still gated. It cannot place real orders yet.
+- `live_trading` starts disarmed and is local-verification only. It requires explicit `live-control` commands and is not deployed or dashboard-armed yet.
 - Replay-grade public feed capture is the default for new research runs.
 - Active live-money implementation planning lives in [LIVE_TRADING_PLAN.md](./LIVE_TRADING_PLAN.md), not in `docs/`.
 
@@ -42,7 +42,7 @@ Requires Rust 1.94+ and Node 22+ for local frontend and sidecar work. Docker Com
 
 ## Safety State
 
-The sidecar implements the authenticated venue boundary for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all`. The bot still gates `live_trading`; real-money order submission from strategy runtime, live ledger persistence, reconciliation, and dashboard controls remain unfinished phases.
+The sidecar implements the authenticated venue boundary for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, `/redeem-all`, and `/activity`. The bot now has a local disarmed `live_trading` runtime with ledger and CLI-control wiring under verification. Dashboard mutation controls, deployment, and real arming remain unfinished phases.
 
 New runs intended for research should keep:
 
@@ -57,6 +57,7 @@ Run `buba-paint validate-replay-data` before any long sweep. Sweeps refuse non-s
 ```bash
 cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 200
 cargo run -p buba-paint --release -- live-preflight
+cargo run -p buba-paint --release -- live-control --db-path /tmp/paint.db arm --actor operator --reason "preflight passed"
 cargo run -p buba-paint --release -- backtest --data data/market-data.db --start 2026-02-20 --end 2026-03-04
 cargo run -p buba-paint --release -- sweep --data data/market-data.db --start 2026-02-20 --end 2026-03-04 --output data/sweeps/test/sweep.csv
 cargo run -p buba-paint --release -- validate-replay-data --data data/market-data.db --start 2026-02-20 --end 2026-03-04

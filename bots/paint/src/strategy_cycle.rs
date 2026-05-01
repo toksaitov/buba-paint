@@ -426,7 +426,7 @@ pub fn spread_budget_rejection_sample(
 /// Return the persisted signal count implied by one submission outcome.
 fn submission_signal_count(outcome: &SubmissionOutcome) -> u64 {
     match outcome {
-        SubmissionOutcome::Queued { signal_ids }
+        SubmissionOutcome::Queued { signal_ids, .. }
         | SubmissionOutcome::Rejected { signal_ids, .. } => signal_ids.len() as u64,
     }
 }

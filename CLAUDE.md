@@ -4,7 +4,7 @@ AI development guidelines for the buba workspace. [AGENTS.md](./AGENTS.md) is on
 
 ## Project
 
-`buba` is a Rust-first trading research workspace for Polymarket prediction markets. The first bot, `paint`, trades 5-minute BTC Up/Down markets in paper mode and supports authenticated `live_readonly` venue monitoring. The sidecar venue write boundary exists, but bot `live_trading` arming is not enabled yet.
+`buba` is a Rust-first trading research workspace for Polymarket prediction markets. The first bot, `paint`, trades 5-minute BTC Up/Down markets in paper mode, supports authenticated `live_readonly` venue monitoring, and has a local disarmed `live_trading` runtime for mocked verification.
 
 Primary components:
 
@@ -20,9 +20,9 @@ Current safety state:
 
 - `paper` is the production research mode.
 - `live_readonly` is real authenticated venue/account monitoring plus shadow paper trading.
-- `live_trading` is intentionally gated.
+- `live_trading` starts disarmed, requires local `live-control` commands, and is not deployed or armed.
 - Sidecar `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` are real venue-boundary surfaces.
-- Bot runtime order submission, live ledger persistence, reconciliation, dashboard controls, and operator arming remain unfinished phases.
+- Bot runtime order submission, live ledger persistence, reconciliation, and CLI control are under Phase 3 local verification. Dashboard mutation controls and deployment remain unfinished phases.
 
 ## Build and Test
 
@@ -88,7 +88,7 @@ When writing Markdown, comments, or prose:
 Paint bot:
 
 - `cli.rs`: CLI parsing and command dispatch.
-- `live.rs`: shared paper and readonly runtime, with `live_trading` gated.
+- `live.rs`: shared paper, readonly, and disarmed live-trading runtime.
 - `live_readonly.rs`: readonly sessions, preflight, account snapshots, reconciliation, and rollups.
 - `config.rs`: env config, sweep overrides, execution mode, caps, reserve knobs, and settlement mode.
 - `feeds/`: Binance, CLOB, Chainlink, and feed utility code.

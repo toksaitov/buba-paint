@@ -44,8 +44,9 @@ Issue-resolution discipline for every phase:
 
 - Phase 0, Documentation IA Reset: complete in commit `398da37` on 2026-05-01.
 - Phase 1, Polymarket CLOB V2 Venue Contract Reset: complete in commit `6c2f2d5` on 2026-05-01.
-- Phase 2, Sidecar Write Boundary: complete in the current uncommitted local work on 2026-05-01; commit after review.
-- Phase 3 and later: unfinished. `live_trading` remains gated until those phases are implemented and verified.
+- Phase 2, Sidecar Write Boundary: complete in commit `e8c223d` on 2026-05-01.
+- Phase 3, Live Ledger and Bot Runtime: complete in current local work on 2026-05-01, pending commit.
+- Phase 4 and later: unfinished. Dashboard execution controls and deployment remain gated until those phases are implemented and verified.
 
 ## Current Decision
 
@@ -319,6 +320,14 @@ Acceptance gates:
 - `cargo test -p buba-paint live_system`
 - `cargo build --release -p buba-paint`
 - mocked end-to-end live runtime test with sidecar stub
+
+Phase 3 closeout:
+
+- Implemented local disarmed `live_trading` startup, durable live-control command queue, live-control audit state, sidecar `/activity`, Rust activity recovery, live order intent persistence before sidecar submission, venue response/fill persistence, unknown-order blocking, spread residual critical reconciliation, and read-only dashboard summary states for `disarmed`, `armed`, `halted`, and `unknown_order`.
+- Blockers found and fixed: stale agent/dashboard `live_trading` state still reported `gated`; sidecar lifecycle mocks missed the new activity contract; Clippy flagged long Phase 3 order-path functions; dashboard Vite/PostCSS dev dependencies had fixable audit advisories.
+- Accepted low-risk debt: dashboard production bundle still emits the existing chunk-size warning above 500 kB.
+- Gates run: `cargo test -p buba-paint live`, `cargo test -p buba-paint live_sidecar`, `cargo test -p buba-paint live_control`, `cargo test -p buba-paint --test live_system_test`, `cargo test -p buba-agent`, `cd polymarket-sidecar && npm test`, `cd polymarket-sidecar && npm run build`, `cd dashboard/client && npm test -- --run src/lib/__tests__/trading-summary.test.ts`, `cd dashboard/client && npm run build`, `cd dashboard/client && npm audit`, `make lint`, `make docs-audit`, `make comment-audit`, `cargo build --release -p buba-paint`, and `git diff --check`.
+- Gates intentionally skipped: none from the Phase 3 plan. Full workspace `make test-all` and dashboard Playwright are deferred because they are broader than this phase gate set.
 
 ## Phase 4: Dashboard Execution Controls
 

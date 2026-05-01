@@ -20,9 +20,9 @@ The bot has three explicit execution modes:
 
 - `paper`: shared strategy runtime with simulated execution.
 - `live_readonly`: authenticated account and venue monitoring plus the shared shadow paper runtime. It does not place orders.
-- `live_trading`: reserved for future real order flow from the bot runtime. It is intentionally gated in the current tree.
+- `live_trading`: local disarmed real-order runtime. It can start, persist live ledger state, and accept audited local control commands, but it is not deployed or dashboard-armed yet.
 
-The sidecar has real venue-boundary endpoints for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all`. The bot still cannot arm `live_trading`; runtime order submission, persistence, reconciliation, and dashboard controls are later phases.
+The sidecar has real venue-boundary endpoints for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, `/redeem-all`, and `/activity`. The bot-side live runtime starts disarmed and uses the local `live-control` CLI for Phase 3 verification. Dashboard mutation controls and deployment are later phases.
 
 ## Strategy Runtime
 
@@ -54,7 +54,7 @@ All feed connection attempts are bounded. Binance and CLOB have no-message watch
 
 Important paint modules:
 
-- `live.rs`: shared runtime for `paper` and `live_readonly`, with `live_trading` gated.
+- `live.rs`: shared runtime for `paper`, `live_readonly`, and disarmed `live_trading`.
 - `live_readonly.rs`: readonly preflight, live sessions, account snapshots, reconciliation, and operator rollups.
 - `config.rs`: env and sweep configuration, execution mode, live budget caps, and reserve knobs.
 - `strategy_cycle.rs`: shared evaluation, routing, trend suppression, spread affordability, signal persistence, and order submission into the execution engine.
@@ -103,4 +103,4 @@ The normal flow is:
 5. The agent reads SQLite and serves dashboard APIs.
 6. The dashboard visualizes operator state and analysis.
 
-In `live_readonly`, the bot also records live sessions, account snapshots, and reconciliation state from the sidecar while continuing the shadow paper track.
+In `live_readonly`, the bot also records live sessions, account snapshots, and reconciliation state from the sidecar while continuing the shadow paper track. In local `live_trading` verification, the bot starts disarmed, applies audited `live-control` commands, persists live intents before sidecar submission, records venue responses and fills, and blocks on unknown order or account state.

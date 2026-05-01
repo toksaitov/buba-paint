@@ -27,6 +27,8 @@ describe("runtime and trading labels", () => {
     expect(tradingStateLabel("degraded")).toBe("Degraded");
     expect(tradingStateLabel("disarmed")).toBe("Disarmed");
     expect(tradingStateLabel("armed")).toBe("Armed");
+    expect(tradingStateLabel("halted")).toBe("Halted");
+    expect(tradingStateLabel("unknown_order")).toBe("Unknown order");
     expect(tradingStateLabel("unknown")).toBe("Paper");
   });
 
@@ -109,6 +111,8 @@ describe("health, alerts, and capabilities", () => {
     expect(tradingStateTone("readonly")).toBe("neutral");
     expect(tradingStateTone("degraded")).toBe("warning");
     expect(tradingStateTone("armed")).toBe("danger");
+    expect(tradingStateTone("halted")).toBe("danger");
+    expect(tradingStateTone("unknown_order")).toBe("danger");
     expect(tradingStateTone("gated")).toBe("muted");
     expect(tradingStateTone("paper")).toBe("muted");
   });

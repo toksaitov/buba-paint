@@ -221,6 +221,7 @@ function humanizeCapabilityReason(reason: string): string | null {
   const lowered = reason.toLowerCase();
   if (
     lowered.includes("no dashboard action endpoint") ||
+    lowered.includes("dashboard mutation endpoints") ||
     lowered.includes("not wired") ||
     lowered.includes("designed in the ui")
   ) {

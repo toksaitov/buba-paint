@@ -130,6 +130,33 @@ pub struct LiveRedemptionResponse {
     pub details_json: Option<String>,
 }
 
+/// One raw-safe live activity event returned by the sidecar.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveActivityEvent {
+    pub timestamp_ms: u64,
+    pub source: String,
+    pub event_type: String,
+    pub market_id: Option<String>,
+    pub order_id: Option<String>,
+    pub trade_id: Option<String>,
+    pub asset_id: Option<String>,
+    pub side: Option<String>,
+    pub price: Option<f64>,
+    pub size: Option<f64>,
+    pub status: Option<String>,
+    pub details_json: Option<String>,
+}
+
+/// One sidecar activity snapshot used for live reconciliation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveActivityResponse {
+    pub timestamp_ms: u64,
+    pub user_stream_status: LiveCheckStatus,
+    pub user_stream_events: Vec<LiveActivityEvent>,
+    pub clob_trades: Vec<LiveActivityEvent>,
+    pub details_json: Option<String>,
+}
+
 /// Thin `HTTP` client for the local Polymarket live sidecar.
 #[derive(Clone)]
 pub struct LiveSidecarClient {
@@ -161,6 +188,11 @@ impl LiveSidecarClient {
     /// Fetch the current live account-state decomposition.
     pub async fn account_state(&self) -> anyhow::Result<LiveAccountState> {
         self.get_json("/account").await
+    }
+
+    /// Fetch raw-safe venue activity used to reconcile orders and fills.
+    pub async fn activity(&self) -> anyhow::Result<LiveActivityResponse> {
+        self.get_json("/activity").await
     }
 
     /// Submit one live order intent to the authenticated venue boundary.

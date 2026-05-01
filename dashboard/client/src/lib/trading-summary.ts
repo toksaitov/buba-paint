@@ -30,6 +30,10 @@ export function tradingStateLabel(state: string): string {
       return "Disarmed";
     case "armed":
       return "Armed";
+    case "halted":
+      return "Halted";
+    case "unknown_order":
+      return "Unknown order";
     default:
       return "Paper";
   }
@@ -56,6 +60,8 @@ export function tradingStateTone(state: string): ChipTone {
       return "neutral";
     case "degraded":
       return "warning";
+    case "halted":
+    case "unknown_order":
     case "armed":
       return "danger";
     case "gated":

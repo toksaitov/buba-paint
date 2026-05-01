@@ -160,6 +160,7 @@ fn portfolio_stats_track_overlap_and_blocked_counts() {
         PortfolioRegime::Dislocation,
         &SubmissionOutcome::Queued {
             signal_ids: vec![7],
+            orders: Vec::new(),
         },
     );
     stats.record_processed_outcomes(&[ProcessedOrderOutcome {

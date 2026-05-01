@@ -766,6 +766,30 @@ pub struct ControlAuditEntry {
     pub details_json: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct LiveControlState {
+    pub id: Option<i64>,
+    pub session_id: i64,
+    pub state: String,
+    pub updated_at_ms: u64,
+    pub actor: String,
+    pub reason: String,
+    pub details_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveControlCommand {
+    pub id: Option<i64>,
+    pub session_id: i64,
+    pub action: String,
+    pub actor: String,
+    pub reason: String,
+    pub requested_at_ms: u64,
+    pub applied_at_ms: Option<u64>,
+    pub status: String,
+    pub details_json: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedStatus {
     Disconnected,

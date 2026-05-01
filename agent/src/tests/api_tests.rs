@@ -590,7 +590,7 @@ fn derive_process_state_covers_runtime_modes() {
     assert_eq!(super::derive_process_state(false, true, None), "stopped");
 }
 
-/// Verifies that trading-state derivation handles readonly degradation and gating.
+/// Verifies that trading-state derivation handles readonly and live-trading states.
 #[test]
 fn derive_trading_state_covers_modes() {
     assert_eq!(
@@ -601,7 +601,26 @@ fn derive_trading_state_covers_modes() {
         super::derive_trading_state("live_readonly", Some("readonly_ready")),
         "readonly"
     );
-    assert_eq!(super::derive_trading_state("live_trading", None), "gated");
+    assert_eq!(
+        super::derive_trading_state("live_trading", None),
+        "disarmed"
+    );
+    assert_eq!(
+        super::derive_trading_state("live_trading", Some("armed")),
+        "armed"
+    );
+    assert_eq!(
+        super::derive_trading_state("live_trading", Some("halted")),
+        "halted"
+    );
+    assert_eq!(
+        super::derive_trading_state("live_trading", Some("unknown_order")),
+        "unknown_order"
+    );
+    assert_eq!(
+        super::derive_trading_state("live_trading", Some("auth_failed")),
+        "degraded"
+    );
     assert_eq!(super::derive_trading_state("paper", None), "paper");
 }
 
@@ -666,7 +685,7 @@ fn trading_capabilities_and_alerts_cover_branches() {
         live_capabilities
             .kill_switch
             .reason
-            .contains("no dashboard action endpoint")
+            .contains("dashboard mutation endpoints are disabled")
     );
 
     let mut missing_allowance = empty_live_status();
@@ -708,12 +727,26 @@ fn trading_capabilities_and_alerts_cover_branches() {
     assert!(readonly_titles.contains(&"Allowance missing"));
     assert!(readonly_titles.contains(&"Critical reconciliation events"));
 
+    let mut live_trading_status = empty_live_status();
+    live_trading_status.latest_session = Some(crate::types::LiveSessionRow {
+        id: 1,
+        started_at_ms: 1000,
+        ended_at_ms: None,
+        status: "unknown_order".to_string(),
+        execution_mode: "live_trading".to_string(),
+        wallet_address: None,
+        proxy_wallet: None,
+        enabled_strategies_json: "[]".to_string(),
+        config_fingerprint: "test".to_string(),
+        cash_cap_usd: 100.0,
+        details_json: None,
+    });
     let live_trading_alerts =
-        super::build_trading_alerts("live_trading", None, None, &empty_live_status(), "running");
+        super::build_trading_alerts("live_trading", None, None, &live_trading_status, "running");
     assert!(
         live_trading_alerts
             .iter()
-            .any(|alert| alert.title == "Live trading gated")
+            .any(|alert| alert.title == "Order state unknown")
     );
 
     let paper_alerts =

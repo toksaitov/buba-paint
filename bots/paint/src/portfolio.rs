@@ -187,7 +187,7 @@ impl PortfolioAttributionStats {
         outcome: &SubmissionOutcome,
     ) {
         match outcome {
-            SubmissionOutcome::Queued { signal_ids } => {
+            SubmissionOutcome::Queued { signal_ids, .. } => {
                 *self.queued_counts.entry(regime).or_insert(0) += signal_ids.len() as u64;
                 for signal_id in signal_ids {
                     self.signal_regimes.insert(*signal_id, regime);

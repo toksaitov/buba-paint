@@ -85,6 +85,8 @@ describe("PolymarketReadonlyProvider", () => {
     cancelAllResponse?: Record<string, unknown>;
     cancelError?: { value: unknown | null };
     cancelAllError?: { value: unknown | null };
+    trades?: Array<Record<string, unknown>>;
+    tradesError?: { value: unknown | null };
     relayerExecuteCalls?: Array<Record<string, unknown>>;
     relayerTerminalState?: string;
     builderCredentials?: boolean;
@@ -223,6 +225,36 @@ describe("PolymarketReadonlyProvider", () => {
             tbf: 0,
           };
         },
+        getTrades: async () => {
+          if (options?.tradesError?.value) {
+            throw options.tradesError.value;
+          }
+          return (
+            (options?.trades as never as []) ??
+            [
+              {
+                id: "0xtrade",
+                taker_order_id: "0xvenue-order",
+                market: "0xcondition",
+                asset_id: "up-token",
+                side: "BUY",
+                size: "10",
+                fee_rate_bps: "0",
+                price: "0.5",
+                status: "confirmed",
+                match_time: "1700000000",
+                last_update: "1700000001",
+                outcome: "Up",
+                bucket_index: 0,
+                owner: "owner",
+                maker_address: "maker",
+                maker_orders: [],
+                transaction_hash: "0xtx",
+                trader_side: "TAKER",
+              },
+            ]
+          );
+        },
         createAndPostMarketOrder: async (order, marketOptions, orderType) => {
           options?.postedOrders?.push({ order, marketOptions, orderType });
           if (options?.orderError?.value) {
@@ -302,6 +334,7 @@ describe("PolymarketReadonlyProvider", () => {
           lastDisconnectReason: options?.ensureConnectedError?.value ?? null,
           consecutiveFailures: options?.ensureConnectedError?.value ? 2 : 0,
           subscribedMarkets: connectedMarkets,
+          recentEvents: [],
         }),
         close: () => undefined,
       }),
@@ -487,6 +520,31 @@ describe("PolymarketReadonlyProvider", () => {
     expect(order.details_json).toContain("\"client_order_id\":\"client-1\"");
     expect(order.details_json).not.toContain("secret");
     expect(postedOrders).toHaveLength(1);
+  });
+
+  it("returns sanitized activity from CLOB trade recovery", async () => {
+    const provider = createProvider();
+    await provider.preflight(request);
+
+    const activity = await provider.activity();
+
+    expect(activity.user_stream_status).toBe("ok");
+    expect(activity.user_stream_events).toEqual([]);
+    expect(activity.clob_trades).toHaveLength(1);
+    expect(activity.clob_trades[0]).toMatchObject({
+      source: "clob_trades",
+      event_type: "confirmed",
+      market_id: "0xcondition",
+      order_id: "0xtrade",
+      trade_id: "0xtrade",
+      asset_id: "up-token",
+      side: "BUY",
+      price: 0.5,
+      size: 10,
+      status: "confirmed",
+    });
+    expect(activity.details_json).toContain("\"clob_trade_count\":1");
+    expect(activity.details_json).not.toContain("secret");
   });
 
   it("rejects BUY market orders without dollar amount before reaching CLOB", async () => {

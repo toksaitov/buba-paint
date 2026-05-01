@@ -3,7 +3,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::config::{Config, ExecutionMode};
 use crate::live_sidecar::{
-    LiveOrderIntentRequest, LivePreflightRequest, LiveSidecarClient, strategy_readiness_matrix,
+    LiveCheckStatus, LiveOrderIntentRequest, LivePreflightRequest, LiveSidecarClient,
+    strategy_readiness_matrix,
 };
 
 /// Verifies that readiness matrix reflects the configured strategy flags.
@@ -202,4 +203,54 @@ async fn live_sidecar_client_health_reports_additive_readiness_fields() {
         "positions: timed out"
     );
     assert_eq!(response["consecutive_user_stream_failures"], 4);
+}
+
+/// Verifies that sidecar activity snapshots decode recovered order and trade truth.
+#[tokio::test]
+async fn live_sidecar_client_activity_round_trip() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/activity"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "timestamp_ms": 1_700_000_000_000_u64,
+            "user_stream_status": "ok",
+            "user_stream_events": [{
+                "timestamp_ms": 1_700_000_000_001_u64,
+                "source": "user_stream",
+                "event_type": "order",
+                "market_id": "mkt-1",
+                "order_id": "venue-1",
+                "trade_id": null,
+                "asset_id": "tok-up",
+                "side": "BUY",
+                "price": 0.51,
+                "size": 5.0,
+                "status": "matched",
+                "details_json": "{\"source\":\"test\"}"
+            }],
+            "clob_trades": [{
+                "timestamp_ms": 1_700_000_000_002_u64,
+                "source": "clob_trades",
+                "event_type": "trade",
+                "market_id": "mkt-1",
+                "order_id": "venue-1",
+                "trade_id": "trade-1",
+                "asset_id": "tok-up",
+                "side": "BUY",
+                "price": 0.51,
+                "size": 5.0,
+                "status": "confirmed",
+                "details_json": null
+            }],
+            "details_json": "{\"provider\":\"test\"}"
+        })))
+        .mount(&server)
+        .await;
+
+    let client = LiveSidecarClient::new(&server.uri());
+    let response = client.activity().await.unwrap();
+    assert_eq!(response.user_stream_status, LiveCheckStatus::Ok);
+    assert_eq!(response.user_stream_events.len(), 1);
+    assert_eq!(response.clob_trades.len(), 1);
+    assert_eq!(response.clob_trades[0].trade_id.as_deref(), Some("trade-1"));
 }

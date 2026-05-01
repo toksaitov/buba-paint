@@ -458,7 +458,16 @@ fn derive_trading_state(runtime_mode: &str, live_session_status: Option<&str>) -
             Some("readonly_degraded" | "readonly_failed") => "degraded".to_string(),
             _ => "readonly".to_string(),
         },
-        "live_trading" => "gated".to_string(),
+        "live_trading" => match live_session_status {
+            Some("armed") => "armed".to_string(),
+            Some("halted") => "halted".to_string(),
+            Some("unknown_order") => "unknown_order".to_string(),
+            Some("stop_after_flat" | "disarmed") | None => "disarmed".to_string(),
+            Some(status) if status.contains("degraded") || status.contains("failed") => {
+                "degraded".to_string()
+            }
+            Some(_) => "degraded".to_string(),
+        },
         _ => "paper".to_string(),
     }
 }
@@ -595,8 +604,12 @@ fn build_trading_capabilities(runtime_mode: &str) -> TradingCapabilities {
     } else {
         "Dashboard preflight actions are not wired in this pass."
     };
-    let arm_reason = "live_trading remains gated in buba-paint.";
-    let control_reason = "Trading controls are designed in the UI, but no dashboard action endpoint exists in this pass.";
+    let arm_reason = if runtime_mode == "live_trading" {
+        "Use buba-paint live-control arm on the host; dashboard arming is disabled in Phase 3."
+    } else {
+        "Dashboard arming is only available in a later live-trading UI phase."
+    };
+    let control_reason = "Use buba-paint live-control on the host; dashboard mutation endpoints are disabled in Phase 3.";
     TradingCapabilities {
         preflight: disabled_capability(preflight_reason),
         arm: disabled_capability(arm_reason),
@@ -625,11 +638,38 @@ fn build_trading_alerts(
         });
     }
     match runtime_mode {
-        "live_trading" => alerts.push(TradingAlert {
-            severity: "warning".to_string(),
-            title: "Live trading gated".to_string(),
-            detail: "Real-money execution remains intentionally disabled in this branch.".to_string(),
-        }),
+        "live_trading" => match live_status
+            .latest_session
+            .as_ref()
+            .map(|session| session.status.as_str())
+        {
+            Some("armed") => alerts.push(TradingAlert {
+                severity: "critical".to_string(),
+                title: "Live trading armed".to_string(),
+                detail: "The bot is permitted to submit real venue orders through the local live-control state.".to_string(),
+            }),
+            Some("halted") => alerts.push(TradingAlert {
+                severity: "critical".to_string(),
+                title: "Live session halted".to_string(),
+                detail: "The live session hit a terminal halt and requires analysis before a new session.".to_string(),
+            }),
+            Some("unknown_order") => alerts.push(TradingAlert {
+                severity: "critical".to_string(),
+                title: "Order state unknown".to_string(),
+                detail: "Trading is blocked until venue order and fill state are reconciled.".to_string(),
+            }),
+            Some("stop_after_flat") => alerts.push(TradingAlert {
+                severity: "warning".to_string(),
+                title: "Stop after flat".to_string(),
+                detail: "The bot should stop submitting new orders after current exposure is flat.".to_string(),
+            }),
+            Some("disarmed") => alerts.push(TradingAlert {
+                severity: "info".to_string(),
+                title: "Live trading disarmed".to_string(),
+                detail: "Use buba-paint live-control from the host to arm after preflight gates pass.".to_string(),
+            }),
+            _ => {}
+        },
         "live_readonly" => alerts.push(TradingAlert {
             severity: "info".to_string(),
             title: "Shadow and execution views differ".to_string(),
