@@ -99,6 +99,36 @@ After any deploy or restart:
 
 Before any future live-money arming, also verify host geoblock, current BTC market metadata, CLOB V2 fee/tick/min-size metadata, pUSD account diagnostics, sidecar preflight, dashboard Execution state, and current official Polymarket docs. Save the no-order readonly verification report under `data/experiments/venue-contract-v2-001/` or the current phase-specific experiment directory.
 
+## Replay-Grade Readonly Soak
+
+Before the first funded canary, run a no-order readonly soak on the `buba-paint` host from a reviewed release. This is not part of the local Phase 6 implementation pass; it is a later host verification gate.
+
+Use a fresh runtime directory and keep output under `data/experiments/replay-grade-readonly-soak-001/` when copying reports back locally. The soak must use:
+
+```bash
+EXECUTION_MODE=live_readonly
+FEED_EVENT_STORAGE_PROFILE=replay_grade
+LATENCY_ARB_ENABLED=true
+SPREAD_CAPTURE_ENABLED=false
+CALM_PERSISTENCE_ENABLED=false
+```
+
+Minimum checks after enough active-market data has been captured:
+
+```bash
+cargo run -p buba-paint --release -- validate-replay-data \
+  --data <readonly-soak-db> \
+  --start <soak-start-iso-time> \
+  --end <soak-end-iso-time>
+
+sqlite3 <readonly-soak-db> 'PRAGMA quick_check;'
+sqlite3 <readonly-soak-db> "SELECT key, value FROM run_metadata ORDER BY key;"
+ssh buba-paint 'ps -eo pid=,args= | awk "/buba-paint live|buba-agent|buba-dashboard|polymarket-sidecar/ && !/awk/ {print}"'
+find . -maxdepth 1 \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \) -print
+```
+
+The soak is not accepted unless `validate-replay-data` reports `sweep_grade`, `PRAGMA quick_check` returns `ok`, only intended processes are running, and no scratch DB/WAL/SHM files appear in the repo root.
+
 ## Cleanup Policy
 
 If remote disk gets tight, prune old releases, archived remote runs, and disposable remote backups. Do not delete local `runs/` or local `data/` as part of server cleanup.

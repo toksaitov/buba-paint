@@ -27,8 +27,17 @@ struct CloseoutFileContext<'a> {
     started_at_ms: u64,
     ended_at_ms: u64,
     quick_check: &'a str,
-    replay_report: &'a str,
+    replay_quality: &'a CloseoutReplayQuality,
     exported_files: &'a [String],
+}
+
+struct CloseoutReplayQuality {
+    text: String,
+    class: String,
+    missing_required: Vec<String>,
+    start_time: u64,
+    end_time: u64,
+    error: Option<String>,
 }
 
 /// Export live-trading closeout artifacts and record the export in the audit ledger.
@@ -52,7 +61,7 @@ pub fn run_live_closeout(options: &LiveCloseoutOptions) -> anyhow::Result<()> {
     } else {
         latest_live_timestamp_ms(db.conn())?.unwrap_or(options.generated_at_ms)
     };
-    let replay_report = replay_quality_report(&options.db_path, session.started_at_ms, end_ms);
+    let replay_quality = replay_quality_report(&options.db_path, session.started_at_ms, end_ms);
     persist_closeout_marker(&db, session_id, options, &output_dir)?;
     let exported_files = export_live_tables(db.conn(), session_id, &output_dir)?;
     write_closeout_files(&CloseoutFileContext {
@@ -62,7 +71,7 @@ pub fn run_live_closeout(options: &LiveCloseoutOptions) -> anyhow::Result<()> {
         started_at_ms: session.started_at_ms,
         ended_at_ms: end_ms,
         quick_check: &quick_check,
-        replay_report: &replay_report,
+        replay_quality: &replay_quality,
         exported_files: &exported_files,
     })?;
     db.close();
@@ -106,10 +115,28 @@ fn latest_live_timestamp_ms(conn: &rusqlite::Connection) -> anyhow::Result<Optio
 }
 
 /// Build a replay-quality report for the live closeout interval.
-fn replay_quality_report(db_path: &str, start_ms: u64, end_ms: u64) -> String {
+fn replay_quality_report(db_path: &str, start_ms: u64, end_ms: u64) -> CloseoutReplayQuality {
     match replay_quality::analyze_path(db_path, start_ms, end_ms) {
-        Ok(report) => replay_quality::format_report(&report),
-        Err(error) => format!("replay-quality report failed: {error}"),
+        Ok(report) => CloseoutReplayQuality {
+            text: replay_quality::format_report(&report),
+            class: report.class.as_str().to_string(),
+            missing_required: report
+                .missing_required_keys()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            start_time: report.start_time,
+            end_time: report.end_time,
+            error: None,
+        },
+        Err(error) => CloseoutReplayQuality {
+            text: format!("replay-quality report failed: {error}"),
+            class: "descriptive_only".to_string(),
+            missing_required: Vec::new(),
+            start_time: start_ms,
+            end_time: end_ms,
+            error: Some(error.to_string()),
+        },
     }
 }
 
@@ -251,6 +278,7 @@ fn write_rows_json<'stmt>(
 
 /// Write summary, manifest, integrity, replay-quality, and postmortem files.
 fn write_closeout_files(context: &CloseoutFileContext<'_>) -> anyhow::Result<()> {
+    let replay_quality = closeout_replay_quality_json(context.replay_quality);
     let summary = json!({
         "session_id": context.session_id,
         "db_path": context.options.db_path,
@@ -260,6 +288,7 @@ fn write_closeout_files(context: &CloseoutFileContext<'_>) -> anyhow::Result<()>
         "actor": context.options.actor,
         "reason": context.options.reason,
         "sqlite_quick_check": context.quick_check,
+        "replay_quality": replay_quality.clone(),
     });
     write_json_file(context.output_dir, "summary.json", &summary)?;
     let manifest = json!({
@@ -268,6 +297,7 @@ fn write_closeout_files(context: &CloseoutFileContext<'_>) -> anyhow::Result<()>
         "db_path": context.options.db_path,
         "output_dir": context.output_dir.display().to_string(),
         "generated_at_ms": context.options.generated_at_ms,
+        "replay_quality": replay_quality,
         "files": context.exported_files,
     });
     write_json_file(context.output_dir, "manifest.json", &manifest)?;
@@ -275,17 +305,33 @@ fn write_closeout_files(context: &CloseoutFileContext<'_>) -> anyhow::Result<()>
     write_text_file(
         context.output_dir,
         "replay_quality.txt",
-        context.replay_report,
+        &context.replay_quality.text,
     )?;
+    let replay_status = if context.replay_quality.class == "sweep_grade" {
+        "sweep-grade"
+    } else {
+        "descriptive only, not research-grade"
+    };
     write_text_file(
         context.output_dir,
         "postmortem.md",
         &format!(
-            "# Live Trading Closeout Postmortem\n\nStatus: draft, required before another funded run.\n\nSession: {}\nActor: {}\nReason: {}\n\n## Executive Summary\n\n- Fill this in before starting a new run DB.\n\n## Halt Or Closeout Trigger\n\n- Fill this in from `live_reconciliation_events.json`, `live_control_state.json`, and `summary.json`.\n\n## Risk Review\n\n- Review high-water mark, trough/current equity, daily loss, and session drawdown from `live_session.json`.\n\n## Order And Reconciliation Review\n\n- Review `live_order_intents.json`, `live_orders.json`, `live_fills.json`, and `live_reconciliation_events.json`.\n\n## Required Decision\n\n- Do not reuse this DB for another funded run. Start a new run DB only after this postmortem is complete.\n",
-            context.session_id, context.options.actor, context.options.reason
+            "# Live Trading Closeout Postmortem\n\nStatus: draft, required before another funded run.\nReplay quality: {}.\n\nSession: {}\nActor: {}\nReason: {}\n\n## Executive Summary\n\n- Fill this in before starting a new run DB.\n\n## Halt Or Closeout Trigger\n\n- Fill this in from `live_reconciliation_events.json`, `live_control_state.json`, and `summary.json`.\n\n## Replay-Quality Review\n\n- Review `replay_quality.txt` and `summary.json` before using this run for research.\n\n## Risk Review\n\n- Review high-water mark, trough/current equity, daily loss, and session drawdown from `live_session.json`.\n\n## Order And Reconciliation Review\n\n- Review `live_order_intents.json`, `live_orders.json`, `live_fills.json`, and `live_reconciliation_events.json`.\n\n## Required Decision\n\n- Do not reuse this DB for another funded run. Start a new run DB only after this postmortem is complete.\n",
+            replay_status, context.session_id, context.options.actor, context.options.reason
         ),
     )?;
     Ok(())
+}
+
+/// Build the closeout replay-quality JSON summary.
+fn closeout_replay_quality_json(replay_quality: &CloseoutReplayQuality) -> Value {
+    json!({
+        "class": replay_quality.class.clone(),
+        "missing_required": replay_quality.missing_required.clone(),
+        "start_time": replay_quality.start_time,
+        "end_time": replay_quality.end_time,
+        "error": replay_quality.error.clone(),
+    })
 }
 
 /// Write one pretty JSON file.
@@ -409,6 +455,10 @@ mod tests {
         ] {
             assert!(output_dir.path().join(file).exists(), "{file} missing");
         }
+        let summary = fs::read_to_string(output_dir.path().join("summary.json")).unwrap();
+        let postmortem = fs::read_to_string(output_dir.path().join("postmortem.md")).unwrap();
+        assert!(summary.contains("\"class\": \"empty\""));
+        assert!(postmortem.contains("descriptive only, not research-grade"));
         let conn = rusqlite::Connection::open(db_path).unwrap();
         let action: String = conn
             .query_row(

@@ -63,6 +63,25 @@ impl ReplayQualityReport {
             .filter(|requirement| requirement.required && !requirement.present())
             .collect()
     }
+
+    /// Return stable keys for missing required feed classes.
+    #[must_use]
+    pub fn missing_required_keys(&self) -> Vec<&'static str> {
+        self.missing_required()
+            .into_iter()
+            .map(|requirement| requirement.key)
+            .collect()
+    }
+
+    /// Return one compact requirement count summary.
+    #[must_use]
+    pub fn requirement_count_summary(&self) -> String {
+        self.requirements
+            .iter()
+            .map(|requirement| format!("{}={}", requirement.key, requirement.rows))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 /// Analyze replay fidelity for one database and time interval.

@@ -107,6 +107,8 @@ Keep these artifacts:
 
 Do not bloat SQLite with full raw private websocket traffic unless a short forensic session explicitly requires it.
 
+Replay quality must be verified from observed data, not from configuration. A run configured with `FEED_EVENT_STORAGE_PROFILE=replay_grade` is only research-grade after `validate-replay-data` reports `sweep_grade` for the captured interval. If closeout labels the run descriptive-only, use it for operational diagnosis and postmortem only, not parameter selection.
+
 ## UI safety rules
 
 The dedicated Execution page should enforce:

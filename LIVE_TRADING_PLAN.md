@@ -47,8 +47,9 @@ Issue-resolution discipline for every phase:
 - Phase 2, Sidecar Write Boundary: complete in commit `e8c223d` on 2026-05-01.
 - Phase 3, Live Ledger and Bot Runtime: complete in commit `359393f` on 2026-05-02.
 - Phase 4, Dashboard Execution Controls: complete in commit `53a1fe9` on 2026-05-02. Chosen defaults are admin-only dashboard controls and audited preflight commands queued through the bot control ledger.
-- Phase 5, Risk, Halt, and Human Cooldown Policy: complete in current local work on 2026-05-02, pending commit. Chosen defaults are postmortem-only cooldown, new run DB after terminal halt, current loss caps, 2-minute terminal degradation threshold, and cancel/redeem still available from halted sessions.
-- Phase 6 and later: unfinished. Replay-grade funded capture review, host rollout, and real-money canary remain gated until those phases are implemented and verified.
+- Phase 5, Risk, Halt, and Human Cooldown Policy: complete in commit `c406e39` on 2026-05-02. Chosen defaults are postmortem-only cooldown, new run DB after terminal halt, current loss caps, 2-minute terminal degradation threshold, and cancel/redeem still available from halted sessions.
+- Phase 6, Replay-Grade Real-Money Capture: complete in current local work on 2026-05-02, pending commit. Chosen scope is public replay gate only; the deployment-host readonly soak is prepared but not run in this phase.
+- Phase 7 and later: unfinished. Backtest fidelity review, host rollout, and real-money canary remain gated until those phases are implemented and verified.
 
 ## Current Decision
 
@@ -505,8 +506,22 @@ Tests:
 Acceptance gates:
 
 - one local replay-grade paper smoke DB passes `validate-replay-data`
-- one readonly host soak DB passes `validate-replay-data`
+- deployment-host readonly soak procedure is prepared but not run in this local-only phase
 - no WAL or DB garbage in the repo root
+
+Phase 6 closeout:
+
+- Implemented observed replay-quality metadata semantics. `replay_quality_class` now reflects database evidence only, while configured capture capability is recorded separately.
+- Implemented live-trading storage hardening: `FEED_EVENT_STORAGE_PROFILE=compact` fails fast in `live_trading`, and arming remains blocked until observed replay quality is `sweep_grade`.
+- Reused the canonical `validate-replay-data` classifier for runtime metadata and closeout evidence instead of profile-implied or footprint-only approximations.
+- Extended `live-closeout` summary, manifest, and postmortem stub with replay-quality class, missing required classes, validation interval, and descriptive-only labeling.
+- Added deterministic replay-grade fixture coverage for complete data, missing Binance `bookTicker`, missing Binance `depth`, empty data, and path-based validation.
+- Prepared the future no-order deployment-host readonly soak checklist under stable operations docs; it was not run in this local-only phase.
+- Blockers found: lint caught `refresh_remote_state` exceeding the line-count limit after replay-gate wiring.
+- Blockers fixed: replay-gate wiring was extracted into a helper without suppressing lint.
+- Accepted low-risk debt: host readonly soak is intentionally deferred by Phase 6 scope, and full live/backtest fidelity proof remains Phase 7.
+- Validation gates run: `cargo test -p buba-paint replay`, `cargo test -p buba-paint live`, `cargo test -p buba-paint live_control`, `cargo test -p buba-paint --test live_system_test`, `/tmp` replay-grade smoke DB through `./target/release/buba-paint validate-replay-data`, `make lint`, `make docs-audit`, `make comment-audit`, `cargo build --release -p buba-paint`, `git diff --check`, and repo-root DB/WAL/SHM check.
+- Gates intentionally skipped: deployment-host readonly soak, because Phase 6 prepared it but did not run it.
 
 ## Phase 7: Backtest Fidelity Review
 

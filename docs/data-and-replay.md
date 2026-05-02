@@ -44,11 +44,13 @@ cargo run -p buba-paint --release -- validate-replay-data \
 
 Old runs that lack Binance book-ticker rows are descriptive evidence only. They can support postmortems, drawdown analysis, and operational diagnostics, but not trusted parameter selection.
 
+Live runtime metadata separates configured capture capability from observed DB evidence. `configured_replay_quality_class` records whether the selected storage profile can become replay-grade. `replay_quality_class` records only observed data quality from the database interval and must not be treated as `sweep_grade` until the required public feed classes are present.
+
 ## Database Tables
 
 Important run DB tables:
 
-- `run_metadata`: feed storage profile, replay-quality class, and observed feed-event classes.
+- `run_metadata`: feed storage profile, configured capture capability, observed replay-quality class, validation interval, missing required classes, and observed feed-event classes.
 - `feed_events`: canonical replay source when available.
 - `tick_data`: 1-second sampled telemetry for dashboards and coarse inspection.
 - `markets`: one row per 5-minute window with token IDs, status, resolution, fee profile, min size, tick size, rewards, and accepting-orders metadata.

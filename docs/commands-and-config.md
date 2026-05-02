@@ -152,6 +152,8 @@ cargo run -p buba-paint --release -- live-closeout \
 
 `live-closeout` writes `summary.json`, `manifest.json`, `db_integrity.txt`, `replay_quality.txt`, live ledger exports, control audit, and a `postmortem.md` stub. It records `live_closeout_exported` in the DB audit ledger. It does not make a halted DB re-armable; the next funded attempt must use a new run DB.
 
+The closeout summary and manifest include observed replay-quality class, validation interval, and missing required public feed classes. If the interval is not `sweep_grade`, the postmortem stub labels the run descriptive-only.
+
 Live-money risk defaults are:
 
 - `LIVE_MAX_DAILY_LOSS_USD=15`

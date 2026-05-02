@@ -1,6 +1,7 @@
 use super::*;
 use crate::db::schema::run_migrations;
 use rusqlite::params;
+use tempfile::NamedTempFile;
 
 /// Build a migrated in-memory database for replay-quality tests.
 fn setup_db() -> Connection {
@@ -222,4 +223,46 @@ fn blocking_error_names_missing_requirements() {
     let error = blocking_error(&report);
     assert!(error.contains("binance_book_ticker"));
     assert!(error.contains("descriptive_only"));
+}
+
+/// Verify that missing depth rows block sweep-grade classification.
+#[test]
+fn missing_depth_is_descriptive_only() {
+    let conn = setup_db();
+    insert_sweep_grade_feed_events(&conn);
+    conn.execute(
+        "DELETE FROM feed_events WHERE source = 'binance' AND event_type = 'depth'",
+        [],
+    )
+    .unwrap();
+
+    let report = analyze_connection(&conn, 0, 2_000).unwrap();
+
+    assert_eq!(report.class, ReplayQualityClass::DescriptiveOnly);
+    assert_eq!(report.missing_required_keys(), vec!["binance_depth"]);
+}
+
+/// Verify that an empty database is never labeled sweep-grade.
+#[test]
+fn empty_data_is_not_sweep_grade() {
+    let conn = setup_db();
+
+    let report = analyze_connection(&conn, 0, 2_000).unwrap();
+
+    assert_eq!(report.class, ReplayQualityClass::Empty);
+    assert!(!report.is_sweep_grade());
+}
+
+/// Verify that path-based validation accepts a complete replay-grade fixture.
+#[test]
+fn validate_sweep_input_accepts_complete_fixture_path() {
+    let db_file = NamedTempFile::new().unwrap();
+    let conn = Connection::open(db_file.path()).unwrap();
+    run_migrations(&conn).unwrap();
+    insert_sweep_grade_feed_events(&conn);
+    drop(conn);
+
+    let report = validate_sweep_input(db_file.path().to_str().unwrap(), 0, 2_000).unwrap();
+
+    assert_eq!(report.class, ReplayQualityClass::SweepGrade);
 }

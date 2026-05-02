@@ -7,11 +7,12 @@ use serde_json::json;
 use tracing::{error, info, warn};
 
 use crate::backtest::momentum::MomentumCalculator;
+use crate::backtest::replay_quality::{self, ReplayQualityReport};
 use crate::bankroll::BankrollManager;
 use crate::circuit_breaker::CircuitBreaker;
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, FeedEventStorageProfile};
-use crate::db::database::{Database, FeedEventFootprintRow};
+use crate::db::database::Database;
 use crate::executor::{
     ExecutionEngine, OrderOutcomeDisposition, ProcessedOrderOutcome, QueuedOrderIntent,
     SubmissionOutcome,
@@ -63,6 +64,7 @@ struct LiveTradingRuntimeBootstrap {
 struct LiveTradingMonitor {
     sidecar: LiveSidecarClient,
     session_id: i64,
+    session_started_at_ms: u64,
     state: String,
     preflight: Option<LivePreflightResponse>,
     account: Option<LiveAccountState>,
@@ -483,28 +485,21 @@ async fn run_live_runtime(
         } else {
             (db, balance)
         };
+    let runtime_started_at_ms = clock.now();
     let pending_policy = config.pending_settlement_policy_unchecked();
-    db.set_run_metadata(
-        "feed_event_storage_profile",
-        config.feed_event_storage_profile.as_str(),
-        clock.now(),
-    )?;
-    db.set_run_metadata(
-        "replay_quality_class",
-        initial_replay_quality_class(config.feed_event_storage_profile),
-        clock.now(),
-    )?;
-    db.set_run_metadata(
-        "required_feed_event_classes",
-        required_feed_event_classes(),
-        clock.now(),
+    let initial_replay_quality = persist_replay_quality_metadata(
+        &db,
+        config.feed_event_storage_profile,
+        runtime_started_at_ms,
+        runtime_started_at_ms,
+        runtime_started_at_ms,
     )?;
     info!(
         balance = runtime_balance,
         db = %db_path,
         execution_mode = config.execution_mode.as_str(),
         feed_event_storage_profile = config.feed_event_storage_profile.as_str(),
-        replay_quality_class = initial_replay_quality_class(config.feed_event_storage_profile),
+        replay_quality_class = initial_replay_quality.class.as_str(),
         pending_settlement_mode = pending_policy.mode.as_str(),
         pending_settlement_family_reserve_fraction = pending_policy.family_reserve_fraction,
         pending_settlement_global_reserve_fraction = pending_policy.global_reserve_fraction,
@@ -1493,22 +1488,28 @@ async fn run_live_runtime(
                         .map(|(key, count)| format!("{key}={count}"))
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let now = clock.now();
+                    let replay_quality = match persist_replay_quality_metadata(
+                        &db,
+                        config.feed_event_storage_profile,
+                        runtime_started_at_ms,
+                        now,
+                        now,
+                    ) {
+                        Ok(report) => report.class.as_str().to_string(),
+                        Err(error) => {
+                            warn!(%error, "failed to persist replay quality metadata");
+                            "unknown".to_string()
+                        }
+                    };
                     info!(
                         db_bytes = footprint.db_bytes,
                         wal_bytes = footprint.wal_bytes,
                         feed_events = footprint.feed_event_count,
                         rows = row_summary,
-                        replay_quality_class = footprint_replay_quality_class(&footprint.grouped_feed_events),
+                        replay_quality_class = %replay_quality,
                         "live storage footprint"
                     );
-                    let now = clock.now();
-                    if let Err(error) = db.set_run_metadata(
-                        "replay_quality_class",
-                        footprint_replay_quality_class(&footprint.grouped_feed_events),
-                        now,
-                    ) {
-                        warn!(%error, "failed to persist replay quality metadata");
-                    }
                     if let Err(error) = db.set_run_metadata("feed_event_classes", &row_summary, now) {
                         warn!(%error, "failed to persist feed class metadata");
                     }
@@ -1800,7 +1801,15 @@ impl LiveTradingMonitor {
         let db = Database::new(db_path)?;
         db.log_live_account_snapshot(&live_account_snapshot(self.session_id, &account))?;
         self.persist_activity_recovery(&db, &activity)?;
-        let issues = live_gate_issues(&preflight, &account, &activity, config);
+        let mut issues = live_gate_issues(&preflight, &account, &activity, config);
+        issues.extend(replay_quality_issues_for_live(
+            &db,
+            config.feed_event_storage_profile,
+            self.session_started_at_ms,
+            clock.now(),
+        )?);
+        issues.sort();
+        issues.dedup();
         self.preflight = Some(preflight);
         self.account = Some(account);
         self.activity = Some(activity);
@@ -2694,6 +2703,11 @@ async fn bootstrap_live_trading_runtime(
     clock: &dyn Clock,
 ) -> anyhow::Result<(Database, LiveTradingRuntimeBootstrap)> {
     let started_at_ms = clock.now();
+    if config.feed_event_storage_profile == FeedEventStorageProfile::Compact {
+        bail!(
+            "live_trading requires replay-grade feed capture; FEED_EVENT_STORAGE_PROFILE=compact is descriptive-only"
+        )
+    }
     if db.terminal_live_trading_halt_exists()? {
         bail!(
             "live_trading cannot start against a DB with a halted or unknown-order live session; run live-closeout and start a new run DB"
@@ -2726,6 +2740,7 @@ async fn bootstrap_live_trading_runtime(
     let mut monitor = LiveTradingMonitor {
         sidecar: LiveSidecarClient::new(&config.live_sidecar_url),
         session_id,
+        session_started_at_ms: started_at_ms,
         state: "disarmed".to_string(),
         preflight: None,
         account: None,
@@ -3645,46 +3660,105 @@ fn log_feed_health_rollups(rows: &[FeedHealthRollupRow]) {
     }
 }
 
-/// Return the initial quality class implied by the configured storage profile.
-fn initial_replay_quality_class(profile: FeedEventStorageProfile) -> &'static str {
+/// Return the configured replay-quality capability for the storage profile.
+fn configured_replay_quality_class(profile: FeedEventStorageProfile) -> &'static str {
     match profile {
         FeedEventStorageProfile::Compact => "descriptive_only",
-        FeedEventStorageProfile::ReplayGrade | FeedEventStorageProfile::FullDebug => "sweep_grade",
+        FeedEventStorageProfile::ReplayGrade | FeedEventStorageProfile::FullDebug => {
+            "sweep_capable"
+        }
+    }
+}
+
+/// Persist observed replay-quality metadata for one runtime interval.
+fn persist_replay_quality_metadata(
+    db: &Database,
+    profile: FeedEventStorageProfile,
+    start_time: u64,
+    end_time: u64,
+    recorded_at_ms: u64,
+) -> anyhow::Result<ReplayQualityReport> {
+    let report = replay_quality::analyze_connection(db.conn(), start_time, end_time)?;
+    db.set_run_metadata(
+        "feed_event_storage_profile",
+        profile.as_str(),
+        recorded_at_ms,
+    )?;
+    db.set_run_metadata(
+        "configured_replay_quality_class",
+        configured_replay_quality_class(profile),
+        recorded_at_ms,
+    )?;
+    db.set_run_metadata(
+        "replay_quality_class",
+        report.class.as_str(),
+        recorded_at_ms,
+    )?;
+    db.set_run_metadata(
+        "replay_quality_validated_at_ms",
+        &recorded_at_ms.to_string(),
+        recorded_at_ms,
+    )?;
+    db.set_run_metadata(
+        "replay_quality_validation_interval",
+        &json!({
+            "start_time": start_time,
+            "end_time": end_time,
+        })
+        .to_string(),
+        recorded_at_ms,
+    )?;
+    db.set_run_metadata(
+        "replay_quality_missing_required_classes",
+        &report.missing_required_keys().join(","),
+        recorded_at_ms,
+    )?;
+    db.set_run_metadata(
+        "replay_quality_observed_feed_classes",
+        &report.requirement_count_summary(),
+        recorded_at_ms,
+    )?;
+    db.set_run_metadata(
+        "required_feed_event_classes",
+        required_feed_event_classes(),
+        recorded_at_ms,
+    )?;
+    Ok(report)
+}
+
+/// Return live arming issues after recording current replay-quality metadata.
+fn replay_quality_issues_for_live(
+    db: &Database,
+    profile: FeedEventStorageProfile,
+    start_time: u64,
+    now_ms: u64,
+) -> anyhow::Result<Vec<String>> {
+    let report = persist_replay_quality_metadata(db, profile, start_time, now_ms, now_ms)?;
+    Ok(replay_quality_gate_issue(&report).into_iter().collect())
+}
+
+/// Return an arming issue when observed replay quality is incomplete.
+fn replay_quality_gate_issue(report: &ReplayQualityReport) -> Option<String> {
+    if report.is_sweep_grade() {
+        return None;
+    }
+    let missing = report.missing_required_keys();
+    if missing.is_empty() {
+        Some(format!(
+            "feed capture is not replay-grade: replay_quality={}",
+            report.class.as_str()
+        ))
+    } else {
+        Some(format!(
+            "feed capture is not replay-grade: missing {}",
+            missing.join(",")
+        ))
     }
 }
 
 /// Return the required feed classes for sweep-grade replay.
 fn required_feed_event_classes() -> &'static str {
     "binance:aggTrade, binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:top_of_book, clob_down:top_of_book"
-}
-
-/// Return the best current quality class implied by persisted feed classes.
-fn footprint_replay_quality_class(rows: &[FeedEventFootprintRow]) -> &'static str {
-    if has_feed_class(rows, "binance", "aggTrade")
-        && has_feed_class(rows, "binance", "bookTicker")
-        && has_feed_class(rows, "binance", "depth")
-        && has_feed_class(rows, "chainlink", "chainlink_price")
-        && has_source(rows, "clob_up")
-        && has_source(rows, "clob_down")
-    {
-        "sweep_grade"
-    } else if rows.is_empty() {
-        "empty"
-    } else {
-        "descriptive_only"
-    }
-}
-
-/// Return whether footprint rows include one source and event type.
-fn has_feed_class(rows: &[FeedEventFootprintRow], source: &str, event_type: &str) -> bool {
-    rows.iter()
-        .any(|row| row.source == source && row.event_type == event_type && row.row_count > 0)
-}
-
-/// Return whether footprint rows include any event for one source.
-fn has_source(rows: &[FeedEventFootprintRow], source: &str) -> bool {
-    rows.iter()
-        .any(|row| row.source == source && row.row_count > 0)
 }
 
 /// Register or update one market that still needs authoritative settlement.
@@ -3842,6 +3916,145 @@ mod tests {
     use tempfile::NamedTempFile;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Insert every feed class required for sweep-grade replay into a test DB.
+    fn insert_sweep_grade_feed_events(db: &Database) {
+        for (
+            source,
+            event_type,
+            price,
+            trade_size,
+            signed_quantity,
+            best_bid,
+            best_ask,
+            bid_size,
+            ask_size,
+            depth_bid_notional,
+            depth_ask_notional,
+            depth_imbalance,
+        ) in [
+            (
+                "binance",
+                "aggTrade",
+                Some(42_000.0),
+                Some(0.2),
+                Some(-0.2),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            (
+                "binance",
+                "bookTicker",
+                None,
+                None,
+                None,
+                Some(41_999.0),
+                Some(42_001.0),
+                Some(0.4),
+                Some(0.5),
+                None,
+                None,
+                None,
+            ),
+            (
+                "binance",
+                "depth",
+                None,
+                None,
+                None,
+                Some(41_999.0),
+                Some(42_001.0),
+                Some(0.4),
+                Some(0.5),
+                Some(10_000.0),
+                Some(11_000.0),
+                Some(-0.047),
+            ),
+            (
+                "chainlink",
+                "chainlink_price",
+                Some(42_000.5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            (
+                "clob_up",
+                "best_bid_ask",
+                None,
+                None,
+                None,
+                Some(0.45),
+                Some(0.55),
+                Some(20.0),
+                Some(30.0),
+                None,
+                None,
+                None,
+            ),
+            (
+                "clob_down",
+                "best_bid_ask",
+                None,
+                None,
+                None,
+                Some(0.44),
+                Some(0.56),
+                Some(21.0),
+                Some(31.0),
+                None,
+                None,
+                None,
+            ),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO feed_events (
+                        received_at_ms,
+                        event_at_ms,
+                        source,
+                        event_type,
+                        price,
+                        trade_size,
+                        signed_quantity,
+                        best_bid,
+                        best_ask,
+                        bid_size,
+                        ask_size,
+                        depth_bid_notional,
+                        depth_ask_notional,
+                        depth_imbalance,
+                        fidelity
+                    ) VALUES (1000, 1000, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'raw_event')",
+                    rusqlite::params![
+                        source,
+                        event_type,
+                        price,
+                        trade_size,
+                        signed_quantity,
+                        best_bid,
+                        best_ask,
+                        bid_size,
+                        ask_size,
+                        depth_bid_notional,
+                        depth_ask_notional,
+                        depth_imbalance
+                    ],
+                )
+                .unwrap();
+        }
+    }
 
     /// Verifies that persisted Binance ticks take precedence when recovering a window open.
     #[test]
@@ -4085,6 +4298,40 @@ mod tests {
         let result = run_live(config, tmp_db.path().to_str().unwrap(), 100.0, shutdown_rx).await;
 
         assert!(result.is_ok());
+        let conn = rusqlite::Connection::open(tmp_db.path()).unwrap();
+        let quality: String = conn
+            .query_row(
+                "SELECT value FROM run_metadata WHERE key = 'replay_quality_class'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let configured: String = conn
+            .query_row(
+                "SELECT value FROM run_metadata WHERE key = 'configured_replay_quality_class'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(quality, "empty");
+        assert_eq!(configured, "sweep_capable");
+    }
+
+    /// Verifies that live-trading refuses descriptive-only compact capture at startup.
+    #[tokio::test]
+    async fn run_live_trading_rejects_compact_capture() {
+        let mut config = Config::default();
+        config.execution_mode = ExecutionMode::LiveTrading;
+        config.feed_event_storage_profile = FeedEventStorageProfile::Compact;
+        let tmp_db = NamedTempFile::new().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        shutdown_tx.send(()).unwrap();
+
+        let result = run_live(config, tmp_db.path().to_str().unwrap(), 100.0, shutdown_rx).await;
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("replay-grade"));
+        assert!(error.contains("compact"));
     }
 
     /// Verifies that compact capture blocks live arming.
@@ -4101,6 +4348,71 @@ mod tests {
         );
 
         assert!(issues.iter().any(|issue| issue.contains("replay-grade")));
+    }
+
+    /// Verifies that observed replay-quality metadata starts empty and then reaches sweep-grade from actual rows.
+    #[test]
+    fn replay_quality_metadata_uses_observed_rows() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
+
+        let empty = persist_replay_quality_metadata(
+            &db,
+            FeedEventStorageProfile::ReplayGrade,
+            0,
+            2_000,
+            2_000,
+        )
+        .unwrap();
+        insert_sweep_grade_feed_events(&db);
+        let sweep = persist_replay_quality_metadata(
+            &db,
+            FeedEventStorageProfile::ReplayGrade,
+            0,
+            2_000,
+            2_500,
+        )
+        .unwrap();
+
+        assert_eq!(empty.class.as_str(), "empty");
+        assert_eq!(sweep.class.as_str(), "sweep_grade");
+        assert_eq!(
+            db.get_run_metadata("replay_quality_class")
+                .unwrap()
+                .unwrap(),
+            "sweep_grade"
+        );
+        assert_eq!(
+            db.get_run_metadata("configured_replay_quality_class")
+                .unwrap()
+                .unwrap(),
+            "sweep_capable"
+        );
+        assert_eq!(
+            db.get_run_metadata("replay_quality_missing_required_classes")
+                .unwrap()
+                .unwrap(),
+            ""
+        );
+    }
+
+    /// Verifies that replay quality gate issues come from observed DB evidence.
+    #[test]
+    fn replay_quality_gate_issue_names_missing_classes() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
+        insert_sweep_grade_feed_events(&db);
+        db.conn()
+            .execute(
+                "DELETE FROM feed_events WHERE source = 'binance' AND event_type = 'bookTicker'",
+                [],
+            )
+            .unwrap();
+        let report = replay_quality::analyze_connection(db.conn(), 0, 2_000).unwrap();
+
+        let issue = replay_quality_gate_issue(&report).unwrap();
+
+        assert!(issue.contains("binance_book_ticker"));
     }
 
     /// Verifies that live risk state halts on session drawdown.
@@ -4277,6 +4589,7 @@ mod tests {
         let mut monitor = LiveTradingMonitor {
             sidecar: LiveSidecarClient::new(&server.uri()),
             session_id,
+            session_started_at_ms: 1_000,
             state: "disarmed".to_string(),
             preflight: None,
             account: None,
@@ -4307,7 +4620,12 @@ mod tests {
         assert_eq!(status, "applied");
         assert_eq!(snapshot_count, 1);
         assert_eq!(monitor.state, "disarmed");
-        assert!(monitor.blocked_reason.is_none());
+        assert!(
+            monitor
+                .blocked_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("replay-grade"))
+        );
     }
 
     /// Verifies that terminal live-control states cannot be cleared by disarm.
