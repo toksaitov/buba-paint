@@ -49,7 +49,8 @@ Issue-resolution discipline for every phase:
 - Phase 4, Dashboard Execution Controls: complete in commit `53a1fe9` on 2026-05-02. Chosen defaults are admin-only dashboard controls and audited preflight commands queued through the bot control ledger.
 - Phase 5, Risk, Halt, and Human Cooldown Policy: complete in commit `c406e39` on 2026-05-02. Chosen defaults are postmortem-only cooldown, new run DB after terminal halt, current loss caps, 2-minute terminal degradation threshold, and cancel/redeem still available from halted sessions.
 - Phase 6, Replay-Grade Real-Money Capture: complete in commit `21e4d5d` on 2026-05-02. Chosen scope is public replay gate only; the deployment-host readonly soak is prepared but not run in this phase.
-- Phase 7, Live Fidelity and Replay Explainability Gate: complete in current local work on 2026-05-02, pending commit. Host rollout and real-money canary remain gated until later phases are implemented and verified.
+- Phase 7, Live Fidelity and Replay Explainability Gate: complete in commit `cffbb9a` on 2026-05-02. Host rollout and real-money canary remain gated until later phases are implemented and verified.
+- Phase 8, Local Verification Gate Pack: complete in current local work on 2026-05-02, pending commit. This phase is local-only and did not touch the deployment host, funded wallet, sidecar credentials, or real arming.
 
 ## Current Decision
 
@@ -619,23 +620,52 @@ Phase 7 closeout:
 - Validation gates run: `cargo test -p buba-paint live_fidelity`, `cargo test -p buba-paint replay`, `cargo test -p buba-paint backtest`, `cargo test -p buba-paint live`, `cargo test -p buba-paint live_control`, `cd polymarket-sidecar && npm test`, `cd polymarket-sidecar && npm run build`, `make lint`, `make docs-audit`, `make comment-audit`, `cargo build --release -p buba-paint`, and `git diff --check`.
 - Gates intentionally skipped: deployment-host readonly soak, funded write smoke, and real arming, because Phase 7 is local implementation only.
 
-## Phase 8: Verification Ladder
+## Phase 8: Local Verification Gate Pack
 
-Goal: avoid jumping from code changes directly to money.
+Goal: turn the local part of the live-money verification ladder into a repeatable evidence-producing gate before any host soak, funded write smoke, or canary.
 
-Step 1: local mocked tests.
+Scope:
 
-- Sidecar mocked CLOB V2 and relayer.
-- Bot mocked sidecar.
-- Dashboard mocked APIs.
-- Full unit and integration coverage for happy and failure paths.
+- local mocked and fixture-based tests only
+- local builds and audits only
+- no `ssh buba-paint`
+- no deployment-host readonly soak
+- no funded write smoke
+- no real arming
+- no account-affecting action
 
-Step 2: local dry run.
+Tasks:
 
-- `EXECUTION_MODE=paper`.
-- replay-grade capture.
-- fake representative data.
-- dashboard Execution reviewed.
+- Add a local readiness runner exposed through `make live-readiness-local`.
+- Write readiness evidence outside the repo by default, under `/tmp`.
+- Include command logs, exit statuses, git SHA, timestamp, host info, selected redacted environment summary, and a final manifest.
+- Run the local mocked gate set: Rust live/replay/fidelity tests, sidecar tests/build, dashboard tests/build, lint, docs audit, comment audit, release build, and `git diff --check`.
+- Refuse repo-root output directories unless an operator explicitly overrides that safety for debugging.
+- Prepare the later deployment-host readonly soak checklist in stable docs, but do not run it.
+
+Acceptance gates:
+
+- `make live-readiness-local` writes a complete manifest and exits successfully.
+- a dry-run mode proves the runner records commands and writes only outside the repo.
+- stable docs describe the later no-order host readonly soak checklist.
+- `make lint`
+- `make docs-audit`
+- `make comment-audit`
+- `git diff --check`
+
+Phase 8 closeout:
+
+- Implemented `make live-readiness-local` and `scripts/live-readiness-local.py`.
+- The runner writes command logs, exit statuses, git SHA, dirty status, host info, redacted selected environment values, and final pass/fail state to an outside-repo evidence bundle.
+- The runner refuses repo-local output directories by default and supports a safe `--dry-run` mode for manifest-only verification.
+- Updated stable commands, testing, and deployment docs with the local gate and later no-order host readonly soak checklist.
+- Blockers found: no correctness blockers were found. The stale Phase 7 pending-commit status in this plan was corrected before Phase 8 closeout.
+- Blockers fixed: none required beyond the plan-status correction.
+- Accepted low-risk debt: deployment-host readonly soak, funded write smoke, first canary, and real arming remain intentionally out of Phase 8.
+- Validation gates run: `python3 -m py_compile scripts/live-readiness-local.py`, dry-run local readiness manifest, repo-output refusal check, full `make live-readiness-local` with manifest `/private/tmp/buba-live-readiness-local-20260502-060915Z/manifest.json`, `make docs-audit`, `make comment-audit`, and `git diff --check`.
+- Gates intentionally skipped: host readonly soak, funded write smoke, first canary, and real arming, because Phase 8 is local-only.
+
+Later verification ladder steps, not part of Phase 8:
 
 Step 3: server readonly soak.
 
@@ -729,12 +759,12 @@ When live trading v1 is implemented, tested, and either deployed or deliberately
 
 ## Immediate Next Plan-Mode Slice
 
-The next implementation slice should be Phase 0 only:
+The next implementation slice should be Phase 9 host rollout preparation and no-order readonly soak planning only:
 
-- make docs stable-only
-- move or delete stale future-work docs
-- shrink `Readme.md`
-- update docs audit to reject active plans under `docs/`
-- keep this root plan as the active unfinished work marker
+- stage a reviewed release shape for `buba-paint`
+- verify supervised sidecar, bot, agent, and dashboard process layout
+- run or prepare the deployment-host `live_readonly` soak with replay-grade capture
+- save readonly soak evidence under the documented experiment directory
+- keep real order placement, funded write smoke, canary arming, and production live trading out of that slice unless a later plan explicitly approves them
 
-Do not start CLOB V2 migration in the same slice. The docs reset should be committed separately so later live-money work has a clean context base.
+Do not combine host readonly soak with funded write smoke or first canary. The host soak should produce evidence first, then the next plan-mode slice can decide whether a controlled write smoke is justified.

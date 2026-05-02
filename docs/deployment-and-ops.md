@@ -103,7 +103,13 @@ Before any future live-money arming, also verify host geoblock, current BTC mark
 
 Before the first funded canary, run a no-order readonly soak on the `buba-paint` host from a reviewed release. This is not part of the local Phase 6 implementation pass; it is a later host verification gate.
 
-Use a fresh runtime directory and keep output under `data/experiments/replay-grade-readonly-soak-001/` when copying reports back locally. The soak must use:
+Before starting the host soak, complete the local gate pack and keep its manifest:
+
+```bash
+make live-readiness-local
+```
+
+Use a fresh runtime directory and keep copied-back reports under `data/experiments/replay-grade-readonly-soak-001/`. The soak must use:
 
 ```bash
 EXECUTION_MODE=live_readonly
@@ -113,21 +119,22 @@ SPREAD_CAPTURE_ENABLED=false
 CALM_PERSISTENCE_ENABLED=false
 ```
 
-Minimum checks after enough active-market data has been captured:
+Minimum no-order host checks:
 
 ```bash
+curl -fsS http://127.0.0.1:3210/health
+cargo run -p buba-paint --release -- live-preflight
+sqlite3 <readonly-soak-db> 'PRAGMA quick_check;'
+sqlite3 <readonly-soak-db> "SELECT key, value FROM run_metadata ORDER BY key;"
 cargo run -p buba-paint --release -- validate-replay-data \
   --data <readonly-soak-db> \
   --start <soak-start-iso-time> \
   --end <soak-end-iso-time>
-
-sqlite3 <readonly-soak-db> 'PRAGMA quick_check;'
-sqlite3 <readonly-soak-db> "SELECT key, value FROM run_metadata ORDER BY key;"
 ssh buba-paint 'ps -eo pid=,args= | awk "/buba-paint live|buba-agent|buba-dashboard|polymarket-sidecar/ && !/awk/ {print}"'
 find . -maxdepth 1 \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \) -print
 ```
 
-The soak is not accepted unless `validate-replay-data` reports `sweep_grade`, `PRAGMA quick_check` returns `ok`, only intended processes are running, and no scratch DB/WAL/SHM files appear in the repo root.
+The soak is not accepted unless there is no order placement, sidecar health is sane, host geoblock passes, current BTC market metadata is captured, `validate-replay-data` reports `sweep_grade`, `PRAGMA quick_check` returns `ok`, only intended processes are running, dashboard Execution agrees with CLI preflight, and no scratch DB/WAL/SHM files appear in the repo root.
 
 ## Cleanup Policy
 

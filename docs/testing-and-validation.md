@@ -108,6 +108,7 @@ Treat coverage as a regression guard, not as proof of trading safety.
 Before any funded run, the validation ladder in [LIVE_TRADING_PLAN.md](../LIVE_TRADING_PLAN.md) controls. At minimum, live-money work requires:
 
 - local mocked tests for sidecar, bot, dashboard, and failure paths
+- local evidence bundle from `make live-readiness-local`
 - readonly production-host smoke checks
 - replay-grade data validation
 - private live-fidelity validation for funded intervals

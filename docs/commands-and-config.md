@@ -26,6 +26,7 @@ cd dashboard/client && npm run test:e2e
 cd dashboard/client && npm run test:coverage
 cd polymarket-sidecar && npm test
 cd polymarket-sidecar && npm run build
+make live-readiness-local
 ```
 
 ## Local Stack
@@ -36,6 +37,22 @@ cd dashboard/client && npm run dev
 ```
 
 Docker Compose starts a local paper stack with paint, agent, and dashboard. It does not start the Polymarket sidecar or authenticated `live_readonly` monitoring.
+
+## Local Live-Money Readiness Gate
+
+Before any host soak or funded smoke, run the local gate pack:
+
+```bash
+make live-readiness-local
+```
+
+By default, the gate writes command logs and `manifest.json` under `/tmp/buba-live-readiness-local-<timestamp>`. It refuses repo-local output directories unless explicitly overridden for debugging. For a safe runner-only check:
+
+```bash
+make live-readiness-local LIVE_READINESS_ARGS="--dry-run --output-dir /tmp/buba-readiness-dry-run"
+```
+
+The manifest records git SHA, dirty status, host metadata, selected redacted environment values, each command, each log path, exit statuses, and final pass/fail. Treat any failed command as a blocker before moving to host verification.
 
 ## Bot Commands
 
