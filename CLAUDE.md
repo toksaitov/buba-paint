@@ -128,7 +128,7 @@ Use [docs/system-architecture.md](./docs/system-architecture.md) for the durable
 
 `runs/` contains primary run data and must not be edited manually. `data/` contains derived data and should still be treated as valuable. Do not create temporary or test databases in the project root. Use `/tmp` or test tempfiles.
 
-Replay-grade capture is the research default. Run `buba-paint validate-replay-data` before long sweeps. See [docs/data-and-replay.md](./docs/data-and-replay.md).
+Replay-grade capture is the research default. Run `buba-paint validate-replay-data` before long sweeps. Funded live intervals also require `buba-paint validate-live-fidelity` before they can be used for parameter selection. See [docs/data-and-replay.md](./docs/data-and-replay.md).
 
 ## Deployment Discipline
 

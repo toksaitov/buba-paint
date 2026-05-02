@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 
 use crate::backtest::replay_quality;
 use crate::db::database::Database;
+use crate::db::live_fidelity;
 use crate::types::ControlAuditEntry;
 
 /// Options for exporting one live-trading run closeout package.
@@ -28,10 +29,20 @@ struct CloseoutFileContext<'a> {
     ended_at_ms: u64,
     quick_check: &'a str,
     replay_quality: &'a CloseoutReplayQuality,
+    live_fidelity: &'a CloseoutLiveFidelity,
     exported_files: &'a [String],
 }
 
 struct CloseoutReplayQuality {
+    text: String,
+    class: String,
+    missing_required: Vec<String>,
+    start_time: u64,
+    end_time: u64,
+    error: Option<String>,
+}
+
+struct CloseoutLiveFidelity {
     text: String,
     class: String,
     missing_required: Vec<String>,
@@ -62,6 +73,7 @@ pub fn run_live_closeout(options: &LiveCloseoutOptions) -> anyhow::Result<()> {
         latest_live_timestamp_ms(db.conn())?.unwrap_or(options.generated_at_ms)
     };
     let replay_quality = replay_quality_report(&options.db_path, session.started_at_ms, end_ms);
+    let live_fidelity = live_fidelity_report(&options.db_path, session.started_at_ms, end_ms);
     persist_closeout_marker(&db, session_id, options, &output_dir)?;
     let exported_files = export_live_tables(db.conn(), session_id, &output_dir)?;
     write_closeout_files(&CloseoutFileContext {
@@ -72,6 +84,7 @@ pub fn run_live_closeout(options: &LiveCloseoutOptions) -> anyhow::Result<()> {
         ended_at_ms: end_ms,
         quick_check: &quick_check,
         replay_quality: &replay_quality,
+        live_fidelity: &live_fidelity,
         exported_files: &exported_files,
     })?;
     db.close();
@@ -132,6 +145,28 @@ fn replay_quality_report(db_path: &str, start_ms: u64, end_ms: u64) -> CloseoutR
         Err(error) => CloseoutReplayQuality {
             text: format!("replay-quality report failed: {error}"),
             class: "descriptive_only".to_string(),
+            missing_required: Vec::new(),
+            start_time: start_ms,
+            end_time: end_ms,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+/// Build a live-fidelity report for the live closeout interval.
+fn live_fidelity_report(db_path: &str, start_ms: u64, end_ms: u64) -> CloseoutLiveFidelity {
+    match live_fidelity::analyze_path(db_path, start_ms, end_ms) {
+        Ok(report) => CloseoutLiveFidelity {
+            text: live_fidelity::format_report(&report),
+            class: report.class.as_str().to_string(),
+            missing_required: report.missing_required_keys(),
+            start_time: report.start_time,
+            end_time: report.end_time,
+            error: None,
+        },
+        Err(error) => CloseoutLiveFidelity {
+            text: format!("live-fidelity report failed: {error}"),
+            class: "descriptive_only_live".to_string(),
             missing_required: Vec::new(),
             start_time: start_ms,
             end_time: end_ms,
@@ -279,6 +314,7 @@ fn write_rows_json<'stmt>(
 /// Write summary, manifest, integrity, replay-quality, and postmortem files.
 fn write_closeout_files(context: &CloseoutFileContext<'_>) -> anyhow::Result<()> {
     let replay_quality = closeout_replay_quality_json(context.replay_quality);
+    let live_fidelity = closeout_live_fidelity_json(context.live_fidelity);
     let summary = json!({
         "session_id": context.session_id,
         "db_path": context.options.db_path,
@@ -289,6 +325,7 @@ fn write_closeout_files(context: &CloseoutFileContext<'_>) -> anyhow::Result<()>
         "reason": context.options.reason,
         "sqlite_quick_check": context.quick_check,
         "replay_quality": replay_quality.clone(),
+        "live_fidelity": live_fidelity.clone(),
     });
     write_json_file(context.output_dir, "summary.json", &summary)?;
     let manifest = json!({
@@ -298,6 +335,7 @@ fn write_closeout_files(context: &CloseoutFileContext<'_>) -> anyhow::Result<()>
         "output_dir": context.output_dir.display().to_string(),
         "generated_at_ms": context.options.generated_at_ms,
         "replay_quality": replay_quality,
+        "live_fidelity": live_fidelity,
         "files": context.exported_files,
     });
     write_json_file(context.output_dir, "manifest.json", &manifest)?;
@@ -307,17 +345,31 @@ fn write_closeout_files(context: &CloseoutFileContext<'_>) -> anyhow::Result<()>
         "replay_quality.txt",
         &context.replay_quality.text,
     )?;
+    write_text_file(
+        context.output_dir,
+        "live_fidelity.txt",
+        &context.live_fidelity.text,
+    )?;
     let replay_status = if context.replay_quality.class == "sweep_grade" {
         "sweep-grade"
     } else {
         "descriptive only, not research-grade"
     };
+    let live_status = if context.live_fidelity.class == "research_grade_live" {
+        "research-grade live"
+    } else {
+        "descriptive only, not research-grade live"
+    };
     write_text_file(
         context.output_dir,
         "postmortem.md",
         &format!(
-            "# Live Trading Closeout Postmortem\n\nStatus: draft, required before another funded run.\nReplay quality: {}.\n\nSession: {}\nActor: {}\nReason: {}\n\n## Executive Summary\n\n- Fill this in before starting a new run DB.\n\n## Halt Or Closeout Trigger\n\n- Fill this in from `live_reconciliation_events.json`, `live_control_state.json`, and `summary.json`.\n\n## Replay-Quality Review\n\n- Review `replay_quality.txt` and `summary.json` before using this run for research.\n\n## Risk Review\n\n- Review high-water mark, trough/current equity, daily loss, and session drawdown from `live_session.json`.\n\n## Order And Reconciliation Review\n\n- Review `live_order_intents.json`, `live_orders.json`, `live_fills.json`, and `live_reconciliation_events.json`.\n\n## Required Decision\n\n- Do not reuse this DB for another funded run. Start a new run DB only after this postmortem is complete.\n",
-            replay_status, context.session_id, context.options.actor, context.options.reason
+            "# Live Trading Closeout Postmortem\n\nStatus: draft, required before another funded run.\nReplay quality: {}.\nLive fidelity: {}.\n\nSession: {}\nActor: {}\nReason: {}\n\n## Executive Summary\n\n- Fill this in before starting a new run DB.\n\n## Halt Or Closeout Trigger\n\n- Fill this in from `live_reconciliation_events.json`, `live_control_state.json`, and `summary.json`.\n\n## Replay-Quality Review\n\n- Review `replay_quality.txt`, `live_fidelity.txt`, and `summary.json` before using this run for research.\n\n## Risk Review\n\n- Review high-water mark, trough/current equity, daily loss, and session drawdown from `live_session.json`.\n\n## Order And Reconciliation Review\n\n- Review `live_order_intents.json`, `live_orders.json`, `live_fills.json`, and `live_reconciliation_events.json`.\n\n## Required Decision\n\n- Do not reuse this DB for another funded run. Start a new run DB only after this postmortem is complete.\n",
+            replay_status,
+            live_status,
+            context.session_id,
+            context.options.actor,
+            context.options.reason
         ),
     )?;
     Ok(())
@@ -331,6 +383,17 @@ fn closeout_replay_quality_json(replay_quality: &CloseoutReplayQuality) -> Value
         "start_time": replay_quality.start_time,
         "end_time": replay_quality.end_time,
         "error": replay_quality.error.clone(),
+    })
+}
+
+/// Build the closeout live-fidelity JSON summary.
+fn closeout_live_fidelity_json(live_fidelity: &CloseoutLiveFidelity) -> Value {
+    json!({
+        "class": live_fidelity.class.clone(),
+        "missing_required": live_fidelity.missing_required.clone(),
+        "start_time": live_fidelity.start_time,
+        "end_time": live_fidelity.end_time,
+        "error": live_fidelity.error.clone(),
     })
 }
 
@@ -449,6 +512,7 @@ mod tests {
             "manifest.json",
             "db_integrity.txt",
             "replay_quality.txt",
+            "live_fidelity.txt",
             "postmortem.md",
             "live_session.json",
             "control_audit.json",
@@ -458,7 +522,10 @@ mod tests {
         let summary = fs::read_to_string(output_dir.path().join("summary.json")).unwrap();
         let postmortem = fs::read_to_string(output_dir.path().join("postmortem.md")).unwrap();
         assert!(summary.contains("\"class\": \"empty\""));
+        assert!(summary.contains("\"live_fidelity\""));
+        assert!(summary.contains("\"descriptive_only_live\""));
         assert!(postmortem.contains("descriptive only, not research-grade"));
+        assert!(postmortem.contains("descriptive only, not research-grade live"));
         let conn = rusqlite::Connection::open(db_path).unwrap();
         let action: String = conn
             .query_row(

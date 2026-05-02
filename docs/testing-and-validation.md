@@ -110,6 +110,7 @@ Before any funded run, the validation ladder in [LIVE_TRADING_PLAN.md](../LIVE_T
 - local mocked tests for sidecar, bot, dashboard, and failure paths
 - readonly production-host smoke checks
 - replay-grade data validation
+- private live-fidelity validation for funded intervals
 - dashboard Execution state verification
 - terminal halt and closeout export verification
 - explicit operator approval before any order-placement smoke

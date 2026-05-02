@@ -48,8 +48,8 @@ Issue-resolution discipline for every phase:
 - Phase 3, Live Ledger and Bot Runtime: complete in commit `359393f` on 2026-05-02.
 - Phase 4, Dashboard Execution Controls: complete in commit `53a1fe9` on 2026-05-02. Chosen defaults are admin-only dashboard controls and audited preflight commands queued through the bot control ledger.
 - Phase 5, Risk, Halt, and Human Cooldown Policy: complete in commit `c406e39` on 2026-05-02. Chosen defaults are postmortem-only cooldown, new run DB after terminal halt, current loss caps, 2-minute terminal degradation threshold, and cancel/redeem still available from halted sessions.
-- Phase 6, Replay-Grade Real-Money Capture: complete in current local work on 2026-05-02, pending commit. Chosen scope is public replay gate only; the deployment-host readonly soak is prepared but not run in this phase.
-- Phase 7 and later: unfinished. Backtest fidelity review, host rollout, and real-money canary remain gated until those phases are implemented and verified.
+- Phase 6, Replay-Grade Real-Money Capture: complete in commit `21e4d5d` on 2026-05-02. Chosen scope is public replay gate only; the deployment-host readonly soak is prepared but not run in this phase.
+- Phase 7, Live Fidelity and Replay Explainability Gate: complete in current local work on 2026-05-02, pending commit. Host rollout and real-money canary remain gated until later phases are implemented and verified.
 
 ## Current Decision
 
@@ -523,7 +523,7 @@ Phase 6 closeout:
 - Validation gates run: `cargo test -p buba-paint replay`, `cargo test -p buba-paint live`, `cargo test -p buba-paint live_control`, `cargo test -p buba-paint --test live_system_test`, `/tmp` replay-grade smoke DB through `./target/release/buba-paint validate-replay-data`, `make lint`, `make docs-audit`, `make comment-audit`, `cargo build --release -p buba-paint`, `git diff --check`, and repo-root DB/WAL/SHM check.
 - Gates intentionally skipped: deployment-host readonly soak, because Phase 6 prepared it but did not run it.
 
-## Phase 7: Backtest Fidelity Review
+## Phase 7: Live Fidelity and Replay Explainability Gate
 
 Goal: prove that the data collected from real trading is most likely enough for as-close-as-possible replay and backtesting before relying on funded-run data for research decisions.
 
@@ -586,7 +586,7 @@ Parity probes:
 Data-quality gates:
 
 - Existing `validate-replay-data` still gates public market completeness.
-- Add a funded-run fidelity report that checks private live execution completeness.
+- Add `validate-live-fidelity` as a funded-run fidelity report that checks private live execution completeness.
 - A funded run may be labeled `research_grade_live` only if public replay data and private order lifecycle data both pass.
 - A funded run with incomplete private lifecycle data must be labeled `descriptive_only_live`.
 - Parameter sweeps against real trading data are blocked unless the run is labeled `research_grade_live`.
@@ -605,6 +605,19 @@ Acceptance gates:
 - one intentionally incomplete fixture is downgraded to `descriptive_only_live`
 - docs explain remaining unavoidable replay limitations
 - parameter sweep tooling refuses `descriptive_only_live` funded runs
+
+Phase 7 closeout:
+
+- Implemented `validate-live-fidelity` with `research_grade_live`, `descriptive_only_live`, and `no_live_trading` classes.
+- Extended sweep gating so funded `live_trading` intervals require private live fidelity in addition to public `sweep_grade` replay data.
+- Extended `live-closeout` with `live_fidelity.txt`, summary and manifest live-fidelity details, and descriptive-only postmortem labeling when private lifecycle evidence is incomplete.
+- Extended sidecar `/activity` details with raw-safe user-stream and CLOB trade lifecycle fields needed for later fill/cancel explainability.
+- Added fixtures for complete live lifecycle, missing fills, missing signal features, missing fee metadata, missing marketability evidence, critical reconciliation, no-live intervals, and path-based validation.
+- Blockers found: initial live-fidelity fixture linkage used the SQLite row-count return value instead of the inserted signal ID.
+- Blockers fixed: fixture linkage now uses `last_insert_rowid`, and targeted live-fidelity tests prove the signal/metrics join.
+- Accepted low-risk debt: exact queue position, hidden liquidity, network-path differences, matching-engine internals, relayer timing, host soak, funded write smoke, and real arming remain intentionally out of Phase 7.
+- Validation gates run: `cargo test -p buba-paint live_fidelity`, `cargo test -p buba-paint replay`, `cargo test -p buba-paint backtest`, `cargo test -p buba-paint live`, `cargo test -p buba-paint live_control`, `cd polymarket-sidecar && npm test`, `cd polymarket-sidecar && npm run build`, `make lint`, `make docs-audit`, `make comment-audit`, `cargo build --release -p buba-paint`, and `git diff --check`.
+- Gates intentionally skipped: deployment-host readonly soak, funded write smoke, and real arming, because Phase 7 is local implementation only.
 
 ## Phase 8: Verification Ladder
 

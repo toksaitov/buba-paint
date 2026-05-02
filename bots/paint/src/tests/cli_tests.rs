@@ -272,6 +272,37 @@ fn cli_live_preflight_command_parses() {
     }
 }
 
+/// Verifies that cli validate-live-fidelity command parses optional output.
+#[test]
+fn cli_validate_live_fidelity_command_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "validate-live-fidelity",
+        "--db-path",
+        "/tmp/live.db",
+        "--start",
+        "2026-05-01T00:00:00Z",
+        "--end",
+        "2026-05-01T01:00:00Z",
+        "--output",
+        "/tmp/live-fidelity.json",
+    ]);
+    match cli.command {
+        Commands::ValidateLiveFidelity {
+            db_path,
+            start,
+            end,
+            output,
+        } => {
+            assert_eq!(db_path, "/tmp/live.db");
+            assert_eq!(start, "2026-05-01T00:00:00Z");
+            assert_eq!(end, "2026-05-01T01:00:00Z");
+            assert_eq!(output.as_deref(), Some("/tmp/live-fidelity.json"));
+        }
+        _ => panic!("expected ValidateLiveFidelity command"),
+    }
+}
+
 /// Verifies that cli live-control command parses durable operator fields.
 #[test]
 fn cli_live_control_command_parses() {

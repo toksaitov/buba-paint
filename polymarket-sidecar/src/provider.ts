@@ -563,6 +563,16 @@ function firstString(...values: unknown[]): string | null {
   return null;
 }
 
+function makerOrderIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (entry === null || typeof entry !== "object") return null;
+      return firstString((entry as Record<string, unknown>).order_id);
+    })
+    .filter((entry): entry is string => entry !== null);
+}
+
 function activityEventFromRecord(
   source: "user_stream" | "clob_trades",
   timestampMs: number,
@@ -591,7 +601,15 @@ function activityEventFromRecord(
       liquidity_side: firstString(record.trader_side, record.liquidity_side),
       transaction_hash: firstString(record.transaction_hash, record.tx_hash),
       match_time: firstString(record.match_time),
+      matchtime: firstString(record.matchtime),
       last_update: firstString(record.last_update),
+      timestamp: firstString(record.timestamp),
+      type: firstString(record.type),
+      original_size: firstString(record.original_size),
+      size_matched: firstString(record.size_matched),
+      matched_amount: firstString(record.matched_amount),
+      taker_order_id: firstString(record.taker_order_id),
+      maker_order_ids: makerOrderIds(record.maker_orders),
     }),
   };
 }

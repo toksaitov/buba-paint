@@ -31,6 +31,9 @@ pub fn run_sweep(
     let quality =
         crate::backtest::replay_quality::validate_sweep_input(data_path, start_time, end_time)?;
     println!("Replay quality: {}\n", quality.class.as_str());
+    let live_fidelity =
+        crate::db::live_fidelity::validate_live_sweep_input(data_path, start_time, end_time)?;
+    println!("Live fidelity: {}\n", live_fidelity.class.as_str());
 
     println!("Loading tick data into memory...");
     let conn = rusqlite::Connection::open_with_flags(

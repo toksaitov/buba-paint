@@ -46,11 +46,31 @@ Old runs that lack Binance book-ticker rows are descriptive evidence only. They 
 
 Live runtime metadata separates configured capture capability from observed DB evidence. `configured_replay_quality_class` records whether the selected storage profile can become replay-grade. `replay_quality_class` records only observed data quality from the database interval and must not be treated as `sweep_grade` until the required public feed classes are present.
 
+## Live Fidelity Gate
+
+Funded live runs need a stricter private gate above public replay quality. `validate-replay-data` proves the public market inputs exist. `validate-live-fidelity` proves the DB can also explain live order intent, legality, marketability, venue lifecycle, fills, cancels, unknowns, account transitions, reconciliation, and operator controls.
+
+```bash
+cargo run -p buba-paint --release -- validate-live-fidelity \
+  --db-path <db> \
+  --start <time> \
+  --end <time> \
+  --output /tmp/live-fidelity.json
+```
+
+The classes are:
+
+- `research_grade_live`: public replay is `sweep_grade` and private live lifecycle evidence is complete.
+- `descriptive_only_live`: funded live evidence exists, but lifecycle, account, reconciliation, or order explainability is incomplete.
+- `no_live_trading`: no funded live-trading evidence exists in the interval.
+
+Sweeps over paper or `live_readonly` intervals use the public replay gate only. Sweeps over intervals containing `live_trading` sessions, live order intents, or live venue orders require `research_grade_live`. A funded run that is only `descriptive_only_live` may still support postmortems and risk review, but it must not be used for parameter selection.
+
 ## Database Tables
 
 Important run DB tables:
 
-- `run_metadata`: feed storage profile, configured capture capability, observed replay-quality class, validation interval, missing required classes, and observed feed-event classes.
+- `run_metadata`: feed storage profile, configured capture capability, observed replay-quality class, validation interval, missing public replay requirements, and observed feed-event classes.
 - `feed_events`: canonical replay source when available.
 - `tick_data`: 1-second sampled telemetry for dashboards and coarse inspection.
 - `markets`: one row per 5-minute window with token IDs, status, resolution, fee profile, min size, tick size, rewards, and accepting-orders metadata.

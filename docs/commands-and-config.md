@@ -64,6 +64,12 @@ cargo run -p buba-paint --release -- validate-replay-data \
   --start 2026-02-20T03:13 \
   --end 2026-02-28T00:00
 
+cargo run -p buba-paint --release -- validate-live-fidelity \
+  --db-path /path/to/live-run/paint.db \
+  --start 2026-05-01T00:00:00Z \
+  --end 2026-05-01T01:00:00Z \
+  --output /tmp/live-fidelity.json
+
 cargo run -p buba-paint --release -- sweep \
   --data data/market-data.db \
   --start 2026-02-20 \
@@ -74,7 +80,7 @@ cargo run -p buba-paint --release -- sweep \
 
 `--sweep PARAM=start:end:step` generates a range. `--sweep PARAM=a,b,c` enumerates values. `--set PARAM=value` fixes a parameter without sweeping. Boolean values accept `true/false`, `1/0`, `yes/no`, and `on/off`; operator docs should prefer `true/false`.
 
-Sweeps refuse inputs that are not `sweep_grade`. Backtests still run on descriptive archives, but they warn when the interval lacks replay-grade decision inputs.
+Sweeps refuse inputs that are not `sweep_grade`. If an interval contains funded `live_trading` evidence, sweeps also require `research_grade_live` from `validate-live-fidelity`. Backtests still run on descriptive archives, but they warn when the interval lacks replay-grade decision inputs.
 
 ## Settlement and Historical Data
 
@@ -150,9 +156,9 @@ cargo run -p buba-paint --release -- live-closeout \
   --reason "session drawdown halt"
 ```
 
-`live-closeout` writes `summary.json`, `manifest.json`, `db_integrity.txt`, `replay_quality.txt`, live ledger exports, control audit, and a `postmortem.md` stub. It records `live_closeout_exported` in the DB audit ledger. It does not make a halted DB re-armable; the next funded attempt must use a new run DB.
+`live-closeout` writes `summary.json`, `manifest.json`, `db_integrity.txt`, `replay_quality.txt`, `live_fidelity.txt`, live ledger exports, control audit, and a `postmortem.md` stub. It records `live_closeout_exported` in the DB audit ledger. It does not make a halted DB re-armable; the next funded attempt must use a new run DB.
 
-The closeout summary and manifest include observed replay-quality class, validation interval, and missing required public feed classes. If the interval is not `sweep_grade`, the postmortem stub labels the run descriptive-only.
+The closeout summary and manifest include observed replay-quality class, live-fidelity class, validation intervals, missing public feed classes, and missing private live requirements. If the interval is not `sweep_grade` or the funded run is not `research_grade_live`, the postmortem stub labels the run descriptive-only.
 
 Live-money risk defaults are:
 

@@ -50,7 +50,7 @@ New runs intended for research should keep:
 FEED_EVENT_STORAGE_PROFILE=replay_grade
 ```
 
-Run `buba-paint validate-replay-data` before any long sweep. Sweeps refuse non-sweep-grade inputs. Old runs that lack required Binance book state are descriptive evidence only, not trusted optimization inputs.
+Run `buba-paint validate-replay-data` before any long sweep. For funded live intervals, also run `buba-paint validate-live-fidelity`. Sweeps refuse non-sweep-grade inputs, and funded intervals must be `research_grade_live`. Old runs that lack required Binance book state are descriptive evidence only, not trusted optimization inputs.
 
 ## Main Commands
 
@@ -61,6 +61,7 @@ cargo run -p buba-paint --release -- live-control --db-path /tmp/paint.db arm --
 cargo run -p buba-paint --release -- backtest --data data/market-data.db --start 2026-02-20 --end 2026-03-04
 cargo run -p buba-paint --release -- sweep --data data/market-data.db --start 2026-02-20 --end 2026-03-04 --output data/sweeps/test/sweep.csv
 cargo run -p buba-paint --release -- validate-replay-data --data data/market-data.db --start 2026-02-20 --end 2026-03-04
+cargo run -p buba-paint --release -- validate-live-fidelity --db-path /path/to/live-run/paint.db --start 2026-05-01T00:00:00Z --end 2026-05-01T01:00:00Z
 cargo run -p buba-paint --release -- db-footprint --db-path /tmp/paint.db
 ```
 

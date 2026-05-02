@@ -60,6 +60,17 @@ pub enum Commands {
         #[arg(long)]
         end: String,
     },
+    /// Validate whether a live-trading interval is research-grade for sweeps
+    ValidateLiveFidelity {
+        #[arg(long)]
+        db_path: String,
+        #[arg(long)]
+        start: String,
+        #[arg(long)]
+        end: String,
+        #[arg(long)]
+        output: Option<String>,
+    },
     /// Run the long-lived runtime in paper, `live_readonly`, or disarmed `live_trading` mode
     Live {
         #[arg(long, default_value = "./data/paint.db")]
@@ -248,6 +259,23 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     "{}",
                     crate::backtest::replay_quality::blocking_error(&quality)
                 );
+            }
+        }
+        Commands::ValidateLiveFidelity {
+            db_path,
+            start,
+            end,
+            output,
+        } => {
+            let start_time = parse_time(&start)?;
+            let end_time = parse_time(&end)?;
+            let report = crate::db::live_fidelity::analyze_path(&db_path, start_time, end_time)?;
+            println!("{}", crate::db::live_fidelity::format_report(&report));
+            if let Some(output_path) = output {
+                write_live_fidelity_json(&output_path, &report)?;
+            }
+            if !report.is_research_grade_live() {
+                bail!("{}", crate::db::live_fidelity::blocking_error(&report));
             }
         }
         Commands::Live {
@@ -440,6 +468,21 @@ pub fn parse_key_value(s: &str) -> anyhow::Result<(String, String)> {
         .find('=')
         .with_context(|| format!("invalid --set format: {s} (expected KEY=VALUE)"))?;
     Ok((s[..eq_idx].to_string(), s[eq_idx + 1..].to_string()))
+}
+
+/// Write one live-fidelity report as pretty JSON.
+fn write_live_fidelity_json(
+    output_path: &str,
+    report: &crate::db::live_fidelity::LiveFidelityReport,
+) -> anyhow::Result<()> {
+    if let Some(parent) = std::path::Path::new(output_path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating output directory: {}", parent.display()))?;
+    }
+    std::fs::write(output_path, serde_json::to_string_pretty(report)?)
+        .with_context(|| format!("writing live-fidelity JSON to {output_path}"))
 }
 
 /// Wait for SIGTERM (Unix only). On non-Unix platforms, this never resolves.

@@ -544,6 +544,8 @@ describe("PolymarketReadonlyProvider", () => {
       status: "confirmed",
     });
     expect(activity.details_json).toContain("\"clob_trade_count\":1");
+    expect(activity.clob_trades[0].details_json).toContain("matched_amount");
+    expect(activity.clob_trades[0].details_json).toContain("taker_order_id");
     expect(activity.details_json).not.toContain("secret");
   });
 
