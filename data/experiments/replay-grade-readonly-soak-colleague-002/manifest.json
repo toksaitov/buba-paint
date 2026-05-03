@@ -1,0 +1,1362 @@
+{
+  "commands": [
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:02:15Z",
+      "log": "01-remote-bootstrap-dirs.log",
+      "name": "remote-bootstrap-dirs",
+      "started_at_utc": "2026-05-03T06:02:13Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "rsync",
+        "-az",
+        "--delete",
+        "--exclude=.git/",
+        "--exclude=target/",
+        "--exclude=data/",
+        "--exclude=runs/",
+        "--exclude=node_modules/",
+        "--exclude=dashboard/client/node_modules/",
+        "--exclude=dashboard/client/coverage/",
+        "--exclude=dashboard/client/test-results/",
+        "--exclude=dashboard/client/playwright-report/",
+        "--exclude=polymarket-sidecar/node_modules/",
+        "--exclude=polymarket-sidecar/coverage/",
+        "/Users/toksaitov/Desktop/buba-paint/",
+        "buba-paint-fin:/root/buba-paint-live/releases/phase9-readonly-soak-colleague-20260503-060213Z/"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:02:17Z",
+      "log": "02-rsync-release.log",
+      "name": "rsync-release",
+      "started_at_utc": "2026-05-03T06:02:15Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:05:53Z",
+      "log": "03-remote-configure-build.log",
+      "name": "remote-configure-build",
+      "started_at_utc": "2026-05-03T06:02:17Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:05:57Z",
+      "log": "04-remote-start-sidecar.log",
+      "name": "remote-start-sidecar",
+      "started_at_utc": "2026-05-03T06:05:53Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:06:00Z",
+      "log": "05-live-preflight.log",
+      "name": "live-preflight",
+      "output": "live-preflight.json",
+      "started_at_utc": "2026-05-03T06:05:57Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:06:08Z",
+      "log": "06-remote-start-monitor-services.log",
+      "name": "remote-start-monitor-services",
+      "started_at_utc": "2026-05-03T06:06:00Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:06:09Z",
+      "log": "07-pre-soak-health.log",
+      "name": "pre-soak-health",
+      "output": "pre-soak-health.json",
+      "started_at_utc": "2026-05-03T06:06:08Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:06:11Z",
+      "log": "08-pre-soak-processes.log",
+      "name": "pre-soak-processes",
+      "output": "pre-soak-processes.txt",
+      "started_at_utc": "2026-05-03T06:06:09Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:06:12Z",
+      "log": "09-pre-soak-logs.log",
+      "name": "pre-soak-logs",
+      "output": "pre-soak-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:06:11Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:06:13Z",
+      "log": "10-pre-soak-db.log",
+      "name": "pre-soak-db",
+      "output": "pre-soak-db.txt",
+      "started_at_utc": "2026-05-03T06:06:12Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:06:15Z",
+      "log": "11-dashboard-summary.log",
+      "name": "dashboard-summary",
+      "output": "dashboard-trading-summary.json",
+      "started_at_utc": "2026-05-03T06:06:13Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:11:16Z",
+      "log": "12-poll-01-health.log",
+      "name": "poll-01-health",
+      "output": "poll-01-health.json",
+      "started_at_utc": "2026-05-03T06:11:15Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:11:17Z",
+      "log": "13-poll-01-processes.log",
+      "name": "poll-01-processes",
+      "output": "poll-01-processes.txt",
+      "started_at_utc": "2026-05-03T06:11:16Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:11:19Z",
+      "log": "14-poll-01-logs.log",
+      "name": "poll-01-logs",
+      "output": "poll-01-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:11:17Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:11:20Z",
+      "log": "15-poll-01-db.log",
+      "name": "poll-01-db",
+      "output": "poll-01-db.txt",
+      "started_at_utc": "2026-05-03T06:11:19Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:16:21Z",
+      "log": "16-poll-02-health.log",
+      "name": "poll-02-health",
+      "output": "poll-02-health.json",
+      "started_at_utc": "2026-05-03T06:16:20Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:16:22Z",
+      "log": "17-poll-02-processes.log",
+      "name": "poll-02-processes",
+      "output": "poll-02-processes.txt",
+      "started_at_utc": "2026-05-03T06:16:21Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:16:24Z",
+      "log": "18-poll-02-logs.log",
+      "name": "poll-02-logs",
+      "output": "poll-02-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:16:22Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:16:25Z",
+      "log": "19-poll-02-db.log",
+      "name": "poll-02-db",
+      "output": "poll-02-db.txt",
+      "started_at_utc": "2026-05-03T06:16:24Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:21:27Z",
+      "log": "20-poll-03-health.log",
+      "name": "poll-03-health",
+      "output": "poll-03-health.json",
+      "started_at_utc": "2026-05-03T06:21:25Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:21:28Z",
+      "log": "21-poll-03-processes.log",
+      "name": "poll-03-processes",
+      "output": "poll-03-processes.txt",
+      "started_at_utc": "2026-05-03T06:21:27Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:21:29Z",
+      "log": "22-poll-03-logs.log",
+      "name": "poll-03-logs",
+      "output": "poll-03-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:21:28Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:21:30Z",
+      "log": "23-poll-03-db.log",
+      "name": "poll-03-db",
+      "output": "poll-03-db.txt",
+      "started_at_utc": "2026-05-03T06:21:29Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:26:32Z",
+      "log": "24-poll-04-health.log",
+      "name": "poll-04-health",
+      "output": "poll-04-health.json",
+      "started_at_utc": "2026-05-03T06:26:30Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:26:33Z",
+      "log": "25-poll-04-processes.log",
+      "name": "poll-04-processes",
+      "output": "poll-04-processes.txt",
+      "started_at_utc": "2026-05-03T06:26:32Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:26:35Z",
+      "log": "26-poll-04-logs.log",
+      "name": "poll-04-logs",
+      "output": "poll-04-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:26:33Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:26:36Z",
+      "log": "27-poll-04-db.log",
+      "name": "poll-04-db",
+      "output": "poll-04-db.txt",
+      "started_at_utc": "2026-05-03T06:26:35Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:31:37Z",
+      "log": "28-poll-05-health.log",
+      "name": "poll-05-health",
+      "output": "poll-05-health.json",
+      "started_at_utc": "2026-05-03T06:31:36Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:31:38Z",
+      "log": "29-poll-05-processes.log",
+      "name": "poll-05-processes",
+      "output": "poll-05-processes.txt",
+      "started_at_utc": "2026-05-03T06:31:37Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:31:40Z",
+      "log": "30-poll-05-logs.log",
+      "name": "poll-05-logs",
+      "output": "poll-05-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:31:38Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:31:41Z",
+      "log": "31-poll-05-db.log",
+      "name": "poll-05-db",
+      "output": "poll-05-db.txt",
+      "started_at_utc": "2026-05-03T06:31:40Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:36:43Z",
+      "log": "32-poll-06-health.log",
+      "name": "poll-06-health",
+      "output": "poll-06-health.json",
+      "started_at_utc": "2026-05-03T06:36:41Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:36:44Z",
+      "log": "33-poll-06-processes.log",
+      "name": "poll-06-processes",
+      "output": "poll-06-processes.txt",
+      "started_at_utc": "2026-05-03T06:36:43Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:36:45Z",
+      "log": "34-poll-06-logs.log",
+      "name": "poll-06-logs",
+      "output": "poll-06-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:36:44Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:36:46Z",
+      "log": "35-poll-06-db.log",
+      "name": "poll-06-db",
+      "output": "poll-06-db.txt",
+      "started_at_utc": "2026-05-03T06:36:45Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:41:48Z",
+      "log": "36-poll-07-health.log",
+      "name": "poll-07-health",
+      "output": "poll-07-health.json",
+      "started_at_utc": "2026-05-03T06:41:46Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:41:49Z",
+      "log": "37-poll-07-processes.log",
+      "name": "poll-07-processes",
+      "output": "poll-07-processes.txt",
+      "started_at_utc": "2026-05-03T06:41:48Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:41:50Z",
+      "log": "38-poll-07-logs.log",
+      "name": "poll-07-logs",
+      "output": "poll-07-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:41:49Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:41:51Z",
+      "log": "39-poll-07-db.log",
+      "name": "poll-07-db",
+      "output": "poll-07-db.txt",
+      "started_at_utc": "2026-05-03T06:41:50Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:46:53Z",
+      "log": "40-poll-08-health.log",
+      "name": "poll-08-health",
+      "output": "poll-08-health.json",
+      "started_at_utc": "2026-05-03T06:46:52Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:46:54Z",
+      "log": "41-poll-08-processes.log",
+      "name": "poll-08-processes",
+      "output": "poll-08-processes.txt",
+      "started_at_utc": "2026-05-03T06:46:53Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:46:56Z",
+      "log": "42-poll-08-logs.log",
+      "name": "poll-08-logs",
+      "output": "poll-08-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:46:54Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:46:57Z",
+      "log": "43-poll-08-db.log",
+      "name": "poll-08-db",
+      "output": "poll-08-db.txt",
+      "started_at_utc": "2026-05-03T06:46:56Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:51:58Z",
+      "log": "44-poll-09-health.log",
+      "name": "poll-09-health",
+      "output": "poll-09-health.json",
+      "started_at_utc": "2026-05-03T06:51:57Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:52:00Z",
+      "log": "45-poll-09-processes.log",
+      "name": "poll-09-processes",
+      "output": "poll-09-processes.txt",
+      "started_at_utc": "2026-05-03T06:51:58Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:52:01Z",
+      "log": "46-poll-09-logs.log",
+      "name": "poll-09-logs",
+      "output": "poll-09-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:52:00Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:52:02Z",
+      "log": "47-poll-09-db.log",
+      "name": "poll-09-db",
+      "output": "poll-09-db.txt",
+      "started_at_utc": "2026-05-03T06:52:01Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:57:04Z",
+      "log": "48-poll-10-health.log",
+      "name": "poll-10-health",
+      "output": "poll-10-health.json",
+      "started_at_utc": "2026-05-03T06:57:02Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:57:05Z",
+      "log": "49-poll-10-processes.log",
+      "name": "poll-10-processes",
+      "output": "poll-10-processes.txt",
+      "started_at_utc": "2026-05-03T06:57:04Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:57:06Z",
+      "log": "50-poll-10-logs.log",
+      "name": "poll-10-logs",
+      "output": "poll-10-log-tail.txt",
+      "started_at_utc": "2026-05-03T06:57:05Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T06:57:08Z",
+      "log": "51-poll-10-db.log",
+      "name": "poll-10-db",
+      "output": "poll-10-db.txt",
+      "started_at_utc": "2026-05-03T06:57:06Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:02:09Z",
+      "log": "52-poll-11-health.log",
+      "name": "poll-11-health",
+      "output": "poll-11-health.json",
+      "started_at_utc": "2026-05-03T07:02:08Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:02:10Z",
+      "log": "53-poll-11-processes.log",
+      "name": "poll-11-processes",
+      "output": "poll-11-processes.txt",
+      "started_at_utc": "2026-05-03T07:02:09Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:02:12Z",
+      "log": "54-poll-11-logs.log",
+      "name": "poll-11-logs",
+      "output": "poll-11-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:02:10Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:02:13Z",
+      "log": "55-poll-11-db.log",
+      "name": "poll-11-db",
+      "output": "poll-11-db.txt",
+      "started_at_utc": "2026-05-03T07:02:12Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:07:15Z",
+      "log": "56-poll-12-health.log",
+      "name": "poll-12-health",
+      "output": "poll-12-health.json",
+      "started_at_utc": "2026-05-03T07:07:13Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:07:16Z",
+      "log": "57-poll-12-processes.log",
+      "name": "poll-12-processes",
+      "output": "poll-12-processes.txt",
+      "started_at_utc": "2026-05-03T07:07:15Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:07:17Z",
+      "log": "58-poll-12-logs.log",
+      "name": "poll-12-logs",
+      "output": "poll-12-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:07:16Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:07:18Z",
+      "log": "59-poll-12-db.log",
+      "name": "poll-12-db",
+      "output": "poll-12-db.txt",
+      "started_at_utc": "2026-05-03T07:07:17Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:12:20Z",
+      "log": "60-poll-13-health.log",
+      "name": "poll-13-health",
+      "output": "poll-13-health.json",
+      "started_at_utc": "2026-05-03T07:12:18Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:12:22Z",
+      "log": "61-poll-13-processes.log",
+      "name": "poll-13-processes",
+      "output": "poll-13-processes.txt",
+      "started_at_utc": "2026-05-03T07:12:20Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:12:23Z",
+      "log": "62-poll-13-logs.log",
+      "name": "poll-13-logs",
+      "output": "poll-13-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:12:22Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:12:25Z",
+      "log": "63-poll-13-db.log",
+      "name": "poll-13-db",
+      "output": "poll-13-db.txt",
+      "started_at_utc": "2026-05-03T07:12:23Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:17:26Z",
+      "log": "64-poll-14-health.log",
+      "name": "poll-14-health",
+      "output": "poll-14-health.json",
+      "started_at_utc": "2026-05-03T07:17:25Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:17:28Z",
+      "log": "65-poll-14-processes.log",
+      "name": "poll-14-processes",
+      "output": "poll-14-processes.txt",
+      "started_at_utc": "2026-05-03T07:17:26Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:17:29Z",
+      "log": "66-poll-14-logs.log",
+      "name": "poll-14-logs",
+      "output": "poll-14-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:17:28Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:17:31Z",
+      "log": "67-poll-14-db.log",
+      "name": "poll-14-db",
+      "output": "poll-14-db.txt",
+      "started_at_utc": "2026-05-03T07:17:29Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:22:32Z",
+      "log": "68-poll-15-health.log",
+      "name": "poll-15-health",
+      "output": "poll-15-health.json",
+      "started_at_utc": "2026-05-03T07:22:31Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:22:33Z",
+      "log": "69-poll-15-processes.log",
+      "name": "poll-15-processes",
+      "output": "poll-15-processes.txt",
+      "started_at_utc": "2026-05-03T07:22:32Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:22:35Z",
+      "log": "70-poll-15-logs.log",
+      "name": "poll-15-logs",
+      "output": "poll-15-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:22:33Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:22:36Z",
+      "log": "71-poll-15-db.log",
+      "name": "poll-15-db",
+      "output": "poll-15-db.txt",
+      "started_at_utc": "2026-05-03T07:22:35Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:27:38Z",
+      "log": "72-poll-16-health.log",
+      "name": "poll-16-health",
+      "output": "poll-16-health.json",
+      "started_at_utc": "2026-05-03T07:27:36Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:27:39Z",
+      "log": "73-poll-16-processes.log",
+      "name": "poll-16-processes",
+      "output": "poll-16-processes.txt",
+      "started_at_utc": "2026-05-03T07:27:38Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:27:40Z",
+      "log": "74-poll-16-logs.log",
+      "name": "poll-16-logs",
+      "output": "poll-16-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:27:39Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:27:42Z",
+      "log": "75-poll-16-db.log",
+      "name": "poll-16-db",
+      "output": "poll-16-db.txt",
+      "started_at_utc": "2026-05-03T07:27:40Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:32:44Z",
+      "log": "76-poll-17-health.log",
+      "name": "poll-17-health",
+      "output": "poll-17-health.json",
+      "started_at_utc": "2026-05-03T07:32:42Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:32:45Z",
+      "log": "77-poll-17-processes.log",
+      "name": "poll-17-processes",
+      "output": "poll-17-processes.txt",
+      "started_at_utc": "2026-05-03T07:32:44Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:32:47Z",
+      "log": "78-poll-17-logs.log",
+      "name": "poll-17-logs",
+      "output": "poll-17-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:32:45Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:32:48Z",
+      "log": "79-poll-17-db.log",
+      "name": "poll-17-db",
+      "output": "poll-17-db.txt",
+      "started_at_utc": "2026-05-03T07:32:47Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:37:50Z",
+      "log": "80-poll-18-health.log",
+      "name": "poll-18-health",
+      "output": "poll-18-health.json",
+      "started_at_utc": "2026-05-03T07:37:48Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:37:51Z",
+      "log": "81-poll-18-processes.log",
+      "name": "poll-18-processes",
+      "output": "poll-18-processes.txt",
+      "started_at_utc": "2026-05-03T07:37:50Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:37:53Z",
+      "log": "82-poll-18-logs.log",
+      "name": "poll-18-logs",
+      "output": "poll-18-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:37:51Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:37:54Z",
+      "log": "83-poll-18-db.log",
+      "name": "poll-18-db",
+      "output": "poll-18-db.txt",
+      "started_at_utc": "2026-05-03T07:37:53Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:37:55Z",
+      "log": "84-post-soak-health.log",
+      "name": "post-soak-health",
+      "output": "post-soak-health.json",
+      "started_at_utc": "2026-05-03T07:37:54Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:37:57Z",
+      "log": "85-post-soak-processes.log",
+      "name": "post-soak-processes",
+      "output": "post-soak-processes.txt",
+      "started_at_utc": "2026-05-03T07:37:55Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:37:58Z",
+      "log": "86-post-soak-logs.log",
+      "name": "post-soak-logs",
+      "output": "post-soak-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:37:57Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:00Z",
+      "log": "87-post-soak-db.log",
+      "name": "post-soak-db",
+      "output": "post-soak-db.txt",
+      "started_at_utc": "2026-05-03T07:37:58Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:02Z",
+      "log": "88-validate-replay-data.log",
+      "name": "validate-replay-data",
+      "output": "replay-quality.txt",
+      "started_at_utc": "2026-05-03T07:38:00Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:04Z",
+      "log": "89-remote-acceptance-check.log",
+      "name": "remote-acceptance-check",
+      "started_at_utc": "2026-05-03T07:38:02Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:05Z",
+      "log": "90-remote-env-report.log",
+      "name": "remote-env-report",
+      "output": "env-report.json",
+      "started_at_utc": "2026-05-03T07:38:04Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:07Z",
+      "log": "91-remote-stop-services.log",
+      "name": "remote-stop-services",
+      "started_at_utc": "2026-05-03T07:38:05Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:08Z",
+      "log": "92-post-stop-health.log",
+      "name": "post-stop-health",
+      "output": "post-stop-health.json",
+      "started_at_utc": "2026-05-03T07:38:07Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:10Z",
+      "log": "93-post-stop-processes.log",
+      "name": "post-stop-processes",
+      "output": "post-stop-processes.txt",
+      "started_at_utc": "2026-05-03T07:38:08Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:11Z",
+      "log": "94-post-stop-logs.log",
+      "name": "post-stop-logs",
+      "output": "post-stop-log-tail.txt",
+      "started_at_utc": "2026-05-03T07:38:10Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "ssh",
+        "buba-paint-fin",
+        "<capture script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-03T07:38:13Z",
+      "log": "95-post-stop-db.log",
+      "name": "post-stop-db",
+      "output": "post-stop-db.txt",
+      "started_at_utc": "2026-05-03T07:38:11Z",
+      "status": "passed"
+    }
+  ],
+  "dry_run": false,
+  "duration_seconds": 5400,
+  "failure": null,
+  "finished_at_utc": "2026-05-03T07:37:54Z",
+  "generated_at_utc": "2026-05-03T06:02:13Z",
+  "git_sha": "3d8fd3b58e3676bc87d88d72b4aae0638138151c",
+  "git_status_short": "M .gitignore\n M LIVE_TRADING_PLAN.md\n M Makefile\n M docs/commands-and-config.md\n M docs/deployment-and-ops.md\n M ops/Readme.md\n M ops/systemd/buba-agent.service\n M ops/systemd/buba-dashboard.service\n M ops/systemd/buba-paint-bot.service\n M ops/systemd/buba-polymarket-sidecar.service\n M polymarket-sidecar/src/__tests__/config.test.ts\n M polymarket-sidecar/src/__tests__/user_stream_monitor.test.ts\n M polymarket-sidecar/src/config.ts\n M polymarket-sidecar/src/index.ts\n M polymarket-sidecar/src/logging.ts\n M polymarket-sidecar/src/provider.ts\n M scripts/Readme.md\n?? .claude/\n?? PROMPT.md\n?? data/experiments/replay-grade-readonly-soak-001/\n?? data/experiments/replay-grade-readonly-soak-002/\n?? data/experiments/replay-grade-readonly-soak-003/\n?? data/experiments/replay-grade-readonly-soak-004/\n?? data/experiments/replay-grade-readonly-soak-colleague-001/\n?? data/experiments/replay-grade-readonly-soak-colleague-002/\n?? polymarket-sidecar/scripts/\n?? polymarket-sidecar/src/__tests__/logging.test.ts\n?? scripts/__pycache__/\n?? scripts/live-readiness-host-soak.py",
+  "host": "buba-paint-fin",
+  "kind": "buba_live_readiness_host_soak",
+  "local_host": {
+    "hostname": "uMa-Pro-M4.local",
+    "machine": "arm64",
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.4"
+  },
+  "passed": true,
+  "poll_seconds": 300,
+  "release_dir": "/root/buba-paint-live/releases/phase9-readonly-soak-colleague-20260503-060213Z",
+  "release_name": "phase9-readonly-soak-colleague-20260503-060213Z",
+  "runtime_dir": "/root/buba-paint-live/runtime/soak-001-colleague-20260503-060213Z",
+  "runtime_name": "soak-001-colleague-20260503-060213Z",
+  "started_at_utc": "2026-05-03T06:06:15Z"
+}

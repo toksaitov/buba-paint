@@ -17,6 +17,9 @@ export interface SidecarConfig {
   privateKey: string | null;
   proxyWallet: string | null;
   funder: string | null;
+  apiKey: string | null;
+  apiSecret: string | null;
+  apiPassphrase: string | null;
   relayerApiKey: string | null;
   relayerApiKeyAddress: string | null;
   builderApiKey: string | null;
@@ -85,6 +88,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     privateKey: envStr(env, "POLYMARKET_PRIVATE_KEY"),
     proxyWallet,
     funder: envStr(env, "POLYMARKET_FUNDER", proxyWallet),
+    apiKey: envStr(env, "POLYMARKET_API_KEY"),
+    apiSecret: envStr(env, "POLYMARKET_API_SECRET"),
+    apiPassphrase: envStr(env, "POLYMARKET_API_PASSPHRASE"),
     relayerApiKey: envStr(env, "POLYMARKET_RELAYER_API_KEY"),
     relayerApiKeyAddress: envStr(env, "POLYMARKET_RELAYER_API_KEY_ADDRESS"),
     builderApiKey: envStr(env, "POLYMARKET_BUILDER_API_KEY"),

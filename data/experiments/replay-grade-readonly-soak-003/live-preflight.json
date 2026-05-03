@@ -1,0 +1,19 @@
+{
+  "ok": false,
+  "mode": "live_readonly",
+  "wallet_address": "0xE7C092ffa4c73EA874d8309cFC0e8915cb348616",
+  "proxy_wallet": "0xE7C092ffa4c73EA874d8309cFC0e8915cb348616",
+  "geoblock_status": "ok",
+  "geoblock_country_code": "IE",
+  "auth_status": "ok",
+  "clock_status": "ok",
+  "allowance_status": "failed",
+  "user_stream_status": "failed",
+  "available_cash_usd": null,
+  "legal_order_min_usd": 5.0,
+  "details_json": "{\"provider\":\"polymarket\",\"clob_contract_version\":\"v2\",\"collateral_token\":\"pUSD\",\"collateral_decimals\":6,\"strategy_readiness\":[{\"strategy\":\"latency-arb\",\"readiness\":\"live_ready_v1\",\"enabled\":true},{\"strategy\":\"calm-persistence\",\"readiness\":\"live_supported_but_disabled\",\"enabled\":false},{\"strategy\":\"spread-capture\",\"readiness\":\"not_live_v1\",\"enabled\":false}],\"relayer_api_key_present\":true,\"geoblock\":{\"blocked\":false,\"ip\":\"52.50.76.220\",\"country\":\"IE\",\"region\":\"L\"},\"active_markets\":[{\"slug\":\"btc-updown-5m-1777726500\",\"conditionId\":\"0xe8149945c8ae8f3567b1cbeb1ddff426ca5dec50eb590bac53b475e07a131c2e\",\"minOrderSize\":5,\"tickSize\":0.01,\"acceptingOrders\":true,\"tokens\":[{\"tokenId\":\"108565142235944922063259680637283359244031730885117949808954620552449746786286\",\"outcome\":\"Up\"},{\"tokenId\":\"5693043761937527222997507849101382638198219488223112600851806234102464530030\",\"outcome\":\"Down\"}],\"feeDetails\":{\"rate\":0.072,\"exponent\":1,\"takerOnly\":true,\"makerBaseFee\":1000,\"takerBaseFee\":1000},\"negRisk\":null,\"metadataSource\":\"clob_v2\",\"metadataError\":null},{\"slug\":\"btc-updown-5m-1777726800\",\"conditionId\":\"0x3e5c1fbe14fc6970438fc12dc19df68fe81fa9d83edab18c13e3349666a54fc8\",\"minOrderSize\":5,\"tickSize\":0.01,\"acceptingOrders\":true,\"tokens\":[{\"tokenId\":\"676437167247026202376782482302327334987247246835174925960599609767053139972\",\"outcome\":\"Up\"},{\"tokenId\":\"12403623974580393849295725502098406563294565267585716794676667725280091296971\",\"outcome\":\"Down\"}],\"feeDetails\":{\"rate\":0.072,\"exponent\":1,\"takerOnly\":true,\"makerBaseFee\":1000,\"takerBaseFee\":1000},\"negRisk\":null,\"metadataSource\":\"clob_v2\",\"metadataError\":null}],\"discovery_degraded\":false,\"discovery_error\":null,\"wallet_address_source\":\"funder\",\"last_user_stream_connected_at_ms\":null,\"last_user_stream_event_at_ms\":null,\"last_user_stream_error\":\"user_stream_connect: user stream closed (1006): \",\"last_user_stream_disconnect_at_ms\":1777726752462,\"last_user_stream_disconnect_reason\":\"user_stream_connect: user stream closed (1006): \",\"last_successful_account_refresh_at_ms\":null,\"last_account_refresh_error\":\"open_orders: Unauthorized/Invalid api key\"}",
+  "errors": [
+    "Authenticated user stream failed: user_stream_connect: user stream closed (1006): ",
+    "Account state could not be read: open_orders: Unauthorized/Invalid api key"
+  ]
+}

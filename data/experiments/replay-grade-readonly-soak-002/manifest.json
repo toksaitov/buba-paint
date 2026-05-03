@@ -1,0 +1,65 @@
+{
+  "commands": [
+    {
+      "command": [
+        "ssh",
+        "buba-paint",
+        "<script redacted>"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-02T12:48:55Z",
+      "log": "01-remote-bootstrap-dirs.log",
+      "name": "remote-bootstrap-dirs",
+      "started_at_utc": "2026-05-02T12:48:53Z",
+      "status": "passed"
+    },
+    {
+      "command": [
+        "rsync",
+        "-az",
+        "--delete",
+        "--exclude=.git/",
+        "--exclude=target/",
+        "--exclude=data/",
+        "--exclude=runs/",
+        "--exclude=node_modules/",
+        "--exclude=dashboard/client/node_modules/",
+        "--exclude=dashboard/client/coverage/",
+        "--exclude=dashboard/client/test-results/",
+        "--exclude=dashboard/client/playwright-report/",
+        "--exclude=polymarket-sidecar/node_modules/",
+        "--exclude=polymarket-sidecar/coverage/",
+        "/Users/toksaitov/Desktop/buba-paint/",
+        "buba-paint:/home/ubuntu/buba-paint-live/releases/phase9-readonly-soak-20260502-124853Z/"
+      ],
+      "exit_code": 0,
+      "finished_at_utc": "2026-05-02T12:48:57Z",
+      "log": "02-rsync-release.log",
+      "name": "rsync-release",
+      "started_at_utc": "2026-05-02T12:48:55Z",
+      "status": "passed"
+    }
+  ],
+  "dry_run": false,
+  "duration_seconds": 5400,
+  "failure": null,
+  "finished_at_utc": null,
+  "generated_at_utc": "2026-05-02T12:48:53Z",
+  "git_sha": "3d8fd3b58e3676bc87d88d72b4aae0638138151c",
+  "git_status_short": "M .gitignore\n M LIVE_TRADING_PLAN.md\n M Makefile\n M docs/commands-and-config.md\n M docs/deployment-and-ops.md\n M ops/Readme.md\n M ops/systemd/buba-agent.service\n M ops/systemd/buba-dashboard.service\n M ops/systemd/buba-paint-bot.service\n M ops/systemd/buba-polymarket-sidecar.service\n M polymarket-sidecar/src/__tests__/config.test.ts\n M polymarket-sidecar/src/config.ts\n M polymarket-sidecar/src/index.ts\n M polymarket-sidecar/src/logging.ts\n M polymarket-sidecar/src/provider.ts\n M scripts/Readme.md\n?? data/experiments/replay-grade-readonly-soak-001/\n?? polymarket-sidecar/src/__tests__/logging.test.ts\n?? scripts/live-readiness-host-soak.py",
+  "host": "buba-paint",
+  "kind": "buba_live_readiness_host_soak",
+  "local_host": {
+    "hostname": "uMa-Pro-M4.local",
+    "machine": "arm64",
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.3"
+  },
+  "passed": false,
+  "poll_seconds": 300,
+  "release_dir": "/home/ubuntu/buba-paint-live/releases/phase9-readonly-soak-20260502-124853Z",
+  "release_name": "phase9-readonly-soak-20260502-124853Z",
+  "runtime_dir": "/home/ubuntu/buba-paint-live/runtime/soak-001-20260502-124853Z",
+  "runtime_name": "soak-001-20260502-124853Z",
+  "started_at_utc": null
+}

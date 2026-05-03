@@ -8,6 +8,9 @@ describe("loadConfig", () => {
       POLYMARKET_PROXY_WALLET: "0xproxy",
       POLYMARKET_RELAYER_API_KEY: "relayer",
       POLYMARKET_RELAYER_API_KEY_ADDRESS: "0xrelayer",
+      POLYMARKET_API_KEY: "l2-key",
+      POLYMARKET_API_SECRET: "l2-secret",
+      POLYMARKET_API_PASSPHRASE: "l2-passphrase",
       POLYMARKET_BUILDER_API_KEY: "builder-key",
       POLYMARKET_BUILDER_SECRET: "builder-secret",
       POLYMARKET_BUILDER_PASSPHRASE: "builder-passphrase",
@@ -19,6 +22,9 @@ describe("loadConfig", () => {
     expect(config.relayerHost).toBe("https://relayer-v2.polymarket.com");
     expect(config.relayerApiKey).toBe("relayer");
     expect(config.relayerApiKeyAddress).toBe("0xrelayer");
+    expect(config.apiKey).toBe("l2-key");
+    expect(config.apiSecret).toBe("l2-secret");
+    expect(config.apiPassphrase).toBe("l2-passphrase");
     expect(config.builderApiKey).toBe("builder-key");
     expect(config.builderSecret).toBe("builder-secret");
     expect(config.builderPassphrase).toBe("builder-passphrase");

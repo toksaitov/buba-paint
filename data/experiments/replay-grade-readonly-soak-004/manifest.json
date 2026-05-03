@@ -1,0 +1,25 @@
+{
+  "kind": "manual_phase9_readonly_soak",
+  "host": "buba-paint-fin",
+  "remote_root": "/root/buba-paint-live",
+  "release_name": "phase9-readonly-soak-20260502-152805Z",
+  "runtime_name": "soak-004-20260502-152805Z",
+  "release_dir": "/root/buba-paint-live/releases/phase9-readonly-soak-20260502-152805Z",
+  "runtime_dir": "/root/buba-paint-live/runtime/soak-004-20260502-152805Z",
+  "created_at_utc": "2026-05-02T15:28:05Z",
+  "git_sha": "3d8fd3b58e3676bc87d88d72b4aae0638138151c",
+  "scope": "live_readonly_no_order_soak",
+  "status": "failed_acceptance_after_short_live_readonly_run",
+  "blocked_reason": "Replay-grade public feed capture passed, but CLOB L2 account/open-order reads degraded to intermittent 401 Unauthorized/Invalid api key. Existing-key derivation did not recover a key for tested nonces 0..100, and fresh CLOB L2 API-key creation is Cloudflare-blocked from non-browser runtimes.",
+  "capture_interval_utc": {
+    "start": "2026-05-02T16:12:33Z",
+    "end": "2026-05-02T16:30:11Z"
+  },
+  "db_quick_check": "ok",
+  "replay_quality": "sweep_grade",
+  "live_order_intents": 0,
+  "live_orders": 0,
+  "live_fills": 0,
+  "live_redemptions": 0,
+  "stopped_at_utc": "2026-05-02T16:31:00Z"
+}

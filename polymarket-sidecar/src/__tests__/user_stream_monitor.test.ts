@@ -60,6 +60,8 @@ describe("WsUserStreamMonitor", () => {
       },
       setTimeoutFn: setTimeout,
       clearTimeoutFn: clearTimeout,
+      setIntervalFn: setInterval,
+      clearIntervalFn: clearInterval,
       random: () => 0.5,
       log: () => undefined,
       connectTimeoutMs: 50,
@@ -155,6 +157,24 @@ describe("WsUserStreamMonitor", () => {
 
     expect(monitor.snapshot().status).toBe("ok");
     expect(monitor.snapshot().subscribedMarkets).toEqual(["mkt-a"]);
+  });
+
+  it("keeps the authenticated user stream alive with PING frames", async () => {
+    const { monitor, sockets } = createMonitor();
+
+    await connectMonitor(monitor, sockets);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sockets[0].sent).toHaveLength(2);
+    expect(JSON.parse(sockets[0].sent[0]) as Record<string, unknown>).toMatchObject({
+      markets: ["mkt-a"],
+      type: "user",
+    });
+    expect(sockets[0].sent[1]).toBe("PING");
+
+    monitor.close();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(sockets[0].sent).toHaveLength(2);
   });
 
   it("fails cleanly on an auth error frame", async () => {

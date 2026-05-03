@@ -17,3 +17,12 @@ Systemd user-service templates live in `ops/systemd/`.
 - `buba-dashboard.service`: dashboard server template
 
 The sidecar should be supervised for normal readonly/live-readiness operation. Bot, agent, and dashboard service templates are provided so future operators can move away from ad hoc shells without inventing a new layout. Before installing any template, copy the matching env file into `~/buba-paint-live/config`, verify paths, and run the local validation gates listed in `CLAUDE.md`.
+
+The service templates read runtime-specific log paths from env files:
+
+- `BUBA_SIDECAR_LOG_PATH`
+- `BUBA_PAINT_LOG_PATH`
+- `BUBA_AGENT_LOG_PATH`
+- `BUBA_DASHBOARD_LOG_PATH`
+
+If these are absent, services fall back to `~/buba-paint-live/logs/*.log`. For host readonly soaks and funded runs, prefer runtime-specific paths so evidence stays with the run directory.

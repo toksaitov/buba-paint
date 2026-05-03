@@ -50,7 +50,8 @@ Issue-resolution discipline for every phase:
 - Phase 5, Risk, Halt, and Human Cooldown Policy: complete in commit `c406e39` on 2026-05-02. Chosen defaults are postmortem-only cooldown, new run DB after terminal halt, current loss caps, 2-minute terminal degradation threshold, and cancel/redeem still available from halted sessions.
 - Phase 6, Replay-Grade Real-Money Capture: complete in commit `21e4d5d` on 2026-05-02. Chosen scope is public replay gate only; the deployment-host readonly soak is prepared but not run in this phase.
 - Phase 7, Live Fidelity and Replay Explainability Gate: complete in commit `cffbb9a` on 2026-05-02. Host rollout and real-money canary remain gated until later phases are implemented and verified.
-- Phase 8, Local Verification Gate Pack: complete in current local work on 2026-05-02, pending commit. This phase is local-only and did not touch the deployment host, funded wallet, sidecar credentials, or real arming.
+- Phase 8, Local Verification Gate Pack: complete in commit `3d8fd3b` on 2026-05-02. This phase is local-only and did not touch the deployment host, funded wallet, sidecar credentials, or real arming.
+- Phase 9, Deployment Layout Verification and Host Readonly Soak: complete on 2026-05-03. The Finland host completed the accepted no-order `live_readonly` soak with supervised sidecar, bot, agent, and dashboard services, stable CLOB L2 account reads, clean user-stream health, `sweep_grade` replay capture, DB quick check `ok`, zero live order/cancel/redeem rows, and services stopped at closeout. Evidence lives under `data/experiments/replay-grade-readonly-soak-colleague-001/` and `data/experiments/replay-grade-readonly-soak-colleague-002/`. No `live_trading`, arming, order placement, cancellation, redemption, funded write smoke, or canary occurred.
 
 ## Current Decision
 
@@ -702,9 +703,9 @@ Step 6: post-run review.
 - write postmortem.
 - only then decide whether to continue, adjust, or stop.
 
-## Phase 9: Deployment Plan
+## Phase 9: Host Readonly Soak and Deployment Layout Verification
 
-Goal: deploy only after the implementation and verification ladder prove the system is ready.
+Goal: deploy a reviewed release into the host layout and run a no-order `live_readonly` soak only after the implementation and verification ladder prove the system is ready.
 
 Deployment shape:
 
@@ -742,6 +743,21 @@ Remote pre-arm gates:
 - Execution page agrees with CLI preflight.
 - Arm capability is disabled until explicit operator confirmation.
 
+Phase 9 status on 2026-05-03:
+
+- Result: complete. The Finland host passed the independent auth probes, the 5-minute no-order `live_readonly` check, and the accepted 90-minute no-order `live_readonly` soak.
+- Evidence paths: `data/experiments/replay-grade-readonly-soak-colleague-001/` for the 5-minute run, `data/experiments/replay-grade-readonly-soak-colleague-002/` for the 90-minute run, and `REPORT.md` / `REPORT2.md` for human analysis. Earlier failed attempts remain under `data/experiments/replay-grade-readonly-soak-001/` through `data/experiments/replay-grade-readonly-soak-004/`.
+- Host mutations completed: stable `~/buba-paint-live/config` and `~/buba-paint-live/logs` directories were used, reviewed releases were staged, user systemd units for sidecar/bot/agent/dashboard were installed, and user linger was enabled.
+- Host process state at closeout: sidecar, bot, agent, and dashboard services were stopped. Direct host verification after closeout showed no active `buba-*` units and no stale bot/agent/dashboard/sidecar processes.
+- CLOB auth outcome: CLOB L2 account and open-order reads were stable for the accepted soak. Sidecar auth bootstrapped once, did not re-bootstrap, and recorded no `Unauthorized/Invalid api key` errors. The durable lesson from failed attempts is that L2 auth headers must use the signer EOA as `POLY_ADDRESS`, while proxy/funder remain the proxy wallet.
+- User-stream outcome: the authenticated user stream stayed healthy. Subscription-change reconnects occurred at normal market-window rotation boundaries; there were no user-stream errors, disconnect failures, or silent-freeze symptoms.
+- Data-quality outcome: the 90-minute runtime DB passed SQLite quick check and `validate-replay-data` returned `replay_quality=sweep_grade` over the full captured window. Required Binance `aggTrade`, Binance `bookTicker`, Binance `depth`, Chainlink price, and CLOB UP/DOWN top-of-book classes were present.
+- Safety outcome: the only live session was `live_readonly`, ending in `readonly_stopped`. `live_order_intents`, `live_orders`, `live_fills`, and `live_redemptions` were all zero. No `live_trading`, arming, order placement, cancellation, redemption, funded write smoke, or canary occurred.
+- Blockers fixed during the phase: sidecar user-stream heartbeat, raw HTTP/1.1 CLOB L2 reads for critical account/open-order paths, host-soak automation for fresh hosts without old `runtime/run-013` env files, generated dashboard admin credentials for evidence capture, and replay-grade host evidence collection.
+- Accepted low-risk debt: builder relayer credentials remain absent, so redemption readiness remains unavailable. That is acceptable for readonly soak but must be resolved before redemption testing or a full live closeout rehearsal. The host-soak script still has historical `runtime/run-013` fallback naming; it no longer blocks fresh-host soaks but should be cleaned later.
+- Gates run: independent auth probes, `make live-readiness-local`, host-soak dry run, 5-minute no-order soak, 90-minute no-order soak, remote acceptance check, remote DB quick check, remote replay-quality validation, `cd polymarket-sidecar && npm test -- --run user_stream_monitor provider`, `cd polymarket-sidecar && npm run build`, and `git diff --check`.
+- Gates intentionally skipped: funded write smoke, canary, real arming, order placement, cancellation, and redemption. They remain out of Phase 9 scope.
+
 ## Phase 10: Clean Finish
 
 Goal: remove the active plan and preserve only durable facts.
@@ -759,12 +775,13 @@ When live trading v1 is implemented, tested, and either deployed or deliberately
 
 ## Immediate Next Plan-Mode Slice
 
-The next implementation slice should be Phase 9 host rollout preparation and no-order readonly soak planning only:
+The next implementation slice should be the controlled production write-smoke phase:
 
-- stage a reviewed release shape for `buba-paint`
-- verify supervised sidecar, bot, agent, and dashboard process layout
-- run or prepare the deployment-host `live_readonly` soak with replay-grade capture
-- save readonly soak evidence under the documented experiment directory
-- keep real order placement, funded write smoke, canary arming, and production live trading out of that slice unless a later plan explicitly approves them
+- use `ssh buba-paint` as the active deployment host again; `buba-paint-fin` was a disposable soak host and has been deleted
+- start from the accepted Phase 9 evidence and re-run only the specific checks needed on Ireland before any write
+- keep `live_trading` disarmed until the operator explicitly approves the write-smoke plan and commands
+- place at most one controlled minimum legal FOK/FAK order if the plan is approved
+- verify intent persistence, venue response, user-stream/trade recovery, account/open-order state, dashboard state, and replay/live-fidelity evidence
+- cancel only if a resting order exists, and redeem only after a resolved winning position exists and builder relayer readiness is explicitly handled
 
-Do not combine host readonly soak with funded write smoke or first canary. The host soak should produce evidence first, then the next plan-mode slice can decide whether a controlled write smoke is justified.
+Do not combine the write smoke with the first latency-arb canary. The write smoke should produce evidence first, then the next plan-mode slice can decide whether a short canary is justified.

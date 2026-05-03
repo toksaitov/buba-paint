@@ -7,11 +7,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/buba-paint-live/current
 EnvironmentFile=%h/buba-paint-live/config/bot.env
-ExecStart=/usr/bin/env bash -lc 'exec "$HOME/buba-paint-live/current/target/release/buba-paint" live --db-path "$BUBA_PAINT_DB_PATH" --balance "$BUBA_PAINT_BALANCE"'
+ExecStart=/usr/bin/env bash -lc 'exec "$HOME/buba-paint-live/current/target/release/buba-paint" live --db-path "$BUBA_PAINT_DB_PATH" --balance "$BUBA_PAINT_BALANCE" >> "${BUBA_PAINT_LOG_PATH:-$HOME/buba-paint-live/logs/bot.log}" 2>&1'
 Restart=always
 RestartSec=3
-StandardOutput=append:%h/buba-paint-live/logs/bot.log
-StandardError=append:%h/buba-paint-live/logs/bot.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target

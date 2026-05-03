@@ -1,0 +1,59 @@
+{
+  "agent_env_keys": [
+    "AGENT_SECRET",
+    "BUBA_AGENT_LOG_PATH",
+    "BUBA_AGENT_PORT",
+    "BUBA_PAINT_DB_PATH",
+    "BUBA_PAINT_LOG_PATH"
+  ],
+  "bot_env_keys": [
+    "BUBA_PAINT_BALANCE",
+    "BUBA_PAINT_DB_PATH",
+    "BUBA_PAINT_LOG_PATH",
+    "CALM_PERSISTENCE_ENABLED",
+    "DB_PATH",
+    "EXECUTION_MODE",
+    "FEED_EVENT_STORAGE_PROFILE",
+    "LATENCY_ARB_ENABLED",
+    "LIVE_SIDECAR_URL",
+    "MAX_DRAWDOWN_PCT",
+    "PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION",
+    "PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION",
+    "PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION",
+    "SIM_ORDER_LATENCY_MS",
+    "SPREAD_CAPTURE_ENABLED",
+    "TAKER_FEE_EXPONENT",
+    "TAKER_FEE_RATE"
+  ],
+  "clob_l2_creds_present": true,
+  "dashboard_env_keys": [
+    "ADMIN_PASSWORD",
+    "ADMIN_USER",
+    "BUBA_DASHBOARD_CONFIG",
+    "BUBA_DASHBOARD_LOG_PATH",
+    "DASHBOARD_DB_PATH",
+    "JWT_SECRET"
+  ],
+  "dashboard_login_password_written_to": "/root/buba-paint-live/runtime/soak-004-20260502-152805Z/dashboard-admin-password.txt",
+  "dashboard_login_user": "admin",
+  "runtime": "/root/buba-paint-live/runtime/soak-004-20260502-152805Z",
+  "sidecar_env_keys": [
+    "BUBA_SIDECAR_LOG_PATH",
+    "POLYMARKET_API_KEY",
+    "POLYMARKET_API_KEY_NONCE",
+    "POLYMARKET_API_PASSPHRASE",
+    "POLYMARKET_API_SECRET",
+    "POLYMARKET_CLOB_HOST",
+    "POLYMARKET_CLOCK_DRIFT_MAX_MS",
+    "POLYMARKET_FUNDER",
+    "POLYMARKET_GEOBLOCK_URL",
+    "POLYMARKET_PRIVATE_KEY",
+    "POLYMARKET_PROXY_WALLET",
+    "POLYMARKET_RELAYER_API_KEY",
+    "POLYMARKET_RELAYER_API_KEY_ADDRESS",
+    "POLYMARKET_RELAYER_HOST",
+    "POLYMARKET_SIGNATURE_TYPE",
+    "SIDECAR_HOST",
+    "SIDECAR_PORT"
+  ]
+}

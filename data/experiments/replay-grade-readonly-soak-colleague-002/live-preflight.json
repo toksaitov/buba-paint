@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "mode": "live_readonly",
+  "wallet_address": "0xE7C092ffa4c73EA874d8309cFC0e8915cb348616",
+  "proxy_wallet": "0xE7C092ffa4c73EA874d8309cFC0e8915cb348616",
+  "geoblock_status": "ok",
+  "geoblock_country_code": "FI",
+  "auth_status": "ok",
+  "clock_status": "ok",
+  "allowance_status": "ok",
+  "user_stream_status": "ok",
+  "available_cash_usd": 99.166994,
+  "legal_order_min_usd": 5.0,
+  "details_json": "{\"provider\":\"polymarket\",\"clob_contract_version\":\"v2\",\"collateral_token\":\"pUSD\",\"collateral_decimals\":6,\"strategy_readiness\":[{\"strategy\":\"latency-arb\",\"readiness\":\"live_ready_v1\",\"enabled\":true},{\"strategy\":\"calm-persistence\",\"readiness\":\"live_supported_but_disabled\",\"enabled\":false},{\"strategy\":\"spread-capture\",\"readiness\":\"not_live_v1\",\"enabled\":false}],\"relayer_api_key_present\":true,\"geoblock\":{\"blocked\":false,\"ip\":\"95.216.148.123\",\"country\":\"FI\",\"region\":\"18\"},\"active_markets\":[{\"slug\":\"btc-updown-5m-1777788300\",\"conditionId\":\"0xde77c03532f8a2136fdfbad72c00e8dc30d8fb7d352c7f20046f4239d535bcc8\",\"minOrderSize\":5,\"tickSize\":0.01,\"acceptingOrders\":true,\"tokens\":[{\"tokenId\":\"40662073144137680337390732955868711657561965447240461538887951276971570334086\",\"outcome\":\"Up\"},{\"tokenId\":\"93239371633132150647636138381403835432008845733878531419210840655894371125396\",\"outcome\":\"Down\"}],\"feeDetails\":{\"rate\":0.072,\"exponent\":1,\"takerOnly\":true,\"makerBaseFee\":1000,\"takerBaseFee\":1000},\"negRisk\":null,\"metadataSource\":\"clob_v2\",\"metadataError\":null},{\"slug\":\"btc-updown-5m-1777788600\",\"conditionId\":\"0xd8928e5baa6d6c4eab744745b958f826f2fa7f29fd6e892cca425b05f41ca3d5\",\"minOrderSize\":5,\"tickSize\":0.01,\"acceptingOrders\":true,\"tokens\":[{\"tokenId\":\"86939650411626763280993563141618327775070859781764788485990898274274726357243\",\"outcome\":\"Up\"},{\"tokenId\":\"7019458229686158418634144333648168966356556739096394650954187328583716613574\",\"outcome\":\"Down\"}],\"feeDetails\":{\"rate\":0.072,\"exponent\":1,\"takerOnly\":true,\"makerBaseFee\":1000,\"takerBaseFee\":1000},\"negRisk\":null,\"metadataSource\":\"clob_v2\",\"metadataError\":null}],\"discovery_degraded\":false,\"discovery_error\":null,\"wallet_address_source\":\"funder\",\"last_user_stream_connected_at_ms\":1777788360515,\"last_user_stream_event_at_ms\":null,\"last_user_stream_error\":null,\"last_user_stream_disconnect_at_ms\":null,\"last_user_stream_disconnect_reason\":null,\"last_successful_account_refresh_at_ms\":1777788360740,\"last_account_refresh_error\":null}",
+  "errors": []
+}

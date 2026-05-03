@@ -7,11 +7,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/buba-paint-live/current
 EnvironmentFile=%h/buba-paint-live/config/dashboard.env
-ExecStart=/usr/bin/env bash -lc 'exec "$HOME/buba-paint-live/current/target/release/buba-dashboard" --config "$BUBA_DASHBOARD_CONFIG" --static-dir "$HOME/buba-paint-live/current/dashboard/client/dist"'
+ExecStart=/usr/bin/env bash -lc 'exec "$HOME/buba-paint-live/current/target/release/buba-dashboard" --config "$BUBA_DASHBOARD_CONFIG" --static-dir "$HOME/buba-paint-live/current/dashboard/client/dist" >> "${BUBA_DASHBOARD_LOG_PATH:-$HOME/buba-paint-live/logs/dashboard.log}" 2>&1'
 Restart=always
 RestartSec=3
-StandardOutput=append:%h/buba-paint-live/logs/dashboard.log
-StandardError=append:%h/buba-paint-live/logs/dashboard.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target

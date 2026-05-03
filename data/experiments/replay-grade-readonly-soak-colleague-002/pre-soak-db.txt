@@ -1,0 +1,17 @@
+quick_check=ok
+run_metadata
+configured_replay_quality_class=sweep_capable
+feed_event_storage_profile=replay_grade
+replay_quality_class=empty
+replay_quality_missing_required_classes=
+replay_quality_observed_feed_classes=
+replay_quality_validated_at_ms=1777788363032
+replay_quality_validation_interval={"end_time":1777788363032,"start_time":1777788363032}
+required_feed_event_classes=binance:aggTrade, binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:top_of_book, clob_down:top_of_book
+live_sessions
+live_readonly:readonly_ready:1
+order_counts
+live_order_intents=0
+live_orders=0
+live_fills=0
+live_redemptions=0

@@ -109,6 +109,14 @@ Before starting the host soak, complete the local gate pack and keep its manifes
 make live-readiness-local
 ```
 
+The repeatable host runner is:
+
+```bash
+make live-readiness-host-soak
+```
+
+Use `LIVE_HOST_SOAK_ARGS="--dry-run"` to inspect the plan without SSH mutations. The runner fails closed if host `live-preflight` returns `ok=false`.
+
 Use a fresh runtime directory and keep copied-back reports under `data/experiments/replay-grade-readonly-soak-001/`. The soak must use:
 
 ```bash
@@ -134,7 +142,7 @@ ssh buba-paint 'ps -eo pid=,args= | awk "/buba-paint live|buba-agent|buba-dashbo
 find . -maxdepth 1 \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \) -print
 ```
 
-The soak is not accepted unless there is no order placement, sidecar health is sane, host geoblock passes, current BTC market metadata is captured, `validate-replay-data` reports `sweep_grade`, `PRAGMA quick_check` returns `ok`, only intended processes are running, dashboard Execution agrees with CLI preflight, and no scratch DB/WAL/SHM files appear in the repo root.
+The soak is not accepted unless there is no order placement, sidecar health is sane, host geoblock passes, current BTC market metadata is captured, `validate-replay-data` reports `sweep_grade`, `PRAGMA quick_check` returns `ok`, only intended processes are running, dashboard Execution agrees with CLI preflight, and no scratch DB/WAL/SHM files appear in the repo root. If authenticated CLOB bootstrap is blocked by Cloudflare or missing L2 credentials, stop the phase and fix host/account authentication before rerunning the soak.
 
 ## Cleanup Policy
 

@@ -54,6 +54,14 @@ make live-readiness-local LIVE_READINESS_ARGS="--dry-run --output-dir /tmp/buba-
 
 The manifest records git SHA, dirty status, host metadata, selected redacted environment values, each command, each log path, exit statuses, and final pass/fail. Treat any failed command as a blocker before moving to host verification.
 
+The host no-order soak runner is:
+
+```bash
+make live-readiness-host-soak
+```
+
+Use `LIVE_HOST_SOAK_ARGS="--dry-run"` to inspect the command plan without touching the host. The runner stages a release on `buba-paint`, uses stable config files under `~/buba-paint-live/config`, writes runtime data under a fresh `~/buba-paint-live/runtime/soak-...` directory, stops services at closeout by default, and writes non-secret local evidence under `data/experiments/replay-grade-readonly-soak-001/`. A failed `live-preflight` is a hard blocker.
+
 ## Bot Commands
 
 ```bash
@@ -141,7 +149,7 @@ Important groups:
 - Strategy toggles: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, `CALM_PERSISTENCE_ENABLED`.
 - Sidecar: `LIVE_SIDECAR_URL`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_PROXY_WALLET`, `POLYMARKET_FUNDER`, `POLYMARKET_RELAYER_HOST`, `POLYMARKET_RELAYER_API_KEY`, `POLYMARKET_RELAYER_API_KEY_ADDRESS`, `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, `POLYMARKET_BUILDER_PASSPHRASE`.
 
-The sidecar CLOB boundary uses `@polymarket/clob-client-v2`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted. Gasless redemption uses the builder relayer SDK path and stays fail-closed unless the configured credentials are complete.
+The sidecar CLOB boundary uses `@polymarket/clob-client-v2`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted. Optional CLOB L2 credentials may be configured with `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, and `POLYMARKET_API_PASSPHRASE`; otherwise the sidecar derives or creates them through authenticated CLOB L1 bootstrap. Gasless redemption uses the builder relayer SDK path and stays fail-closed unless the configured credentials are complete.
 
 `live_trading` starts disarmed and is local-verification only until deployment and final canary phases are complete. Do not treat the presence of live caps, sidecar credentials, callable sidecar write endpoints, or queued `live-control` commands as permission to deploy real money.
 

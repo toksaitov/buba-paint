@@ -1,0 +1,114 @@
+{
+  "account_health": {
+    "detail": "Real cash, allowance, and equity decomposition are available.",
+    "label": "Account tracked",
+    "state": "healthy"
+  },
+  "alerts": [
+    {
+      "detail": "Overview, equity, trades, signals, and strategies remain shadow-performance pages in live_readonly.",
+      "severity": "info",
+      "title": "Shadow and execution views differ"
+    }
+  ],
+  "capabilities": {
+    "arm": {
+      "enabled": false,
+      "reason": "live_readonly is observation-only; start a live_trading session to queue controls."
+    },
+    "cancel_all": {
+      "enabled": false,
+      "reason": "live_readonly is observation-only; start a live_trading session to queue controls."
+    },
+    "disarm": {
+      "enabled": false,
+      "reason": "live_readonly is observation-only; start a live_trading session to queue controls."
+    },
+    "kill_switch": {
+      "enabled": false,
+      "reason": "live_readonly is observation-only; start a live_trading session to queue controls."
+    },
+    "preflight": {
+      "enabled": false,
+      "reason": "live_readonly is observation-only; start a live_trading session to queue controls."
+    },
+    "redeem": {
+      "enabled": false,
+      "reason": "live_readonly is observation-only; start a live_trading session to queue controls."
+    },
+    "stop_after_flat": {
+      "enabled": false,
+      "reason": "live_readonly is observation-only; start a live_trading session to queue controls."
+    }
+  },
+  "process_state": "running",
+  "real_account_summary": {
+    "allowance_available": 99.166994,
+    "available_cash": 99.166994,
+    "cash_cap_usd": 100.0,
+    "critical_reconciliation_events": 0,
+    "enabled_strategies": [
+      "latency-arb"
+    ],
+    "inventory_mark_value": 0.0,
+    "last_account_refresh_at_ms": 1777788363030,
+    "last_user_stream_connected_at_ms": 1777788360515,
+    "last_user_stream_event_at_ms": null,
+    "latest_snapshot_at_ms": 1777788363030,
+    "open_orders": 0,
+    "pending_redeem_value": 0.0,
+    "pending_redemptions": 0,
+    "provider": "polymarket",
+    "proxy_wallet": "0xE7C092ffa4c73EA874d8309cFC0e8915cb348616",
+    "redeemable_value": 0.0,
+    "reserved_cash": 0.0,
+    "session_id": 1,
+    "session_started_at_ms": 1777788361998,
+    "session_status": "readonly_ready",
+    "total_equity": 99.166994,
+    "user_stream_status": "ok",
+    "wallet_address": "0xE7C092ffa4c73EA874d8309cFC0e8915cb348616"
+  },
+  "reconciliation_health": {
+    "detail": "No critical reconciliation events are recorded.",
+    "label": "Reconciliation clean",
+    "state": "healthy"
+  },
+  "risk_summary": {
+    "closeout_exported_at_ms": null,
+    "current_equity": null,
+    "daily_loss_usd": null,
+    "halt_at_ms": null,
+    "halt_reason": null,
+    "high_water_mark": null,
+    "session_drawdown_usd": null,
+    "trough_equity": null
+  },
+  "runtime_mode": "live_readonly",
+  "shadow_summary": {
+    "balance": 100.0,
+    "current_window": {
+      "end_time": 1777788600000,
+      "market_id": "2138055",
+      "question": "Bitcoin Up or Down - May 3, 2:05AM-2:10AM ET"
+    },
+    "high_water_mark": 100.0,
+    "last_tick_at": 1777788375036,
+    "live_session_status": "readonly_ready",
+    "losses": 0,
+    "max_drawdown_pct": 0.0,
+    "open_trades": 0,
+    "starting_balance": 100.0,
+    "total_pnl": 0.0,
+    "total_trades": 0,
+    "uptime_hours": 0.0030555555555555557,
+    "win_rate": 0.0,
+    "wins": 0
+  },
+  "trading_state": "readonly",
+  "venue_health": {
+    "detail": "Authenticated venue monitoring and user-stream health are green.",
+    "label": "Venue connected",
+    "state": "healthy"
+  }
+}

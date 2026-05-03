@@ -1,4 +1,5 @@
 import { Wallet } from "@ethersproject/wallet";
+import https from "node:https";
 import {
   AssetType,
   Chain,
@@ -6,6 +7,8 @@ import {
   OrderType,
   SignatureTypeV2,
   Side,
+  createL1Headers,
+  createL2Headers,
   type ApiKeyCreds,
   type MarketDetails,
   type OpenOrder,
@@ -51,6 +54,9 @@ const POLYMARKET_HTTP_USER_AGENT = "buba-polymarket-sidecar/0.1.0";
 const PUSD_COLLATERAL_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
 const ZERO_BYTES32 = zeroHash;
+const CLOB_INITIAL_CURSOR = "MA==";
+const CLOB_END_CURSOR = "LTE=";
+const USER_STREAM_PING_INTERVAL_MS = 10_000;
 
 const {
   RelayClient,
@@ -290,6 +296,8 @@ interface WsUserStreamMonitorDeps {
   createSocket: (url: string) => UserStreamSocketLike;
   setTimeoutFn: typeof setTimeout;
   clearTimeoutFn: typeof clearTimeout;
+  setIntervalFn: typeof setInterval;
+  clearIntervalFn: typeof clearInterval;
   random: () => number;
   log: SidecarLogger;
   connectTimeoutMs: number;
@@ -305,6 +313,7 @@ interface ConnectionAttempt {
   socket: UserStreamSocketLike;
   connectTimer: NodeJS.Timeout | null;
   readyTimer: NodeJS.Timeout | null;
+  heartbeatTimer: NodeJS.Timeout | null;
   abort?: (error: unknown) => void;
 }
 
@@ -731,6 +740,222 @@ function hasBuilderRelayerCredentials(config: SidecarConfig): boolean {
   );
 }
 
+function configuredApiKeyCreds(config: SidecarConfig): ApiKeyCreds | null {
+  const configuredCount = [
+    config.apiKey,
+    config.apiSecret,
+    config.apiPassphrase,
+  ].filter(Boolean).length;
+  if (configuredCount > 0 && configuredCount < 3) {
+    throw new Error(
+      "incomplete CLOB L2 credentials; set POLYMARKET_API_KEY, POLYMARKET_API_SECRET, and POLYMARKET_API_PASSPHRASE together",
+    );
+  }
+  if (!config.apiKey || !config.apiSecret || !config.apiPassphrase) {
+    return null;
+  }
+  return {
+    key: config.apiKey,
+    secret: config.apiSecret,
+    passphrase: config.apiPassphrase,
+  };
+}
+
+function compactErrorBody(body: string): string {
+  return body.replace(/\s+/g, " ").slice(0, 240);
+}
+
+function normalizeApiKeyCreds(value: unknown): ApiKeyCreds {
+  if (!value || typeof value !== "object") {
+    throw new Error("CLOB API key response is not an object");
+  }
+  const record = value as Record<string, unknown>;
+  const key = typeof record.key === "string"
+    ? record.key
+    : typeof record.apiKey === "string"
+      ? record.apiKey
+      : null;
+  const secret = typeof record.secret === "string" ? record.secret : null;
+  const passphrase = typeof record.passphrase === "string"
+    ? record.passphrase
+    : null;
+  if (!key || !secret || !passphrase) {
+    throw new Error("CLOB API key response is missing key, secret, or passphrase");
+  }
+  return { key, secret, passphrase };
+}
+
+function postHttp11Json(
+  target: URL,
+  headers: Record<string, string | number | boolean>,
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || undefined,
+        path: `${target.pathname}${target.search}`,
+        method: "POST",
+        headers: {
+          ...headers,
+          "User-Agent": "@polymarket/clob-client",
+          Accept: "*/*",
+          "Content-Type": "application/json",
+          "Content-Length": "0",
+        },
+        agent: new https.Agent({ keepAlive: false }),
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          if (response.statusCode !== 200) {
+            reject(
+              new Error(
+                `CLOB HTTP/1.1 API key create failed status=${response.statusCode ?? "unknown"} body=${compactErrorBody(body)}`,
+              ),
+            );
+            return;
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (error) {
+            reject(new Error(`CLOB API key response JSON parse failed: ${stringError(error)}`));
+          }
+        });
+      },
+    );
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function getHttp11Json(
+  target: URL,
+  headers: Record<string, string | number | boolean>,
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || undefined,
+        path: `${target.pathname}${target.search}`,
+        method: "GET",
+        headers: {
+          ...headers,
+          "User-Agent": "@polymarket/clob-client",
+          Accept: "*/*",
+          "Content-Type": "application/json",
+        },
+        agent: new https.Agent({ keepAlive: false }),
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          if (response.statusCode !== 200) {
+            reject(
+              new Error(
+                `CLOB HTTP/1.1 GET failed status=${response.statusCode ?? "unknown"} path=${target.pathname} body=${compactErrorBody(body)}`,
+              ),
+            );
+            return;
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (error) {
+            reject(new Error(`CLOB HTTP/1.1 JSON parse failed: ${stringError(error)}`));
+          }
+        });
+      },
+    );
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+async function signedClobGetHttp11(
+  config: SidecarConfig,
+  signer: Wallet,
+  creds: ApiKeyCreds,
+  endpoint: string,
+  params: Record<string, string | number | boolean | undefined>,
+  timestamp: number,
+): Promise<unknown> {
+  const host = new URL(config.clobHost);
+  if (host.protocol !== "https:") {
+    throw new Error("CLOB HTTP/1.1 authenticated GET requires an https host");
+  }
+  const target = new URL(endpoint, host);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      target.searchParams.set(key, String(value));
+    }
+  }
+  const headers = await createL2Headers(
+    signer,
+    creds,
+    { method: "GET", requestPath: endpoint },
+    timestamp,
+  );
+  return getHttp11Json(target, headers);
+}
+
+function requireApiCreds(creds: ApiKeyCreds | undefined): ApiKeyCreds {
+  if (!creds) {
+    throw new Error("CLOB API credentials are required for authenticated readonly access");
+  }
+  return creds;
+}
+
+function balanceAllowanceView(value: unknown): BalanceAllowanceView {
+  if (!value || typeof value !== "object") {
+    throw new Error("CLOB balance/allowance response is not an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.balance !== "string") {
+    throw new Error("CLOB balance/allowance response is missing balance");
+  }
+  return record as unknown as BalanceAllowanceView;
+}
+
+function paginatedData<T>(value: unknown): { data: T[]; nextCursor: string } {
+  if (!value || typeof value !== "object") {
+    throw new Error("CLOB paginated response is not an object");
+  }
+  const record = value as Record<string, unknown>;
+  const data = Array.isArray(record.data) ? (record.data as T[]) : [];
+  const nextCursor = typeof record.next_cursor === "string"
+    ? record.next_cursor
+    : CLOB_END_CURSOR;
+  return { data, nextCursor };
+}
+
+async function createApiKeyOverHttp11(
+  config: SidecarConfig,
+  signer: Wallet,
+  nonce?: number,
+): Promise<ApiKeyCreds> {
+  const host = new URL(config.clobHost);
+  if (host.protocol !== "https:") {
+    throw new Error("CLOB HTTP/1.1 API key fallback requires an https host");
+  }
+  const headers = await createL1Headers(signer, CHAIN_ID, nonce);
+  const response = await postHttp11Json(
+    new URL("/auth/api-key", host),
+    headers,
+  );
+  return normalizeApiKeyCreds(response);
+}
+
 function relayerTxTypeFromConfig(config: SidecarConfig): typeof RelayerTxType.PROXY | typeof RelayerTxType.SAFE {
   return config.signatureType === SignatureTypeV2.POLY_GNOSIS_SAFE
     ? RelayerTxType.SAFE
@@ -981,6 +1206,7 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
       socket,
       connectTimer: null,
       readyTimer: null,
+      heartbeatTimer: null,
     };
     this.currentAttempt = attempt;
 
@@ -1004,7 +1230,7 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
           resolve();
           return;
         }
-        this.clearAttemptTimers(attempt);
+        this.clearAttemptStartupTimers(attempt);
         this.state.status = "ok";
         this.state.lifecycle = "connected";
         this.state.lastConnectedAtMs = this.deps.now();
@@ -1040,6 +1266,7 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
               type: "user",
             }),
           );
+          this.startHeartbeat(attempt);
         } catch (error) {
           completeFailure(error);
           return;
@@ -1125,6 +1352,10 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
   }
 
   private markDisconnected(message: string): void {
+    const attempt = this.currentAttempt;
+    if (attempt) {
+      this.clearAttemptTimers(attempt);
+    }
     this.state.status = "failed";
     this.state.lastError = message;
     this.state.lifecycle = this.closed ? "closed" : "reconnecting";
@@ -1137,6 +1368,23 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
     });
     this.currentAttempt = null;
     this.scheduleReconnect();
+  }
+
+  private startHeartbeat(attempt: ConnectionAttempt): void {
+    if (attempt.heartbeatTimer) {
+      return;
+    }
+    attempt.heartbeatTimer = this.deps.setIntervalFn(() => {
+      if (!this.isActiveAttempt(attempt) || attempt.socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      try {
+        attempt.socket.send("PING");
+      } catch (error) {
+        this.markDisconnected(stageError("user_stream_connect", error).message);
+        safeCloseSocket(attempt.socket, this.deps.log);
+      }
+    }, USER_STREAM_PING_INTERVAL_MS);
   }
 
   private scheduleReconnect(): void {
@@ -1175,6 +1423,14 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
   }
 
   private clearAttemptTimers(attempt: ConnectionAttempt): void {
+    this.clearAttemptStartupTimers(attempt);
+    if (attempt.heartbeatTimer) {
+      this.deps.clearIntervalFn(attempt.heartbeatTimer);
+      attempt.heartbeatTimer = null;
+    }
+  }
+
+  private clearAttemptStartupTimers(attempt: ConnectionAttempt): void {
     if (attempt.connectTimer) {
       this.deps.clearTimeoutFn(attempt.connectTimer);
       attempt.connectTimer = null;
@@ -1218,11 +1474,13 @@ function defaultProviderDeps(): ProviderDeps {
         );
       }
       const signer = new Wallet(config.privateKey);
+      const configuredCreds = configuredApiKeyCreds(config);
+      const effectiveCreds = creds ?? configuredCreds ?? undefined;
       const client = new ClobClient({
         host: config.clobHost,
         chain: CHAIN_ID,
         signer,
-        creds,
+        creds: effectiveCreds,
         signatureType: signatureTypeFromConfig(config.signatureType),
         funderAddress: walletAddress(config) ?? undefined,
         useServerTime: true,
@@ -1230,15 +1488,84 @@ function defaultProviderDeps(): ProviderDeps {
         throwOnError: true,
       });
       return {
-        createOrDeriveApiKey: async () => client.createOrDeriveApiKey(),
+        createOrDeriveApiKey: async () => {
+          if (effectiveCreds) {
+            return effectiveCreds;
+          }
+          try {
+            return await client.deriveApiKey();
+          } catch (deriveError) {
+            try {
+              return await client.createApiKey();
+            } catch (createError) {
+              try {
+                return await createApiKeyOverHttp11(config, signer);
+              } catch (fallbackError) {
+                throw new Error(
+                  `derive API key failed: ${compactErrorBody(stringError(deriveError))}; create API key failed: ${compactErrorBody(stringError(createError))}; HTTP/1.1 create fallback failed: ${compactErrorBody(stringError(fallbackError))}`,
+                );
+              }
+            }
+          }
+        },
         getServerTime: async () => client.getServerTime(),
         getBalanceAllowance: async () =>
-          client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL }),
-        getOpenOrders: async () => client.getOpenOrders(),
+          balanceAllowanceView(
+            await signedClobGetHttp11(
+              config,
+              signer,
+              requireApiCreds(effectiveCreds),
+              "/balance-allowance",
+              {
+                asset_type: AssetType.COLLATERAL,
+                signature_type: signatureTypeFromConfig(config.signatureType),
+              },
+              await client.getServerTime(),
+            ),
+          ),
+        getOpenOrders: async () => {
+          const orders: OpenOrder[] = [];
+          let cursor = CLOB_INITIAL_CURSOR;
+          while (cursor !== CLOB_END_CURSOR) {
+            const page = paginatedData<OpenOrder>(
+              await signedClobGetHttp11(
+                config,
+                signer,
+                requireApiCreds(effectiveCreds),
+                "/data/orders",
+                { next_cursor: cursor },
+                await client.getServerTime(),
+              ),
+            );
+            orders.push(...page.data);
+            cursor = page.nextCursor;
+          }
+          return orders;
+        },
         getClobMarketInfo: async (conditionId) =>
           client.getClobMarketInfo(conditionId),
-        getTrades: async (params, onlyFirstPage) =>
-          client.getTrades(params, onlyFirstPage),
+        getTrades: async (params, onlyFirstPage) => {
+          const trades: Trade[] = [];
+          let cursor = CLOB_INITIAL_CURSOR;
+          while (cursor !== CLOB_END_CURSOR) {
+            const page = paginatedData<Trade>(
+              await signedClobGetHttp11(
+                config,
+                signer,
+                requireApiCreds(effectiveCreds),
+                "/data/trades",
+                { ...params, next_cursor: cursor },
+                await client.getServerTime(),
+              ),
+            );
+            trades.push(...page.data);
+            if (onlyFirstPage) {
+              break;
+            }
+            cursor = page.nextCursor;
+          }
+          return trades;
+        },
         createAndPostMarketOrder: async (order, options, orderType) =>
           client.createAndPostMarketOrder(order, options, orderType),
         cancelOrder: async (payload) => client.cancelOrder(payload),
@@ -1275,6 +1602,8 @@ function defaultProviderDeps(): ProviderDeps {
         createSocket: (url) => new WebSocket(url),
         setTimeoutFn: setTimeout,
         clearTimeoutFn: clearTimeout,
+        setIntervalFn: setInterval,
+        clearIntervalFn: clearInterval,
         random: Math.random,
         log,
         connectTimeoutMs: config.userStreamConnectTimeoutMs,

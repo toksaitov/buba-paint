@@ -1,0 +1,52 @@
+{
+  "agent_env_keys": [
+    "AGENT_SECRET",
+    "BUBA_AGENT_LOG_PATH",
+    "BUBA_AGENT_PORT",
+    "BUBA_PAINT_DB_PATH",
+    "BUBA_PAINT_LOG_PATH"
+  ],
+  "bot_env_keys": [
+    "BUBA_PAINT_BALANCE",
+    "BUBA_PAINT_DB_PATH",
+    "BUBA_PAINT_LOG_PATH",
+    "CALM_PERSISTENCE_ENABLED",
+    "DB_PATH",
+    "EXECUTION_MODE",
+    "FEED_EVENT_STORAGE_PROFILE",
+    "LATENCY_ARB_ENABLED",
+    "LIVE_SIDECAR_URL",
+    "SPREAD_CAPTURE_ENABLED"
+  ],
+  "builder_relayer_credentials_present": false,
+  "dashboard_env_keys": [
+    "ADMIN_PASSWORD",
+    "ADMIN_USER",
+    "BUBA_DASHBOARD_CONFIG",
+    "BUBA_DASHBOARD_LOG_PATH",
+    "DASHBOARD_DB_PATH",
+    "JWT_SECRET"
+  ],
+  "dashboard_login_password_written_to":"<redacted>",
+  "dashboard_login_user": "admin",
+  "redemption_readiness": "unavailable_missing_builder_credentials",
+  "sidecar_env_keys": [
+    "BUBA_SIDECAR_LOG_PATH",
+    "POLYMARKET_API_KEY",
+    "POLYMARKET_API_KEY_NONCE",
+    "POLYMARKET_API_PASSPHRASE",
+    "POLYMARKET_API_SECRET",
+    "POLYMARKET_CLOB_HOST",
+    "POLYMARKET_CLOCK_DRIFT_MAX_MS",
+    "POLYMARKET_FUNDER",
+    "POLYMARKET_GEOBLOCK_URL",
+    "POLYMARKET_PRIVATE_KEY",
+    "POLYMARKET_PROXY_WALLET",
+    "POLYMARKET_RELAYER_API_KEY",
+    "POLYMARKET_RELAYER_API_KEY_ADDRESS",
+    "POLYMARKET_RELAYER_HOST",
+    "POLYMARKET_SIGNATURE_TYPE",
+    "SIDECAR_HOST",
+    "SIDECAR_PORT"
+  ]
+}

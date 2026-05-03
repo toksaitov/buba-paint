@@ -1,0 +1,1032 @@
+{
+  "kind": "buba_clob_auth_probe",
+  "started_at_utc": "2026-05-03T05:35:04Z",
+  "finished_at_utc": "2026-05-03T05:35:08Z",
+  "chain_id": 137,
+  "host": "https://clob.polymarket.com",
+  "iterations": 60,
+  "nonce_scan": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "try_create": true,
+  "signature_types_tested": [
+    1,
+    2
+  ],
+  "signer_address": "0x<redacted-long-hex>",
+  "proxy_wallet": "0x<redacted-long-hex>",
+  "funder": "0x<redacted-long-hex>",
+  "configured_signature_type": 1,
+  "preconfigured_creds_present": true,
+  "configured_nonce_hint": 0,
+  "server_time": {
+    "name": "server_time",
+    "http_status": 200,
+    "ms_elapsed": 70,
+    "server_time": "1777786504",
+    "ok": true,
+    "error": null
+  },
+  "derive_attempts": [
+    {
+      "name": "derive_nonce_0",
+      "http_status": 200,
+      "ms_elapsed": 70,
+      "ok": true,
+      "creds_present": true,
+      "creds_key_prefix": "d6ba...",
+      "error": null
+    },
+    {
+      "name": "derive_nonce_1",
+      "http_status": 200,
+      "ms_elapsed": 62,
+      "ok": true,
+      "creds_present": true,
+      "creds_key_prefix": "7ac9...",
+      "error": null
+    },
+    {
+      "name": "derive_nonce_2",
+      "http_status": 200,
+      "ms_elapsed": 60,
+      "ok": true,
+      "creds_present": true,
+      "creds_key_prefix": "0aff...",
+      "error": null
+    },
+    {
+      "name": "derive_nonce_3",
+      "http_status": 200,
+      "ms_elapsed": 37,
+      "ok": true,
+      "creds_present": true,
+      "creds_key_prefix": "d6d8...",
+      "error": null
+    },
+    {
+      "name": "derive_nonce_4",
+      "http_status": 200,
+      "ms_elapsed": 44,
+      "ok": true,
+      "creds_present": true,
+      "creds_key_prefix": "68ce...",
+      "error": null
+    },
+    {
+      "name": "derive_nonce_5",
+      "http_status": 200,
+      "ms_elapsed": 36,
+      "ok": true,
+      "creds_present": true,
+      "creds_key_prefix": "e232...",
+      "error": null
+    }
+  ],
+  "create_attempts": [],
+  "chosen_creds_source": "preconfigured",
+  "chosen_creds_key_prefix": "d6ba...",
+  "stability": {
+    "total": 60,
+    "passed_balance": 60,
+    "passed_orders": 60,
+    "failed_balance": 0,
+    "failed_orders": 0,
+    "avg_ms_balance": 31,
+    "avg_ms_orders": 31,
+    "first_balance_failure": null,
+    "first_orders_failure": null,
+    "iterations": [
+      {
+        "i": 1,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 38,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 2,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 30,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 3,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 4,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 36,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 5,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 6,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 7,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 8,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 9,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 10,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 30,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 11,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 30,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 12,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 13,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 35,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 33,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 14,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 33,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 15,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 16,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 33,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 17,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 18,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 46,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 30,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 19,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 39,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 20,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 21,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 47,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 22,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 33,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 23,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 24,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 25,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 30,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 26,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 27,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 41,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 28,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 26,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 29,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 44,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 30,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 33,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 31,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 26,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 32,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 26,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 33,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 34,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 35,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 36,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 35,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 37,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 38,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 39,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 43,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 40,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 41,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 51,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 42,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 43,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 44,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 30,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 45,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 46,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 41,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 47,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 48,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 49,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 50,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 36,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 51,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 52,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 53,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 27,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 54,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 28,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 55,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 56,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 35,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 32,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 57,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 33,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 58,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 34,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 59,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 30,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        }
+      },
+      {
+        "i": 60,
+        "balance": {
+          "http_status": 200,
+          "ms_elapsed": 29,
+          "ok": true,
+          "error": null
+        },
+        "orders": {
+          "http_status": 200,
+          "ms_elapsed": 31,
+          "ok": true,
+          "error": null
+        }
+      }
+    ]
+  },
+  "signature_type_probe": {
+    "type_1": {
+      "http_status": 200,
+      "ms_elapsed": 37,
+      "ok": true,
+      "balance_present": true,
+      "error": null
+    },
+    "type_2": {
+      "http_status": 200,
+      "ms_elapsed": 39,
+      "ok": true,
+      "balance_present": true,
+      "error": null
+    }
+  },
+  "summary": {
+    "passed": true,
+    "blockers": []
+  },
+  "working_signature_types": [
+    1,
+    2
+  ],
+  "stability_signature_type": 1
+}

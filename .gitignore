@@ -2,6 +2,9 @@
 node_modules/
 dist/
 .env
+/*.env
+/.secrets/
+*.local.env
 
 # SQLite temp files (everywhere)
 data/market-data.db

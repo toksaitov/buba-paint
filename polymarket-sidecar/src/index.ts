@@ -3,7 +3,7 @@ import { webcrypto } from "node:crypto";
 import { createServer } from "./server.js";
 import { loadConfig, type SidecarConfig } from "./config.js";
 import { createDefaultProvider, type SidecarProvider } from "./provider.js";
-import { logEvent } from "./logging.js";
+import { installConsoleRedaction, logEvent } from "./logging.js";
 
 export interface SidecarRuntime {
   close(): Promise<void>;
@@ -20,6 +20,8 @@ interface ProcessLike {
 if (!globalThis.crypto?.subtle) {
   globalThis.crypto = webcrypto as Crypto;
 }
+
+installConsoleRedaction();
 
 export function startSidecar(
   config: SidecarConfig = loadConfig(),

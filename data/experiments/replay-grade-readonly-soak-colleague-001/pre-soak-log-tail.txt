@@ -1,0 +1,32 @@
+===== sidecar.log =====
+{"ts":"2026-05-03T05:53:11.089Z","level":"info","event":"sidecar_listening","host":"127.0.0.1","port":3210}
+{"ts":"2026-05-03T05:53:12.962Z","level":"info","event":"auth_bootstrap_start"}
+{"ts":"2026-05-03T05:53:13.052Z","level":"info","event":"auth_bootstrap_ok","wallet_address":"0xE7C092ffa4c73EA874d8309cFC0e8915cb348616","proxy_wallet":"0xE7C092ffa4c73EA874d8309cFC0e8915cb348616"}
+{"ts":"2026-05-03T05:53:13.448Z","level":"info","event":"user_stream_connect_start","markets":["0xbee93a7d7643a7d0bcbb28448fb14dcf476e5b1b094d413a097fef155236f3d8","0xcb0a4a8492c343662216615d19231a21e8c66246f364a135d69c8e22da96156d"],"reconnecting":false,"failures":0}
+{"ts":"2026-05-03T05:53:14.576Z","level":"info","event":"user_stream_connect_ok","markets":["0xbee93a7d7643a7d0bcbb28448fb14dcf476e5b1b094d413a097fef155236f3d8","0xcb0a4a8492c343662216615d19231a21e8c66246f364a135d69c8e22da96156d"]}
+===== paint.log =====
+[2m2026-05-03T05:53:16.256761Z[0m [32m INFO[0m [2mbuba_paint::live_readonly[0m[2m:[0m starting live readonly venue monitor [3mexecution_mode[0m[2m=[0m"live_readonly" [3mlive_sidecar_url[0m[2m=[0mhttp://127.0.0.1:3210 [3mcash_cap_usd[0m[2m=[0m100.0
+[2m2026-05-03T05:53:17.272298Z[0m [32m INFO[0m [2mbuba_paint::live_readonly[0m[2m:[0m readonly session status changed [3msession_id[0m[2m=[0m1 [3mprevious_status[0m[2m=[0mreadonly_starting [3mnext_status[0m[2m=[0mreadonly_ready [3missue_count[0m[2m=[0m0
+[2m2026-05-03T05:53:17.272530Z[0m [32m INFO[0m [2mbuba_paint::live_readonly[0m[2m:[0m readonly shadow bankroll resolved [3msession_id[0m[2m=[0m1 [3mshadow_starting_balance[0m[2m=[0m100.0 [3mavailable_cash[0m[2m=[0m99.166994 [3mcash_cap_usd[0m[2m=[0m100.0
+[2m2026-05-03T05:53:17.273422Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m starting live runtime [3mbalance[0m[2m=[0m100.0 [3mdb[0m[2m=[0m/root/buba-paint-live/runtime/soak-001-colleague-20260503-054927Z/paint.db [3mexecution_mode[0m[2m=[0m"live_readonly" [3mfeed_event_storage_profile[0m[2m=[0m"replay_grade" [3mreplay_quality_class[0m[2m=[0m"empty" [3mpending_settlement_mode[0m[2m=[0m"conservative" [3mpending_settlement_family_reserve_fraction[0m[2m=[0m0.0 [3mpending_settlement_global_reserve_fraction[0m[2m=[0m1.0 [3mpending_settlement_counts_as_open_position[0m[2m=[0mfalse
+[2m2026-05-03T05:53:17.273631Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m live strategy set resolved [3menabled_strategies[0m[2m=[0mlatency-arb [3mstrategy_count[0m[2m=[0m1
+[2m2026-05-03T05:53:17.273783Z[0m [32m INFO[0m [2mbuba_paint::feeds::binance_feed[0m[2m:[0m connecting to wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker/btcusdt@depth5@100ms&timeUnit=MICROSECOND [3mfeed[0m[2m=[0m"binance"
+[2m2026-05-03T05:53:17.273983Z[0m [32m INFO[0m [2mbuba_paint::feeds::chainlink_feed[0m[2m:[0m connecting to wss://ws-live-data.polymarket.com [3mfeed[0m[2m=[0m"chainlink"
+[2m2026-05-03T05:53:17.275617Z[0m [32m INFO[0m [2mbuba_paint::tick_logger[0m[2m:[0m tick logger started [3mtick_interval_ms[0m[2m=[0m1000
+[2m2026-05-03T05:53:17.278907Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m all tasks spawned, entering main loop
+[2m2026-05-03T05:53:17.375522Z[0m [32m INFO[0m [2mbuba_paint::market_discovery[0m[2m:[0m fetching https://gamma-api.polymarket.com/events/slug/btc-updown-5m-1777787400 [3mdiscovery[0m[2m=[0m"gamma"
+[2m2026-05-03T05:53:17.592759Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m feed connected [3mfeed[0m[2m=[0mchainlink
+[2m2026-05-03T05:53:17.624551Z[0m [32m INFO[0m [2mbuba_paint::market_discovery[0m[2m:[0m discovered new window [3mdiscovery[0m[2m=[0m"gamma" [3mslug[0m[2m=[0mbtc-updown-5m-1777787400 [3mmarket_id[0m[2m=[0m2137997
+[2m2026-05-03T05:53:17.624633Z[0m [32m INFO[0m [2mbuba_paint::market_discovery[0m[2m:[0m fetching https://gamma-api.polymarket.com/events/slug/btc-updown-5m-1777787700 [3mdiscovery[0m[2m=[0m"gamma"
+[2m2026-05-03T05:53:17.624694Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m new market window discovered [3mmarket_id[0m[2m=[0m2137997 [3mquestion[0m[2m=[0mBitcoin Up or Down - May 3, 1:50AM-1:55AM ET
+[2m2026-05-03T05:53:17.625428Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m window activated (now trading) [3mmarket_id[0m[2m=[0m2137997
+[2m2026-05-03T05:53:17.625519Z[0m [32m INFO[0m [2mbuba_paint::feeds::clob_feed[0m[2m:[0m connecting to wss://ws-subscriptions-clob.polymarket.com/ws/market [3mfeed[0m[2m=[0m"clob"
+[2m2026-05-03T05:53:17.782398Z[0m [32m INFO[0m [2mbuba_paint::market_discovery[0m[2m:[0m discovered new window [3mdiscovery[0m[2m=[0m"gamma" [3mslug[0m[2m=[0mbtc-updown-5m-1777787700 [3mmarket_id[0m[2m=[0m2138027
+[2m2026-05-03T05:53:17.782554Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m new market window discovered [3mmarket_id[0m[2m=[0m2138027 [3mquestion[0m[2m=[0mBitcoin Up or Down - May 3, 1:55AM-2:00AM ET
+[2m2026-05-03T05:53:17.782843Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m window activation scheduled [3mmarket_id[0m[2m=[0m2138027 [3mdelay_ms[0m[2m=[0m102218
+[2m2026-05-03T05:53:17.871123Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m feed connected [3mfeed[0m[2m=[0mclob
+[2m2026-05-03T05:53:18.342879Z[0m [32m INFO[0m [2mbuba_paint::live[0m[2m:[0m feed connected [3mfeed[0m[2m=[0mbinance
+===== agent.log =====
+[2m2026-05-03T05:53:21.280061Z[0m [32m INFO[0m [2mbuba_agent[0m[2m:[0m buba-agent listening on 0.0.0.0:9090
+===== dashboard.log =====
+[2m2026-05-03T05:53:22.344505Z[0m [32m INFO[0m [2mbuba_dashboard[0m[2m:[0m buba-dashboard listening on 0.0.0.0:3000

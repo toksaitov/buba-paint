@@ -1,0 +1,18 @@
+quick_check=ok
+run_metadata
+configured_replay_quality_class=sweep_capable
+feed_event_classes=binance:bookTicker=36933, clob:last_trade_price=6442, clob_up:best_bid_ask=3975, clob_down:best_bid_ask=3974, binance:aggTrade=3848, binance:depth=3565, chainlink:chainlink_price=894, clob:new_market=33, clob:tick_size_change=4, clob_down:book=3, clob_up:book=3
+feed_event_storage_profile=replay_grade
+replay_quality_class=sweep_grade
+replay_quality_missing_required_classes=
+replay_quality_observed_feed_classes=binance_agg_trade=19645,binance_book_ticker=199683,binance_depth=21400,chainlink_price=5392,clob_up_top_of_book=20292,clob_down_top_of_book=20280
+replay_quality_validated_at_ms=1777793763617
+replay_quality_validation_interval={"end_time":1777793763617,"start_time":1777788363032}
+required_feed_event_classes=binance:aggTrade, binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:top_of_book, clob_down:top_of_book
+live_sessions
+live_readonly:readonly_stopped:1
+order_counts
+live_order_intents=0
+live_orders=0
+live_fills=0
+live_redemptions=0

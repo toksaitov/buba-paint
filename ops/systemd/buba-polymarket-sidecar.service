@@ -7,11 +7,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/buba-paint-live/current/polymarket-sidecar
 EnvironmentFile=%h/buba-paint-live/config/sidecar.env
-ExecStart=/usr/bin/env node dist/index.js
+ExecStart=/usr/bin/env bash -lc 'exec node dist/index.js >> "${BUBA_SIDECAR_LOG_PATH:-$HOME/buba-paint-live/logs/sidecar.log}" 2>&1'
 Restart=always
 RestartSec=2
-StandardOutput=append:%h/buba-paint-live/logs/sidecar.log
-StandardError=append:%h/buba-paint-live/logs/sidecar.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target

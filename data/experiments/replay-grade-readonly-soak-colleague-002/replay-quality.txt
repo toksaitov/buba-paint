@@ -1,0 +1,11 @@
+replay_quality=sweep_grade
+start_time=1777788375000
+end_time=1777793874000
+feed_event_rows=323187
+legacy_tick_rows=21996
+requirement=binance_agg_trade present=true rows=19880 description=Binance aggTrade rows with price, trade size, and signed quantity
+requirement=binance_book_ticker present=true rows=201953 description=Binance bookTicker rows with best bid, best ask, bid size, and ask size
+requirement=binance_depth present=true rows=21795 description=Binance depth rows with depth notional or imbalance fields
+requirement=chainlink_price present=true rows=5431 description=Chainlink price rows
+requirement=clob_up_top_of_book present=true rows=20581 description=CLOB UP top-of-book rows with best bid and ask
+requirement=clob_down_top_of_book present=true rows=20569 description=CLOB DOWN top-of-book rows with best bid and ask

@@ -1,0 +1,4 @@
+{"sidecar":
+{"ok":true,"ready":true,"readiness_status":"ready","mode":"local-sidecar","provider":"polymarket","signature_type":1,"wallet_address":"0xE7C092ffa4c73EA874d8309cFC0e8915cb348616","proxy_wallet":"0xE7C092ffa4c73EA874d8309cFC0e8915cb348616","auth_configured":true,"relayer_api_key_present":true,"user_stream_status":"ok","last_user_stream_connected_at_ms":1777791304378,"last_user_stream_event_at_ms":1777791423494,"last_user_stream_error":null,"last_successful_account_refresh_at_ms":1777791423475,"last_account_refresh_error":null,"last_user_stream_disconnect_at_ms":null,"last_user_stream_disconnect_reason":null,"consecutive_user_stream_failures":0},"agent":
+{"ok":true},"dashboard":
+{"ok":true}}
