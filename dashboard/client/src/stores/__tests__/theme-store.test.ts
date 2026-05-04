@@ -1,8 +1,9 @@
+import type { ThemeMode } from "../theme-store";
 import { useThemeStore } from "../theme-store";
 
 beforeEach(() => {
   localStorage.removeItem("theme");
-  useThemeStore.setState({ mode: "system" });
+  useThemeStore.setState({ mode: "system", armedOverride: false });
 });
 
 test("defaults to system mode", () => {
@@ -34,7 +35,19 @@ test("setMode system stores system in localStorage", () => {
 
 test("reads persisted value on init", () => {
   localStorage.setItem("theme", "dark");
-  const store = useThemeStore.getState();
-  useThemeStore.setState({ mode: (localStorage.getItem("theme") as "system" | "light" | "dark") ?? "system" });
+  useThemeStore.setState({ mode: (localStorage.getItem("theme") as ThemeMode) ?? "system" });
   expect(useThemeStore.getState().mode).toBe("dark");
+});
+
+test("armedOverride defaults to false", () => {
+  expect(useThemeStore.getState().armedOverride).toBe(false);
+});
+
+test("setArmedOverride flips the runtime flag and is not persisted", () => {
+  useThemeStore.getState().setArmedOverride(true);
+  expect(useThemeStore.getState().armedOverride).toBe(true);
+  expect(localStorage.getItem("theme")).toBeNull();
+
+  useThemeStore.getState().setArmedOverride(false);
+  expect(useThemeStore.getState().armedOverride).toBe(false);
 });

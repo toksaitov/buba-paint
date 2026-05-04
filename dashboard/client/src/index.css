@@ -9,8 +9,20 @@
   --color-accent-red: #d1242f;
   --color-accent-green: #1a7f37;
   --color-accent-blue: #0969da;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+  --color-danger-fill: color-mix(in srgb, var(--color-accent-red) 10%, transparent);
+  --color-warning-fill: color-mix(in srgb, var(--color-accent-blue) 10%, transparent);
+  --color-success-fill: color-mix(in srgb, var(--color-accent-green) 10%, transparent);
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 14px;
+  --text-xl: 18px;
+  --text-2xl: 22px;
+  --text-display: 28px;
+  --leading-tight: 1.2;
+  --leading-base: 1.45;
 }
 
 html.dark {
@@ -22,6 +34,41 @@ html.dark {
   --color-accent-red: #ff6b6b;
   --color-accent-green: #4ade80;
   --color-accent-blue: #60a5fa;
+  --color-danger-fill: color-mix(in srgb, var(--color-accent-red) 10%, transparent);
+  --color-warning-fill: color-mix(in srgb, var(--color-accent-blue) 10%, transparent);
+  --color-success-fill: color-mix(in srgb, var(--color-accent-green) 10%, transparent);
+}
+
+html.armed {
+  --color-bg: #000087;
+  --color-text: #ffffff;
+  --color-border: #b0b0e0;
+  --color-surface: #00005a;
+  --color-muted: #878787;
+  --color-accent-red: #ff7f50;
+  --color-accent-green: #00ff00;
+  --color-accent-blue: #5fffff;
+  --color-danger-fill: color-mix(in srgb, var(--color-accent-red) 10%, transparent);
+  --color-warning-fill: color-mix(in srgb, var(--color-accent-blue) 10%, transparent);
+  --color-success-fill: color-mix(in srgb, var(--color-accent-green) 10%, transparent);
+}
+
+@supports not (color: color-mix(in srgb, red 10%, white)) {
+  :root {
+    --color-danger-fill: #fde7e8;
+    --color-warning-fill: #e6effa;
+    --color-success-fill: #e6f4ea;
+  }
+  html.dark {
+    --color-danger-fill: #2a1414;
+    --color-warning-fill: #131c2a;
+    --color-success-fill: #122218;
+  }
+  html.armed {
+    --color-danger-fill: #1a0d82;
+    --color-warning-fill: #0a1993;
+    --color-success-fill: #001a7a;
+  }
 }
 
 * {
@@ -30,6 +77,7 @@ html.dark {
 
 html {
   font-family: var(--font-mono);
+  font-feature-settings: "liga" 0, "calt" 0;
   color: var(--color-text);
   background: var(--color-bg);
   -webkit-font-smoothing: antialiased;
@@ -64,4 +112,14 @@ button:focus-visible {
 ::-webkit-scrollbar-thumb {
   background: var(--color-muted);
   border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+  }
 }

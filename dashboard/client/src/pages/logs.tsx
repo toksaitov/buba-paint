@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ComponentType } from "react";
 import { useOutletContext } from "react-router-dom";
-import AnsiModule from "ansi-to-react";
 import { Loading } from "../components/common/loading";
 import { StateEmpty, Surface, TableToolbar } from "../components/ui/dashboard-primitives";
 import { useLogs } from "../hooks/use-logs";
 import { empty } from "../lib/copy";
-import { cn } from "../lib/utils";
+import { parseAnsi, stripAnsi } from "../lib/log-ansi";
+import { cn, formatLogTimestamp } from "../lib/utils";
 
 type LogSeverity = "error" | "warn" | "info" | "other";
 type LogSource =
@@ -30,12 +29,17 @@ type LogEventType =
 
 interface ParsedLogLine {
   raw: string;
+  display: string;
+  text: string;
   severity: LogSeverity;
   source: LogSource;
   sourceLabel: string;
   message: string;
   eventType: LogEventType;
 }
+
+const LEADING_RFC3339_UTC_PATTERN =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)(.*)$/;
 
 const sourceOptions: Array<{ value: "all" | LogSource; label: string }> = [
   { value: "all", label: "All sources" },
@@ -59,20 +63,19 @@ const eventTypeOptions: Array<{ value: "all" | LogEventType; label: string }> = 
   { value: "errors", label: "Errors" },
 ];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let ansiImpl: any = AnsiModule;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-while (typeof ansiImpl !== "function" && ansiImpl && typeof ansiImpl.default !== "undefined") {
-  ansiImpl = ansiImpl.default;
-}
-
-const Ansi: ComponentType<{ children: string }> = ansiImpl;
-
 function lineSeverity(line: string): LogSeverity {
   if (line.includes(" ERROR ")) return "error";
   if (line.includes(" WARN ")) return "warn";
   if (line.includes(" INFO ")) return "info";
   return "other";
+}
+
+function localizeLogTimestamp(line: string): string {
+  const match = line.match(LEADING_RFC3339_UTC_PATTERN);
+  if (!match) return line;
+  const epochMs = Date.parse(match[1]);
+  if (!Number.isFinite(epochMs)) return line;
+  return `${formatLogTimestamp(epochMs)}${match[2]}`;
 }
 
 function classifySource(sourceToken: string, line: string): LogSource {
@@ -129,19 +132,24 @@ function classifyEventType(
 }
 
 function parseLogLine(line: string): ParsedLogLine {
-  const severity = lineSeverity(line);
-  const match = line.match(/\b(?:INFO|WARN|ERROR)\s+([A-Za-z0-9_:]+):?\s*(.*)$/);
+  const display = localizeLogTimestamp(line);
+  const parseText = stripAnsi(line);
+  const text = stripAnsi(display);
+  const severity = lineSeverity(parseText);
+  const match = parseText.match(/\b(?:INFO|WARN|ERROR)\s+([A-Za-z0-9_:]+):?\s*(.*)$/);
   const sourceToken = match?.[1]?.replace(/:$/, "") ?? "unknown";
-  const message = match?.[2]?.trim() ?? line;
-  const source = classifySource(sourceToken, line);
+  const message = match?.[2]?.trim() ?? text;
+  const source = classifySource(sourceToken, text);
 
   return {
     raw: line,
+    display,
+    text,
     severity,
     source,
     sourceLabel: sourceToken,
     message,
-    eventType: classifyEventType(severity, source, message, line),
+    eventType: classifyEventType(severity, source, message, text),
   };
 }
 
@@ -213,7 +221,7 @@ export function LogsPage() {
       if (search.trim()) {
         const query = search.trim().toLowerCase();
         if (
-          !line.raw.toLowerCase().includes(query) &&
+          !line.text.toLowerCase().includes(query) &&
           !line.message.toLowerCase().includes(query) &&
           !line.sourceLabel.toLowerCase().includes(query)
         ) {
@@ -233,7 +241,8 @@ export function LogsPage() {
   if (isLoading) return <Loading label="Loading logs" />;
 
   return (
-    <Surface className="overflow-hidden bg-[#0a0a0a]">
+    <div className="flex h-full flex-col">
+    <Surface className="flex flex-1 flex-col overflow-hidden">
         <TableToolbar
           left={
             <div className="flex flex-wrap items-center gap-2">
@@ -369,7 +378,7 @@ export function LogsPage() {
             </select>
           </div>
         )}
-        <div className="max-h-[calc(100dvh-16rem)] overflow-y-auto overflow-x-auto p-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="min-h-[200px] flex-1 overflow-y-auto overflow-x-auto p-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {filteredLines.length === 0 ? (
             <StateEmpty message={empty.noLogsMatch} />
           ) : (
@@ -378,12 +387,16 @@ export function LogsPage() {
                 <div
                   key={`${index}-${line.raw}`}
                   className={cn(
-                    "border-l-2 px-2 py-0.5 text-[11px] leading-[1.55] text-[#e6edf3]",
+                    "border-l-2 px-2 py-0.5 text-[11px] leading-[1.55] text-text",
                     wrap ? "whitespace-pre-wrap" : "whitespace-pre",
                     lineTone(line),
                   )}
                 >
-                  <Ansi>{line.raw}</Ansi>
+                  {parseAnsi(line.display).map((token, i) => (
+                    <span key={i} className={token.className}>
+                      {token.text}
+                    </span>
+                  ))}
                 </div>
               ))}
               <div ref={bottomRef} />
@@ -391,5 +404,6 @@ export function LogsPage() {
           )}
         </div>
     </Surface>
+    </div>
   );
 }

@@ -1,10 +1,12 @@
 import { create } from "zustand";
 
-type ThemeMode = "system" | "light" | "dark";
+export type ThemeMode = "system" | "light" | "dark";
 
 interface ThemeState {
   mode: ThemeMode;
+  armedOverride: boolean;
   setMode: (mode: ThemeMode) => void;
+  setArmedOverride: (armed: boolean) => void;
 }
 
 function readPersistedMode(): ThemeMode {
@@ -15,8 +17,10 @@ function readPersistedMode(): ThemeMode {
 
 export const useThemeStore = create<ThemeState>((set) => ({
   mode: readPersistedMode(),
+  armedOverride: false,
   setMode: (mode) => {
     localStorage.setItem("theme", mode);
     set({ mode });
   },
+  setArmedOverride: (armedOverride) => set({ armedOverride }),
 }));

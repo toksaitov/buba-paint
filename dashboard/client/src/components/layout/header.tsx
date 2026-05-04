@@ -91,7 +91,8 @@ export function Header({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notifyEnabled, setNotifyEnabled] = useState(isNotificationEnabled);
-  const { mode: themeMode, setMode: setThemeMode } = useTheme();
+  const { mode: themeMode, setMode: setThemeMode, theme } = useTheme();
+  const armed = theme === "armed";
 
   const cycleTheme = () => {
     const next =
@@ -115,6 +116,12 @@ export function Header({
 
   const ThemeIcon =
     themeMode === "dark" ? Moon : themeMode === "light" ? Sun : Monitor;
+  const themeLabel =
+    themeMode === "system"
+      ? "Theme: system"
+      : themeMode === "dark"
+        ? "Theme: dark"
+        : "Theme: light";
   const processRunning = process?.active ?? tradingSummary?.process_state === "running";
   const controlAvailable = process?.control_available ?? true;
   const runtimeMode = tradingSummary?.runtime_mode ?? "paper";
@@ -260,26 +267,16 @@ export function Header({
 
           <div className="flex items-center gap-1 text-[12px] text-muted lg:gap-0.5 md:gap-3">
             {user && <span className="hidden md:inline">{user.username}</span>}
-            <button
-              onClick={cycleTheme}
-              className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
-              title={
-                themeMode === "system"
-                  ? "Theme: system"
-                  : themeMode === "dark"
-                    ? "Theme: dark"
-                    : "Theme: light"
-              }
-              aria-label={
-                themeMode === "system"
-                  ? "Theme: system"
-                  : themeMode === "dark"
-                    ? "Theme: dark"
-                    : "Theme: light"
-              }
-            >
-              <ThemeIcon size={14} />
-            </button>
+            {!armed && (
+              <button
+                onClick={cycleTheme}
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
+                title={themeLabel}
+                aria-label={themeLabel}
+              >
+                <ThemeIcon size={14} />
+              </button>
+            )}
             {isNotificationSupported() && (
               <button
                 onClick={toggleNotifications}

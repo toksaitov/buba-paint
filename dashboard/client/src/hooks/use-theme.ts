@@ -4,18 +4,22 @@ import { useMediaQuery } from "./use-media-query";
 
 export function useTheme() {
   const mode = useThemeStore((s) => s.mode);
+  const armedOverride = useThemeStore((s) => s.armedOverride);
   const setMode = useThemeStore((s) => s.setMode);
   const osDark = useMediaQuery("(prefers-color-scheme: dark)");
 
-  const isDark = mode === "dark" || (mode === "system" && osDark);
+  const userTheme: "light" | "dark" =
+    mode === "dark" ? "dark" : mode === "light" ? "light" : osDark ? "dark" : "light";
+
+  const theme: "light" | "dark" | "armed" = armedOverride ? "armed" : userTheme;
+  const isDark = theme === "dark";
 
   useEffect(() => {
-    if (isDark) {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
-  }, [isDark]);
+    const root = document.documentElement.classList;
+    root.remove("dark", "armed");
+    if (theme === "dark") root.add("dark");
+    else if (theme === "armed") root.add("armed");
+  }, [theme]);
 
-  return { mode, isDark, setMode };
+  return { mode, theme, isDark, setMode };
 }

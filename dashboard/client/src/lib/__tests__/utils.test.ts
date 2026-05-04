@@ -3,9 +3,12 @@ import {
   cn,
   formatDateTime,
   formatDurationShort,
+  formatChartTick,
+  formatLogTimestamp,
   formatPct,
   formatTime,
   formatUsd,
+  localTimeZoneLabel,
   pnlColor,
 } from "../utils";
 
@@ -60,7 +63,6 @@ describe("formatPct", () => {
 
 describe("formatTime", () => {
   test("renders HH:MM:SS pattern", () => {
-
     const result = formatTime(1767267045000);
 
     expect(result).toMatch(/\d{2}:\d{2}:\d{2}/);
@@ -68,11 +70,30 @@ describe("formatTime", () => {
 });
 
 describe("formatDateTime", () => {
-  test("renders abbreviated date and time", () => {
+  test("renders local date, time, and zone", () => {
     const result = formatDateTime(1767267045000);
 
-    expect(result).toMatch(/\w{3}/);
+    expect(result).toMatch(/\d{4}-\d{2}-\d{2}/);
     expect(result).toMatch(/\d{2}:\d{2}:\d{2}/);
+    expect(result.length).toBeGreaterThan("2026-01-01 00:00:00".length);
+  });
+});
+
+describe("localTimeZoneLabel", () => {
+  test("returns a string", () => {
+    expect(typeof localTimeZoneLabel(1767267045000)).toBe("string");
+  });
+});
+
+describe("formatLogTimestamp", () => {
+  test("uses the same local timestamp policy as date time", () => {
+    expect(formatLogTimestamp(1767267045000)).toBe(formatDateTime(1767267045000));
+  });
+});
+
+describe("formatChartTick", () => {
+  test("keeps chart axis labels compact", () => {
+    expect(formatChartTick(1767267045000)).toMatch(/^\d{2}:\d{2}$/);
   });
 });
 
@@ -108,4 +129,3 @@ describe("pnlColor", () => {
     expect(pnlColor(0)).toBe("text-muted");
   });
 });
-

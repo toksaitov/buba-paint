@@ -23,7 +23,7 @@ test("renders grouped navigation with Execution near the top", () => {
   expect(screen.getByText("Overview")).toBeInTheDocument();
   expect(screen.getByText("Execution")).toBeInTheDocument();
   expect(screen.getByText("Logs")).toBeInTheDocument();
-  expect(screen.getByText("Equity")).toBeInTheDocument();
+  expect(screen.getByText("Trend")).toBeInTheDocument();
   expect(screen.getByText("Trades")).toBeInTheDocument();
   expect(screen.getByText("Signals")).toBeInTheDocument();
   expect(screen.getByText("Strategies")).toBeInTheDocument();

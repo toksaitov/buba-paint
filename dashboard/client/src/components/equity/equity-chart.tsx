@@ -1,23 +1,28 @@
 import { useRef, useEffect } from "react";
-import { createChart, AreaSeries, type IChartApi } from "lightweight-charts";
-import { useMediaQuery } from "../../hooks/use-media-query";
+import { createChart, AreaSeries, type IChartApi, type Time } from "lightweight-charts";
 import { useTheme } from "../../hooks/use-theme";
 import { getChartColors } from "../../lib/chart-colors";
 import type { BalanceEntry } from "../../lib/types";
+import { formatChartTick, formatChartTime } from "../../lib/utils";
+
+function chartTimeToMs(time: Time): number {
+  if (typeof time === "number") return time * 1000;
+  if (typeof time === "string") return Date.parse(time);
+  return new Date(time.year, time.month - 1, time.day).getTime();
+}
 
 export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const isDesktop = useMediaQuery("(min-width: 768px)");
-  const { isDark } = useTheme();
-  const chartHeight = isDesktop ? 480 : 320;
+  const { theme } = useTheme();
 
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const c = getChartColors(isDark);
+    const c = getChartColors(theme);
     const chart = createChart(containerRef.current, {
-      height: chartHeight,
+      width: containerRef.current.clientWidth,
+      height: containerRef.current.clientHeight,
       layout: {
         background: { color: c.background },
         textColor: c.textColor,
@@ -37,6 +42,10 @@ export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
         borderColor: c.borderColor,
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: (time: Time) => formatChartTick(chartTimeToMs(time)),
+      },
+      localization: {
+        timeFormatter: (time: Time) => formatChartTime(chartTimeToMs(time)),
       },
       crosshair: {
         vertLine: { color: c.crosshairColor, width: 1, style: 2 },
@@ -71,7 +80,10 @@ export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
 
     const ro = new ResizeObserver(() => {
       if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
+        chart.applyOptions({
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight,
+        });
       }
     });
     ro.observe(containerRef.current);
@@ -80,7 +92,7 @@ export function EquityChart({ entries }: { entries: BalanceEntry[] }) {
       ro.disconnect();
       chart.remove();
     };
-  }, [entries, chartHeight, isDark]);
+  }, [entries, theme]);
 
-  return <div ref={containerRef} className="w-full" />;
+  return <div ref={containerRef} className="h-full w-full min-h-[200px]" />;
 }

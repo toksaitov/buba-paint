@@ -19,24 +19,52 @@ export function formatPct(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function localDateTime(epochMs: number): Date {
+  return new Date(epochMs);
+}
+
+export function localTimeZoneLabel(epochMs = Date.now()): string {
+  const part = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+    .formatToParts(new Date(epochMs))
+    .find((item) => item.type === "timeZoneName");
+  return part?.value ?? "";
+}
+
+function formatLocalDateTimeParts(epochMs: number, includeSeconds: boolean): string {
+  const date = localDateTime(epochMs);
+  const base = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  if (!includeSeconds) {
+    return `${base} ${time}`;
+  }
+  return `${base} ${time}:${pad2(date.getSeconds())}`;
+}
+
 export function formatTime(epochMs: number): string {
-  return new Date(epochMs).toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  const date = localDateTime(epochMs);
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
 }
 
 export function formatDateTime(epochMs: number): string {
-  return new Date(epochMs).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  const zone = localTimeZoneLabel(epochMs);
+  return `${formatLocalDateTimeParts(epochMs, true)}${zone ? ` ${zone}` : ""}`;
+}
+
+export function formatChartTime(epochMs: number): string {
+  return formatDateTime(epochMs);
+}
+
+export function formatChartTick(epochMs: number): string {
+  const date = localDateTime(epochMs);
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+export function formatLogTimestamp(epochMs: number): string {
+  return formatDateTime(epochMs);
 }
 
 export function pnlColor(value: number): string {

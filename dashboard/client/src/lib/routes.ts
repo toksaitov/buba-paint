@@ -55,11 +55,11 @@ export const dashboardRoutes: DashboardRouteMeta[] = [
   },
   {
     to: "/equity",
-    label: "Equity",
+    label: "Trend",
     section: "Analysis",
     scope: "shadow",
     showContextStrip: false,
-    contextTitle: "Equity",
+    contextTitle: "Trend",
     contextDescription: "",
     icon: LineChart,
   },

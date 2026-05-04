@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, vi } from "vitest";
 import type { ReactNode } from "react";
@@ -123,9 +123,9 @@ function baseTradingSummary(overrides: Partial<TradingSummary> = {}): TradingSum
       enabled_strategies: ["latency-arb"],
       provider: "polymarket",
       user_stream_status: "ok",
-      last_user_stream_connected_at_ms: 1200,
-      last_user_stream_event_at_ms: 1250,
-      last_account_refresh_at_ms: 1300,
+      last_user_stream_connected_at_ms: Date.now(),
+      last_user_stream_event_at_ms: Date.now(),
+      last_account_refresh_at_ms: Date.now(),
       open_orders: 0,
       pending_redemptions: 0,
       critical_reconciliation_events: 0,
@@ -173,6 +173,24 @@ function mockLatestSession() {
   } as ReturnType<typeof useLiveSessions>);
 }
 
+function getActionRow(action: string): HTMLElement {
+  const row = document.querySelector(`[data-action="${action}"]`);
+  if (!row) throw new Error(`Could not find row for action "${action}"`);
+  return row as HTMLElement;
+}
+
+function getReasonField(action: string) {
+  return within(getActionRow(action)).getByRole("textbox", { name: /reason/i });
+}
+
+function getConfirmationField(action: string) {
+  return within(getActionRow(action)).getByRole("textbox", { name: /confirmation phrase/i });
+}
+
+function getActionButton(action: string, label: RegExp | string) {
+  return within(getActionRow(action)).getByRole("button", { name: label });
+}
+
 test("shows loading state", () => {
   mockUseTradingSummary.mockReturnValue({
     isLoading: true,
@@ -183,60 +201,10 @@ test("shows loading state", () => {
 });
 
 test("renders the execution cockpit", () => {
-  mockUseTradingSummary.mockReturnValue({
-    isLoading: false,
-    data: {
+  mockExecutionSummary(
+    baseTradingSummary({
       runtime_mode: "live_readonly",
       trading_state: "readonly",
-      process_state: "running",
-      venue_health: { state: "healthy", label: "Venue connected", detail: null },
-      account_health: { state: "healthy", label: "Account tracked", detail: null },
-      reconciliation_health: {
-        state: "healthy",
-        label: "Reconciliation clean",
-        detail: null,
-      },
-      shadow_summary: {
-        balance: 120,
-        starting_balance: 100,
-        total_pnl: 20,
-        total_trades: 3,
-        wins: 2,
-        losses: 1,
-        win_rate: 0.66,
-        open_trades: 0,
-        uptime_hours: 1,
-        high_water_mark: 125,
-        max_drawdown_pct: 0.1,
-        live_session_status: "readonly_ready",
-        last_tick_at: null,
-        current_window: null,
-      },
-      real_account_summary: {
-        available_cash: 96,
-        reserved_cash: 0,
-        inventory_mark_value: 2,
-        redeemable_value: 1,
-        pending_redeem_value: 0,
-        total_equity: 99,
-        allowance_available: 96,
-        latest_snapshot_at_ms: 1100,
-        session_id: 1,
-        session_status: "readonly_ready",
-        session_started_at_ms: 1000,
-        wallet_address: "0xwallet",
-        proxy_wallet: "0xproxy",
-        cash_cap_usd: 100,
-        enabled_strategies: ["latency-arb"],
-        provider: "polymarket",
-        user_stream_status: "ok",
-        last_user_stream_connected_at_ms: 1200,
-        last_user_stream_event_at_ms: 1250,
-        last_account_refresh_at_ms: 1300,
-        open_orders: 0,
-        pending_redemptions: 0,
-        critical_reconciliation_events: 0,
-      },
       capabilities: {
         preflight: { enabled: false, reason: "disabled" },
         arm: { enabled: false, reason: "disabled" },
@@ -246,9 +214,8 @@ test("renders the execution cockpit", () => {
         redeem: { enabled: false, reason: "disabled" },
         kill_switch: { enabled: false, reason: "disabled" },
       },
-      alerts: [],
-    },
-  } as ReturnType<typeof useTradingSummary>);
+    }),
+  );
   mockUseLiveSessions.mockReturnValue({
     data: {
       sessions: [
@@ -271,106 +238,66 @@ test("renders the execution cockpit", () => {
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  expect(screen.getByText("Runtime status")).toBeInTheDocument();
+  expect(screen.getByText("Runtime Status")).toBeInTheDocument();
   expect(screen.getByText("Controls")).toBeInTheDocument();
-  expect(screen.getByText("Polymarket account")).toBeInTheDocument();
-  expect(screen.getByText("Venue activity")).toBeInTheDocument();
-  expect(screen.getByText("Session and wallet")).toBeInTheDocument();
-  expect(screen.getByText("Live Readonly")).toBeInTheDocument();
+  expect(screen.getByText("Polymarket Account")).toBeInTheDocument();
+  expect(screen.getByText("Venue Activity")).toBeInTheDocument();
+  expect(screen.getByText("Session and Wallet")).toBeInTheDocument();
+  expect(screen.getAllByText("Live Readonly").length).toBeGreaterThan(0);
+});
+
+test("paper mode renders the control deck as a read-only preview", () => {
+  mockExecutionSummary(
+    baseTradingSummary({
+      runtime_mode: "paper",
+      trading_state: "paper",
+      real_account_summary: {
+        ...baseTradingSummary().real_account_summary,
+        latest_snapshot_at_ms: null,
+        session_id: null,
+        session_status: null,
+        session_started_at_ms: null,
+        provider: null,
+        user_stream_status: null,
+        last_user_stream_connected_at_ms: null,
+        last_user_stream_event_at_ms: null,
+        last_account_refresh_at_ms: null,
+      },
+      capabilities: {
+        preflight: { enabled: false, reason: "Paper mode." },
+        arm: { enabled: false, reason: "Paper mode." },
+        disarm: { enabled: false, reason: "Paper mode." },
+        cancel_all: { enabled: false, reason: "Paper mode." },
+        stop_after_flat: { enabled: false, reason: "Paper mode." },
+        redeem: { enabled: false, reason: "Paper mode." },
+        kill_switch: { enabled: false, reason: "Paper mode." },
+      },
+    }),
+  );
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  expect(screen.getByText("Paper Mode")).toBeInTheDocument();
+  expect(screen.getByText("Controls")).toBeInTheDocument();
+  expect(screen.queryByText(/Live controls are inactive/i)).not.toBeInTheDocument();
+  expect(getActionButton("preflight", /^Preflight$/)).toBeDisabled();
+  expect(getActionButton("arm", /^Arm$/)).toBeDisabled();
+  expect(getActionButton("disarm", /^Disarm$/)).toBeDisabled();
+  expect(getActionButton("stop_after_flat", /^Stop After Flat$/)).toBeDisabled();
+  expect(getActionButton("cancel_all", /^Cancel All$/)).toBeDisabled();
+  expect(getActionButton("redeem_all", /^Redeem All$/)).toBeDisabled();
+  expect(getActionButton("kill_switch", /^Kill Switch$/)).toBeDisabled();
 });
 
 test("queues an audited preflight command from live trading controls", async () => {
   const user = userEvent.setup();
-  mockUseTradingSummary.mockReturnValue({
-    isLoading: false,
-    data: {
-      runtime_mode: "live_trading",
-      trading_state: "disarmed",
-      process_state: "running",
-      venue_health: { state: "healthy", label: "Venue connected", detail: null },
-      account_health: { state: "healthy", label: "Account tracked", detail: null },
-      reconciliation_health: {
-        state: "healthy",
-        label: "Reconciliation clean",
-        detail: null,
-      },
-      shadow_summary: {
-        balance: 120,
-        starting_balance: 100,
-        total_pnl: 20,
-        total_trades: 3,
-        wins: 2,
-        losses: 1,
-        win_rate: 0.66,
-        open_trades: 0,
-        uptime_hours: 1,
-        high_water_mark: 125,
-        max_drawdown_pct: 0.1,
-        live_session_status: "disarmed",
-        last_tick_at: null,
-        current_window: null,
-      },
-      real_account_summary: {
-        available_cash: 96,
-        reserved_cash: 0,
-        inventory_mark_value: 2,
-        redeemable_value: 0,
-        pending_redeem_value: 0,
-        total_equity: 99,
-        allowance_available: 96,
-        latest_snapshot_at_ms: 1100,
-        session_id: 1,
-        session_status: "disarmed",
-        session_started_at_ms: 1000,
-        wallet_address: "0xwallet",
-        proxy_wallet: "0xproxy",
-        cash_cap_usd: 100,
-        enabled_strategies: ["latency-arb"],
-        provider: "polymarket",
-        user_stream_status: "ok",
-        last_user_stream_connected_at_ms: 1200,
-        last_user_stream_event_at_ms: 1250,
-        last_account_refresh_at_ms: 1300,
-        open_orders: 0,
-        pending_redemptions: 0,
-        critical_reconciliation_events: 0,
-      },
-      capabilities: {
-        preflight: { enabled: true, reason: "Queue an audited preflight refresh." },
-        arm: { enabled: true, reason: "All system gates are green." },
-        disarm: { enabled: false, reason: "Not armed." },
-        cancel_all: { enabled: false, reason: "No open venue orders." },
-        stop_after_flat: { enabled: false, reason: "Not armed." },
-        redeem: { enabled: false, reason: "No redeemable positions." },
-        kill_switch: { enabled: true, reason: "Halt this session." },
-      },
-      alerts: [],
-    },
-  } as ReturnType<typeof useTradingSummary>);
-  mockUseLiveSessions.mockReturnValue({
-    data: {
-      sessions: [
-        {
-          id: 1,
-          started_at_ms: 1000,
-          ended_at_ms: null,
-          status: "disarmed",
-          execution_mode: "live_trading",
-          wallet_address: "0xwallet",
-          proxy_wallet: "0xproxy",
-          enabled_strategies_json: "[\"latency-arb\"]",
-          config_fingerprint: "fingerprint-value",
-          cash_cap_usd: 100,
-          details_json: null,
-        },
-      ],
-    },
-  } as ReturnType<typeof useLiveSessions>);
+  mockExecutionSummary(baseTradingSummary());
+  mockLatestSession();
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  await user.type(screen.getAllByPlaceholderText("Reason")[0], "manual gate refresh");
-  await user.click(screen.getByRole("button", { name: "Preflight" }));
+  await user.type(getReasonField("preflight"), "manual gate refresh");
+  await user.click(getActionButton("preflight", /^Preflight$/));
 
   expect(mockSendLiveControl).toHaveBeenCalledWith("paint", {
     action: "preflight",
@@ -388,8 +315,8 @@ test("limits disarmed controls to preflight and arm", () => {
 
   expect(screen.getByRole("button", { name: "Preflight" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Arm" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Kill switch" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Cancel all" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Kill Switch" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cancel All" })).toBeNull();
 });
 
 test("blocks live-control mutations for observers", () => {
@@ -402,7 +329,7 @@ test("blocks live-control mutations for observers", () => {
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
   expect(screen.getAllByText("Admin role required.").length).toBeGreaterThan(0);
-  expect(screen.getByRole("button", { name: "Preflight" })).toBeDisabled();
+  expect(getActionButton("preflight", /^Preflight$/)).toBeDisabled();
   expect(mockSendLiveControl).not.toHaveBeenCalled();
 });
 
@@ -413,6 +340,16 @@ test("does not expose arm controls after a live session halt", () => {
       real_account_summary: {
         ...baseTradingSummary().real_account_summary,
         session_status: "halted",
+      },
+      risk_summary: {
+        halt_reason: "daily loss limit",
+        halt_at_ms: 1500,
+        high_water_mark: 105,
+        trough_equity: 80,
+        current_equity: 85,
+        daily_loss_usd: -15,
+        session_drawdown_usd: -20,
+        closeout_exported_at_ms: null,
       },
       capabilities: {
         ...baseTradingSummary().capabilities,
@@ -425,11 +362,12 @@ test("does not expose arm controls after a live session halt", () => {
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  expect(screen.getByText("Session halted")).toBeInTheDocument();
+  expect(screen.getByText("Session Halted")).toBeInTheDocument();
   expect(screen.getByText("not exported")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Cancel all" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Redeem all" })).toBeDisabled();
+  expect(getActionButton("cancel_all", /^Cancel All$/)).toBeDisabled();
+  expect(getActionButton("redeem_all", /^Redeem All$/)).toBeDisabled();
   expect(screen.queryByRole("button", { name: "Arm" })).toBeNull();
+  expect(screen.getByText(/Recovery Actions/)).toBeInTheDocument();
 });
 
 test("keeps unknown-order controls focused on reconciliation actions", () => {
@@ -451,10 +389,10 @@ test("keeps unknown-order controls focused on reconciliation actions", () => {
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  expect(screen.getByText("Unknown order state")).toBeInTheDocument();
+  expect(screen.getByText("Unknown Order State")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Preflight" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Cancel all" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Kill switch" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Cancel All" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Kill Switch" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Arm" })).toBeNull();
 });
 
@@ -479,11 +417,11 @@ test("blocks arming from mobile even with valid reason and confirmation", async 
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  await user.type(screen.getAllByPlaceholderText("Reason")[1], "ready from phone");
-  await user.type(screen.getAllByRole("textbox")[2], "ARM paint fingerprint-v");
+  await user.type(getReasonField("arm"), "ready from phone");
+  await user.type(getConfirmationField("arm"), 'ARM "paint" fingerprint-v');
 
   expect(screen.getByText("Desktop confirmation required.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Arm" })).toBeDisabled();
+  expect(getActionButton("arm", /^Arm$/)).toBeDisabled();
   expect(mockSendLiveControl).not.toHaveBeenCalled();
 
   Object.defineProperty(window, "matchMedia", {
@@ -492,14 +430,103 @@ test("blocks arming from mobile even with valid reason and confirmation", async 
   });
 });
 
-test("renders non-empty trading activity, alerts, and advanced details", async () => {
-  const user = userEvent.setup();
-  mockUseTradingSummary.mockReturnValue({
+test("renders cash-headroom progress bar when a cap is set", () => {
+  mockExecutionSummary(
+    baseTradingSummary({
+      real_account_summary: {
+        ...baseTradingSummary().real_account_summary,
+        reserved_cash: 60,
+        inventory_mark_value: 30,
+        cash_cap_usd: 100,
+      },
+    }),
+  );
+  mockLatestSession();
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  expect(screen.getByText(/Cash in Play/)).toBeInTheDocument();
+  expect(screen.getByText(/of \$100\.00 \(90\.0%\)/)).toBeInTheDocument();
+  expect(screen.getByText(/\$10\.00 available/)).toBeInTheDocument();
+});
+
+test("renders recent audit strip with parsed details", () => {
+  mockExecutionSummary(baseTradingSummary());
+  mockLatestSession();
+  mockUseLiveControlAudit.mockReturnValue({
     isLoading: false,
     data: {
-      runtime_mode: "live_trading",
+      entries: [
+        {
+          id: 7,
+          timestamp_ms: Date.now() - 5_000,
+          actor: "alice@host",
+          action: "preflight",
+          target: "control audit",
+          details_json: JSON.stringify({
+            reason: "manual gate refresh",
+            status: "applied",
+            command: "preflight",
+          }),
+        },
+        {
+          id: 6,
+          timestamp_ms: Date.now() - 60_000,
+          actor: "bob@host",
+          action: "disarm",
+          target: null,
+          details_json: null,
+        },
+      ],
+    },
+  } as ReturnType<typeof useLiveControlAudit>);
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  expect(screen.getByText("Recent Commands")).toBeInTheDocument();
+  expect(screen.getByText("alice@host")).toBeInTheDocument();
+  expect(screen.getByText("bob@host")).toBeInTheDocument();
+});
+
+test("scopes per-action errors to the action that failed", async () => {
+  const user = userEvent.setup();
+  mockSendLiveControl.mockRejectedValueOnce(new Error("preflight rejected by gate"));
+  mockExecutionSummary(baseTradingSummary());
+  mockLatestSession();
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  await user.type(getReasonField("preflight"), "manual gate refresh");
+  await user.click(getActionButton("preflight", /^Preflight$/));
+
+  await waitFor(() => {
+    expect(screen.getByText("Command Failed")).toBeInTheDocument();
+  });
+  const row = getActionRow("preflight");
+  expect(within(row).getByText(/preflight rejected by gate/)).toBeInTheDocument();
+});
+
+test("surfaces a stale-data banner when user stream is stalled", () => {
+  mockExecutionSummary(
+    baseTradingSummary({
+      real_account_summary: {
+        ...baseTradingSummary().real_account_summary,
+        user_stream_status: "stalled",
+      },
+    }),
+  );
+
+  render(<ExecutionPage />, { wrapper: createWrapper() });
+
+  expect(screen.getByText("Live State May Be Stale")).toBeInTheDocument();
+  expect(screen.getByText(/user stream stalled/)).toBeInTheDocument();
+});
+
+test("renders non-empty trading activity, alerts, and advanced details", async () => {
+  const user = userEvent.setup();
+  mockExecutionSummary(
+    baseTradingSummary({
       trading_state: "degraded",
-      process_state: "running",
       venue_health: { state: "warning", label: "User stream degraded", detail: "stale" },
       account_health: { state: "warning", label: "Allowance unknown", detail: "missing" },
       reconciliation_health: {
@@ -508,6 +535,7 @@ test("renders non-empty trading activity, alerts, and advanced details", async (
         detail: "remote mismatch",
       },
       shadow_summary: {
+        ...baseTradingSummary().shadow_summary,
         balance: 90,
         starting_balance: 100,
         total_pnl: -10,
@@ -520,10 +548,9 @@ test("renders non-empty trading activity, alerts, and advanced details", async (
         high_water_mark: 110,
         max_drawdown_pct: 0.2,
         live_session_status: "readonly_degraded",
-        last_tick_at: null,
-        current_window: null,
       },
       real_account_summary: {
+        ...baseTradingSummary().real_account_summary,
         available_cash: 75,
         reserved_cash: 5,
         inventory_mark_value: 10,
@@ -531,19 +558,12 @@ test("renders non-empty trading activity, alerts, and advanced details", async (
         pending_redeem_value: 2,
         total_equity: 90,
         allowance_available: null,
-        latest_snapshot_at_ms: 2100,
-        session_id: 2,
-        session_status: "readonly_degraded",
-        session_started_at_ms: 2000,
+        cash_cap_usd: 100,
         wallet_address: "0x1234567890abcdef1234567890abcdef12345678",
         proxy_wallet: "0xabcdef1234567890abcdef1234567890abcdef12",
-        cash_cap_usd: 100,
         enabled_strategies: ["latency-arb", "spread-capture"],
         provider: "polymarket",
-        user_stream_status: "lagged",
-        last_user_stream_connected_at_ms: 2200,
-        last_user_stream_event_at_ms: 2250,
-        last_account_refresh_at_ms: 2300,
+        user_stream_status: "ok",
         open_orders: 1,
         pending_redemptions: 1,
         critical_reconciliation_events: 1,
@@ -561,8 +581,8 @@ test("renders non-empty trading activity, alerts, and advanced details", async (
         { severity: "warning", title: "Venue lag", detail: "User stream is stale." },
         { severity: "critical", title: "Critical recon", detail: "Remote mismatch." },
       ],
-    },
-  } as ReturnType<typeof useTradingSummary>);
+    }),
+  );
   mockUseLiveSessions.mockReturnValue({
     data: {
       sessions: [
@@ -669,74 +689,23 @@ test("renders non-empty trading activity, alerts, and advanced details", async (
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  expect(screen.getByText("Critical divergence")).toBeInTheDocument();
+  expect(screen.getAllByText("Critical divergence").length).toBeGreaterThan(0);
   expect(screen.getByText("Venue lag")).toBeInTheDocument();
-  expect(screen.getAllByText("Available")[0]).toBeInTheDocument();
   expect(screen.getByText("rejected")).toBeInTheDocument();
   expect(screen.getByText("filled")).toBeInTheDocument();
   expect(screen.getByText("pending")).toBeInTheDocument();
   expect(screen.getByText("remote_open_orders")).toBeInTheDocument();
 
-  await user.click(screen.getByText("Session and wallet"));
+  await user.click(screen.getByText("Session and Wallet"));
   expect(screen.getAllByText(/fingerprint/).length).toBeGreaterThan(1);
 });
 
 test("shows degraded Execution detail panels when live detail queries fail", async () => {
   const user = userEvent.setup();
-  mockUseTradingSummary.mockReturnValue({
-    isLoading: false,
-    data: {
+  mockExecutionSummary(
+    baseTradingSummary({
       runtime_mode: "live_readonly",
       trading_state: "readonly",
-      process_state: "running",
-      venue_health: { state: "healthy", label: "Venue connected", detail: null },
-      account_health: { state: "healthy", label: "Account tracked", detail: null },
-      reconciliation_health: {
-        state: "healthy",
-        label: "Reconciliation clean",
-        detail: null,
-      },
-      shadow_summary: {
-        balance: 120,
-        starting_balance: 100,
-        total_pnl: 20,
-        total_trades: 3,
-        wins: 2,
-        losses: 1,
-        win_rate: 0.66,
-        open_trades: 0,
-        uptime_hours: 1,
-        high_water_mark: 125,
-        max_drawdown_pct: 0.1,
-        live_session_status: "readonly_ready",
-        last_tick_at: null,
-        current_window: null,
-      },
-      real_account_summary: {
-        available_cash: 96,
-        reserved_cash: 0,
-        inventory_mark_value: 2,
-        redeemable_value: 1,
-        pending_redeem_value: 0,
-        total_equity: 99,
-        allowance_available: 96,
-        latest_snapshot_at_ms: 1100,
-        session_id: 1,
-        session_status: "readonly_ready",
-        session_started_at_ms: 1000,
-        wallet_address: "0xwallet",
-        proxy_wallet: "0xproxy",
-        cash_cap_usd: 100,
-        enabled_strategies: ["latency-arb"],
-        provider: "polymarket",
-        user_stream_status: "ok",
-        last_user_stream_connected_at_ms: 1200,
-        last_user_stream_event_at_ms: 1250,
-        last_account_refresh_at_ms: 1300,
-        open_orders: 0,
-        pending_redemptions: 0,
-        critical_reconciliation_events: 0,
-      },
       capabilities: {
         preflight: { enabled: false, reason: "disabled" },
         arm: { enabled: false, reason: "disabled" },
@@ -746,9 +715,8 @@ test("shows degraded Execution detail panels when live detail queries fail", asy
         redeem: { enabled: false, reason: "disabled" },
         kill_switch: { enabled: false, reason: "disabled" },
       },
-      alerts: [],
-    },
-  } as ReturnType<typeof useTradingSummary>);
+    }),
+  );
   mockUseLiveSessions.mockReturnValue({
     isError: true,
     isLoading: false,
@@ -780,7 +748,7 @@ test("shows degraded Execution detail panels when live detail queries fail", asy
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  expect(screen.getByText("Detail panels degraded")).toBeInTheDocument();
+  expect(screen.getByText("Detail Panels Degraded")).toBeInTheDocument();
   expect(
     screen.getByText(
       /Summary is current, but some execution detail panels are unavailable:\s*Session details, Orders, Redemptions\./,
@@ -795,7 +763,7 @@ test("shows degraded Execution detail panels when live detail queries fail", asy
   expect(screen.getByText("No venue fills recorded.")).toBeInTheDocument();
   expect(screen.getByText("No reconciliation events recorded.")).toBeInTheDocument();
 
-  await user.click(screen.getByText("Session and wallet"));
+  await user.click(screen.getByText("Session and Wallet"));
   expect(
     screen.getByText(/Live session details are currently unavailable: session endpoint failed/),
   ).toBeInTheDocument();

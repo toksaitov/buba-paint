@@ -92,7 +92,7 @@ export function DashboardPage() {
         <SectionCard
           title="Equity curve"
           className="xl:flex xl:flex-col"
-          toolbar={<SectionLink to="/equity">Open Equity</SectionLink>}
+          toolbar={<SectionLink to="/equity">Open Trend</SectionLink>}
         >
           <div className="xl:flex-1 xl:min-h-[260px]">
             <MiniChart entries={equityData?.points ?? []} />

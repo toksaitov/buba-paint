@@ -7,7 +7,7 @@ describe("dashboardRoutes", () => {
       "Overview",
       "Execution",
       "Logs",
-      "Equity",
+      "Trend",
       "Trades",
       "Signals",
       "Strategies",

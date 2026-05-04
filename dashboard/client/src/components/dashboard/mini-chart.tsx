@@ -1,18 +1,25 @@
 import { useRef, useEffect } from "react";
-import { createChart, AreaSeries, type IChartApi } from "lightweight-charts";
+import { createChart, AreaSeries, type IChartApi, type Time } from "lightweight-charts";
 import { useTheme } from "../../hooks/use-theme";
 import { getChartColors } from "../../lib/chart-colors";
 import type { BalanceEntry } from "../../lib/types";
+import { formatChartTick, formatChartTime } from "../../lib/utils";
+
+function chartTimeToMs(time: Time): number {
+  if (typeof time === "number") return time * 1000;
+  if (typeof time === "string") return Date.parse(time);
+  return new Date(time.year, time.month - 1, time.day).getTime();
+}
 
 export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const { isDark } = useTheme();
+  const { theme } = useTheme();
 
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const c = getChartColors(isDark);
+    const c = getChartColors(theme);
     const chart = createChart(containerRef.current, {
       height: containerRef.current.clientHeight || 120,
       layout: {
@@ -33,6 +40,10 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
       timeScale: {
         borderVisible: false,
         visible: false,
+        tickMarkFormatter: (time: Time) => formatChartTick(chartTimeToMs(time)),
+      },
+      localization: {
+        timeFormatter: (time: Time) => formatChartTime(chartTimeToMs(time)),
       },
       handleScroll: false,
       handleScale: false,
@@ -92,7 +103,7 @@ export function MiniChart({ entries }: { entries: BalanceEntry[] }) {
       ro.disconnect();
       chart.remove();
     };
-  }, [entries, isDark]);
+  }, [entries, theme]);
 
   return <div ref={containerRef} className="w-full h-full min-h-[120px]" />;
 }

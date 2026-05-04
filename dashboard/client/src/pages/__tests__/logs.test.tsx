@@ -10,10 +10,6 @@ vi.mock("../../hooks/use-logs", () => ({
   useLogs: vi.fn(),
 }));
 
-vi.mock("ansi-to-react", () => ({
-  default: ({ children }: { children: string }) => <span>{children}</span>,
-}));
-
 vi.mock("../../components/common/loading", () => ({
   Loading: () => <div data-testid="loading">Loading...</div>,
 }));
@@ -96,6 +92,44 @@ test("filters by severity, source, and event type and can pause follow mode", as
   await user.selectOptions(screen.getByDisplayValue("Errors (1)"), "errors");
   expect(screen.getByText(/feed disconnected/)).toBeInTheDocument();
   expect(scrollIntoView).not.toHaveBeenCalled();
+});
+
+test("filters ANSI-colored log lines using stripped text", async () => {
+  const user = userEvent.setup();
+  mockUseLogs.mockReturnValue({
+    isLoading: false,
+    data: {
+      lines: [
+        "2026-03-20 \u001b[32m INFO\u001b[0m buba_paint::live: strategy rejection rollup",
+        "2026-03-20 \u001b[33m WARN\u001b[0m buba_paint::clob: reconnecting feed",
+      ],
+    },
+  } as ReturnType<typeof useLogs>);
+
+  render(<LogsPage />);
+
+  await user.selectOptions(screen.getByDisplayValue("All severities"), "warn");
+  expect(screen.queryByText(/strategy rejection rollup/)).not.toBeInTheDocument();
+  expect(screen.getByText(/reconnecting feed/)).toBeInTheDocument();
+
+  await user.selectOptions(screen.getByDisplayValue("Warnings"), "all");
+  await user.selectOptions(screen.getByDisplayValue("All event types"), "rollups");
+  expect(screen.getByText(/strategy rejection rollup/)).toBeInTheDocument();
+  expect(screen.queryByText(/reconnecting feed/)).not.toBeInTheDocument();
+});
+
+test("displays leading UTC log timestamps as local time", () => {
+  mockUseLogs.mockReturnValue({
+    isLoading: false,
+    data: {
+      lines: ["2026-03-20T10:15:30.000000Z \u001b[32mINFO\u001b[0m buba_paint::live: hello"],
+    },
+  } as ReturnType<typeof useLogs>);
+
+  render(<LogsPage />);
+
+  expect(screen.queryByText(/2026-03-20T10:15:30.000000Z/)).not.toBeInTheDocument();
+  expect(screen.getByText(/buba_paint::live: hello/)).toBeInTheDocument();
 });
 
 test("shows an empty-state message when filters remove every line", async () => {

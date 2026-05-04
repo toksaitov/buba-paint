@@ -6,6 +6,7 @@ import { Header } from "./header";
 import { Logo } from "./logo";
 import { ContextStrip } from "../ui/dashboard-primitives";
 import { getBots } from "../../lib/api";
+import { useArmedSync } from "../../hooks/use-armed-sync";
 import { useLiveUpdates } from "../../hooks/use-live-updates";
 import { useMediaQuery } from "../../hooks/use-media-query";
 import { useTradingSummary } from "../../hooks/use-trading-summary";
@@ -62,6 +63,7 @@ export function AppShell() {
   const { data: tradingSummary } = useTradingSummary(botId);
 
   useLiveUpdates(botId);
+  useArmedSync(botId);
 
   useEffect(() => {
     if (botId) sessionStorage.setItem("activeBotId", botId);
@@ -78,7 +80,7 @@ export function AppShell() {
           className={`${collapsed ? "w-12" : "w-52"} border-r border-border bg-bg shrink-0 transition-all duration-150 flex flex-col`}
         >
           <div
-            className={`flex items-center h-12 border-b border-border ${collapsed ? "justify-center" : "px-3"}`}
+            className={`flex items-center h-14 border-b border-border ${collapsed ? "justify-center" : "px-3"}`}
           >
             <Link
               to="/"
@@ -87,7 +89,7 @@ export function AppShell() {
             >
               <Logo size={collapsed ? 20 : 18} />
               {!collapsed && (
-                <span className="ml-2 text-[11px] font-semibold text-muted">
+                <span className="ml-2 text-xl font-semibold tracking-tight">
                   buba
                 </span>
               )}
@@ -103,7 +105,7 @@ export function AppShell() {
       ) : (
         <>
           <aside className="w-12 border-r border-border bg-bg shrink-0 flex flex-col pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)]">
-            <div className="flex items-center justify-center h-12 border-b border-border">
+            <div className="flex items-center justify-center h-14 border-b border-border">
               <Link to="/" aria-label="Go to main page" className="hover:opacity-80 transition-opacity">
                 <Logo size={20} />
               </Link>
@@ -123,7 +125,7 @@ export function AppShell() {
                 aria-hidden="true"
               />
               <aside className="relative z-10 w-64 bg-bg border-r border-border flex flex-col pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)]">
-                <div className="flex items-center h-12 border-b border-border px-3">
+                <div className="flex items-center h-14 border-b border-border px-3">
                   <Link
                     to="/"
                     onClick={closeDrawer}
@@ -131,7 +133,7 @@ export function AppShell() {
                     className="flex items-center hover:opacity-80 transition-opacity"
                   >
                     <Logo size={18} />
-                    <span className="ml-2 text-[11px] font-semibold text-muted">
+                    <span className="ml-2 text-lg font-semibold tracking-tight">
                       buba
                     </span>
                   </Link>
