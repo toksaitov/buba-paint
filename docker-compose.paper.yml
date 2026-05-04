@@ -1,0 +1,8 @@
+services:
+  paint:
+    environment:
+      EXECUTION_MODE: paper
+      FEED_EVENT_STORAGE_PROFILE: replay_grade
+      LATENCY_ARB_ENABLED: "true"
+      SPREAD_CAPTURE_ENABLED: "false"
+      CALM_PERSISTENCE_ENABLED: "false"

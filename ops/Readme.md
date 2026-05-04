@@ -1,6 +1,6 @@
 # Operations Artifacts
 
-`ops/` contains deployment templates and runbook helpers for the `buba-paint` host. These files are source-controlled references, not automatically installed services.
+`ops/` contains deployment templates and runbook helpers for the `buba-paint` host. Docker Compose with Caddy is the preferred remote deployment model. The systemd files are retained as legacy/reference templates, not automatically installed services.
 
 Target host layout:
 
@@ -8,6 +8,8 @@ Target host layout:
 - runtime DBs and run logs: `~/buba-paint-live/runtime/run-0NN`
 - stable config files: `~/buba-paint-live/config`
 - stable process logs: `~/buba-paint-live/logs`
+
+Docker deployment notes live in [docker/Readme.md](./docker/Readme.md).
 
 Systemd user-service templates live in `ops/systemd/`.
 

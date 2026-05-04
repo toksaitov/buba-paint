@@ -1,0 +1,23 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - type: bind
+        source: ${BUBA_CADDYFILE:?set BUBA_CADDYFILE}
+        target: /etc/caddy/Caddyfile
+        read_only: true
+      - type: bind
+        source: ${BUBA_CADDY_DATA_DIR:?set BUBA_CADDY_DATA_DIR}
+        target: /data
+      - type: bind
+        source: ${BUBA_CADDY_CONFIG_DIR:?set BUBA_CADDY_CONFIG_DIR}
+        target: /config
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - internal

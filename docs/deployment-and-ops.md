@@ -14,10 +14,11 @@ cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 200
 Docker Compose starts a local paper stack:
 
 ```bash
-docker compose up -d
+mkdir -p .docker/runtime
+docker compose -f docker-compose.yml -f docker-compose.paper.yml -f docker-compose.local.yml up -d --build
 ```
 
-It does not start the Polymarket sidecar or an authenticated `live_readonly` venue monitor.
+The local paper stack does not start the Polymarket sidecar or an authenticated `live_readonly` venue monitor.
 
 ## Remote Layout
 
@@ -35,16 +36,45 @@ Remote layout:
 
 ## Process Model
 
-Preferred process shape:
+Preferred remote process shape is Docker Compose with Caddy as the only public edge:
 
-- sidecar supervised from `~/buba-paint-live/current/polymarket-sidecar`
-- bot started directly, often through `script -qefa` so ANSI output lands in the run log
-- agent started in `--monitor-only` mode against the bot DB
-- dashboard serving static frontend files from `~/buba-paint-live/current/dashboard/client/dist`
+- Caddy publishes ports `80` and `443`, provisions certificates, and reverse-proxies the dashboard.
+- dashboard, agent, bot, and sidecar stay on a private Docker network.
+- runtime DBs and logs are host bind mounts under `~/buba-paint-live/runtime/<runtime-name>`.
+- Caddy state is persisted under `~/buba-paint-live/caddy`.
 
-Operations templates live under [ops/](../ops/). Use them as the starting point for supervised process work.
+Systemd templates under [ops/](../ops/) are retained as legacy/reference artifacts. Use Docker Compose for new deployments unless a phase plan explicitly says otherwise.
 
-## Staging Flow
+## Docker/Caddy Staging Flow
+
+The repeatable Docker deployment command is:
+
+```bash
+make docker-deploy
+```
+
+The default target is equivalent to:
+
+```bash
+python3 scripts/deploy-docker.py \
+  --host buba-paint \
+  --domain buba.toksaitov.com \
+  --mode live-readonly \
+  --install-docker
+```
+
+Use `make docker-deploy-dry-run` before mutating the host. The runner stages a fresh release, generates dashboard/agent secrets, uploads `.secrets/buba-paint-live-sidecar.env` to the host as `sidecar.env`, starts Compose, and writes a non-secret evidence bundle under `data/experiments/docker-deploy-*`.
+
+The production stack uses:
+
+- `docker-compose.yml` for shared internal services.
+- `docker-compose.live-readonly.yml` for authenticated readonly monitoring.
+- `docker-compose.paper.yml` for paper-only runs.
+- `docker-compose.prod.yml` for Caddy TLS and host bind mounts.
+
+`buba.toksaitov.com` must resolve to the same host reached by `ssh buba-paint`, and the cloud firewall must allow inbound TCP `80` and `443` for Caddy certificate provisioning. The deploy runner checks DNS before staging because Caddy cannot complete ACME validation when the A record points at an old instance. On small hosts the runner also enables a 4 GiB swap file by default when no swap is active, which keeps Docker image builds from being killed by memory pressure.
+
+## Legacy Staging Flow
 
 1. Finish code, docs, and tests locally.
 2. Run local gates: `make lint`, `make test-all`, `make coverage-gate`, `cargo build --release`.
@@ -56,33 +86,35 @@ Operations templates live under [ops/](../ops/). Use them as the starting point 
 
 The server has historically had an older Node toolchain. Treat the local frontend build as the deployable static artifact unless the server toolchain is deliberately upgraded.
 
+Use this legacy flow only when Docker is explicitly out of scope.
+
 ## Fresh Run
 
 Use a fresh run for strategy changes, parameter changes, or any experiment where continuity would poison comparability.
 
-1. Stop sidecar, bot, agent, and dashboard.
+1. Stop the Docker Compose project or legacy sidecar, bot, agent, and dashboard.
 2. Verify no stale processes remain.
 3. Archive or discard the old runtime according to the experiment plan.
 4. Create a fresh runtime directory and DB/log paths.
 5. Point `current` to the new release.
-6. Start sidecar, bot, agent, and dashboard in the documented order.
+6. Start the Docker stack or sidecar, bot, agent, and dashboard in the documented order.
 
 ## Partial Update
 
 Use a partial update only for fixes where the current run should continue on the same DB and log, such as dashboard fixes, agent fixes, logging changes, diagnostics, or feed transport hardening that does not alter strategy semantics.
 
 1. Back up the current run DB and log into `runtime/backups`.
-2. Stop sidecar, bot, agent, and dashboard.
+2. Stop the Docker stack or sidecar, bot, agent, and dashboard.
 3. Verify no stale process from the old release remains.
 4. Point `current` to the new release.
-5. Restart the supervised sidecar first.
-6. Restart bot, agent, and dashboard over the same runtime dir, DB, and log.
+5. Restart the Docker stack, or restart the supervised sidecar first in the legacy process model.
+6. Restart bot, agent, and dashboard over the same runtime dir, DB, and log if not using Compose.
 7. Verify the bot recovered the active window correctly.
 
 Process check:
 
 ```bash
-ssh buba-paint 'ps -eo pid=,args= | awk "/script -qefa|buba-paint live|buba-agent|buba-dashboard/ && !/awk/ && !/bash -c/ {print}"'
+ssh buba-paint 'cd ~/buba-paint-live/current && sudo docker compose ps'
 ```
 
 ## Minimum Remote Acceptance
@@ -90,11 +122,11 @@ ssh buba-paint 'ps -eo pid=,args= | awk "/script -qefa|buba-paint live|buba-agen
 After any deploy or restart:
 
 - `readlink -f ~/buba-paint-live/current` matches the intended release.
-- `curl http://127.0.0.1:3210/health` returns a sane sidecar readiness payload.
-- `curl http://127.0.0.1:9090/health` is healthy.
-- `curl http://127.0.0.1:3000/health` is healthy.
+- `curl -I http://buba.toksaitov.com` redirects to HTTPS.
+- `curl https://buba.toksaitov.com/health` is healthy with a valid certificate.
+- internal sidecar, agent, and dashboard health checks pass through `docker compose exec`.
 - `sqlite3 ... "pragma quick_check;"` returns `ok`.
-- process list shows only the intended release path.
+- `docker compose ps` shows only the intended project services.
 - bot logs show sane startup and expected strategy rollups.
 
 Before any future live-money arming, also verify host geoblock, current BTC market metadata, CLOB V2 fee/tick/min-size metadata, pUSD account diagnostics, sidecar preflight, dashboard Execution state, and current official Polymarket docs. Save the no-order readonly verification report under `data/experiments/venue-contract-v2-001/` or the current phase-specific experiment directory.

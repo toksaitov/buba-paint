@@ -1,0 +1,8 @@
+services:
+  agent:
+    ports:
+      - "9090:9090"
+
+  dashboard:
+    ports:
+      - "3001:3001"

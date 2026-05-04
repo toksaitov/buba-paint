@@ -6,7 +6,6 @@ import {
   fingerprintPrefix,
   freshnessSignal,
   parseAuditDetails,
-  visibleControlActions,
 } from "../live-controls";
 import type { RealAccountSummary, TradingCapabilities } from "../types";
 
@@ -79,40 +78,6 @@ describe("controlActions", () => {
     expect(cancel?.confirmation?.("paint", "")).toBe('CANCEL ALL "paint"');
     expect(redeem?.confirmation?.("paint", "")).toBe('REDEEM ALL "paint"');
     expect(kill?.confirmation?.("paint", "")).toBe('KILL "paint"');
-  });
-});
-
-describe("visibleControlActions", () => {
-  test("disarmed limits to preflight and arm", () => {
-    const actions = visibleControlActions("disarmed").map((c) => c.action);
-    expect(actions).toEqual(["preflight", "arm"]);
-  });
-
-  test("armed exposes the destructive set plus disarm and stop after flat", () => {
-    const actions = visibleControlActions("armed").map((c) => c.action);
-    expect(actions).toEqual(["disarm", "stop_after_flat", "cancel_all", "redeem_all", "kill_switch"]);
-  });
-
-  test("stop_after_flat keeps recovery actions but not arm", () => {
-    const actions = visibleControlActions("stop_after_flat").map((c) => c.action);
-    expect(actions).toContain("disarm");
-    expect(actions).toContain("kill_switch");
-    expect(actions).not.toContain("arm");
-  });
-
-  test("unknown_order narrows to reconciliation actions", () => {
-    const actions = visibleControlActions("unknown_order").map((c) => c.action);
-    expect(actions).toEqual(["preflight", "cancel_all", "kill_switch"]);
-  });
-
-  test("halted only exposes recovery actions", () => {
-    const actions = visibleControlActions("halted").map((c) => c.action);
-    expect(actions).toEqual(["cancel_all", "redeem_all"]);
-  });
-
-  test("default exposes preflight and kill switch only", () => {
-    const actions = visibleControlActions("readonly").map((c) => c.action);
-    expect(actions).toEqual(["preflight", "kill_switch"]);
   });
 });
 

@@ -1,80 +1,102 @@
 services:
-  paint-init:
-    build:
-      context: .
-      dockerfile: bots/paint/Dockerfile
-    volumes:
-      - paint-data:/data
-    command: ["init-db", "--db-path", "/data/paint.db", "--balance", "200"]
-    profiles: ["init"]
-
   paint:
     build:
       context: .
       dockerfile: bots/paint/Dockerfile
+    image: buba-paint-bot:local
+    user: "${BUBA_UID:-1000}:${BUBA_GID:-1000}"
     volumes:
-      - paint-data:/data
+      - type: bind
+        source: ${BUBA_RUNTIME_DIR:-./.docker/runtime}
+        target: /runtime
     environment:
-      DB_PATH: /data/paint.db
-      STARTING_BALANCE: "200"
-      LOG_LEVEL: info
-    command: >-
-      sh -c 'buba-paint live --db-path /data/paint.db --balance 200 2>&1 | tee /data/bot.log'
-    entrypoint: []
+      DB_PATH: /runtime/paint.db
+      STARTING_BALANCE: ${BUBA_PAINT_BALANCE:-100}
+      BUBA_PAINT_LOG_PATH: /runtime/paint.log
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      RUST_LOG: ${RUST_LOG:-info}
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - |
+        mkdir -p /runtime
+        touch "$$BUBA_PAINT_LOG_PATH"
+        if [ ! -f "$$DB_PATH" ]; then
+          buba-paint init-db --db-path "$$DB_PATH" --balance "$$STARTING_BALANCE" >> "$$BUBA_PAINT_LOG_PATH" 2>&1
+        fi
+        buba-paint live --db-path "$$DB_PATH" --balance "$$STARTING_BALANCE" >> "$$BUBA_PAINT_LOG_PATH" 2>&1
     restart: unless-stopped
+    networks:
+      - internal
 
   agent:
     build:
       context: .
       dockerfile: agent/Dockerfile
-    ports:
-      - "9090:9090"
+    image: buba-agent:local
+    user: "${BUBA_UID:-1000}:${BUBA_GID:-1000}"
     volumes:
-      - paint-data:/data
+      - type: bind
+        source: ${BUBA_RUNTIME_DIR:-./.docker/runtime}
+        target: /runtime
     environment:
-      DB_PATH: /data/paint.db
-      PORT: "9090"
-      POLL_INTERVAL: "2000"
       AGENT_SECRET: ${AGENT_SECRET:-dev-agent-secret}
-    entrypoint: []
-    command: >-
-      sh -c 'while [ ! -f /data/paint.db ]; do sleep 1; done; touch /data/bot.log; buba-agent --db-path /data/paint.db --port 9090 --monitor-only --log-path /data/bot.log'
+      RUST_LOG: ${RUST_LOG:-info}
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - |
+        while [ ! -f /runtime/paint.db ]; do sleep 1; done
+        touch /runtime/paint.log /runtime/agent.log
+        buba-agent --db-path /runtime/paint.db --port 9090 --monitor-only --log-path /runtime/paint.log >> /runtime/agent.log 2>&1
     depends_on:
       paint:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9090/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9090/health >/dev/null"]
       interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
+    networks:
+      - internal
 
   dashboard:
     build:
       context: .
       dockerfile: dashboard/Dockerfile
-    ports:
-      - "3001:3001"
+    image: buba-dashboard:local
+    user: "${BUBA_UID:-1000}:${BUBA_GID:-1000}"
     volumes:
-      - dashboard-data:/data
-      - ./dashboard.toml:/etc/dashboard.toml:ro
+      - type: bind
+        source: ${BUBA_RUNTIME_DIR:-./.docker/runtime}
+        target: /runtime
+      - type: bind
+        source: ${BUBA_DASHBOARD_CONFIG:-./dashboard.toml}
+        target: /config/dashboard.toml
+        read_only: true
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production}
-      DASHBOARD_DB_PATH: /data/dashboard.db
+      DASHBOARD_DB_PATH: /runtime/dashboard.db
+      RUST_LOG: ${RUST_LOG:-info}
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - |
+        touch /runtime/dashboard.log
+        buba-dashboard --config /config/dashboard.toml --static-dir /srv/static >> /runtime/dashboard.log 2>&1
     depends_on:
       agent:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health >/dev/null"]
       interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
+    networks:
+      - internal
 
-volumes:
-  paint-data:
-  dashboard-data:
+networks:
+  internal:
+    driver: bridge

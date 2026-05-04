@@ -5,6 +5,9 @@ dist/
 /*.env
 /.secrets/
 *.local.env
+.docker/
+__pycache__/
+*.pyc
 
 # SQLite temp files (everywhere)
 data/market-data.db

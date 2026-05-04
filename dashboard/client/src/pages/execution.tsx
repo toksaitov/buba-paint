@@ -17,7 +17,6 @@ import {
   SectionCard,
   StateEmpty,
   StatusChip,
-  Surface,
   Textarea,
 } from "../components/ui/dashboard-primitives";
 import {
@@ -37,14 +36,10 @@ import {
   fingerprintPrefix,
   freshnessSignal,
   parseAuditDetails,
-  visibleControlActions,
   type ControlActionConfig,
 } from "../lib/live-controls";
 import {
   healthTone,
-  processStateLabel,
-  processStateTone,
-  runtimeModeLabel,
   tradingStateLabel,
   tradingStateTone,
 } from "../lib/trading-summary";
@@ -65,10 +60,53 @@ import type {
 } from "../lib/types";
 
 const groupHeading: Record<"dryrun" | "reversible" | "destructive", string> = {
-  dryrun: "Dry Run / Safety",
-  reversible: "Trading State",
+  dryrun: "Pre-trade Checks",
+  reversible: "Session Lifecycle",
   destructive: "Destructive",
 };
+
+type ModeApplicability = "live" | "live_trading";
+
+function modeMatches(target: ModeApplicability, current: string): boolean {
+  if (target === "live") return current !== "paper";
+  return current === "live_trading";
+}
+
+function modeChipLabel(target: ModeApplicability): string {
+  return target === "live" ? "Live" : "Live trading";
+}
+
+function readableMode(current: string): string {
+  if (current === "live_readonly") return "live readonly mode";
+  if (current === "live_trading") return "live trading mode";
+  return "paper mode";
+}
+
+interface ModeHeaderProps {
+  title: string;
+  applicability: ModeApplicability;
+  current: string;
+  titleClassName?: string;
+}
+
+function ModeHeader({ title, applicability, current, titleClassName }: ModeHeaderProps) {
+  const matches = modeMatches(applicability, current);
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className={cn("font-semibold tracking-tight", titleClassName ?? "text-md")}>{title}</h3>
+        <StatusChip
+          label={modeChipLabel(applicability)}
+          tone={matches ? "neutral" : "muted"}
+          compact
+        />
+      </div>
+      {!matches && (
+        <p className="mt-0.5 text-xs text-muted">Inactive in {readableMode(current)}.</p>
+      )}
+    </div>
+  );
+}
 
 const emptyRiskSummary: TradingRiskSummary = {
   halt_reason: null,
@@ -315,24 +353,6 @@ function renderReconciliationRow(event: LiveReconciliationRow) {
       </div>
       <div className="shrink-0 text-right text-muted tabular-nums">{formatDateTime(event.timestamp_ms)}</div>
     </div>
-  );
-}
-
-function renderAuditRow(entry: LiveControlAuditRow) {
-  const parsed = parseAuditDetails(entry.details_json);
-  return (
-    <ActivityRow
-      key={entry.id}
-      title={entry.action}
-      subtitle={
-        <>
-          <div>{parsed.reason ?? entry.target ?? "control audit"}</div>
-          {parsed.status && <div className="mt-0.5">status: {parsed.status}</div>}
-          <div className="mt-0.5 text-xs">by {entry.actor}</div>
-        </>
-      }
-      right={formatDateTime(entry.timestamp_ms)}
-    />
   );
 }
 
@@ -604,23 +624,36 @@ function ActionRow({
   );
 }
 
+const groupApplicability: Record<
+  "dryrun" | "reversible" | "destructive",
+  ModeApplicability
+> = {
+  dryrun: "live",
+  reversible: "live_trading",
+  destructive: "live_trading",
+};
+
 interface ActionGroupProps {
   group: "dryrun" | "reversible" | "destructive";
   actions: ControlActionConfig[];
+  currentMode: string;
   children: (config: ControlActionConfig) => ReactNode;
 }
 
-function ActionGroup({ group, actions, children }: ActionGroupProps) {
+function ActionGroup({ group, actions, currentMode, children }: ActionGroupProps) {
   const heading = groupHeading[group];
+  const applicability = groupApplicability[group];
+  const matches = modeMatches(applicability, currentMode);
   return (
     <section
       className={cn(
         "space-y-3",
         group === "destructive" && "border border-accent-red bg-[var(--color-danger-fill)] p-3",
+        !matches && "opacity-75",
       )}
       data-group={group}
     >
-      <h3 className="text-md font-semibold tracking-tight">{heading}</h3>
+      <ModeHeader title={heading} applicability={applicability} current={currentMode} />
       <div className="space-y-3">{actions.map((config) => children(config))}</div>
     </section>
   );
@@ -716,7 +749,6 @@ interface ControlDeckProps {
   isAdmin: boolean;
   auditEntries: LiveControlAuditRow[];
   auditLoading: boolean;
-  previewMode?: boolean;
 }
 
 function ControlDeck({
@@ -726,7 +758,6 @@ function ControlDeck({
   isAdmin,
   auditEntries,
   auditLoading,
-  previewMode = false,
 }: ControlDeckProps) {
   const queryClient = useQueryClient();
   const [drafts, setDrafts] = useState<Partial<Record<LiveControlAction, ControlDraft>>>({});
@@ -765,18 +796,8 @@ function ControlDeck({
     },
   });
 
-  if (!previewMode && summary.runtime_mode === "live_readonly") {
-    return (
-      <SectionCard title="Controls">
-        <StateEmpty message="Readonly mode observes venue truth but cannot queue controls." />
-      </SectionCard>
-    );
-  }
-
-  const visibleActions = previewMode
-    ? controlActions
-    : visibleControlActions(summary.trading_state);
-  const deckTitle = summary.trading_state === "halted" ? "Recovery Actions" : "Controls";
+  const visibleActions = controlActions;
+  const deckTitle = "Controls";
 
   if (visibleActions.length === 0) {
     return (
@@ -787,7 +808,6 @@ function ControlDeck({
   }
 
   const mobile = isMobileViewport();
-  const account = summary.real_account_summary;
   const groupOrder: Array<"dryrun" | "reversible" | "destructive"> = [
     "dryrun",
     "reversible",
@@ -814,15 +834,29 @@ function ControlDeck({
   }
 
   return (
-    <SectionCard title={deckTitle}>
+    <SectionCard
+      title={deckTitle}
+      toolbar={
+        <StatusChip
+          label={tradingStateLabel(summary.trading_state)}
+          tone={tradingStateTone(summary.trading_state)}
+          compact
+          help={summary.trading_state === "readonly" ? help.readonly : undefined}
+        />
+      }
+    >
       <div className="space-y-4">
-        {!previewMode && <RecentAuditStrip entries={auditEntries} loading={auditLoading} />}
-        <CashHeadroomDeck account={account} />
+        <RecentAuditStrip entries={auditEntries} loading={auditLoading} />
         {groupOrder.map((group) => {
           const actions = grouped.get(group);
           if (!actions || actions.length === 0) return null;
           return (
-            <ActionGroup key={group} group={group} actions={actions}>
+            <ActionGroup
+              key={group}
+              group={group}
+              actions={actions}
+              currentMode={summary.runtime_mode}
+            >
               {(config) => {
                 const capability = capabilityForAction(summary.capabilities, config.action);
                 const draft = drafts[config.action] ?? emptyDraft();
@@ -928,47 +962,7 @@ function StatusBanner({ summary, risk }: StatusBannerProps) {
       </Banner>
     );
   }
-  return (
-    <Surface className="px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <StatusChip
-          label={processStateLabel(summary.process_state)}
-          tone={processStateTone(summary.process_state)}
-          compact
-          dot
-        />
-        <StatusChip
-          label={runtimeModeLabel(summary.runtime_mode)}
-          tone="neutral"
-          compact
-        />
-        <StatusChip
-          label={tradingStateLabel(summary.trading_state)}
-          tone={tradingStateTone(summary.trading_state)}
-          compact
-          help={summary.trading_state === "readonly" ? help.readonly : undefined}
-        />
-        <StatusChip
-          label={summary.venue_health.label}
-          tone={healthTone(summary.venue_health)}
-          compact
-          title={summary.venue_health.detail ?? undefined}
-        />
-        <StatusChip
-          label={summary.account_health.label}
-          tone={healthTone(summary.account_health)}
-          compact
-          title={summary.account_health.detail ?? undefined}
-        />
-        <StatusChip
-          label={summary.reconciliation_health.label}
-          tone={healthTone(summary.reconciliation_health)}
-          compact
-          title={summary.reconciliation_health.detail ?? undefined}
-        />
-      </div>
-    </Surface>
-  );
+  return null;
 }
 
 interface StaleDataBannerProps {
@@ -996,204 +990,135 @@ function StaleDataBanner({ account }: StaleDataBannerProps) {
   );
 }
 
-interface OperationalStateProps {
+interface AccountSectionProps {
   summary: TradingSummary;
   account: RealAccountSummary;
-  hasSnapshot: boolean;
 }
 
-function OperationalState({ summary, account, hasSnapshot }: OperationalStateProps) {
-  return (
-    <Surface className="p-3">
-      <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
-        <div>
-          <div className="mb-2 text-lg font-semibold tracking-tight">Polymarket Account</div>
-          {hasSnapshot ? (
-            <KeyValueList
-              columns={2}
-              items={[
-                {
-                  label: "Cash available",
-                  value:
-                    account.available_cash != null ? formatUsd(account.available_cash) : "n/a",
-                  help: help.cashAvailable,
-                },
-                {
-                  label: "Total equity",
-                  value: account.total_equity != null ? formatUsd(account.total_equity) : "n/a",
-                },
-                {
-                  label: "Reserved",
-                  value:
-                    account.reserved_cash != null ? formatUsd(account.reserved_cash) : "n/a",
-                  help: help.reserved,
-                },
-                {
-                  label: "Inventory mark",
-                  value:
-                    account.inventory_mark_value != null
-                      ? formatUsd(account.inventory_mark_value)
-                      : "n/a",
-                  help: help.inventoryMark,
-                },
-                {
-                  label: "Redeemable",
-                  value:
-                    account.redeemable_value != null
-                      ? formatUsd(account.redeemable_value)
-                      : "n/a",
-                  help: help.redeemable,
-                },
-                {
-                  label: "Pending redeem",
-                  value:
-                    account.pending_redeem_value != null
-                      ? formatUsd(account.pending_redeem_value)
-                      : "n/a",
-                  help: help.pendingRedeem,
-                },
-                {
-                  label: "Allowance",
-                  value:
-                    account.allowance_available != null
-                      ? formatUsd(account.allowance_available)
-                      : "n/a",
-                  help: help.allowance,
-                },
-                { label: "Open orders", value: account.open_orders.toString() },
-                {
-                  label: "User stream",
-                  value: userStreamSummary(account),
-                },
-                {
-                  label: "Last refresh",
-                  value:
-                    account.last_account_refresh_at_ms != null
-                      ? formatDateTime(account.last_account_refresh_at_ms)
-                      : "n/a",
-                },
-              ]}
-            />
-          ) : (
-            <StateEmpty message={empty.noPolymarketSnapshot} />
-          )}
-        </div>
-
-        <div>
-          <div className="mb-2 text-lg font-semibold tracking-tight">Runtime Status</div>
-          <p className="mb-3 text-xs text-muted">
-            Process, mode, venue, account, reconciliation.
-          </p>
-          <KeyValueList
-            items={[
-              {
-                label: "Process",
-                value: (
-                  <StatusChip
-                    label={processStateLabel(summary.process_state)}
-                    tone={processStateTone(summary.process_state)}
-                    compact
-                  />
-                ),
-              },
-              {
-                label: "Mode",
-                value: runtimeModeLabel(summary.runtime_mode),
-              },
-              {
-                label: "Trading state",
-                value: (
-                  <StatusChip
-                    label={tradingStateLabel(summary.trading_state)}
-                    tone={tradingStateTone(summary.trading_state)}
-                    compact
-                    help={summary.trading_state === "readonly" ? help.readonly : undefined}
-                  />
-                ),
-              },
-              {
-                label: "Venue",
-                value: (
-                  <StatusChip
-                    label={summary.venue_health.label}
-                    tone={healthTone(summary.venue_health)}
-                    compact
-                    title={summary.venue_health.detail ?? undefined}
-                  />
-                ),
-              },
-              {
-                label: "Account",
-                value: (
-                  <StatusChip
-                    label={summary.account_health.label}
-                    tone={healthTone(summary.account_health)}
-                    compact
-                    title={summary.account_health.detail ?? undefined}
-                  />
-                ),
-              },
-              {
-                label: "Reconciliation",
-                value: (
-                  <StatusChip
-                    label={summary.reconciliation_health.label}
-                    tone={healthTone(summary.reconciliation_health)}
-                    compact
-                    title={summary.reconciliation_health.detail ?? undefined}
-                  />
-                ),
-              },
-            ]}
+function AccountSection({ summary, account }: AccountSectionProps) {
+  const active = modeMatches("live", summary.runtime_mode);
+  const head = cashHeadroom(account);
+  const body = (
+    <div className="space-y-3">
+      {active && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted">Health</span>
+          <StatusChip
+            label={summary.venue_health.label}
+            tone={healthTone(summary.venue_health)}
+            compact
+            title={summary.venue_health.detail ?? "Venue feeds"}
           />
-          {(summary.venue_health.detail ||
-            summary.account_health.detail ||
-            summary.reconciliation_health.detail) && (
-            <div className="mt-3 space-y-1 border-t border-surface pt-3 text-xs text-muted">
-              {summary.venue_health.detail && (
-                <p>
-                  <span className="text-text">Venue:</span> {summary.venue_health.detail}
-                </p>
-              )}
-              {summary.account_health.detail && (
-                <p>
-                  <span className="text-text">Account:</span> {summary.account_health.detail}
-                </p>
-              )}
-              {summary.reconciliation_health.detail && (
-                <p>
-                  <span className="text-text">Reconciliation:</span>{" "}
-                  {summary.reconciliation_health.detail}
-                </p>
-              )}
-            </div>
-          )}
+          <StatusChip
+            label={summary.account_health.label}
+            tone={healthTone(summary.account_health)}
+            compact
+            title={summary.account_health.detail ?? "Account snapshot"}
+          />
+          <StatusChip
+            label={summary.reconciliation_health.label}
+            tone={healthTone(summary.reconciliation_health)}
+            compact
+            title={summary.reconciliation_health.detail ?? "Local vs remote reconciliation"}
+          />
         </div>
+      )}
+      {head != null && <CashHeadroomDeck account={account} />}
+      <KeyValueList
+          columns={2}
+          items={[
+            {
+              label: "Cash available",
+              value:
+                account.available_cash != null ? formatUsd(account.available_cash) : "n/a",
+              help: help.cashAvailable,
+            },
+            {
+              label: "Total equity",
+              value: account.total_equity != null ? formatUsd(account.total_equity) : "n/a",
+            },
+            {
+              label: "Reserved",
+              value:
+                account.reserved_cash != null ? formatUsd(account.reserved_cash) : "n/a",
+              help: help.reserved,
+            },
+            {
+              label: "Inventory mark",
+              value:
+                account.inventory_mark_value != null
+                  ? formatUsd(account.inventory_mark_value)
+                  : "n/a",
+              help: help.inventoryMark,
+            },
+            {
+              label: "Redeemable",
+              value:
+                account.redeemable_value != null
+                  ? formatUsd(account.redeemable_value)
+                  : "n/a",
+              help: help.redeemable,
+            },
+            {
+              label: "Pending redeem",
+              value:
+                account.pending_redeem_value != null
+                  ? formatUsd(account.pending_redeem_value)
+                  : "n/a",
+              help: help.pendingRedeem,
+            },
+            {
+              label: "Allowance",
+              value:
+                account.allowance_available != null
+                  ? formatUsd(account.allowance_available)
+                  : "n/a",
+              help: help.allowance,
+            },
+            {
+              label: "Open orders",
+              value: active ? account.open_orders.toString() : "n/a",
+            },
+            {
+              label: "User stream",
+              value: active ? userStreamSummary(account) : "n/a",
+            },
+            {
+              label: "Last refresh",
+              value:
+                account.last_account_refresh_at_ms != null
+                  ? formatDateTime(account.last_account_refresh_at_ms)
+                  : "n/a",
+            },
+          ]}
+        />
       </div>
-    </Surface>
   );
-}
 
-interface MarketWindowStripProps {
-  window: NonNullable<TradingSummary["shadow_summary"]["current_window"]>;
-}
+  if (active) {
+    return (
+      <SectionCard
+        title="Polymarket Account"
+        toolbar={<StatusChip label="Live" tone="neutral" compact />}
+      >
+        {body}
+      </SectionCard>
+    );
+  }
 
-function MarketWindowStrip({ window: marketWindow }: MarketWindowStripProps) {
   return (
-    <Surface className="px-3 py-2.5">
-      <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-        <div className="min-w-0 truncate text-md font-semibold tracking-tight">
-          {marketWindow.question}
-        </div>
-        <div className="flex items-center gap-3 text-xs text-muted">
-          <span className="tabular-nums">Ends {formatDateTime(marketWindow.end_time)}</span>
-          <code className="border border-border bg-surface px-1 py-0.5 tabular-nums">
-            {truncateMiddle(marketWindow.market_id, 6, 6)}
-          </code>
-          <CopyButton size="sm" value={marketWindow.market_id} ariaLabel="Copy market id" />
-        </div>
-      </div>
-    </Surface>
+    <details className="border border-border bg-bg">
+      <summary className="cursor-pointer px-3 py-2.5">
+        <span className="inline-flex items-baseline gap-2 flex-wrap">
+          <span className="text-[14px] font-semibold tracking-tight">Polymarket Account</span>
+          <StatusChip label="Live" tone="muted" compact />
+          <span className="text-[11px] text-muted">
+            Inactive in {readableMode(summary.runtime_mode)}.
+          </span>
+        </span>
+      </summary>
+      <div className="border-t border-border p-3 opacity-75">{body}</div>
+    </details>
   );
 }
 
@@ -1212,12 +1137,10 @@ export function ExecutionPage() {
 
   if (isLoading || !summary) return <Loading label="Loading execution" />;
 
-  const shadow = summary.shadow_summary;
   const account = summary.real_account_summary;
   const risk = summary.risk_summary ?? emptyRiskSummary;
   const latestSession = sessionsQuery.data?.sessions[0] ?? null;
   const isAdmin = user?.role === "admin";
-  const hasAccountSnapshot = account.latest_snapshot_at_ms != null;
   const detailQueryFailures = liveDetailsEnabled
     ? [
         sessionsQuery.isError ? "Session details" : null,
@@ -1229,46 +1152,6 @@ export function ExecutionPage() {
       ].filter((panel): panel is string => panel != null)
     : [];
   const detailPanelsDegraded = detailQueryFailures.length > 0;
-
-  if (isPaper) {
-    return (
-      <div className="space-y-3">
-        <Surface className="p-3">
-          <div className="text-lg font-semibold tracking-tight">Paper Mode</div>
-          <KeyValueList
-            items={[
-              {
-                label: "Process",
-                value: (
-                  <StatusChip
-                    label={processStateLabel(summary.process_state)}
-                    tone={processStateTone(summary.process_state)}
-                    compact
-                  />
-                ),
-              },
-              { label: "Mode", value: runtimeModeLabel(summary.runtime_mode) },
-              { label: "Open shadow trades", value: shadow.open_trades.toString() },
-              {
-                label: "Last tick",
-                value: shadow.last_tick_at != null ? formatDateTime(shadow.last_tick_at) : "n/a",
-              },
-            ]}
-          />
-        </Surface>
-
-        <ControlDeck
-          botId={botId}
-          summary={summary}
-          fingerprintPrefixValue={fingerprintPrefix(latestSession)}
-          isAdmin={isAdmin}
-          auditEntries={controlAuditQuery.data?.entries ?? []}
-          auditLoading={false}
-          previewMode
-        />
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-3">
@@ -1297,79 +1180,106 @@ export function ExecutionPage() {
         auditLoading={controlAuditQuery.isLoading}
       />
 
-      <OperationalState
-        summary={summary}
-        account={account}
-        hasSnapshot={hasAccountSnapshot}
-      />
+      <AccountSection summary={summary} account={account} />
 
-      {shadow.current_window && <MarketWindowStrip window={shadow.current_window} />}
-
-      <SectionCard title="Venue Activity">
-        <div className="grid gap-4 xl:grid-cols-2">
-          <ActivityPanel
-            title="Control Audit"
-            loading={controlAuditQuery.isLoading}
-            error={controlAuditQuery.isError ? controlAuditQuery.error : null}
-            loadingMessage="Loading control audit..."
-            errorMessage="Control audit is currently unavailable"
-            emptyMessage="No control commands recorded."
-            count={controlAuditQuery.data?.entries.length ?? 0}
-          >
-            {controlAuditQuery.data?.entries.map(renderAuditRow)}
-          </ActivityPanel>
-          <ActivityPanel
-            title="Orders"
-            loading={ordersQuery.isLoading}
-            error={ordersQuery.isError ? ordersQuery.error : null}
-            loadingMessage="Loading venue orders..."
-            errorMessage="Venue orders are currently unavailable"
-            emptyMessage={empty.noVenueOrders}
-            count={ordersQuery.data?.orders.length ?? 0}
-          >
-            {ordersQuery.data?.orders.map(renderOrderRow)}
-          </ActivityPanel>
-          <ActivityPanel
-            title="Fills"
-            loading={fillsQuery.isLoading}
-            error={fillsQuery.isError ? fillsQuery.error : null}
-            loadingMessage="Loading venue fills..."
-            errorMessage="Venue fills are currently unavailable"
-            emptyMessage={empty.noVenueFills}
-            count={fillsQuery.data?.fills.length ?? 0}
-          >
-            {fillsQuery.data?.fills.map(renderFillRow)}
-          </ActivityPanel>
-          <ActivityPanel
-            title="Redemptions"
-            loading={redemptionsQuery.isLoading}
-            error={redemptionsQuery.isError ? redemptionsQuery.error : null}
-            loadingMessage="Loading redemptions..."
-            errorMessage="Redemption details are currently unavailable"
-            emptyMessage={empty.noRedemptions}
-            count={redemptionsQuery.data?.redemptions.length ?? 0}
-          >
-            {redemptionsQuery.data?.redemptions.map(renderRedemptionRow)}
-          </ActivityPanel>
-          <ActivityPanel
-            title="Reconciliation"
-            loading={reconciliationQuery.isLoading}
-            error={reconciliationQuery.isError ? reconciliationQuery.error : null}
-            loadingMessage="Loading reconciliation..."
-            errorMessage="Reconciliation events are currently unavailable"
-            emptyMessage={empty.noReconciliation}
-            count={reconciliationQuery.data?.events.length ?? 0}
-          >
-            {reconciliationQuery.data?.events.map(renderReconciliationRow)}
-          </ActivityPanel>
-        </div>
-      </SectionCard>
+      {(() => {
+        const venueActive = modeMatches("live", summary.runtime_mode);
+        const venueBody = (
+          <div className="grid gap-4 xl:grid-cols-2">
+            <ActivityPanel
+              title="Orders"
+              loading={ordersQuery.isLoading}
+              error={ordersQuery.isError ? ordersQuery.error : null}
+              loadingMessage="Loading venue orders..."
+              errorMessage="Venue orders are currently unavailable"
+              emptyMessage={empty.noVenueOrders}
+              count={ordersQuery.data?.orders.length ?? 0}
+            >
+              {ordersQuery.data?.orders.map(renderOrderRow)}
+            </ActivityPanel>
+            <ActivityPanel
+              title="Fills"
+              loading={fillsQuery.isLoading}
+              error={fillsQuery.isError ? fillsQuery.error : null}
+              loadingMessage="Loading venue fills..."
+              errorMessage="Venue fills are currently unavailable"
+              emptyMessage={empty.noVenueFills}
+              count={fillsQuery.data?.fills.length ?? 0}
+            >
+              {fillsQuery.data?.fills.map(renderFillRow)}
+            </ActivityPanel>
+            <ActivityPanel
+              title="Redemptions"
+              loading={redemptionsQuery.isLoading}
+              error={redemptionsQuery.isError ? redemptionsQuery.error : null}
+              loadingMessage="Loading redemptions..."
+              errorMessage="Redemption details are currently unavailable"
+              emptyMessage={empty.noRedemptions}
+              count={redemptionsQuery.data?.redemptions.length ?? 0}
+            >
+              {redemptionsQuery.data?.redemptions.map(renderRedemptionRow)}
+            </ActivityPanel>
+            <ActivityPanel
+              title="Reconciliation"
+              loading={reconciliationQuery.isLoading}
+              error={reconciliationQuery.isError ? reconciliationQuery.error : null}
+              loadingMessage="Loading reconciliation..."
+              errorMessage="Reconciliation events are currently unavailable"
+              emptyMessage={empty.noReconciliation}
+              count={reconciliationQuery.data?.events.length ?? 0}
+            >
+              {reconciliationQuery.data?.events.map(renderReconciliationRow)}
+            </ActivityPanel>
+          </div>
+        );
+        if (venueActive) {
+          return (
+            <SectionCard
+              title="Venue Activity"
+              toolbar={<StatusChip label="Live" tone="neutral" compact />}
+            >
+              {venueBody}
+            </SectionCard>
+          );
+        }
+        return (
+          <details className="border border-border bg-bg">
+            <summary className="cursor-pointer px-3 py-2.5">
+              <span className="inline-flex items-baseline gap-2 flex-wrap">
+                <span className="text-[14px] font-semibold tracking-tight">Venue Activity</span>
+                <StatusChip label="Live" tone="muted" compact />
+                <span className="text-[11px] text-muted">
+                  Inactive in {readableMode(summary.runtime_mode)}.
+                </span>
+              </span>
+            </summary>
+            <div className="border-t border-border p-3 opacity-75">{venueBody}</div>
+          </details>
+        );
+      })()}
 
       <details className="border border-border bg-bg">
-        <summary className="cursor-pointer px-3 py-2 text-md font-semibold tracking-tight">
-          Session and Wallet
+        <summary className="cursor-pointer px-3 py-2.5">
+          <span className="inline-flex items-baseline gap-2 flex-wrap">
+            <span className="text-[14px] font-semibold tracking-tight">Session and Wallet</span>
+            <StatusChip
+              label="Live"
+              tone={modeMatches("live", summary.runtime_mode) ? "neutral" : "muted"}
+              compact
+            />
+            {!modeMatches("live", summary.runtime_mode) && (
+              <span className="text-[11px] text-muted">
+                Inactive in {readableMode(summary.runtime_mode)}.
+              </span>
+            )}
+          </span>
         </summary>
-        <div className="border-t border-border p-3">
+        <div
+          className={cn(
+            "border-t border-border p-3",
+            !modeMatches("live", summary.runtime_mode) && "opacity-75",
+          )}
+        >
           {sessionsQuery.isError && (
             <div className="mb-3 text-sm text-accent-blue">
               {queryErrorMessage(
@@ -1405,7 +1315,6 @@ export function ExecutionPage() {
                     ? account.enabled_strategies.join(", ")
                     : "n/a",
               },
-              { label: "Provider", value: account.provider ?? "n/a" },
               {
                 label: "Wallet",
                 value: account.wallet_address ? truncateMiddle(account.wallet_address) : "n/a",
@@ -1414,13 +1323,6 @@ export function ExecutionPage() {
                 label: "Proxy",
                 value: account.proxy_wallet ? truncateMiddle(account.proxy_wallet) : "n/a",
                 help: help.proxy,
-              },
-              {
-                label: "Latest session row",
-                value:
-                  latestSession != null
-                    ? `${latestSession.execution_mode} / ${latestSession.status}`
-                    : "n/a",
               },
               {
                 label: "Session fingerprint",

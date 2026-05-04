@@ -238,15 +238,18 @@ test("renders the execution cockpit", () => {
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  expect(screen.getByText("Runtime Status")).toBeInTheDocument();
   expect(screen.getByText("Controls")).toBeInTheDocument();
   expect(screen.getByText("Polymarket Account")).toBeInTheDocument();
   expect(screen.getByText("Venue Activity")).toBeInTheDocument();
   expect(screen.getByText("Session and Wallet")).toBeInTheDocument();
-  expect(screen.getAllByText("Live Readonly").length).toBeGreaterThan(0);
+  expect(screen.queryByText("Operator Activity")).not.toBeInTheDocument();
+  expect(screen.queryByText("Runtime Status")).not.toBeInTheDocument();
+  expect(screen.getAllByText("Live trading").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Inactive in live readonly mode.").length).toBeGreaterThan(0);
+  expect(screen.queryAllByText("Inactive in paper mode.")).toHaveLength(0);
 });
 
-test("paper mode renders the control deck as a read-only preview", () => {
+test("paper mode renders the same disabled control surface", () => {
   mockExecutionSummary(
     baseTradingSummary({
       runtime_mode: "paper",
@@ -277,9 +280,12 @@ test("paper mode renders the control deck as a read-only preview", () => {
 
   render(<ExecutionPage />, { wrapper: createWrapper() });
 
-  expect(screen.getByText("Paper Mode")).toBeInTheDocument();
+  expect(screen.getAllByText("Paper").length).toBeGreaterThan(0);
   expect(screen.getByText("Controls")).toBeInTheDocument();
-  expect(screen.queryByText(/Live controls are inactive/i)).not.toBeInTheDocument();
+  expect(screen.queryByText("Controls Disabled")).not.toBeInTheDocument();
+  expect(screen.queryAllByText(/Paper mode previews the live control surface/)).toHaveLength(0);
+  expect(screen.getAllByText("Live trading").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Inactive in paper mode.").length).toBeGreaterThan(0);
   expect(getActionButton("preflight", /^Preflight$/)).toBeDisabled();
   expect(getActionButton("arm", /^Arm$/)).toBeDisabled();
   expect(getActionButton("disarm", /^Disarm$/)).toBeDisabled();
@@ -307,7 +313,7 @@ test("queues an audited preflight command from live trading controls", async () 
   expect(await screen.findByText(/Command #123 queued as pending/)).toBeInTheDocument();
 });
 
-test("limits disarmed controls to preflight and arm", () => {
+test("keeps every control visible in disarmed mode", () => {
   mockExecutionSummary(baseTradingSummary());
   mockLatestSession();
 
@@ -315,8 +321,13 @@ test("limits disarmed controls to preflight and arm", () => {
 
   expect(screen.getByRole("button", { name: "Preflight" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Arm" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Kill Switch" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Cancel All" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Disarm" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Stop After Flat" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Cancel All" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Redeem All" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Kill Switch" })).toBeInTheDocument();
+  expect(screen.getAllByText("Live trading").length).toBeGreaterThan(0);
+  expect(screen.queryAllByText(/^Inactive in/)).toHaveLength(0);
 });
 
 test("blocks live-control mutations for observers", () => {
@@ -333,7 +344,7 @@ test("blocks live-control mutations for observers", () => {
   expect(mockSendLiveControl).not.toHaveBeenCalled();
 });
 
-test("does not expose arm controls after a live session halt", () => {
+test("keeps controls visible but gated after a live session halt", () => {
   mockExecutionSummary(
     baseTradingSummary({
       trading_state: "halted",
@@ -364,13 +375,13 @@ test("does not expose arm controls after a live session halt", () => {
 
   expect(screen.getByText("Session Halted")).toBeInTheDocument();
   expect(screen.getByText("not exported")).toBeInTheDocument();
+  expect(getActionButton("arm", /^Arm$/)).toBeDisabled();
   expect(getActionButton("cancel_all", /^Cancel All$/)).toBeDisabled();
   expect(getActionButton("redeem_all", /^Redeem All$/)).toBeDisabled();
-  expect(screen.queryByRole("button", { name: "Arm" })).toBeNull();
-  expect(screen.getByText(/Recovery Actions/)).toBeInTheDocument();
+  expect(screen.getByText("Controls")).toBeInTheDocument();
 });
 
-test("keeps unknown-order controls focused on reconciliation actions", () => {
+test("keeps every control visible in unknown-order state", () => {
   mockExecutionSummary(
     baseTradingSummary({
       trading_state: "unknown_order",
@@ -391,9 +402,10 @@ test("keeps unknown-order controls focused on reconciliation actions", () => {
 
   expect(screen.getByText("Unknown Order State")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Preflight" })).toBeInTheDocument();
+  expect(getActionButton("arm", /^Arm$/)).toBeDisabled();
+  expect(getActionButton("disarm", /^Disarm$/)).toBeDisabled();
   expect(screen.getByRole("button", { name: "Cancel All" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Kill Switch" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Arm" })).toBeNull();
 });
 
 test("blocks arming from mobile even with valid reason and confirmation", async () => {
@@ -420,7 +432,7 @@ test("blocks arming from mobile even with valid reason and confirmation", async 
   await user.type(getReasonField("arm"), "ready from phone");
   await user.type(getConfirmationField("arm"), 'ARM "paint" fingerprint-v');
 
-  expect(screen.getByText("Desktop confirmation required.")).toBeInTheDocument();
+  expect(within(getActionRow("arm")).getByText("Desktop confirmation required.")).toBeInTheDocument();
   expect(getActionButton("arm", /^Arm$/)).toBeDisabled();
   expect(mockSendLiveControl).not.toHaveBeenCalled();
 

@@ -1,0 +1,43 @@
+services:
+  sidecar:
+    build:
+      context: .
+      dockerfile: polymarket-sidecar/Dockerfile
+    image: buba-polymarket-sidecar:local
+    user: "${BUBA_UID:-1000}:${BUBA_GID:-1000}"
+    env_file:
+      - ${BUBA_SIDECAR_ENV:-.secrets/buba-paint-live-sidecar.env}
+    environment:
+      SIDECAR_HOST: 0.0.0.0
+      SIDECAR_PORT: "3210"
+      BUBA_SIDECAR_LOG_PATH: /runtime/sidecar.log
+    volumes:
+      - type: bind
+        source: ${BUBA_RUNTIME_DIR:-./.docker/runtime}
+        target: /runtime
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - |
+        touch "$$BUBA_SIDECAR_LOG_PATH"
+        node dist/index.js >> "$$BUBA_SIDECAR_LOG_PATH" 2>&1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3210/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - internal
+
+  paint:
+    environment:
+      EXECUTION_MODE: live_readonly
+      LIVE_SIDECAR_URL: http://sidecar:3210
+      FEED_EVENT_STORAGE_PROFILE: replay_grade
+      LATENCY_ARB_ENABLED: "true"
+      SPREAD_CAPTURE_ENABLED: "false"
+      CALM_PERSISTENCE_ENABLED: "false"
+    depends_on:
+      sidecar:
+        condition: service_healthy

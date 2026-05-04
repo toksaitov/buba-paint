@@ -11,7 +11,9 @@ COPY dashboard/server/Cargo.toml dashboard/server/Cargo.toml
 RUN cargo build --release -p buba-paint && rm -rf agent/ dashboard/
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/buba-paint /usr/local/bin/buba-paint
 ENTRYPOINT ["buba-paint"]
 CMD ["live", "--db-path", "/data/paint.db", "--balance", "200"]

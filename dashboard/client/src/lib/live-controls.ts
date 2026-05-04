@@ -85,28 +85,6 @@ export const controlActions: ControlActionConfig[] = [
   },
 ];
 
-export function visibleControlActions(tradingState: string): ControlActionConfig[] {
-  const visible = new Set<LiveControlAction>(visibilityFor(tradingState));
-  return controlActions.filter((config) => visible.has(config.action));
-}
-
-function visibilityFor(tradingState: string): LiveControlAction[] {
-  switch (tradingState) {
-    case "disarmed":
-      return ["preflight", "arm"];
-    case "armed":
-      return ["disarm", "stop_after_flat", "cancel_all", "redeem_all", "kill_switch"];
-    case "stop_after_flat":
-      return ["disarm", "cancel_all", "redeem_all", "kill_switch"];
-    case "unknown_order":
-      return ["preflight", "cancel_all", "kill_switch"];
-    case "halted":
-      return ["cancel_all", "redeem_all"];
-    default:
-      return ["preflight", "kill_switch"];
-  }
-}
-
 export function capabilityForAction(
   capabilities: TradingCapabilities,
   action: LiveControlAction,

@@ -22,10 +22,23 @@ make docs-audit
 
 cd dashboard/client && npm install && npm test
 cd polymarket-sidecar && npm install && npm test
-docker compose up -d
 ```
 
-Requires Rust 1.94+ and Node 22+ for local frontend and sidecar work. Docker Compose starts a local paper stack with paint, agent, and dashboard. It does not start the Polymarket sidecar or authenticated `live_readonly` monitoring.
+Requires Rust 1.94+ and Node 22+ for local frontend and sidecar work. Docker Compose starts a local paper stack with paint, agent, and dashboard when combined with the paper/local overrides.
+
+```bash
+mkdir -p .docker/runtime
+docker compose -f docker-compose.yml -f docker-compose.paper.yml -f docker-compose.local.yml up -d --build
+```
+
+The production deployment path uses Docker Compose with Caddy automatic HTTPS:
+
+```bash
+make docker-deploy-dry-run
+make docker-deploy
+```
+
+The default deployment target is `buba.toksaitov.com` on `buba-paint`, running `live_readonly` with no arming and no order placement.
 
 ## Where To Read Next
 
