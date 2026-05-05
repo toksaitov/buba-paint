@@ -220,10 +220,10 @@ pub async fn run_chainlink_feed(
             }
         };
 
-        if let Some(connection_lifetime_ms) = disconnect.connection_lifetime_ms {
-            if should_reset_backoff(0, connection_lifetime_ms, min_stable_ms) {
-                attempt = 0;
-            }
+        if let Some(connection_lifetime_ms) = disconnect.connection_lifetime_ms
+            && should_reset_backoff(0, connection_lifetime_ms, min_stable_ms)
+        {
+            attempt = 0;
         }
 
         let reconnect_delay = if attempt >= max_failures {
@@ -278,18 +278,18 @@ pub async fn run_chainlink_feed(
 pub(crate) fn parse_chainlink_payload(msg: &serde_json::Value) -> Vec<(f64, u64)> {
     let mut results = Vec::new();
 
-    if msg.get("topic").and_then(serde_json::Value::as_str) == Some("crypto_prices_chainlink") {
-        if let Some(payload) = msg.get("payload") {
-            let price = parse_f64_field(payload, "value");
-            let timestamp = payload
-                .get("timestamp")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
+    if msg.get("topic").and_then(serde_json::Value::as_str) == Some("crypto_prices_chainlink")
+        && let Some(payload) = msg.get("payload")
+    {
+        let price = parse_f64_field(payload, "value");
+        let timestamp = payload
+            .get("timestamp")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
 
-            if let Some(p) = price {
-                results.push((p, timestamp));
-                return results;
-            }
+        if let Some(p) = price {
+            results.push((p, timestamp));
+            return results;
         }
     }
 

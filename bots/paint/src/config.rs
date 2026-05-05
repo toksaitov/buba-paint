@@ -735,27 +735,29 @@ impl Config {
 
             db_path: env_str("DB_PATH", "./data/paint.db"),
 
-            latency_arb_momentum_threshold: env_f64("LATENCY_ARB_MOMENTUM_THRESHOLD", 0.0015),
-            latency_arb_max_ask: env_f64("LATENCY_ARB_MAX_ASK", 0.55),
+            latency_arb_momentum_threshold: env_f64("LATENCY_ARB_MOMENTUM_THRESHOLD", 0.0008),
+            latency_arb_max_ask: env_f64("LATENCY_ARB_MAX_ASK", 0.60),
             latency_arb_min_ask: env_f64("LATENCY_ARB_MIN_ASK", 0.30),
             latency_arb_cooldown_ms: env_u64("LATENCY_ARB_COOLDOWN_MS", 60_000),
             latency_arb_adaptive_window_ms: env_u64("LATENCY_ARB_ADAPTIVE_WINDOW_MS", 1_800_000),
             latency_arb_enabled: env_bool("LATENCY_ARB_ENABLED", true),
             latency_arb_max_position_fraction: env::var("LATENCY_ARB_MAX_POSITION_FRACTION")
                 .ok()
-                .and_then(|v| v.parse::<f64>().ok()),
+                .and_then(|v| v.parse::<f64>().ok())
+                .or(Some(0.125)),
 
-            spread_capture_threshold: env_f64("SPREAD_CAPTURE_THRESHOLD", 0.998),
+            spread_capture_threshold: env_f64("SPREAD_CAPTURE_THRESHOLD", 0.970),
             spread_capture_min_ask: env_f64("SPREAD_CAPTURE_MIN_ASK", 0.15),
             spread_capture_max_leg_skew_ms: env_u64("SPREAD_CAPTURE_MAX_LEG_SKEW_MS", 25),
             spread_capture_max_quote_churn_per_s: env_f64(
                 "SPREAD_CAPTURE_MAX_QUOTE_CHURN_PER_S",
                 8.0,
             ),
-            spread_capture_enabled: env_bool("SPREAD_CAPTURE_ENABLED", true),
+            spread_capture_enabled: env_bool("SPREAD_CAPTURE_ENABLED", false),
             spread_capture_max_position_fraction: env::var("SPREAD_CAPTURE_MAX_POSITION_FRACTION")
                 .ok()
-                .and_then(|v| v.parse::<f64>().ok()),
+                .and_then(|v| v.parse::<f64>().ok())
+                .or(Some(0.05)),
 
             calm_persistence_enabled: env_bool("CALM_PERSISTENCE_ENABLED", false),
             calm_persistence_min_window_time_ms: env_u64(
@@ -769,15 +771,15 @@ impl Config {
             calm_persistence_max_ask: env_f64("CALM_PERSISTENCE_MAX_ASK", 0.65),
             calm_persistence_min_abs_distance_bps: env_f64(
                 "CALM_PERSISTENCE_MIN_ABS_DISTANCE_BPS",
-                5.0,
+                6.0,
             ),
             calm_persistence_distance_vol_ratio_threshold: env_f64(
                 "CALM_PERSISTENCE_DISTANCE_VOL_RATIO_THRESHOLD",
-                2.0,
+                1.0,
             ),
             calm_persistence_max_realized_vol_15s_bps: env_f64(
                 "CALM_PERSISTENCE_MAX_REALIZED_VOL_15S_BPS",
-                35.0,
+                80.0,
             ),
             calm_persistence_max_open_crosses_30s: env_u64(
                 "CALM_PERSISTENCE_MAX_OPEN_CROSSES_30S",
@@ -785,24 +787,25 @@ impl Config {
             ) as u32,
             calm_persistence_max_quote_churn_per_s: env_f64(
                 "CALM_PERSISTENCE_MAX_QUOTE_CHURN_PER_S",
-                20.0,
+                100.0,
             ),
             calm_persistence_min_alignment_fraction: env_f64(
                 "CALM_PERSISTENCE_MIN_ALIGNMENT_FRACTION",
-                0.60,
+                0.50,
             ),
-            calm_persistence_max_fair_bias: env_f64("CALM_PERSISTENCE_MAX_FAIR_BIAS", 0.18),
-            calm_persistence_min_expected_edge: env_f64("CALM_PERSISTENCE_MIN_EXPECTED_EDGE", 0.0),
+            calm_persistence_max_fair_bias: env_f64("CALM_PERSISTENCE_MAX_FAIR_BIAS", 0.35),
+            calm_persistence_min_expected_edge: env_f64("CALM_PERSISTENCE_MIN_EXPECTED_EDGE", 0.05),
             calm_persistence_max_position_fraction: env::var(
                 "CALM_PERSISTENCE_MAX_POSITION_FRACTION",
             )
             .ok()
-            .and_then(|v| v.parse::<f64>().ok()),
+            .and_then(|v| v.parse::<f64>().ok())
+            .or(Some(0.05)),
 
             momentum_window_ms: env_u64("MOMENTUM_WINDOW_MS", 30_000),
 
-            starting_balance: env_f64("STARTING_BALANCE", 150.0),
-            max_position_fraction: env_f64("MAX_POSITION_FRACTION", 0.10),
+            starting_balance: env_f64("STARTING_BALANCE", 100.0),
+            max_position_fraction: env_f64("MAX_POSITION_FRACTION", 0.05),
             min_balance_threshold: env_f64("MIN_BALANCE_THRESHOLD", 20.0),
             max_drawdown_pct: env_f64("MAX_DRAWDOWN_PCT", 0.50),
             max_position_usd_fraction: env_f64("MAX_POSITION_USD_FRACTION", 0.20),
@@ -870,15 +873,15 @@ impl Config {
             resolution_poll_delay_ms: 10_000,
             pending_settlement_family_reserve_fraction: env_f64(
                 "PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION",
-                PendingSettlementPolicy::conservative().family_reserve_fraction,
+                0.0,
             ),
             pending_settlement_global_reserve_fraction: env_f64(
                 "PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION",
-                PendingSettlementPolicy::conservative().global_reserve_fraction,
+                0.25,
             ),
             pending_settlement_counts_as_open_position: env_bool(
                 "PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION",
-                PendingSettlementPolicy::conservative().counts_as_open_position,
+                false,
             ),
             backtest_settlement_mode: BacktestSettlementMode::from_env_value(
                 env::var("BACKTEST_SETTLEMENT_MODE").ok().as_deref(),
@@ -926,39 +929,39 @@ impl Default for Config {
 
             db_path: "./data/paint.db".to_string(),
 
-            latency_arb_momentum_threshold: 0.0015,
-            latency_arb_max_ask: 0.55,
+            latency_arb_momentum_threshold: 0.0008,
+            latency_arb_max_ask: 0.60,
             latency_arb_min_ask: 0.30,
             latency_arb_cooldown_ms: 60_000,
             latency_arb_adaptive_window_ms: 1_800_000,
             latency_arb_enabled: true,
-            latency_arb_max_position_fraction: None,
+            latency_arb_max_position_fraction: Some(0.125),
 
-            spread_capture_threshold: 0.998,
+            spread_capture_threshold: 0.970,
             spread_capture_min_ask: 0.15,
             spread_capture_max_leg_skew_ms: 25,
             spread_capture_max_quote_churn_per_s: 8.0,
-            spread_capture_enabled: true,
-            spread_capture_max_position_fraction: None,
+            spread_capture_enabled: false,
+            spread_capture_max_position_fraction: Some(0.05),
 
             calm_persistence_enabled: false,
             calm_persistence_min_window_time_ms: 30_000,
             calm_persistence_max_window_time_ms: 90_000,
             calm_persistence_max_ask: 0.65,
-            calm_persistence_min_abs_distance_bps: 5.0,
-            calm_persistence_distance_vol_ratio_threshold: 2.0,
-            calm_persistence_max_realized_vol_15s_bps: 35.0,
+            calm_persistence_min_abs_distance_bps: 6.0,
+            calm_persistence_distance_vol_ratio_threshold: 1.0,
+            calm_persistence_max_realized_vol_15s_bps: 80.0,
             calm_persistence_max_open_crosses_30s: 1,
-            calm_persistence_max_quote_churn_per_s: 20.0,
-            calm_persistence_min_alignment_fraction: 0.60,
-            calm_persistence_max_fair_bias: 0.18,
-            calm_persistence_min_expected_edge: 0.0,
-            calm_persistence_max_position_fraction: None,
+            calm_persistence_max_quote_churn_per_s: 100.0,
+            calm_persistence_min_alignment_fraction: 0.50,
+            calm_persistence_max_fair_bias: 0.35,
+            calm_persistence_min_expected_edge: 0.05,
+            calm_persistence_max_position_fraction: Some(0.05),
 
             momentum_window_ms: 30_000,
 
-            starting_balance: 150.0,
-            max_position_fraction: 0.10,
+            starting_balance: 100.0,
+            max_position_fraction: 0.05,
             min_balance_threshold: 20.0,
             max_drawdown_pct: 0.50,
             max_position_usd_fraction: 0.20,
@@ -1014,12 +1017,9 @@ impl Default for Config {
             resolution_poll_retries: 30,
             resolution_initial_delay_ms: 30_000,
             resolution_poll_delay_ms: 10_000,
-            pending_settlement_family_reserve_fraction: PendingSettlementPolicy::conservative()
-                .family_reserve_fraction,
-            pending_settlement_global_reserve_fraction: PendingSettlementPolicy::conservative()
-                .global_reserve_fraction,
-            pending_settlement_counts_as_open_position: PendingSettlementPolicy::conservative()
-                .counts_as_open_position,
+            pending_settlement_family_reserve_fraction: 0.0,
+            pending_settlement_global_reserve_fraction: 0.25,
+            pending_settlement_counts_as_open_position: false,
             backtest_settlement_mode: BacktestSettlementMode::Immediate,
         }
     }

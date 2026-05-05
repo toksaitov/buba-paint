@@ -1040,6 +1040,7 @@ async fn live_bot_persists_rejection_summaries_for_no_signal_window() {
         &gamma_mock.uri(),
     );
     config.min_window_time_ms = 0;
+    config.spread_capture_enabled = true;
     config.spread_capture_threshold = 0.97;
     config.latency_arb_max_ask = 0.60;
 
@@ -1118,6 +1119,7 @@ async fn live_bot_rejects_unaffordable_spread_before_logging_signal_rows() {
         &gamma_mock.uri(),
     );
     config.min_window_time_ms = 0;
+    config.spread_capture_enabled = true;
     config.spread_capture_threshold = 1.0;
     config.spread_capture_max_quote_churn_per_s = 50.0;
     config.max_position_fraction = 0.05;
@@ -1412,8 +1414,11 @@ async fn live_bot_spread_capture_executes() {
         &chainlink_mock.url,
         &gamma_mock.uri(),
     );
+    config.spread_capture_enabled = true;
+    config.spread_capture_max_position_fraction = Some(0.60);
     config.spread_capture_threshold = 0.90;
     config.spread_capture_min_ask = 0.15;
+    config.max_position_usd_fraction = 1.0;
     config.latency_arb_momentum_threshold = 99.0;
     config.min_window_time_ms = 0;
 

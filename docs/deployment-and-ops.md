@@ -7,8 +7,8 @@ This document describes durable local and remote operations guidance.
 Use `/tmp` for local DBs and logs when testing manually:
 
 ```bash
-cargo run -p buba-paint --release -- init-db --db-path /tmp/paint.db --balance 200
-cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 200
+cargo run -p buba-paint --release -- init-db --db-path /tmp/paint.db --balance 100
+cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 100
 ```
 
 Docker Compose starts a local paper stack:

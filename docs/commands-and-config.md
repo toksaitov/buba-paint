@@ -4,6 +4,8 @@ This document keeps durable command and configuration guidance. Use [Readme.md](
 
 ## Build and Local Checks
 
+Supported local toolchains are Rust `1.94+` and Node `22+`. Current dashboard toolchain majors are intentionally held at TypeScript `5.9`, ESLint `9`, and `@types/node` `24` until the existing config is migrated deliberately. The Rust workspace currently holds `rusqlite` at `0.33` because newer `rusqlite` releases removed direct `u64` SQL conversions used throughout the DB boundary.
+
 ```bash
 cargo build
 cargo build --release
@@ -65,9 +67,9 @@ Use `LIVE_HOST_SOAK_ARGS="--dry-run"` to inspect the command plan without touchi
 ## Bot Commands
 
 ```bash
-cargo run -p buba-paint --release -- init-db --db-path /tmp/paint.db --balance 200
-cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 200
-cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 200 --set LATENCY_ARB_MAX_ASK=0.55
+cargo run -p buba-paint --release -- init-db --db-path /tmp/paint.db --balance 100
+cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 100
+cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 100 --set LATENCY_ARB_MAX_ASK=0.60
 cargo run -p buba-paint --release -- live-preflight
 cargo run -p buba-paint --release -- latency-probe --timeout-ms 3000
 cargo run -p buba-paint --release -- db-footprint --db-path /tmp/paint.db
@@ -82,7 +84,7 @@ cargo run -p buba-paint --release -- backtest \
   --data data/market-data.db \
   --start 2026-02-20T03:13 \
   --end 2026-02-28T00:00 \
-  --balance 200
+  --balance 100
 
 cargo run -p buba-paint --release -- validate-replay-data \
   --data data/market-data.db \
@@ -127,13 +129,13 @@ cargo run -p buba-paint --release -- backtest \
   --data /tmp/run-replay-data.db \
   --start 2026-04-04T20:15 \
   --end 2026-04-08T17:25 \
-  --balance 200 \
+  --balance 100 \
   --set LATENCY_ARB_ENABLED=true \
-  --set SPREAD_CAPTURE_ENABLED=true \
-  --set CALM_PERSISTENCE_ENABLED=true
+  --set SPREAD_CAPTURE_ENABLED=false \
+  --set CALM_PERSISTENCE_ENABLED=false
 ```
 
-The pending-settlement reserve defaults are conservative. Override them only when intentionally comparing compatibility or risky modes. See [pending-settlement-modes.md](./pending-settlement-modes.md).
+The pending-settlement reserve defaults match the selected run-012 latency-only canary profile. Override them only when intentionally comparing compatibility or conservative modes. See [pending-settlement-modes.md](./pending-settlement-modes.md).
 
 ## Core Environment Knobs
 
@@ -149,7 +151,7 @@ Important groups:
 - Strategy toggles: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, `CALM_PERSISTENCE_ENABLED`.
 - Sidecar: `LIVE_SIDECAR_URL`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_PROXY_WALLET`, `POLYMARKET_FUNDER`, `POLYMARKET_RELAYER_HOST`, `POLYMARKET_RELAYER_API_KEY`, `POLYMARKET_RELAYER_API_KEY_ADDRESS`, `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, `POLYMARKET_BUILDER_PASSPHRASE`.
 
-The sidecar CLOB boundary uses `@polymarket/clob-client-v2`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted. Optional CLOB L2 credentials may be configured with `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, and `POLYMARKET_API_PASSPHRASE`; otherwise the sidecar derives or creates them through authenticated CLOB L1 bootstrap. Gasless redemption uses the builder relayer SDK path and stays fail-closed unless the configured credentials are complete.
+The sidecar CLOB boundary uses `@polymarket/clob-client-v2@1.0.3`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted. Optional CLOB L2 credentials may be configured with `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, and `POLYMARKET_API_PASSPHRASE`; otherwise the sidecar derives or creates them through authenticated CLOB L1 bootstrap. Gasless redemption uses `@polymarket/builder-relayer-client@0.0.9` with `@polymarket/builder-signing-sdk@1.0.0` and stays fail-closed unless the configured credentials are complete.
 
 `live_trading` starts disarmed and is local-verification only until deployment and final canary phases are complete. Do not treat the presence of live caps, sidecar credentials, callable sidecar write endpoints, or queued `live-control` commands as permission to deploy real money.
 

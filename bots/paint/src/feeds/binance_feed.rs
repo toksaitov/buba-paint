@@ -173,10 +173,10 @@ pub async fn run_binance_feed(
             }
         };
 
-        if let Some(connection_lifetime_ms) = disconnect.connection_lifetime_ms {
-            if should_reset_backoff(0, connection_lifetime_ms, min_stable_ms) {
-                attempt = 0;
-            }
+        if let Some(connection_lifetime_ms) = disconnect.connection_lifetime_ms
+            && should_reset_backoff(0, connection_lifetime_ms, min_stable_ms)
+        {
+            attempt = 0;
         }
 
         let reconnect_delay = if attempt >= max_failures {

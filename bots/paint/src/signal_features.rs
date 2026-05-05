@@ -910,10 +910,11 @@ fn signed_price_side(price: f64, open_price: f64) -> Option<i8> {
 /// Fill observed freshness from the raw source timestamp when tests or replay
 /// supply older `TopOfBook` values without the live-only freshness field.
 fn normalize_observed_timestamp(book: Option<&mut TopOfBook>) {
-    if let Some(book) = book {
-        if book.observed_at_ms == 0 && book.timestamp > 0 {
-            book.observed_at_ms = book.timestamp;
-        }
+    if let Some(book) = book
+        && book.observed_at_ms == 0
+        && book.timestamp > 0
+    {
+        book.observed_at_ms = book.timestamp;
     }
 }
 

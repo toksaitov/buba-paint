@@ -59,39 +59,39 @@ impl FeedState {
             }
         }
 
-        if let Some(ref sample) = group.chainlink {
-            if let Some(price) = sample.price {
-                self.chainlink_price = Some(price);
-                self.signal_state
-                    .update_chainlink(price, group.timestamp, group.timestamp_us);
-            }
+        if let Some(ref sample) = group.chainlink
+            && let Some(price) = sample.price
+        {
+            self.chainlink_price = Some(price);
+            self.signal_state
+                .update_chainlink(price, group.timestamp, group.timestamp_us);
         }
 
         if group.clob_up.is_some() || group.clob_down.is_some() {
             let mut book_state = self.book_state.clone();
-            if let Some(ref sample) = group.clob_up {
-                if let (Some(bid), Some(ask)) = (sample.bid, sample.ask) {
-                    book_state.up = Some(crate::types::TopOfBook {
-                        best_bid: bid,
-                        best_ask: ask,
-                        bid_size: sample.bid_size.unwrap_or(0.0),
-                        ask_size: sample.ask_size.unwrap_or(0.0),
-                        timestamp: group.timestamp,
-                        observed_at_ms: group.timestamp,
-                    });
-                }
+            if let Some(ref sample) = group.clob_up
+                && let (Some(bid), Some(ask)) = (sample.bid, sample.ask)
+            {
+                book_state.up = Some(crate::types::TopOfBook {
+                    best_bid: bid,
+                    best_ask: ask,
+                    bid_size: sample.bid_size.unwrap_or(0.0),
+                    ask_size: sample.ask_size.unwrap_or(0.0),
+                    timestamp: group.timestamp,
+                    observed_at_ms: group.timestamp,
+                });
             }
-            if let Some(ref sample) = group.clob_down {
-                if let (Some(bid), Some(ask)) = (sample.bid, sample.ask) {
-                    book_state.down = Some(crate::types::TopOfBook {
-                        best_bid: bid,
-                        best_ask: ask,
-                        bid_size: sample.bid_size.unwrap_or(0.0),
-                        ask_size: sample.ask_size.unwrap_or(0.0),
-                        timestamp: group.timestamp,
-                        observed_at_ms: group.timestamp,
-                    });
-                }
+            if let Some(ref sample) = group.clob_down
+                && let (Some(bid), Some(ask)) = (sample.bid, sample.ask)
+            {
+                book_state.down = Some(crate::types::TopOfBook {
+                    best_bid: bid,
+                    best_ask: ask,
+                    bid_size: sample.bid_size.unwrap_or(0.0),
+                    ask_size: sample.ask_size.unwrap_or(0.0),
+                    timestamp: group.timestamp,
+                    observed_at_ms: group.timestamp,
+                });
             }
             self.book_state = book_state.clone();
             self.signal_state

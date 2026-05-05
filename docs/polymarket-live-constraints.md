@@ -21,9 +21,9 @@ Official client coverage is uneven:
 - CLOB client support exists in Rust, TypeScript, and Python
 - relayer SDK support exists in TypeScript and Python
 
-Because of that split, the repo uses a TypeScript sidecar for the full authenticated venue boundary instead of trying to mix Rust CLOB calls with ad hoc redemption code. The active sidecar CLOB dependency is `@polymarket/clob-client-v2`. Legacy V1 CLOB, order-utils, and builder-signing packages are not part of the readonly CLOB boundary.
+Because of that split, the repo uses a TypeScript sidecar for the full authenticated venue boundary instead of trying to mix Rust CLOB calls with ad hoc redemption code. The active sidecar CLOB dependency is `@polymarket/clob-client-v2@1.0.3`. Legacy V1 CLOB and order-utils packages are not part of the readonly CLOB boundary.
 
-Gasless CTF redemption uses `@polymarket/builder-relayer-client` with `@polymarket/builder-signing-sdk`. The current sidecar fails closed unless builder relayer credentials are configured; plain relayer API key fields are tracked as config but are not treated as sufficient for redemption with the installed TypeScript SDK.
+Gasless CTF redemption uses `@polymarket/builder-relayer-client@0.0.9` with `@polymarket/builder-signing-sdk@1.0.0`. The current sidecar fails closed unless builder relayer credentials are configured; plain relayer API key fields are tracked as config but are not treated as sufficient for redemption with the installed TypeScript SDK.
 
 ## CLOB V2 and collateral
 

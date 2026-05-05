@@ -117,10 +117,10 @@ impl FeedEventStorageState {
         }
         let snapshot = persisted_top_of_book(&event)?;
         let key = clob_storage_key(&event);
-        if let Some(previous) = self.clob_top_of_book.get(&key) {
-            if previous.bucket_ms == snapshot.bucket_ms || same_top_of_book(previous, &snapshot) {
-                return None;
-            }
+        if let Some(previous) = self.clob_top_of_book.get(&key)
+            && (previous.bucket_ms == snapshot.bucket_ms || same_top_of_book(previous, &snapshot))
+        {
+            return None;
         }
         self.clob_top_of_book.insert(key, snapshot);
         event.microprice = compute_microprice(

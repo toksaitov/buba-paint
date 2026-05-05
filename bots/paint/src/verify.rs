@@ -222,7 +222,7 @@ pub async fn run_verify_settlements(
         let result = handle.await.context("task panicked")?;
         results.push(result);
         done += 1;
-        if done % 500 == 0 || done == total {
+        if done.is_multiple_of(500) || done == total {
             println!("[verify] Progress: {done}/{total}");
         }
     }

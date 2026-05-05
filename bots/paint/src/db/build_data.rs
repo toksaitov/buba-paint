@@ -274,11 +274,11 @@ pub fn build_market_data(runs_dir: &str, output: &str) -> anyhow::Result<()> {
         log("Removed existing output DB");
     }
 
-    if let Some(parent) = Path::new(output).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating directory for output: {}", parent.display()))?;
-        }
+    if let Some(parent) = Path::new(output).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating directory for output: {}", parent.display()))?;
     }
 
     let conn = Connection::open(output).context("creating output database")?;

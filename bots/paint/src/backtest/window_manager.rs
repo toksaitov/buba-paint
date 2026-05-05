@@ -121,11 +121,11 @@ impl WindowManager {
             closed: None,
         };
 
-        if let Some(ref current) = self.current {
-            if timestamp >= current.end_time {
-                events.closed = Some(current.clone());
-                self.current = None;
-            }
+        if let Some(ref current) = self.current
+            && timestamp >= current.end_time
+        {
+            events.closed = Some(current.clone());
+            self.current = None;
         }
 
         while self.current.is_none() && self.cursor < self.windows.len() {

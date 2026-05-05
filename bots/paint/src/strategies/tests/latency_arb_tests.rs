@@ -206,7 +206,7 @@ fn max_ask_filter_blocks_expensive_entries() {
     let config = test_config();
     let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
 
-    let ctx = ctx_with(0.0020, book(0.55, 0.60, 0.45, 0.50), 120_000);
+    let ctx = ctx_with(0.0020, book(0.60, 0.65, 0.45, 0.50), 120_000);
     let result = strat.evaluate(&ctx, &config, 1_000_000);
     assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
 }
@@ -483,7 +483,16 @@ fn ask_exactly_at_max_does_not_fire() {
     let config = test_config();
     let mut strat = LatencyArbStrategy::new(config.latency_arb_momentum_threshold);
 
-    let ctx = ctx_with(0.0020, book(0.50, 0.55, 0.45, 0.50), 120_000);
+    let ctx = ctx_with(
+        0.0020,
+        book(
+            config.latency_arb_max_ask - 0.05,
+            config.latency_arb_max_ask,
+            0.45,
+            0.50,
+        ),
+        120_000,
+    );
     let result = strat.evaluate(&ctx, &config, 1_000_000);
     assert_rejected(result, StrategyRejectionReason::DirectionNotSelected);
 }

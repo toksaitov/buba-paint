@@ -2,7 +2,7 @@
 name = "buba-agent"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94"
 description = "Monitoring agent for buba trading bots"
 
 [lints.rust]
@@ -41,7 +41,7 @@ shell-words = "1"
 libc = "0.2"
 
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 tempfile = "3"
-tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 tower = { version = "0.5", features = ["util"] }

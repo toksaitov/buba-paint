@@ -1619,10 +1619,10 @@ async fn run_live_runtime(
                     timer.tick().await;
                 }
             }, if live_trading_monitor.is_some() => {
-                if let Some(monitor) = live_trading_monitor.as_mut() {
-                    if let Err(error) = monitor.apply_pending_controls(db_path, &config, &clock).await {
-                        error!("failed to apply live-control command: {error}");
-                    }
+                if let Some(monitor) = live_trading_monitor.as_mut()
+                    && let Err(error) = monitor.apply_pending_controls(db_path, &config, &clock).await
+                {
+                    error!("failed to apply live-control command: {error}");
                 }
             }
 
@@ -1631,10 +1631,10 @@ async fn run_live_runtime(
                     timer.tick().await;
                 }
             }, if live_trading_monitor.is_some() => {
-                if let Some(monitor) = live_trading_monitor.as_mut() {
-                    if let Err(error) = monitor.refresh_remote_state(db_path, &config, &clock).await {
-                        error!("failed to refresh live-trading remote state: {error}");
-                    }
+                if let Some(monitor) = live_trading_monitor.as_mut()
+                    && let Err(error) = monitor.refresh_remote_state(db_path, &config, &clock).await
+                {
+                    error!("failed to refresh live-trading remote state: {error}");
                 }
             }
 

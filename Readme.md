@@ -68,7 +68,7 @@ Run `buba-paint validate-replay-data` before any long sweep. For funded live int
 ## Main Commands
 
 ```bash
-cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 200
+cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 100
 cargo run -p buba-paint --release -- live-preflight
 cargo run -p buba-paint --release -- live-control --db-path /tmp/paint.db arm --actor operator --reason "preflight passed"
 cargo run -p buba-paint --release -- backtest --data data/market-data.db --start 2026-02-20 --end 2026-03-04

@@ -11,21 +11,22 @@
   },
   "dependencies": {
     "@ethersproject/wallet": "^5.8.0",
-    "@polymarket/builder-relayer-client": "^0.0.8",
-    "@polymarket/builder-signing-sdk": "^0.0.8",
-    "@polymarket/clob-client-v2": "^1.0.2",
-    "viem": "^2.48.7",
+    "@polymarket/builder-relayer-client": "^0.0.9",
+    "@polymarket/builder-signing-sdk": "^1.0.0",
+    "@polymarket/clob-client-v2": "^1.0.3",
+    "viem": "^2.48.8",
     "ws": "^8.20.0"
   },
   "overrides": {
     "@polymarket/builder-relayer-client": {
-      "axios": "^1.15.0"
+      "axios": "^1.15.0",
+      "@polymarket/builder-signing-sdk": "1.0.0"
     }
   },
   "devDependencies": {
     "@types/node": "^24.12.0",
     "@types/ws": "^8.18.1",
     "typescript": "~5.9.3",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.5"
   }
 }

@@ -465,13 +465,13 @@ fn readonly_soft_issues(
         ) {
             issues.push("Allowance is unavailable for a future trading session.".to_string());
         }
-        if let Some(cash_available) = preflight.available_cash_usd {
-            if cash_available + CASH_CHANGE_EPSILON_USD < config.live_min_required_cash_usd {
-                issues.push(format!(
-                    "Available cash {:.2} is below LIVE_MIN_REQUIRED_CASH_USD {:.2}.",
-                    cash_available, config.live_min_required_cash_usd
-                ));
-            }
+        if let Some(cash_available) = preflight.available_cash_usd
+            && cash_available + CASH_CHANGE_EPSILON_USD < config.live_min_required_cash_usd
+        {
+            issues.push(format!(
+                "Available cash {:.2} is below LIVE_MIN_REQUIRED_CASH_USD {:.2}.",
+                cash_available, config.live_min_required_cash_usd
+            ));
         }
         if let Some(legal_order_min) = preflight.legal_order_min_usd {
             if legal_order_min > config.live_max_single_order_usd + CASH_CHANGE_EPSILON_USD {
@@ -480,12 +480,12 @@ fn readonly_soft_issues(
                     legal_order_min, config.live_max_single_order_usd
                 ));
             }
-            if let Some(cash_available) = preflight.available_cash_usd {
-                if cash_available + CASH_CHANGE_EPSILON_USD < legal_order_min {
-                    issues.push(format!(
-                        "Available cash {cash_available:.2} is below the live venue minimum order size {legal_order_min:.2}.",
-                    ));
-                }
+            if let Some(cash_available) = preflight.available_cash_usd
+                && cash_available + CASH_CHANGE_EPSILON_USD < legal_order_min
+            {
+                issues.push(format!(
+                    "Available cash {cash_available:.2} is below the live venue minimum order size {legal_order_min:.2}.",
+                ));
             }
         }
     }

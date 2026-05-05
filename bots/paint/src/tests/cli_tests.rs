@@ -444,7 +444,7 @@ fn cli_live_default_values() {
             db_path, balance, ..
         } => {
             assert_eq!(db_path, "./data/paint.db");
-            assert!((balance - 150.0).abs() < f64::EPSILON);
+            assert!((balance - 100.0).abs() < f64::EPSILON);
         }
         _ => panic!("expected Live command"),
     }

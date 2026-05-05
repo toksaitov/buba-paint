@@ -33,20 +33,20 @@ fn default_values_match_typescript() {
 
     assert_eq!(cfg.db_path, "./data/paint.db");
 
-    assert!((cfg.latency_arb_momentum_threshold - 0.0015).abs() < f64::EPSILON);
-    assert!((cfg.latency_arb_max_ask - 0.55).abs() < f64::EPSILON);
+    assert!((cfg.latency_arb_momentum_threshold - 0.0008).abs() < f64::EPSILON);
+    assert!((cfg.latency_arb_max_ask - 0.60).abs() < f64::EPSILON);
     assert!((cfg.latency_arb_min_ask - 0.30).abs() < f64::EPSILON);
     assert_eq!(cfg.latency_arb_cooldown_ms, 60_000);
 
-    assert!((cfg.spread_capture_threshold - 0.998).abs() < f64::EPSILON);
+    assert!((cfg.spread_capture_threshold - 0.970).abs() < f64::EPSILON);
     assert!((cfg.spread_capture_min_ask - 0.15).abs() < f64::EPSILON);
     assert!((cfg.spread_capture_max_quote_churn_per_s - 8.0).abs() < f64::EPSILON);
-    assert_eq!(cfg.spread_capture_max_position_fraction, None);
+    assert_eq!(cfg.spread_capture_max_position_fraction, Some(0.05));
 
     assert_eq!(cfg.momentum_window_ms, 30_000);
 
-    assert!((cfg.starting_balance - 150.0).abs() < f64::EPSILON);
-    assert!((cfg.max_position_fraction - 0.10).abs() < f64::EPSILON);
+    assert!((cfg.starting_balance - 100.0).abs() < f64::EPSILON);
+    assert!((cfg.max_position_fraction - 0.05).abs() < f64::EPSILON);
     assert!((cfg.min_balance_threshold - 20.0).abs() < f64::EPSILON);
     assert!((cfg.max_drawdown_pct - 0.50).abs() < f64::EPSILON);
     assert!((cfg.max_position_usd_fraction - 0.20).abs() < f64::EPSILON);
@@ -75,20 +75,21 @@ fn default_values_match_typescript() {
 
     assert!(!cfg.regime_detection_enabled);
     assert!(cfg.latency_arb_enabled);
-    assert!(cfg.spread_capture_enabled);
+    assert!(!cfg.spread_capture_enabled);
     assert!(!cfg.calm_persistence_enabled);
-    assert_eq!(cfg.latency_arb_max_position_fraction, None);
-    assert_eq!(cfg.calm_persistence_max_position_fraction, None);
+    assert_eq!(cfg.latency_arb_max_position_fraction, Some(0.125));
+    assert_eq!(cfg.calm_persistence_max_position_fraction, Some(0.05));
     assert_eq!(cfg.calm_persistence_min_window_time_ms, 30_000);
     assert_eq!(cfg.calm_persistence_max_window_time_ms, 90_000);
     assert!((cfg.calm_persistence_max_ask - 0.65).abs() < f64::EPSILON);
-    assert!((cfg.calm_persistence_min_abs_distance_bps - 5.0).abs() < f64::EPSILON);
-    assert!((cfg.calm_persistence_distance_vol_ratio_threshold - 2.0).abs() < f64::EPSILON);
-    assert!((cfg.calm_persistence_max_realized_vol_15s_bps - 35.0).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_min_abs_distance_bps - 6.0).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_distance_vol_ratio_threshold - 1.0).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_max_realized_vol_15s_bps - 80.0).abs() < f64::EPSILON);
     assert_eq!(cfg.calm_persistence_max_open_crosses_30s, 1);
-    assert!((cfg.calm_persistence_max_quote_churn_per_s - 20.0).abs() < f64::EPSILON);
-    assert!((cfg.calm_persistence_min_alignment_fraction - 0.60).abs() < f64::EPSILON);
-    assert!((cfg.calm_persistence_max_fair_bias - 0.18).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_max_quote_churn_per_s - 100.0).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_min_alignment_fraction - 0.50).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_max_fair_bias - 0.35).abs() < f64::EPSILON);
+    assert!((cfg.calm_persistence_min_expected_edge - 0.05).abs() < f64::EPSILON);
 
     assert_eq!(cfg.log_level, "info");
 
@@ -102,7 +103,7 @@ fn default_values_match_typescript() {
     assert_eq!(cfg.resolution_initial_delay_ms, 30_000);
     assert_eq!(cfg.resolution_poll_delay_ms, 10_000);
     assert!((cfg.pending_settlement_family_reserve_fraction - 0.0).abs() < f64::EPSILON);
-    assert!((cfg.pending_settlement_global_reserve_fraction - 1.0).abs() < f64::EPSILON);
+    assert!((cfg.pending_settlement_global_reserve_fraction - 0.25).abs() < f64::EPSILON);
     assert!(!cfg.pending_settlement_counts_as_open_position);
     assert_eq!(
         cfg.backtest_settlement_mode,
@@ -110,15 +111,15 @@ fn default_values_match_typescript() {
     );
 }
 
-/// Verifies that the default pending-settlement policy is conservative.
+/// Verifies that the default pending-settlement policy matches the run-012 canary baseline.
 #[test]
-fn default_pending_settlement_policy_is_conservative() {
+fn default_pending_settlement_policy_matches_run012_canary() {
     let cfg = Config::default();
     let policy = cfg.pending_settlement_policy().unwrap();
 
-    assert_eq!(policy.mode, PendingSettlementReserveMode::Conservative);
+    assert_eq!(policy.mode, PendingSettlementReserveMode::Risky);
     assert!((policy.family_reserve_fraction - 0.0).abs() < f64::EPSILON);
-    assert!((policy.global_reserve_fraction - 1.0).abs() < f64::EPSILON);
+    assert!((policy.global_reserve_fraction - 0.25).abs() < f64::EPSILON);
     assert!(!policy.counts_as_open_position);
 }
 
@@ -299,12 +300,15 @@ fn resolve_bool_invalid_uses_default() {
 #[test]
 fn enabled_strategy_names_match_flags() {
     let mut cfg = Config::default();
-    assert_eq!(
-        cfg.enabled_strategy_names(),
-        vec!["latency-arb", "spread-capture"]
-    );
+    assert_eq!(cfg.enabled_strategy_names(), vec!["latency-arb"]);
 
     cfg.calm_persistence_enabled = true;
+    assert_eq!(
+        cfg.enabled_strategy_names(),
+        vec!["latency-arb", "calm-persistence"]
+    );
+
+    cfg.spread_capture_enabled = true;
     assert_eq!(
         cfg.enabled_strategy_names(),
         vec!["latency-arb", "spread-capture", "calm-persistence"]

@@ -75,7 +75,7 @@ pub enum Commands {
     Live {
         #[arg(long, default_value = "./data/paint.db")]
         db_path: String,
-        #[arg(long, default_value = "150")]
+        #[arg(long, default_value = "100")]
         balance: f64,
         #[arg(long = "set")]
         sets: Vec<String>,

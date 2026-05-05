@@ -8,11 +8,11 @@ pub async fn proxy_get(
     query: Option<&str>,
 ) -> Result<serde_json::Value, DashboardError> {
     let mut url = format!("{}{path}", agent.url);
-    if let Some(q) = query {
-        if !q.is_empty() {
-            url.push('?');
-            url.push_str(q);
-        }
+    if let Some(q) = query
+        && !q.is_empty()
+    {
+        url.push('?');
+        url.push_str(q);
     }
 
     let client = reqwest::Client::new();
@@ -92,10 +92,10 @@ pub async fn proxy_post_json(
 /// Tries to parse `{"error": "..."}` `JSON`; falls back to raw body text.
 pub(crate) async fn extract_agent_error(resp: reqwest::Response) -> String {
     let body = resp.text().await.unwrap_or_default();
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-        if let Some(msg) = json.get("error").and_then(|v| v.as_str()) {
-            return msg.to_string();
-        }
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
+        && let Some(msg) = json.get("error").and_then(|v| v.as_str())
+    {
+        return msg.to_string();
     }
     body
 }

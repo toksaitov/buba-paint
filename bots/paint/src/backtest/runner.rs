@@ -404,10 +404,10 @@ pub fn run_backtest(options: BacktestOptions) -> anyhow::Result<BacktestResult> 
         let processed_outcomes = execution_engine.take_recent_outcomes();
         portfolio_stats.record_processed_outcomes(&processed_outcomes);
 
-        if let Some(ref binance) = group.binance {
-            if let Some(price) = binance.price {
-                momentum.push(price, group.timestamp);
-            }
+        if let Some(ref binance) = group.binance
+            && let Some(price) = binance.price
+        {
+            momentum.push(price, group.timestamp);
         }
 
         let events = window_manager.advance(group.timestamp);

@@ -58,12 +58,11 @@ impl DashboardDb {
         let conn = if db_path == ":memory:" {
             Connection::open_in_memory()
         } else {
-            if let Some(parent) = std::path::Path::new(db_path).parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).map_err(|e| {
-                        DashboardError::Internal(format!("creating db directory: {e}"))
-                    })?;
-                }
+            if let Some(parent) = std::path::Path::new(db_path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| DashboardError::Internal(format!("creating db directory: {e}")))?;
             }
             Connection::open(db_path)
         }

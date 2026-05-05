@@ -12,6 +12,7 @@ use crate::live_sidecar::{
 fn strategy_readiness_matrix_reflects_live_rollout_policy() {
     let mut config = Config::default();
     config.calm_persistence_enabled = true;
+    config.spread_capture_enabled = true;
 
     let matrix = strategy_readiness_matrix(&config);
     assert_eq!(matrix.len(), 3);

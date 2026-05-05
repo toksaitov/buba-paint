@@ -92,11 +92,11 @@ impl Database {
     /// Open (or create) the database at `db_path`, enable WAL mode + NORMAL
     /// synchronous, and run all schema migrations.
     pub fn new(db_path: &str) -> anyhow::Result<Self> {
-        if let Some(parent) = Path::new(db_path).parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating directory for DB: {}", parent.display()))?;
-            }
+        if let Some(parent) = Path::new(db_path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating directory for DB: {}", parent.display()))?;
         }
 
         let conn = rusqlite::Connection::open(db_path)

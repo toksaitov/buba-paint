@@ -184,11 +184,11 @@ pub fn run_sweep(
         })
         .collect();
 
-    if let Some(parent) = std::path::Path::new(output_path).parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating output directory: {}", parent.display()))?;
-        }
+    if let Some(parent) = std::path::Path::new(output_path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating output directory: {}", parent.display()))?;
     }
 
     let csv = build_csv(&dim_names, &results);

@@ -200,19 +200,19 @@ impl ProcessManager for ChildProcessManager {
                 st.pid
             };
 
-            if let Some(pid) = pid {
+            if let Some(pid) = pid
+                && self.alive.load(Ordering::SeqCst)
+            {
+                send_terminate(pid);
+
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < deadline && self.alive.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+
                 if self.alive.load(Ordering::SeqCst) {
-                    send_terminate(pid);
-
-                    let deadline = Instant::now() + Duration::from_secs(5);
-                    while Instant::now() < deadline && self.alive.load(Ordering::SeqCst) {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-
-                    if self.alive.load(Ordering::SeqCst) {
-                        send_kill(pid);
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
+                    send_kill(pid);
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                 }
             }
 

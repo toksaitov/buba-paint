@@ -50,21 +50,21 @@ Meaning:
 
 ## Real Default
 
-The real default is now `conservative`, not `compatibility`.
+The real default is now the `risky` run-012 profile, not `compatibility` or `conservative`.
 
 That means:
 
 - `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0`
-- `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0`
+- `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=0.25`
 - `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false`
 
 In practice:
 
 - the family sleeve is released at market close
-- the full account-level reserve stays locked until authoritative settlement
+- 25% of the account-level reserve stays locked until authoritative settlement
 - pending-settlement trades stop counting toward open-position caps
 
-This is the recommended live baseline because it fixes the main live bottleneck without inventing extra capital through a global haircut.
+This is the selected live-readonly and first-canary baseline because it matches the run-012 latency sleeve we decided to carry forward. It is intentionally more aggressive than the conservative reserve profile.
 
 ## When To Use Each Mode
 
@@ -74,17 +74,17 @@ Use `compatibility` only for legacy comparison:
 - diagnosing why an old replay diverged from a new replay
 - checking whether a code change accidentally changed semantics
 
-Use `conservative` for normal live paper runs and exact-run calibration:
+Use `conservative` for safety comparison runs:
 
-- best current live baseline
-- safest way to stop Gamma lag from clogging family sleeves
-- default reserve recommendation for the next research deployment
+- safer than the selected canary profile
+- useful for comparing whether the 25% global reserve haircut is adding unacceptable exposure
+- not the current deployment default
 
-Use `risky` only as an explicit experiment:
+Use `risky` for the selected run-012 latency-only canary baseline:
 
 - family sleeve still releases at close
 - global reserve lock is reduced while waiting for settlement
-- should only be considered after exact-run evidence shows it improves PnL without a material drawdown penalty
+- matches the old run knobs the current Docker deployment is expected to use
 
 ## Exact-Run Parity Workflow
 
@@ -96,13 +96,13 @@ cargo run -p buba-paint --release -- backtest \
   --data /tmp/run-018-replay-data.db \
   --start 2026-04-04T20:15 \
   --end 2026-04-08T17:25 \
-  --balance 200 \
+  --balance 100 \
   --set LATENCY_ARB_ENABLED=true \
-  --set SPREAD_CAPTURE_ENABLED=true \
-  --set CALM_PERSISTENCE_ENABLED=true
+  --set SPREAD_CAPTURE_ENABLED=false \
+  --set CALM_PERSISTENCE_ENABLED=false
 ```
 
-Because conservative mode is now the default, those three reserve knobs do not need to be repeated unless you are intentionally overriding them.
+Because the selected canary profile is now the default, those three reserve knobs do not need to be repeated unless you are intentionally overriding them.
 
 Boolean env vars and boolean `--set` overrides accept `true/false`, `1/0`, `yes/no`, and `on/off`, but operator examples should prefer `true/false`.
 
@@ -116,7 +116,7 @@ PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=true \
 cargo run -p buba-paint --release -- backtest ...
 ```
 
-Use `risky` only as an experiment:
+The current default reserve profile is:
 
 ```bash
 BACKTEST_SETTLEMENT_MODE=observed_market_resolution \
@@ -146,7 +146,7 @@ That was the balanced row from the parity-aware `run-018` frontier:
 - below the `20%` drawdown line on that run
 - preferred over the more aggressive `0.10` latency sleeve row unless a later exact-run rerun moves the frontier
 
-Do not treat this as a current live-money promotion by itself. The next trusted parameter decision should come after a fresh replay-grade run passes `validate-replay-data` and is analyzed against the current code path.
+Do not treat this as a current live-money promotion by itself. The current deployment profile is the run-012 latency-only row with a `0.125` latency sleeve and the `0.25` global pending-settlement reserve.
 
 ## Operational Notes
 

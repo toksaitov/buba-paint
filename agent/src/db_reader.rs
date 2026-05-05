@@ -550,10 +550,10 @@ impl DbReader {
             });
         }
 
-        if (groups.len() as u64) < limit {
-            if let Some(group) = current.take() {
-                groups.push(finish_signal_group(group));
-            }
+        if (groups.len() as u64) < limit
+            && let Some(group) = current.take()
+        {
+            groups.push(finish_signal_group(group));
         }
 
         Ok(SignalGroupsResponse {

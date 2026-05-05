@@ -1008,8 +1008,11 @@ fn backtest_spread_capture_fires() {
 
     let config = Config {
         peak_dd_pause_pct: 1.0,
+        spread_capture_enabled: true,
+        spread_capture_max_position_fraction: Some(0.60),
         spread_capture_threshold: 0.90,
         spread_capture_min_ask: 0.15,
+        max_position_usd_fraction: 1.0,
         latency_arb_momentum_threshold: 99.0,
         log_level: "error".to_string(),
         ..Config::default()
