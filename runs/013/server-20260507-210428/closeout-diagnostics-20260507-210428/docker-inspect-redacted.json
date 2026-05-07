@@ -1,0 +1,4 @@
+  File "<string>", line 1
+    import json,sys; d=json.load(sys.stdin);\nfor c in d:\n  cfg=c.get("Config",{}); env=cfg.get("Env") or []; cfg["Env"]=[(e.split("=",1)[0]+"=<redacted>") for e in env];\nprint(json.dumps(d, indent=2))
+                                             ^
+SyntaxError: unexpected character after line continuation character

@@ -71,6 +71,15 @@ html.armed {
   }
 }
 
+:root {
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-left: env(safe-area-inset-left, 0px);
+  --app-header-base-height: 3.5rem;
+  --app-header-height: calc(var(--app-header-base-height) + var(--app-safe-top));
+}
+
 * {
   box-sizing: border-box;
 }
@@ -88,6 +97,27 @@ html {
 body {
   margin: 0;
   min-height: 100dvh;
+  overflow: hidden;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+.app-header {
+  height: calc(var(--app-header-base-height) + var(--app-safe-top));
+  padding-top: var(--app-safe-top);
+}
+
+.app-header-menu {
+  top: calc(var(--app-header-base-height) + var(--app-safe-top));
+}
+
+@media (min-width: 768px) {
+  .app-header {
+    height: var(--app-header-base-height);
+    padding-top: 0;
+  }
 }
 
 ::selection {
@@ -101,7 +131,6 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
-/* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

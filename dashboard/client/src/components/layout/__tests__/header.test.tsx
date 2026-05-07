@@ -177,6 +177,25 @@ test("shows process state and one meaningful live_readonly badge", () => {
   expect(screen.queryByText("Readonly")).not.toBeInTheDocument();
 });
 
+test("uses a safe-area-aware app header height", () => {
+  renderHeader();
+  expect(screen.getByRole("banner")).toHaveClass("app-header");
+});
+
+test("keeps mobile header controls in an overflow menu", async () => {
+  const user = userEvent.setup();
+  renderHeader({ isDesktop: false });
+
+  expect(screen.queryByText("Start bot")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "More header controls" }));
+
+  expect(screen.getByRole("menu")).toBeInTheDocument();
+  expect(screen.getByText("Start bot")).toBeInTheDocument();
+  expect(screen.getByText("Stop bot")).toBeInTheDocument();
+  expect(screen.getByText("Restart bot")).toBeInTheDocument();
+  expect(screen.getByText("Logout")).toBeInTheDocument();
+});
+
 test("renders paper as a single mobile pill without duplicating desktop badges", () => {
   mockUseTradingSummary.mockReturnValue({
     data: { ...tradingSummary, runtime_mode: "paper", trading_state: "paper" },

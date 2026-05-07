@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
@@ -6,6 +6,7 @@ import {
   LogOut,
   Monitor,
   Moon,
+  MoreHorizontal,
   PanelLeft,
   PanelLeftClose,
   Play,
@@ -91,8 +92,13 @@ export function Header({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notifyEnabled, setNotifyEnabled] = useState(isNotificationEnabled);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { mode: themeMode, setMode: setThemeMode, theme } = useTheme();
   const armed = theme === "armed";
+
+  useEffect(() => {
+    if (isDesktop) setMobileMenuOpen(false);
+  }, [isDesktop]);
 
   const cycleTheme = () => {
     const next =
@@ -148,9 +154,19 @@ export function Header({
     }
   };
 
+  const runMobile = (action: () => Promise<unknown>) => {
+    setMobileMenuOpen(false);
+    void run(action);
+  };
+
+  const controlButtonClass =
+    "inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface disabled:opacity-40";
+  const mobileMenuButtonClass =
+    "flex min-h-[44px] w-full items-center gap-3 border-b border-border px-3 py-2 text-left text-[12px] last:border-b-0 hover:bg-surface disabled:opacity-40";
+
   return (
     <>
-      <header className="flex h-14 items-center justify-between border-b border-border bg-bg px-2 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] md:px-4">
+      <header className="app-header relative flex shrink-0 items-end justify-between border-b border-border bg-bg px-2 pb-0 pr-[max(0.5rem,var(--app-safe-right))] md:items-center md:px-4 md:pr-4">
         <div className="flex min-w-0 items-center gap-2 overflow-hidden md:gap-3">
           <button
             onClick={onToggle}
@@ -211,13 +227,13 @@ export function Header({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 lg:gap-0.5">
+        <div className="hidden shrink-0 items-center gap-1 md:flex lg:gap-0.5">
           {botId && (
             <div className="mr-2 flex items-center gap-1 lg:gap-0.5 md:mr-3">
               <button
                 onClick={() => run(() => botStart(botId))}
                 disabled={busy || !controlAvailable || processRunning}
-                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 text-accent-green transition-colors hover:bg-surface disabled:opacity-40"
+                className={cn(controlButtonClass, "text-accent-green")}
                 title={
                   actionUnavailableTitle ??
                   (processRunning ? "Bot is already running" : "Start bot")
@@ -232,7 +248,7 @@ export function Header({
               <button
                 onClick={() => run(() => botStop(botId))}
                 disabled={busy || !controlAvailable || !process?.active}
-                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 text-accent-red transition-colors hover:bg-surface disabled:opacity-40"
+                className={cn(controlButtonClass, "text-accent-red")}
                 title={
                   actionUnavailableTitle ??
                   (!process?.active ? "Bot is not running" : "Stop bot")
@@ -248,7 +264,8 @@ export function Header({
                 onClick={() => run(() => botRestart(botId))}
                 disabled={busy || !controlAvailable || !process?.active}
                 className={cn(
-                  "inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 text-muted transition-colors hover:bg-surface disabled:opacity-40",
+                  controlButtonClass,
+                  "text-muted",
                   busy && "animate-spin",
                 )}
                 title={
@@ -270,7 +287,7 @@ export function Header({
             {!armed && (
               <button
                 onClick={cycleTheme}
-                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
+                className={controlButtonClass}
                 title={themeLabel}
                 aria-label={themeLabel}
               >
@@ -280,7 +297,7 @@ export function Header({
             {isNotificationSupported() && (
               <button
                 onClick={toggleNotifications}
-                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
+                className={controlButtonClass}
                 title={notifyEnabled ? "Disable notifications" : "Enable notifications"}
                 aria-label={notifyEnabled ? "Disable notifications" : "Enable notifications"}
               >
@@ -289,13 +306,132 @@ export function Header({
             )}
             <button
               onClick={logout}
-              className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
+              className={controlButtonClass}
               title="Logout"
               aria-label="Logout"
             >
               <LogOut size={14} />
             </button>
           </div>
+        </div>
+        <div className="flex shrink-0 items-center md:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center p-2 transition-colors hover:bg-surface"
+            title="More header controls"
+            aria-label="More header controls"
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-header-controls"
+          >
+            <MoreHorizontal size={16} />
+          </button>
+          {mobileMenuOpen && (
+            <div
+              id="mobile-header-controls"
+              role="menu"
+              className="app-header-menu absolute right-[max(0.5rem,var(--app-safe-right))] z-40 w-56 border border-border bg-bg shadow-none"
+            >
+              {botId && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => runMobile(() => botStart(botId))}
+                    disabled={busy || !controlAvailable || processRunning}
+                    className={cn(mobileMenuButtonClass, "text-accent-green")}
+                    title={
+                      actionUnavailableTitle ??
+                      (processRunning ? "Bot is already running" : "Start bot")
+                    }
+                    aria-label={
+                      actionUnavailableTitle ??
+                      (processRunning ? "Bot is already running" : "Start bot")
+                    }
+                  >
+                    <Play size={14} />
+                    <span>Start bot</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runMobile(() => botStop(botId))}
+                    disabled={busy || !controlAvailable || !process?.active}
+                    className={cn(mobileMenuButtonClass, "text-accent-red")}
+                    title={
+                      actionUnavailableTitle ??
+                      (!process?.active ? "Bot is not running" : "Stop bot")
+                    }
+                    aria-label={
+                      actionUnavailableTitle ??
+                      (!process?.active ? "Bot is not running" : "Stop bot")
+                    }
+                  >
+                    <Square size={14} />
+                    <span>Stop bot</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runMobile(() => botRestart(botId))}
+                    disabled={busy || !controlAvailable || !process?.active}
+                    className={cn(mobileMenuButtonClass, "text-muted", busy && "animate-spin")}
+                    title={
+                      actionUnavailableTitle ??
+                      (!process?.active ? "Bot is not running" : "Restart bot")
+                    }
+                    aria-label={
+                      actionUnavailableTitle ??
+                      (!process?.active ? "Bot is not running" : "Restart bot")
+                    }
+                  >
+                    <RotateCw size={14} />
+                    <span>Restart bot</span>
+                  </button>
+                </>
+              )}
+              {!armed && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    cycleTheme();
+                    setMobileMenuOpen(false);
+                  }}
+                  className={mobileMenuButtonClass}
+                  title={themeLabel}
+                  aria-label={themeLabel}
+                >
+                  <ThemeIcon size={14} />
+                  <span>{themeLabel}</span>
+                </button>
+              )}
+              {isNotificationSupported() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    void toggleNotifications();
+                  }}
+                  className={mobileMenuButtonClass}
+                  title={notifyEnabled ? "Disable notifications" : "Enable notifications"}
+                  aria-label={notifyEnabled ? "Disable notifications" : "Enable notifications"}
+                >
+                  {notifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
+                  <span>{notifyEnabled ? "Disable notifications" : "Enable notifications"}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  logout();
+                }}
+                className={mobileMenuButtonClass}
+                title="Logout"
+                aria-label="Logout"
+              >
+                <LogOut size={14} />
+                <span>Logout</span>
+              </button>
+            </div>
+          )}
         </div>
       </header>
       {error && (

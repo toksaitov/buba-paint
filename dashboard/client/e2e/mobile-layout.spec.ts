@@ -2,6 +2,10 @@ import { expect, test } from "@playwright/test";
 
 import { installMockWebSocket, stubApi } from "./fixtures";
 
+function isMobileViewport(width?: number) {
+  return (width ?? 1024) < 768;
+}
+
 test.beforeEach(async ({ page }) => {
   await installMockWebSocket(page);
   await page.addInitScript(() => {
@@ -13,8 +17,8 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("mobile drawer opens and closes", async ({ page, browserName }) => {
-  test.skip(browserName !== "webkit" && !page.viewportSize()?.width || (page.viewportSize()?.width ?? 1024) >= 768, "mobile only");
+test("mobile drawer opens and closes", async ({ page }) => {
+  test.skip(!isMobileViewport(page.viewportSize()?.width), "mobile only");
 
   await stubApi(page);
   await page.goto("/login");
@@ -42,7 +46,7 @@ test("mobile drawer opens and closes", async ({ page, browserName }) => {
 });
 
 test("mobile shows trade cards instead of table", async ({ page }) => {
-  test.skip((page.viewportSize()?.width ?? 1024) >= 768, "mobile only");
+  test.skip(!isMobileViewport(page.viewportSize()?.width), "mobile only");
 
   await stubApi(page);
   await page.goto("/login");
@@ -59,4 +63,50 @@ test("mobile shows trade cards instead of table", async ({ page }) => {
     page.locator("span:visible").filter({ hasText: /^latency-arb$/ }).first(),
   ).toBeVisible();
   await expect(page.locator("table")).not.toBeVisible();
+});
+
+test("mobile standalone shell keeps toolbar below safe area", async ({ page }) => {
+  test.skip(!isMobileViewport(page.viewportSize()?.width), "mobile only");
+
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "standalone", {
+      value: true,
+      configurable: true,
+    });
+    const originalMatchMedia = window.matchMedia.bind(window);
+    window.matchMedia = (query: string) => {
+      if (query === "(display-mode: standalone)") {
+        return {
+          matches: true,
+          media: query,
+          onchange: null,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+          dispatchEvent: () => false,
+        };
+      }
+      return originalMatchMedia(query);
+    };
+  });
+
+  await stubApi(page);
+  await page.goto("/login");
+  await page.getByRole("textbox").first().fill("admin");
+  await page.locator('input[type="password"]').fill("secret");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).toHaveURL("/");
+  await page.addStyleTag({
+    content: ":root { --app-safe-top: 47px; --app-safe-right: 0px; --app-safe-bottom: 21px; --app-safe-left: 0px; }",
+  });
+
+  await expect(page.locator("html")).toHaveClass(/standalone/);
+  const headerBox = await page.getByRole("banner").boundingBox();
+  const menuBox = await page.getByRole("button", { name: "Expand navigation" }).boundingBox();
+  expect(headerBox?.height ?? 0).toBeGreaterThanOrEqual(100);
+  expect(menuBox?.y ?? 0).toBeGreaterThanOrEqual(47);
+  await page.getByRole("button", { name: "More header controls" }).click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByText("Start bot", { exact: true })).toBeVisible();
 });

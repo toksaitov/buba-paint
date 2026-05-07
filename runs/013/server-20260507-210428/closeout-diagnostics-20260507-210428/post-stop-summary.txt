@@ -1,0 +1,42 @@
+# stopped at
+2026-05-07T21:13:31+00:00
+# docker ps
+NAMES                    STATUS                            IMAGE
+buba-paint-caddy-1       Exited (0) 6 minutes ago          caddy:2-alpine
+buba-paint-dashboard-1   Exited (137) 4 minutes ago        buba-dashboard:local
+buba-paint-agent-1       Exited (137) 3 minutes ago        buba-agent:local
+buba-paint-paint-1       Exited (137) About a minute ago   buba-paint-bot:local
+buba-paint-sidecar-1     Exited (137) 21 seconds ago       buba-polymarket-sidecar:local
+# runtime files
+total 4.3G
+-rw-r--r-- 1 ubuntu ubuntu  116 May  5 00:03 agent.log
+drwxrwxr-x 2 ubuntu ubuntu 4.0K May  7 21:13 closeout-diagnostics-20260507-210428
+-rw------- 1 ubuntu ubuntu   44 May  4 23:56 dashboard-admin-password.txt
+-rw-r--r-- 1 ubuntu ubuntu 4.0K May  5 00:03 dashboard.db
+-rw-r--r-- 1 ubuntu ubuntu  32K May  5 00:15 dashboard.db-shm
+-rw-r--r-- 1 ubuntu ubuntu  61K May  5 00:03 dashboard.db-wal
+-rw-r--r-- 1 ubuntu ubuntu  236 May  5 00:03 dashboard.log
+-rw-r--r-- 1 ubuntu ubuntu 4.2G May  7 21:03 paint.db
+-rw-r--r-- 1 ubuntu ubuntu 256K May  7 21:11 paint.db-shm
+-rw-r--r-- 1 ubuntu ubuntu  64M May  7 21:11 paint.db-wal
+-rw-r--r-- 1 ubuntu ubuntu 3.7M May  7 21:03 paint.log
+-rw-r--r-- 1 ubuntu ubuntu 477K May  7 21:03 sidecar.log
+2026-05-04 23:56:19.987332712 +0000 44 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard-admin-password.txt
+2026-05-05 00:03:39.529308970 +0000 116 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/agent.log
+2026-05-05 00:03:45.245373476 +0000 4096 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard.db
+2026-05-05 00:03:45.302374120 +0000 61832 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard.db-wal
+2026-05-05 00:03:45.304374142 +0000 236 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard.log
+2026-05-05 00:15:25.375224249 +0000 32768 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard.db-shm
+2026-05-07 21:03:09.184546069 +0000 4446720000 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/paint.db
+2026-05-07 21:03:10.345559346 +0000 487967 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/sidecar.log
+2026-05-07 21:03:10.460560661 +0000 3873124 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/paint.log
+2026-05-07 21:11:19.199233484 +0000 262144 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/paint.db-shm
+2026-05-07 21:11:39.209482525 +0000 67108864 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/paint.db-wal
+2026-05-07 21:13:31.189794101 +0000 4096 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/closeout-diagnostics-20260507-210428
+# disk after stop
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root        29G   21G  7.7G  73% /
+# memory after stop
+               total        used        free      shared  buff/cache   available
+Mem:           1.8Gi       539Mi       269Mi       336Ki       1.2Gi       1.3Gi
+Swap:          4.0Gi       364Mi       3.6Gi

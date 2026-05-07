@@ -52,6 +52,17 @@ Dashboard client tests use Vitest, React Testing Library, jsdom, and MSW where u
 
 Playwright lives under `dashboard/client/e2e/` and covers desktop and mobile viewport behavior. Mobile coverage is important because the dashboard is used as an operator surface, but mobile must not become the primary arming surface for future real-money controls.
 
+Dashboard mobile and PWA acceptance targets:
+
+- iPhone SE-sized viewport for narrow-width pressure.
+- Modern notched iPhone and Dynamic Island-sized iPhone for safe-area toolbar behavior.
+- iPad Mini and large iPad for tablet navigation and chart layout.
+- Pixel-class Android phone and Android tablet-class layouts for manifest/install behavior and touch targets.
+- Browser mode and installed standalone mode simulation.
+- Light, dark, and armed themes.
+
+The dashboard PWA must use opaque Apple touch icons, normal and maskable Android icons, `viewport-fit=cover`, and safe-area-aware shell sizing. In-page notifications are supported only while the dashboard page or installed app is running. Full background Web Push is a separate backend feature, not part of the current frontend notification contract.
+
 ## Sidecar Tests
 
 The TypeScript sidecar tests cover provider behavior, lifecycle, server routes, auth/account/preflight handling, user-stream resilience, FOK/FAK order submission validation, cancellation, redemption state handling, and failure classification. The sidecar security audit gate fails on moderate-or-higher npm advisories; current upstream Polymarket SDK dependencies still carry low-severity ethers/elliptic advisories with no available fix.

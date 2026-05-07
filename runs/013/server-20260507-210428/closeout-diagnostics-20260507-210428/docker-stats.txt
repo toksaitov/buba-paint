@@ -1,0 +1,6 @@
+NAME                     CPU %     MEM USAGE / LIMIT     BLOCK I/O        NET I/O
+buba-paint-caddy-1       0.00%     21.59MiB / 1.791GiB   113MB / 8.68MB   56.6MB / 19.5MB
+buba-paint-dashboard-1   0.00%     33.38MiB / 1.791GiB   157MB / 133MB    42MB / 53.1MB
+buba-paint-agent-1       0.03%     15.19MiB / 1.791GiB   152MB / 9.95MB   1.98MB / 36.8MB
+buba-paint-paint-1       11.61%    38.62MiB / 1.791GiB   4.32TB / 756GB   51.2GB / 2.59GB
+buba-paint-sidecar-1     0.00%     76.34MiB / 1.791GiB   284MB / 120MB    91.1MB / 61.9MB

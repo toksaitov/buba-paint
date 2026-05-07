@@ -1,6 +1,6 @@
 # buba dashboard
 
-React frontend for monitoring buba trading bots. Displays operator triage, execution readiness, chart-safe equity curves, filtered trades, grouped signals, strategy contribution, and raw logs via a WebSocket-fed dashboard. Installable as a PWA on iPhone, iPad, and Android with trade notifications. Built with React 19, TypeScript, Vite, TanStack React Query, and Zustand.
+React frontend for monitoring buba trading bots. Displays operator triage, execution readiness, chart-safe equity curves, filtered trades, grouped signals, strategy contribution, and raw logs via a WebSocket-fed dashboard. Installable as a PWA on iPhone, iPad, and Android. Built with React 19, TypeScript, Vite, TanStack React Query, and Zustand.
 
 ## Quick Start
 
@@ -10,7 +10,7 @@ npm run dev                # dev server on :3000 (proxies /api + /ws to :3001)
 npm test                   # run vitest suite
 npm run build              # TypeScript check + Vite production build
 npm run lint               # ESLint check
-npm run test:e2e           # Playwright E2E (chromium, iPhone 14, iPad Mini)
+npm run test:e2e           # Playwright E2E (desktop, iPhone, iPad, Android)
 ```
 
 In production, the dashboard server serves the built frontend as static files. In development, Vite proxies `/api` to `http://localhost:3001` and `/ws` to `ws://localhost:3001`.
@@ -36,11 +36,11 @@ An inline script in `index.html` applies the dark class before React hydrates, p
 
 ## Mobile and PWA
 
-The dashboard is a Progressive Web App installable from iPhone, iPad, and Android browsers via "Add to Home Screen". It runs in standalone fullscreen mode with proper notch and dynamic island handling via `viewport-fit=cover` and `env(safe-area-inset-*)` CSS.
+The dashboard is a Progressive Web App installable from iPhone, iPad, and Android browsers via "Add to Home Screen". It runs in normal standalone app mode with `viewport-fit=cover` and explicit safe-area layout for notches, Dynamic Island devices, older iOS status bars, and Android display cutouts.
 
-On mobile (below 768px), the sidebar shows in compact icon-only mode by default, keeping all navigation one tap away without consuming screen width. Tapping the expand button in the header opens the full labeled drawer as an overlay. Nav items have 44px touch targets per Apple HIG. Trade and signal tables switch to a compact card-list layout. The equity chart height adapts (320px on phones, 480px on desktop).
+On mobile (below 768px), the sidebar shows in compact icon-only mode by default, keeping all navigation one tap away without consuming screen width. Tapping the expand button in the header opens the full labeled drawer as an overlay. Header utilities collapse behind the "More header controls" button so process, theme, notification, and logout actions stay reachable without overflowing the iPhone toolbar. Nav items keep 44px touch targets. Trade and signal tables switch to a compact card-list layout. The equity chart height adapts across phone and desktop sizes.
 
-Trade notifications use the browser Notification API. When a trade arrives via WebSocket and the page is in the background, a notification appears. Toggle via the bell icon in the header. Requires iOS 16.4+ for standalone PWA notification support.
+Trade notifications use the browser Notification API while the dashboard app or page is running and receiving WebSocket events. When a trade arrives and the page is hidden, a notification appears and clicking it focuses the dashboard where supported. Toggle via the bell icon in the header. Full background push requires Push API, VAPID keys, service-worker push handlers, and server-side subscription storage, and is intentionally not part of the current dashboard.
 
 A service worker (`public/sw.js`) caches the app shell for offline loading. API and WebSocket requests are never cached.
 
@@ -88,7 +88,7 @@ Setup: `src/test/setup.ts` (localStorage polyfill, matchMedia mock, `@testing-li
 
 Shared utils: `src/test/test-utils.tsx` (`renderWithProviders` wrapper).
 
-Browser E2E: Playwright with chromium, iPhone 14, and iPad Mini projects. Mocked API/WebSocket harness in `e2e/fixtures.ts`. Desktop tests are skipped on mobile viewports. Mobile-specific tests verify drawer navigation and card layout.
+Browser E2E: Playwright with desktop Chromium, iPhone SE, iPhone Dynamic Island-sized, iPad Mini, large iPad, and Android Pixel projects. Mocked API/WebSocket harness in `e2e/fixtures.ts`. Desktop tests are skipped on mobile viewports. Mobile-specific tests verify drawer navigation, card layout, standalone app-shell behavior, and safe-area toolbar spacing.
 
 ## Project Structure
 
@@ -158,7 +158,7 @@ src/
     test-utils.tsx                 # renderWithProviders wrapper
 public/
   sw.js                            # service worker (network-first with offline shell fallback)
-  site.webmanifest                 # PWA manifest (standalone, maskable icon)
+  site.webmanifest                 # PWA manifest (standalone, normal + maskable icons)
   favicon.svg                      # vector favicon
   apple-touch-icon.png             # iOS home screen icon
   icon-*.png                       # raster icons (48 through 512, plus maskable)

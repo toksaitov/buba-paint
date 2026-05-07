@@ -31,7 +31,7 @@ export function Nav({
   onNavigate,
 }: NavProps) {
   return (
-    <nav className="flex flex-col flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
+    <nav className="flex flex-col flex-1 overflow-y-auto pb-[var(--app-safe-bottom)]">
       {bots.length > 0 && (
         <div className="pt-2 pb-1" role="radiogroup" aria-label="Select bot">
           {!collapsed && (

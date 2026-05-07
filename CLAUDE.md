@@ -118,6 +118,8 @@ Dashboard client:
 - `components/`: layout, common, UI primitives, charts, tables, and dashboard surfaces.
 - `stores/`: auth, mobile nav, and theme state.
 
+Dashboard mobile targets are iPhone SE-sized, notched iPhone, Dynamic Island-sized iPhone, iPad Mini, large iPad, Pixel-class Android phone, and Android tablet-class layouts. Installed PWA mode must preserve safe-area spacing and must not hide real-money controls behind untested mobile-only layouts. Keep details in [docs/testing-and-validation.md](./docs/testing-and-validation.md).
+
 Sidecar:
 
 - TypeScript package for proxy-wallet auth, account/preflight checks, user-stream health, and future real order/redeem boundary.

@@ -19,6 +19,14 @@ export function useTheme() {
     root.remove("dark", "armed");
     if (theme === "dark") root.add("dark");
     else if (theme === "armed") root.add("armed");
+
+    const themeColor =
+      theme === "armed" ? "#000087" : theme === "dark" ? "#000000" : "#ffffff";
+    document
+      .querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')
+      .forEach((meta) => {
+        meta.content = themeColor;
+      });
   }, [theme]);
 
   return { mode, theme, isDark, setMode };

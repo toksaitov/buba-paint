@@ -74,7 +74,7 @@ export function AppShell() {
   }, [isDesktop, closeDrawer]);
 
   return (
-    <div className="flex h-[100dvh] overflow-hidden">
+    <div className="flex h-[100dvh] min-h-[100svh] overflow-hidden">
       {isDesktop ? (
         <aside
           className={`${collapsed ? "w-12" : "w-52"} border-r border-border bg-bg shrink-0 transition-all duration-150 flex flex-col`}
@@ -104,7 +104,7 @@ export function AppShell() {
         </aside>
       ) : (
         <>
-          <aside className="w-12 border-r border-border bg-bg shrink-0 flex flex-col pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)]">
+          <aside className="w-12 border-r border-border bg-bg shrink-0 flex flex-col pt-[var(--app-safe-top)] pl-[var(--app-safe-left)]">
             <div className="flex items-center justify-center h-14 border-b border-border">
               <Link to="/" aria-label="Go to main page" className="hover:opacity-80 transition-opacity">
                 <Logo size={20} />
@@ -124,7 +124,7 @@ export function AppShell() {
                 onClick={closeDrawer}
                 aria-hidden="true"
               />
-              <aside className="relative z-10 w-64 bg-bg border-r border-border flex flex-col pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)]">
+              <aside className="relative z-10 w-64 bg-bg border-r border-border flex flex-col pt-[var(--app-safe-top)] pl-[var(--app-safe-left)]">
                 <div className="flex items-center h-14 border-b border-border px-3">
                   <Link
                     to="/"
@@ -168,7 +168,7 @@ export function AppShell() {
             description={contextDescription(routeMeta, tradingSummary)}
           />
         )}
-        <main className="flex-1 overflow-y-auto p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <main className="flex-1 overflow-y-auto p-3 pr-[max(0.75rem,var(--app-safe-right))] pb-[max(0.75rem,var(--app-safe-bottom))]">
           <Outlet context={{ botId, bot }} />
         </main>
       </div>

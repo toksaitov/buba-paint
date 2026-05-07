@@ -1,0 +1,80 @@
+    PID    PPID STAT %CPU %MEM     ELAPSED WCHAN                            CMD
+ 168196  168111 Dl   10.1  1.9  2-21:02:30 folio_wait_bit_common            buba-paint live --db-path /runtime/paint.db --balance 100
+1616554       1 Ss    0.5  0.7       00:23 -                                /usr/lib/systemd/systemd --user
+  31165       1 Ssl   0.2  6.1  3-02:27:24 -                                /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+  30989       1 Ssl   0.1  1.8  3-02:27:25 -                                /usr/bin/containerd
+     53       2 S     0.0  0.0  5-07:29:07 -                                [kswapd0]
+  27621       1 Ssl   0.0  1.1  4-05:53:48 -                                /snap/snapd/current/usr/lib/snapd/snapd
+ 168050  168012 Sl    0.0  3.1  2-21:02:36 ep_poll                          node dist/index.js
+ 168261       1 Sl    0.0  0.6  2-21:02:25 -                                /usr/bin/containerd-shim-runc-v2 -namespace moby -id d7b98927cc931b4c76c39d9e986c6b38f04c4aa1f2f5ed0884f9f50b359e9551 -address /run/containerd/containerd.sock
+ 167986       1 Sl    0.0  0.6  2-21:02:36 -                                /usr/bin/containerd-shim-runc-v2 -namespace moby -id 2d7bbf5e203895093d3d52b18fa525c3e8dc6e34eaa615b62ac5b3df26669d94 -address /run/containerd/containerd.sock
+ 168158       1 Sl    0.0  0.6  2-21:02:30 -                                /usr/bin/containerd-shim-runc-v2 -namespace moby -id 421fffe74ec0b40d7b225324e2d2e6fb51f6d9623209a538ec5ef60d902839c9 -address /run/containerd/containerd.sock
+ 168223  168183 Sl    0.0  0.8  2-21:02:30 futex_do_wait                    buba-agent --db-path /runtime/paint.db --port 9090 --monitor-only --log-path /runtime/paint.log
+1616549    8644 Ss    0.0  0.5       00:24 -                                sshd-session: ubuntu [priv]
+ 168325  168286 Sl    0.0  2.1  2-21:02:24 futex_do_wait                    buba-dashboard --config /config/dashboard.toml --static-dir /srv/static
+   1141       1 Ssl   0.0  0.6  5-07:28:54 -                                /snap/amazon-ssm-agent/13008/amazon-ssm-agent
+     37       2 S     0.0  0.0  5-07:29:08 -                                [kcompactd0]
+1594078       2 I     0.0  0.0    01:00:19 -                                [kworker/u8:2-events_unbound]
+1603760       2 I     0.0  0.0       33:17 -                                [kworker/u8:1-writeback]
+1610239       2 I     0.0  0.0       18:14 -                                [kworker/u8:0-events_power_efficient]
+ 168398  168373 Ssl   0.0  1.3  2-21:02:19 -                                caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+1610984       2 I     0.0  0.0       16:02 -                                [kworker/0:0-events]
+1463351       2 I     0.0  0.0    07:13:00 -                                [kworker/1:0-events]
+    209       1 SLsl  0.0  0.7  5-07:29:05 -                                /usr/sbin/multipathd -d -s
+ 168087       1 Sl    0.0  0.5  2-21:02:30 -                                /usr/bin/containerd-shim-runc-v2 -namespace moby -id 82f4a6ff8dbd2626bb537540fae50fa84d74e93cf5a1f91fa452ca6474077a9f -address /run/containerd/containerd.sock
+     15       2 I     0.0  0.0  5-07:29:08 -                                [rcu_sched]
+ 168373       1 Sl    0.0  0.5  2-21:02:19 -                                /usr/bin/containerd-shim-runc-v2 -namespace moby -id 1cf28a7cb52c50fde7d4969bd594e8fa381786c4d063fbf17b60544fee0e98f5 -address /run/containerd/containerd.sock
+1595575       2 I     0.0  0.0       56:02 -                                [kworker/0:1-cgroup_free]
+      1       0 Ss    0.0  0.5  5-07:29:08 -                                /sbin/init
+  69490       1 Ssl   0.0  2.5  3-01:28:02 -                                /usr/libexec/fwupd/fwupd
+    729       1 Ssl   0.0  0.1  5-07:28:56 -                                /usr/sbin/irqbalance
+    735       1 Ssl   0.0  0.4  5-07:28:56 -                                /usr/lib/polkit-1/polkitd --no-debug --log-level=notice
+    850     716 S     0.0  0.1  5-07:28:55 -                                /usr/sbin/chronyd -n -F 1
+  69498       1 Ssl   0.0  0.8  3-01:28:02 -                                /usr/libexec/udisks2/udisksd
+     24       2 S     0.0  0.0  5-07:29:08 -                                [ksoftirqd/1]
+     14       2 S     0.0  0.0  5-07:29:08 -                                [ksoftirqd/0]
+    226       1 Ss    0.0  0.2  5-07:29:05 -                                /usr/lib/systemd/systemd-resolved
+    162       1 S<s   0.0  1.0  5-07:29:05 -                                /usr/lib/systemd/systemd-journald
+    354       2 I<    0.0  0.0  5-07:29:03 -                                [kworker/0:1H-kblockd]
+    150       2 I<    0.0  0.0  5-07:29:06 -                                [kworker/1:1H-kblockd]
+    113       2 S     0.0  0.0  5-07:29:07 -                                [jbd2/nvme0n1p1-8]
+    719       1 Ss    0.0  0.1  5-07:28:56 -                                @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+     39       2 SN    0.0  0.0  5-07:29:07 -                                [khugepaged]
+     17       2 S     0.0  0.0  5-07:29:08 -                                [rcu_exp_gp_kthread_worker]
+    742       1 Ss    0.0  0.2  5-07:28:56 -                                /usr/lib/systemd/systemd-logind
+     18       2 S     0.0  0.0  5-07:29:08 -                                [migration/0]
+1602479       2 I     0.0  0.0       36:02 -                                [kworker/1:2-cgroup_free]
+   8644       1 Ss    0.0  0.1  5-07:21:31 -                                sshd: /usr/sbin/sshd -D -o AuthorizedKeysCommand /usr/share/ec2-instance-connect/eic_run_authorized_keys %u %f -o AuthorizedKeysCommandUser ec2-instance-connect [listener] 0 of 10-100 startups
+     23       2 S     0.0  0.0  5-07:29:08 -                                [migration/1]
+    230       1 Ss    0.0  0.1  5-07:29:05 -                                /usr/lib/systemd/systemd-udevd
+    913       1 Ssl   0.0  0.1  5-07:28:55 -                                /usr/sbin/rsyslogd -n -iNONE
+    606       1 Ss    0.0  0.2  5-07:28:58 -                                /usr/lib/systemd/systemd-networkd
+    718       1 Ss    0.0  0.0  5-07:28:56 -                                /usr/sbin/cron -f -P
+    733       1 Ss    0.0  0.1  5-07:28:56 -                                /usr/bin/python3 /usr/bin/networkd-dispatcher --run-startup-triggers
+ 168460   31165 Sl    0.0  0.0  2-21:02:19 -                                /usr/bin/docker-proxy -proto tcp -host-ip :: -host-port 443 -container-ip 172.18.0.6 -container-port 443 -use-listen-fd
+ 168454   31165 Sl    0.0  0.0  2-21:02:19 -                                /usr/bin/docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 443 -container-ip 172.18.0.6 -container-port 443 -use-listen-fd
+ 168433   31165 Sl    0.0  0.0  2-21:02:19 -                                /usr/bin/docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 80 -container-ip 172.18.0.6 -container-port 80 -use-listen-fd
+ 168439   31165 Sl    0.0  0.0  2-21:02:19 -                                /usr/bin/docker-proxy -proto tcp -host-ip :: -host-port 80 -container-ip 172.18.0.6 -container-port 80 -use-listen-fd
+    895       1 Ssl   0.0  0.3  5-07:28:55 -                                /usr/sbin/ModemManager
+     33       2 S     0.0  0.0  5-07:29:08 -                                [khungtaskd]
+      2       0 S     0.0  0.0  5-07:29:08 -                                [kthreadd]
+ 168286  168261 Ss    0.0  0.0  2-21:02:25 do_wait                          /bin/sh -lc touch /runtime/dashboard.log buba-dashboard --config /config/dashboard.toml --static-dir /srv/static >> /runtime/dashboard.log 2>&1 
+ 168183  168158 Ss    0.0  0.0  2-21:02:30 do_wait                          /bin/sh -lc while [ ! -f /runtime/paint.db ]; do sleep 1; done touch /runtime/paint.log /runtime/agent.log buba-agent --db-path /runtime/paint.db --port 9090 --monitor-only --log-path /runtime/paint.log >> /runtime/agent.log 2>&1 
+ 168111  168087 Ss    0.0  0.0  2-21:02:30 do_wait                          /bin/sh -lc mkdir -p /runtime touch "$BUBA_PAINT_LOG_PATH" if [ ! -f "$DB_PATH" ]; then   buba-paint init-db --db-path "$DB_PATH" --balance "$STARTING_BALANCE" >> "$BUBA_PAINT_LOG_PATH" 2>&1 fi buba-paint live --db-path "$DB_PATH" --balance "$STARTING_BALANCE" >> "$BUBA_PAINT_LOG_PATH" 2>&1 
+ 168012  167986 Ss    0.0  0.0  2-21:02:36 do_wait                          /bin/sh -lc touch "$BUBA_SIDECAR_LOG_PATH" node dist/index.js >> "$BUBA_SIDECAR_LOG_PATH" 2>&1 
+    716       1 Ss    0.0  0.0  5-07:28:56 -                                /bin/sh /usr/lib/systemd/scripts/chronyd-starter.sh -n -F 1
+  31141       2 S     0.0  0.0  3-02:27:24 -                                [psimon]
+      3       2 S     0.0  0.0  5-07:29:08 -                                [pool_workqueue_release]
+      4       2 I<    0.0  0.0  5-07:29:08 -                                [kworker/R-rcu_gp]
+      5       2 I<    0.0  0.0  5-07:29:08 -                                [kworker/R-sync_wq]
+      6       2 I<    0.0  0.0  5-07:29:08 -                                [kworker/R-kvfree_rcu_reclaim]
+      7       2 I<    0.0  0.0  5-07:29:08 -                                [kworker/R-slub_flushwq]
+      8       2 I<    0.0  0.0  5-07:29:08 -                                [kworker/R-netns]
+     10       2 I<    0.0  0.0  5-07:29:08 -                                [kworker/0:0H-kblockd]
+     13       2 I<    0.0  0.0  5-07:29:08 -                                [kworker/R-mm_percpu_wq]
+     16       2 S     0.0  0.0  5-07:29:08 -                                [rcu_exp_par_gp_kthread_worker/0]
+     19       2 S     0.0  0.0  5-07:29:08 -                                [idle_inject/0]
+     20       2 S     0.0  0.0  5-07:29:08 -                                [cpuhp/0]
+     21       2 S     0.0  0.0  5-07:29:08 -                                [cpuhp/1]
+     22       2 S     0.0  0.0  5-07:29:08 -                                [idle_inject/1]
+     26       2 I<    0.0  0.0  5-07:29:08 -                                [kworker/1:0H-kblockd]

@@ -1,0 +1,114 @@
+# host
+ip-172-31-20-159
+2026-05-07T21:05:54+00:00
+ 21:05:54 up 5 days,  7:28,  1 user,  load average: 1.66, 1.27, 1.17
+Linux ip-172-31-20-159 7.0.0-1004-aws #4-Ubuntu SMP PREEMPT Mon Apr 13 12:51:48 UTC 2026 aarch64 GNU/Linux
+Distributor ID:	Ubuntu
+Description:	Ubuntu 26.04 LTS
+Release:	26.04
+Codename:	resolute
+# disk
+Filesystem       Size  Used Avail Use% Mounted on
+/dev/root         29G   21G  7.2G  75% /
+tmpfs            918M     0  918M   0% /dev/shm
+tmpfs            367M  1.5M  366M   1% /run
+efivarfs         128K  3.1K  125K   3% /sys/firmware/efi/efivars
+tmpfs            918M  183M  735M  20% /tmp
+none             1.0M     0  1.0M   0% /run/credentials/systemd-journald.service
+none             1.0M     0  1.0M   0% /run/credentials/systemd-resolved.service
+/dev/nvme0n1p13  891M   95M  734M  12% /boot
+/dev/nvme0n1p15   98M  6.5M   91M   7% /boot/efi
+none             1.0M     0  1.0M   0% /run/credentials/systemd-networkd.service
+none             1.0M     0  1.0M   0% /run/credentials/getty@tty1.service
+none             1.0M     0  1.0M   0% /run/credentials/serial-getty@ttyS0.service
+tmpfs            184M  8.0K  184M   1% /run/user/1000
+Filesystem       Inodes  IUsed   IFree IUse% Mounted on
+/dev/root       3801088 353605 3447483   10% /
+tmpfs            234813      2  234811    1% /dev/shm
+tmpfs            819200    919  818281    1% /run
+efivarfs              0      0       0     - /sys/firmware/efi/efivars
+tmpfs           1048576  19895 1028681    2% /tmp
+none               1024      1    1023    1% /run/credentials/systemd-journald.service
+none               1024      1    1023    1% /run/credentials/systemd-resolved.service
+/dev/nvme0n1p13   59136    284   58852    1% /boot
+/dev/nvme0n1p15       0      0       0     - /boot/efi
+none               1024      1    1023    1% /run/credentials/systemd-networkd.service
+none               1024      1    1023    1% /run/credentials/getty@tty1.service
+none               1024      1    1023    1% /run/credentials/serial-getty@ttyS0.service
+tmpfs             46962     35   46927    1% /run/user/1000
+NAME          SIZE TYPE MOUNTPOINTS                  FSTYPE
+loop0        24.2M loop /snap/amazon-ssm-agent/13008 squashfs
+loop1          69M loop /snap/core22/2412            squashfs
+loop2        41.8M loop /snap/snapd/26383            squashfs
+loop3        42.6M loop /snap/snapd/26869            squashfs
+nvme0n1        30G disk                              
+├─nvme0n1p1    29G part /                            ext4
+├─nvme0n1p13  923M part /boot                        ext4
+└─nvme0n1p15   99M part /boot/efi                    vfat
+# memory
+               total        used        free      shared  buff/cache   available
+Mem:           1.8Gi       661Mi        75Mi       476Ki       1.2Gi       1.1Gi
+Swap:          4.0Gi       511Mi       3.5Gi
+NAME      TYPE SIZE   USED PRIO
+/swapfile file   4G 511.3M   -1
+# docker
+Client: Docker Engine - Community
+ Version:           29.4.2
+ API version:       1.54
+ Go version:        go1.26.2
+ Git commit:        055a478
+ Built:             Fri May  1 10:25:06 2026
+ OS/Arch:           linux/arm64
+ Context:           default
+
+Server: Docker Engine - Community
+ Engine:
+  Version:          29.4.2
+  API version:      1.54 (minimum version 1.40)
+  Go version:       go1.26.2
+  Git commit:       d329809
+  Built:            Fri May  1 10:25:06 2026
+  OS/Arch:          linux/arm64
+  Experimental:     false
+ containerd:
+  Version:          v2.2.3
+  GitCommit:        77c84241c7cbdd9b4eca2591793e3d4f4317c590
+ runc:
+  Version:          1.3.5
+  GitCommit:        v1.3.5-0-g488fc13e
+ docker-init:
+  Version:          0.19.0
+  GitCommit:        de40ad0
+Docker Compose version v5.1.3
+NAMES                    IMAGE                           STATUS                PORTS
+buba-paint-caddy-1       caddy:2-alpine                  Up 2 days             0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp, 443/udp, 2019/tcp
+buba-paint-dashboard-1   buba-dashboard:local            Up 2 days (healthy)   3001/tcp
+buba-paint-agent-1       buba-agent:local                Up 2 days (healthy)   9090/tcp
+buba-paint-paint-1       buba-paint-bot:local            Up 2 days             
+buba-paint-sidecar-1     buba-polymarket-sidecar:local   Up 2 days (healthy)   3210/tcp
+# runtime files
+total 4.3G
+-rw-r--r-- 1 ubuntu ubuntu  116 May  5 00:03 agent.log
+drwxrwxr-x 2 ubuntu ubuntu 4.0K May  7 21:05 closeout-diagnostics-20260507-210428
+-rw------- 1 ubuntu ubuntu   44 May  4 23:56 dashboard-admin-password.txt
+-rw-r--r-- 1 ubuntu ubuntu 4.0K May  5 00:03 dashboard.db
+-rw-r--r-- 1 ubuntu ubuntu  32K May  5 00:15 dashboard.db-shm
+-rw-r--r-- 1 ubuntu ubuntu  61K May  5 00:03 dashboard.db-wal
+-rw-r--r-- 1 ubuntu ubuntu  236 May  5 00:03 dashboard.log
+-rw-r--r-- 1 ubuntu ubuntu 4.2G May  7 21:03 paint.db
+-rw-r--r-- 1 ubuntu ubuntu 256K May  7 21:05 paint.db-shm
+-rw-r--r-- 1 ubuntu ubuntu  64M May  7 21:05 paint.db-wal
+-rw-r--r-- 1 ubuntu ubuntu 3.7M May  7 21:03 paint.log
+-rw-r--r-- 1 ubuntu ubuntu 477K May  7 21:03 sidecar.log
+2026-05-04 23:56:19.987332712 +0000 44 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard-admin-password.txt
+2026-05-05 00:03:39.529308970 +0000 116 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/agent.log
+2026-05-05 00:03:45.245373476 +0000 4096 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard.db
+2026-05-05 00:03:45.302374120 +0000 61832 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard.db-wal
+2026-05-05 00:03:45.304374142 +0000 236 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard.log
+2026-05-05 00:15:25.375224249 +0000 32768 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/dashboard.db-shm
+2026-05-07 21:03:09.184546069 +0000 4446720000 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/paint.db
+2026-05-07 21:03:10.345559346 +0000 487967 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/sidecar.log
+2026-05-07 21:03:10.460560661 +0000 3873124 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/paint.log
+2026-05-07 21:05:53.985436896 +0000 4096 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/closeout-diagnostics-20260507-210428
+2026-05-07 21:05:55.928459219 +0000 262144 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/paint.db-shm
+2026-05-07 21:05:58.223485585 +0000 67108864 /home/ubuntu/buba-paint-live/runtime/docker-live-readonly-20260504-235600/paint.db-wal

@@ -34,5 +34,13 @@ export function showTradeNotification(data: {
       ? `PnL: ${data.pnl >= 0 ? "+" : ""}$${data.pnl.toFixed(2)}`
       : "New trade opened";
 
-  new Notification(title, { body, icon: "/icon-192x192.png", tag: "buba-trade" });
+  const notification = new Notification(title, {
+    body,
+    icon: "/icon-192x192.png",
+    tag: "buba-trade",
+  });
+  notification.onclick = () => {
+    window.focus();
+    notification.close();
+  };
 }

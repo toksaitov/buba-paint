@@ -23,12 +23,24 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
     {
-      name: "iphone",
-      use: { ...devices["iPhone 14"] },
+      name: "iphone-se",
+      use: { ...devices["iPhone SE (3rd gen)"] },
+    },
+    {
+      name: "iphone-dynamic-island",
+      use: { ...devices["iPhone 15 Pro Max"] },
     },
     {
       name: "ipad",
       use: { ...devices["iPad Mini"] },
+    },
+    {
+      name: "ipad-large",
+      use: { ...devices["iPad Pro 11"] },
+    },
+    {
+      name: "android",
+      use: { ...devices["Pixel 7"] },
     },
   ],
 });
