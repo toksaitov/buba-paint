@@ -168,7 +168,7 @@ Funded live data is research-usable only when both gates pass:
 - public `validate-replay-data` classifies the interval as `sweep_grade`
 - private `validate-live-fidelity` classifies the interval as `research_grade_live`
 
-The private gate checks that every funded order can be explained from persisted strategy features, market/window state, fee and tick metadata, token ID, requested order fields, client order ID, submit/ack/update timing, venue status, fills or cancels, account snapshots, reconciliation events, and control audit. Missing lifecycle evidence downgrades the interval to `descriptive_only_live`.
+The private gate checks that every funded order can be explained from persisted decision evidence, strategy features, market/window state, fee and tick metadata, token ID, requested order fields, client order ID, submit/ack/update timing, venue status, fills or cancels, account snapshots, reconciliation events, and control audit. Missing lifecycle or decision evidence downgrades the interval to `descriptive_only_live`.
 
 Even `research_grade_live` is not an exact exchange simulator. Queue position, hidden liquidity, network path differences, matching-engine internals, and relayer timing cannot be perfectly reconstructed from public and account-visible data. Postmortems must state those limits instead of treating replay as ground truth.
 

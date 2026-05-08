@@ -75,6 +75,33 @@ def check_runtime_replay_metadata(errors: list[str]) -> None:
         errors.append("live.rs still defines runtime replay-quality scan helper")
     if "fn replay_quality_issues_for_live" in text:
         errors.append("live.rs still defines replay-quality live gate scan helper")
+    if 'db.set_run_metadata("replay_quality_class"' in text:
+        errors.append("live runtime writes offline replay_quality_class metadata")
+
+
+def check_legacy_live_submission_absent(errors: list[str]) -> None:
+    """Check that old direct live-submission methods cannot be resurrected."""
+    text = read("bots/paint/src/live.rs")
+    forbidden = [
+        "async fn submit_orders(",
+        "async fn submit_one_order(",
+        "fn persist_live_order_intent(\n",
+        "fn build_live_order_request(\n",
+        "fn handle_live_order_response(\n",
+        "async fn handle_live_order_error(\n",
+    ]
+    for pattern in forbidden:
+        if pattern in text:
+            errors.append(f"legacy direct live-submission method remains: {pattern.strip()}")
+
+
+def check_decision_evidence_wired(errors: list[str]) -> None:
+    """Check that compact decision evidence is not left as dead code."""
+    text = read("bots/paint/src/live_decision.rs")
+    if "#[allow(dead_code)]\nfn decision_evidence_json" in text:
+        errors.append("decision evidence helper is still marked dead code")
+    if "decision_signal_event(" not in text:
+        errors.append("decision evidence is not wired into signal persistence")
 
 
 def check_decision_worker_purity(errors: list[str]) -> None:
@@ -146,6 +173,8 @@ def main() -> int:
     check_forbidden_live_runtime_calls(errors)
     check_docker_healthchecks(errors)
     check_runtime_replay_metadata(errors)
+    check_legacy_live_submission_absent(errors)
+    check_decision_evidence_wired(errors)
     check_decision_worker_purity(errors)
     check_legacy_strategy_cycle_absent_from_live(errors)
     check_direct_venue_submission_from_runtime(errors)

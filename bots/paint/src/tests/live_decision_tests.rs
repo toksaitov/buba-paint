@@ -201,7 +201,15 @@ fn live_submission_feedback_converts_pending_intent_to_open_exposure() {
     let first = engine.evaluate(decision_request(window.clone(), 10_000, true));
     let signal_id = first.live_orders[0].signal_id;
 
-    engine.apply_live_submission_feedback(&[signal_id], &[], 10_050);
+    engine.apply_live_submission_feedback(
+        &[LiveOrderFillFeedback {
+            signal_id,
+            fill_price: 0.50,
+            filled_size: first.live_orders[0].requested_size,
+        }],
+        &[],
+        10_050,
+    );
 
     let second = engine.evaluate(decision_request(window, 10_060, true));
     assert!(second.live_orders.is_empty());
@@ -214,4 +222,89 @@ fn live_submission_feedback_converts_pending_intent_to_open_exposure() {
         } if decision_status == "rejected"
             && rejection_reason.as_deref() == Some("duplicate_open_position")
     )));
+}
+
+#[test]
+/// Verifies live partial fills update exposure with the accepted size only.
+fn live_submission_feedback_uses_actual_partial_fill_size() {
+    let window = test_window();
+    let mut engine = engine(ExecutionMode::LiveTrading);
+    let first = engine.evaluate(decision_request(window.clone(), 10_000, true));
+    let order = &first.live_orders[0];
+    let partial_size = (order.requested_size / 2.0).max(1.0);
+
+    engine.apply_live_submission_feedback(
+        &[LiveOrderFillFeedback {
+            signal_id: order.signal_id,
+            fill_price: order.requested_price,
+            filled_size: partial_size,
+        }],
+        &[],
+        10_050,
+    );
+
+    assert!((engine.stats.total_filled_size - partial_size).abs() < f64::EPSILON);
+    assert_eq!(engine.stats.partial_fills, 1);
+    let second = engine.evaluate(decision_request(window, 10_060, true));
+    assert!(second.live_orders.is_empty());
+    assert!(second.persistence_events.iter().any(|event| matches!(
+        event,
+        LivePersistenceEvent::Signal {
+            rejection_reason,
+            ..
+        } if rejection_reason.as_deref() == Some("duplicate_open_position")
+    )));
+}
+
+#[test]
+/// Verifies venue rejection releases pending state and permits a later retry.
+fn live_submission_rejection_removes_pending_state_for_retry() {
+    let window = test_window();
+    let mut engine = engine(ExecutionMode::LiveTrading);
+    let first = engine.evaluate(decision_request(window.clone(), 10_000, true));
+    let order = first.live_orders[0].clone();
+    let original_signal_id = order.signal_id;
+
+    engine.apply_live_submission_feedback(&[], &[order.signal_id], 10_050);
+    engine.release_reservations(vec![(order.strategy.clone(), order.reserved_cost)]);
+
+    let second = engine.evaluate(decision_request(window, 10_060, true));
+    assert_eq!(second.live_orders.len(), 1);
+    assert_ne!(second.live_orders[0].signal_id, original_signal_id);
+}
+
+#[test]
+/// Verifies an unresolved unknown submission remains pending and blocks duplicates.
+fn missing_live_feedback_keeps_pending_state_blocked() {
+    let window = test_window();
+    let mut engine = engine(ExecutionMode::LiveTrading);
+    let first = engine.evaluate(decision_request(window.clone(), 10_000, true));
+    assert_eq!(first.live_orders.len(), 1);
+
+    let second = engine.evaluate(decision_request(window, 10_060, true));
+    assert!(second.live_orders.is_empty());
+    assert!(second.persistence_events.iter().any(|event| matches!(
+        event,
+        LivePersistenceEvent::Signal {
+            rejection_reason,
+            ..
+        } if rejection_reason.as_deref() == Some("duplicate_pending_order")
+    )));
+}
+
+#[test]
+/// Verifies accepted decision rows carry compact decision evidence.
+fn decision_signal_event_includes_compact_decision_evidence() {
+    let mut engine = engine(ExecutionMode::Paper);
+    let output = engine.evaluate(decision_request(test_window(), 10_000, true));
+
+    let evidence_present = output.persistence_events.iter().any(|event| match event {
+        LivePersistenceEvent::Signal { signal, .. } => signal
+            .metadata
+            .get("decisionEvidence")
+            .and_then(|value| value.get("book_state"))
+            .is_some(),
+        _ => false,
+    });
+    assert!(evidence_present);
 }

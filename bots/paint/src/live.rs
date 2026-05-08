@@ -10,7 +10,7 @@ use serde_json::json;
 use tracing::{error, info, warn};
 
 use crate::backtest::momentum::MomentumCalculator;
-use crate::bankroll::{BankrollManager, BankrollStats};
+use crate::bankroll::BankrollStats;
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, FeedEventStorageProfile};
 use crate::db::database::Database;
@@ -21,8 +21,8 @@ use crate::feeds::FeedMessage;
 use crate::feeds::util::now_us;
 use crate::live_control::{LiveControlAction, record_live_control_state};
 use crate::live_decision::{
-    RuntimeDecisionEngine, RuntimeDecisionLogEvent, RuntimeDecisionOutput, RuntimeDecisionRequest,
-    RuntimeDecisionSeed,
+    LiveOrderFillFeedback, RuntimeDecisionEngine, RuntimeDecisionLogEvent, RuntimeDecisionOutput,
+    RuntimeDecisionRequest, RuntimeDecisionSeed,
 };
 use crate::live_feed_writer::{FeedEventWriter, FeedEventWriterConfig, FeedEventWriterSnapshot};
 use crate::live_persistence_writer::{
@@ -207,12 +207,12 @@ impl StrategyWorker {
     /// Enqueue terminal live-submission feedback for in-memory exposure state.
     fn try_apply_live_submission_feedback(
         &self,
-        filled_signal_ids: Vec<i64>,
+        fills: Vec<LiveOrderFillFeedback>,
         rejected_signal_ids: Vec<i64>,
         now_ms: u64,
     ) -> bool {
         self.try_send(StrategyWorkerMessage::LiveSubmissionFeedback {
-            filled_signal_ids,
+            fills,
             rejected_signal_ids,
             now_ms,
         })
@@ -307,7 +307,7 @@ async fn submit_live_orders_from_worker(
     let mut feedback = LiveSubmissionFeedback {
         state_update: None,
         releases: Vec::new(),
-        filled_signal_ids: Vec::new(),
+        fills: Vec::new(),
         rejected_signal_ids: Vec::new(),
         now_ms: request.now_ms,
     };
@@ -324,9 +324,16 @@ async fn submit_live_orders_from_worker(
         )
         .await
         {
-            LiveSubmissionOrderResult::Filled => {
+            LiveSubmissionOrderResult::Filled {
+                accepted_size,
+                fill_price,
+            } => {
                 successful += 1;
-                feedback.filled_signal_ids.push(order.signal_id);
+                feedback.fills.push(LiveOrderFillFeedback {
+                    signal_id: order.signal_id,
+                    fill_price,
+                    filled_size: accepted_size,
+                });
             }
             LiveSubmissionOrderResult::Rejected { release } => {
                 feedback.releases.push((order.strategy.clone(), release));
@@ -384,7 +391,10 @@ async fn submit_live_orders_from_worker(
 
 /// Result of one worker-side live order submission.
 enum LiveSubmissionOrderResult {
-    Filled,
+    Filled {
+        accepted_size: f64,
+        fill_price: f64,
+    },
     Rejected {
         release: f64,
     },
@@ -563,42 +573,123 @@ fn handle_live_order_response_from_worker(
             let details = response.details_json.clone().unwrap_or_else(|| {
                 json!({ "status": response.status, "reason": response.status_reason }).to_string()
             });
-            if let Err(error) = persist_live_worker_state(
+            db.close();
+            return block_live_response_with_state(
                 db_path,
                 session_id,
-                "unknown_order",
-                "system",
-                "blocking venue order response",
                 now_ms,
-                Some(&details),
-            ) {
-                error!("failed to persist blocking live order response state: {error}");
-            }
-            db.close();
-            return LiveSubmissionOrderResult::Blocked {
-                state: "unknown_order",
-                reason: "blocking venue order response".to_string(),
-                release: Some(order.reserved_cost),
-            };
+                "blocking venue order response",
+                Some(details.as_str()),
+                Some(order.reserved_cost),
+            );
         }
         db.close();
         return LiveSubmissionOrderResult::Rejected {
             release: order.reserved_cost,
         };
     }
+    let accepted_size =
+        match classify_accepted_live_size(db_path, session_id, order, now_ms, response) {
+            Ok(Some(accepted_size)) => accepted_size,
+            Ok(None) => {
+                db.close();
+                return LiveSubmissionOrderResult::Rejected {
+                    release: order.reserved_cost,
+                };
+            }
+            Err(blocked) => {
+                db.close();
+                return blocked;
+            }
+        };
+    let fill_price = live_response_fill_price(order, response);
     if let Err(error) = persist_response_fill_from_worker(
         &db,
         session_id,
         intent_id,
         live_order_id,
-        order,
         now_ms,
         response,
+        fill_price,
     ) {
         error!("failed to persist live response fill: {error}");
     }
     db.close();
-    LiveSubmissionOrderResult::Filled
+    LiveSubmissionOrderResult::Filled {
+        accepted_size,
+        fill_price,
+    }
+}
+
+/// Classify the accepted live order size from a successful venue response.
+fn classify_accepted_live_size(
+    db_path: &str,
+    session_id: i64,
+    order: &QueuedOrderIntent,
+    now_ms: u64,
+    response: &LiveOrderIntentResponse,
+) -> Result<Option<f64>, LiveSubmissionOrderResult> {
+    let Some(accepted_size) = response.accepted_size else {
+        let details = response.details_json.clone().unwrap_or_else(|| {
+            json!({ "status": response.status, "reason": "missing accepted_size" }).to_string()
+        });
+        return Err(block_live_response_with_state(
+            db_path,
+            session_id,
+            now_ms,
+            "venue response missing accepted size",
+            Some(details.as_str()),
+            None,
+        ));
+    };
+    if accepted_size <= 0.0 {
+        return Ok(None);
+    }
+    if accepted_size > order.requested_size + f64::EPSILON {
+        let details = response.details_json.clone().unwrap_or_else(|| {
+            json!({
+                "accepted_size": accepted_size,
+                "requested_size": order.requested_size,
+            })
+            .to_string()
+        });
+        return Err(block_live_response_with_state(
+            db_path,
+            session_id,
+            now_ms,
+            "venue response accepted more size than requested",
+            Some(details.as_str()),
+            None,
+        ));
+    }
+    Ok(Some(accepted_size))
+}
+
+/// Persist a blocked live-response state and build the worker result.
+fn block_live_response_with_state(
+    db_path: &str,
+    session_id: i64,
+    now_ms: u64,
+    reason: &str,
+    details: Option<&str>,
+    release: Option<f64>,
+) -> LiveSubmissionOrderResult {
+    if let Err(error) = persist_live_worker_state(
+        db_path,
+        session_id,
+        "unknown_order",
+        "system",
+        reason,
+        now_ms,
+        details,
+    ) {
+        error!("failed to persist blocked live order response state: {error}");
+    }
+    LiveSubmissionOrderResult::Blocked {
+        state: "unknown_order",
+        reason: reason.to_string(),
+        release,
+    }
 }
 
 /// Persist one worker-side unknown submission and try cancel-all.
@@ -740,9 +831,9 @@ fn persist_response_fill_from_worker(
     session_id: i64,
     intent_id: i64,
     live_order_id: i64,
-    order: &QueuedOrderIntent,
     now_ms: u64,
     response: &LiveOrderIntentResponse,
+    fill_price: f64,
 ) -> anyhow::Result<()> {
     if let Some(accepted_size) = response.accepted_size
         && accepted_size > 0.0
@@ -754,7 +845,7 @@ fn persist_response_fill_from_worker(
             live_order_id: Some(live_order_id),
             venue_trade_id: None,
             filled_at_ms: now_ms,
-            price: order.requested_price,
+            price: fill_price,
             size: accepted_size,
             fee_amount: None,
             fee_rate: None,
@@ -807,12 +898,12 @@ fn run_strategy_worker(runtime: StrategyWorkerRuntime) {
                 decision_engine.release_reservations(releases);
             }
             StrategyWorkerMessage::LiveSubmissionFeedback {
-                filled_signal_ids,
+                fills,
                 rejected_signal_ids,
                 now_ms,
             } => {
                 decision_engine.apply_live_submission_feedback(
-                    &filled_signal_ids,
+                    &fills,
                     &rejected_signal_ids,
                     now_ms,
                 );
@@ -1066,7 +1157,7 @@ enum StrategyWorkerMessage {
         releases: Vec<(String, f64)>,
     },
     LiveSubmissionFeedback {
-        filled_signal_ids: Vec<i64>,
+        fills: Vec<LiveOrderFillFeedback>,
         rejected_signal_ids: Vec<i64>,
         now_ms: u64,
     },
@@ -1130,7 +1221,7 @@ struct LiveSubmissionRequest {
 struct LiveSubmissionFeedback {
     state_update: Option<LiveSubmissionStateUpdate>,
     releases: Vec<(String, f64)>,
-    filled_signal_ids: Vec<i64>,
+    fills: Vec<LiveOrderFillFeedback>,
     rejected_signal_ids: Vec<i64>,
     now_ms: u64,
 }
@@ -1510,7 +1601,7 @@ async fn run_live_runtime(
         db = %db_path,
         execution_mode = config.execution_mode.as_str(),
         feed_event_storage_profile = config.feed_event_storage_profile.as_str(),
-        replay_quality_class = "empty",
+        runtime_capture_health = "empty",
         pending_settlement_mode = pending_policy.mode.as_str(),
         pending_settlement_family_reserve_fraction = pending_policy.family_reserve_fraction,
         pending_settlement_global_reserve_fraction = pending_policy.global_reserve_fraction,
@@ -2549,6 +2640,7 @@ async fn run_live_runtime(
                     handle_strategy_decision_output(
                         output,
                         &persistence_writer,
+                        &strategy_worker,
                         live_submission_queue.as_ref(),
                         live_trading_monitor.as_mut(),
                     );
@@ -2580,6 +2672,7 @@ async fn run_live_runtime(
             handle_strategy_decision_output(
                 output,
                 &persistence_writer,
+                &strategy_worker,
                 live_submission_queue.as_ref(),
                 live_trading_monitor.as_mut(),
             );
@@ -2633,7 +2726,6 @@ async fn run_live_runtime(
     Ok(())
 }
 
-#[allow(dead_code)]
 impl LiveTradingMonitor {
     /// Return whether new venue submissions may be attempted right now.
     fn can_submit_orders(&self) -> bool {
@@ -2914,74 +3006,6 @@ impl LiveTradingMonitor {
         Ok(None)
     }
 
-    /// Submit a batch of live orders through the authenticated sidecar boundary.
-    async fn submit_orders(
-        &mut self,
-        db_path: &str,
-        config: &Config,
-        bankroll: &mut BankrollManager,
-        window: &MarketWindow,
-        orders: &[QueuedOrderIntent],
-        now_ms: u64,
-    ) -> anyhow::Result<()> {
-        if orders.is_empty() {
-            return Ok(());
-        }
-        if !self.can_submit_orders() {
-            bail!(
-                "live order submission blocked by state={} reason={}",
-                self.state,
-                self.blocked_reason.as_deref().unwrap_or("none")
-            );
-        }
-        let mut successful = 0_u64;
-        for order in orders {
-            if self
-                .submit_one_order(db_path, config, bankroll, window, order, now_ms)
-                .await?
-            {
-                successful += 1;
-            }
-            if !self.can_submit_orders() {
-                break;
-            }
-        }
-        if orders.len() == 2
-            && orders
-                .iter()
-                .any(|order| order.strategy.as_str() == "spread-capture")
-            && successful == 1
-        {
-            let db = Database::new(db_path)?;
-            let details = json!({
-                "market_id": window.market_id,
-                "successful_legs": successful,
-                "submitted_legs": orders.len(),
-            })
-            .to_string();
-            self.set_state(
-                &db,
-                "unknown_order",
-                "system",
-                "spread residual exposure detected",
-                now_ms,
-                Some(&details),
-            )?;
-            db.log_live_reconciliation_event(&LiveReconciliationEvent {
-                id: None,
-                session_id: self.session_id,
-                timestamp_ms: now_ms,
-                severity: "critical".to_string(),
-                event_type: "spread_residual_exposure".to_string(),
-                local_value: Some(successful as f64),
-                remote_value: Some(orders.len() as f64),
-                details_json: Some(json!({ "market_id": window.market_id }).to_string()),
-            })?;
-            db.close();
-        }
-        Ok(())
-    }
-
     /// Finish the current live-trading session after normal process shutdown.
     fn finish_stopped(&mut self, db: &Database, clock: &dyn Clock) -> anyhow::Result<()> {
         if self.finished {
@@ -3209,296 +3233,6 @@ impl LiveTradingMonitor {
         Ok(json!({ "redeem_all": response }))
     }
 
-    /// Persist one submitted live venue order and its outcome.
-    async fn submit_one_order(
-        &mut self,
-        db_path: &str,
-        config: &Config,
-        bankroll: &mut BankrollManager,
-        window: &MarketWindow,
-        order: &QueuedOrderIntent,
-        now_ms: u64,
-    ) -> anyhow::Result<bool> {
-        let notional = order.requested_price * order.requested_size;
-        let (intent_id, reject_reason) =
-            self.persist_live_order_intent(db_path, config, window, order, now_ms, notional)?;
-        if let Some(reason) = reject_reason {
-            bankroll.release_reserved_for_strategy(order.reserved_cost, &order.strategy);
-            info!(
-                intent_id,
-                signal_id = order.signal_id,
-                strategy = %order.strategy,
-                reason,
-                "live order rejected before venue submission"
-            );
-            return Ok(false);
-        }
-        let request = self.build_live_order_request(intent_id, order, notional);
-        match self.sidecar.submit_order_intent(&request).await {
-            Ok(response) => self
-                .handle_live_order_response(db_path, bankroll, order, intent_id, now_ms, &response),
-            Err(error) => {
-                self.handle_live_order_error(db_path, order, &request, intent_id, now_ms, error)
-                    .await
-            }
-        }
-    }
-
-    /// Persist one live order intent before any venue submission.
-    fn persist_live_order_intent(
-        &self,
-        db_path: &str,
-        config: &Config,
-        window: &MarketWindow,
-        order: &QueuedOrderIntent,
-        now_ms: u64,
-        notional: f64,
-    ) -> anyhow::Result<(i64, Option<&'static str>)> {
-        let (intent_status, reject_reason) =
-            live_order_pre_submit_rejection(order, notional, config);
-        let db = Database::new(db_path)?;
-        let intent_id = db.log_live_order_intent(&LiveOrderIntent {
-            id: None,
-            session_id: self.session_id,
-            signal_id: Some(order.signal_id),
-            market_id: order.market_id.clone(),
-            strategy: order.strategy.clone(),
-            side: order.side.to_string(),
-            order_type: "FOK".to_string(),
-            status: intent_status.to_string(),
-            created_at_ms: now_ms,
-            requested_price: Some(order.requested_price),
-            requested_size: Some(order.requested_size),
-            limit_price: Some(order.limit_price),
-            fee_schedule_json: window.fee_schedule_json.clone(),
-            token_fee_rates_json: window.token_fee_rates_json.clone(),
-            execution_group_id: order.execution_group_id.clone(),
-            details_json: Some(
-                json!({
-                    "signal_timestamp": order.signal_timestamp,
-                    "arrival_ts": order.arrival_ts,
-                    "execution_fidelity": order.execution_fidelity.to_string(),
-                    "amount_usd": notional,
-                    "reject_reason": reject_reason,
-                })
-                .to_string(),
-            ),
-        })?;
-        db.close();
-        Ok((intent_id, reject_reason))
-    }
-
-    /// Build the sidecar order request for one persisted live intent.
-    fn build_live_order_request(
-        &self,
-        intent_id: i64,
-        order: &QueuedOrderIntent,
-        notional: f64,
-    ) -> LiveOrderIntentRequest {
-        LiveOrderIntentRequest {
-            session_id: self.session_id,
-            intent_id,
-            market_id: order.market_id.clone(),
-            token_id: order.token_id.clone(),
-            side: "BUY".to_string(),
-            order_type: "FOK".to_string(),
-            limit_price: order.limit_price,
-            size: order.requested_size,
-            amount_usd: Some(notional),
-            client_order_id: format!("buba-live-{}-{intent_id}", self.session_id),
-            details_json: Some(
-                json!({
-                    "strategy": order.strategy,
-                    "signal_id": order.signal_id,
-                    "execution_group_id": order.execution_group_id,
-                })
-                .to_string(),
-            ),
-        }
-    }
-
-    /// Persist one successful sidecar response and return whether it filled.
-    fn handle_live_order_response(
-        &mut self,
-        db_path: &str,
-        bankroll: &mut BankrollManager,
-        order: &QueuedOrderIntent,
-        intent_id: i64,
-        now_ms: u64,
-        response: &LiveOrderIntentResponse,
-    ) -> anyhow::Result<bool> {
-        let db = Database::new(db_path)?;
-        let live_order_id = self.persist_order_response(&db, intent_id, order, now_ms, response)?;
-        if !response.ok {
-            bankroll.release_reserved_for_strategy(order.reserved_cost, &order.strategy);
-            if live_order_response_is_blocking(response) {
-                self.set_state(
-                    &db,
-                    "unknown_order",
-                    "system",
-                    "blocking venue order response",
-                    now_ms,
-                    response.details_json.as_deref(),
-                )?;
-            }
-            db.close();
-            return Ok(false);
-        }
-        self.persist_response_fill(&db, intent_id, live_order_id, order, now_ms, response)?;
-        db.close();
-        Ok(true)
-    }
-
-    /// Persist one fill inferred from a successful sidecar order response.
-    fn persist_response_fill(
-        &self,
-        db: &Database,
-        intent_id: i64,
-        live_order_id: i64,
-        order: &QueuedOrderIntent,
-        now_ms: u64,
-        response: &LiveOrderIntentResponse,
-    ) -> anyhow::Result<()> {
-        if let Some(accepted_size) = response.accepted_size
-            && accepted_size > 0.0
-        {
-            db.log_live_fill(&LiveFill {
-                id: None,
-                session_id: self.session_id,
-                intent_id: Some(intent_id),
-                live_order_id: Some(live_order_id),
-                venue_trade_id: None,
-                filled_at_ms: now_ms,
-                price: order.requested_price,
-                size: accepted_size,
-                fee_amount: None,
-                fee_rate: None,
-                liquidity_side: Some("taker".to_string()),
-                tx_hash: None,
-                status: "venue_response_pending_reconciliation".to_string(),
-                details_json: response.details_json.clone(),
-            })?;
-        }
-        Ok(())
-    }
-
-    /// Persist an unknown sidecar submission outcome and block further trading.
-    async fn handle_live_order_error(
-        &mut self,
-        db_path: &str,
-        order: &QueuedOrderIntent,
-        request: &LiveOrderIntentRequest,
-        intent_id: i64,
-        now_ms: u64,
-        error: anyhow::Error,
-    ) -> anyhow::Result<bool> {
-        let db = Database::new(db_path)?;
-        let error_message = error.to_string();
-        db.log_live_order(&LiveOrder {
-            id: None,
-            session_id: self.session_id,
-            intent_id,
-            venue_order_id: None,
-            client_order_id: Some(request.client_order_id.clone()),
-            market_id: order.market_id.clone(),
-            token_id: Some(order.token_id.clone()),
-            side: "BUY".to_string(),
-            order_type: "FOK".to_string(),
-            status: "unknown_submission".to_string(),
-            status_reason: Some(error_message.clone()),
-            created_at_ms: now_ms,
-            acknowledged_at_ms: None,
-            updated_at_ms: now_ms,
-            requested_price: Some(order.requested_price),
-            limit_price: Some(order.limit_price),
-            requested_size: Some(order.requested_size),
-            accepted_size: None,
-            details_json: Some(json!({ "error": error_message }).to_string()),
-        })?;
-        let details = json!({ "error": error.to_string() }).to_string();
-        self.set_state(
-            &db,
-            "unknown_order",
-            "system",
-            "sidecar order submission outcome unknown",
-            now_ms,
-            Some(&details),
-        )?;
-        db.log_live_reconciliation_event(&LiveReconciliationEvent {
-            id: None,
-            session_id: self.session_id,
-            timestamp_ms: now_ms,
-            severity: "critical".to_string(),
-            event_type: "unknown_submission".to_string(),
-            local_value: None,
-            remote_value: None,
-            details_json: Some(
-                json!({
-                    "intent_id": intent_id,
-                    "client_order_id": request.client_order_id.clone(),
-                    "market_id": order.market_id.clone(),
-                    "error": error_message,
-                })
-                .to_string(),
-            ),
-        })?;
-        db.close();
-        let cancel_result = self.sidecar.cancel_all().await;
-        let db = Database::new(db_path)?;
-        db.log_control_audit(&crate::types::ControlAuditEntry {
-            id: None,
-            timestamp_ms: now_ms,
-            actor: "system".to_string(),
-            action: "live_unknown_order_cancel_all_attempt".to_string(),
-            target: Some(self.session_id.to_string()),
-            details_json: Some(
-                json!({
-                    "intent_id": intent_id,
-                    "client_order_id": request.client_order_id.clone(),
-                    "cancel_all": match cancel_result {
-                        Ok(response) => json!({ "ok": true, "response": response }),
-                        Err(error) => json!({ "ok": false, "error": error.to_string() }),
-                    },
-                })
-                .to_string(),
-            ),
-        })?;
-        db.close();
-        Err(error)
-    }
-
-    /// Persist one sidecar order response as a live order row.
-    fn persist_order_response(
-        &self,
-        db: &Database,
-        intent_id: i64,
-        order: &QueuedOrderIntent,
-        now_ms: u64,
-        response: &LiveOrderIntentResponse,
-    ) -> anyhow::Result<i64> {
-        db.log_live_order(&LiveOrder {
-            id: None,
-            session_id: self.session_id,
-            intent_id,
-            venue_order_id: response.venue_order_id.clone(),
-            client_order_id: Some(response.client_order_id.clone()),
-            market_id: order.market_id.clone(),
-            token_id: Some(order.token_id.clone()),
-            side: "BUY".to_string(),
-            order_type: "FOK".to_string(),
-            status: response.status.clone(),
-            status_reason: response.status_reason.clone(),
-            created_at_ms: now_ms,
-            acknowledged_at_ms: Some(now_ms),
-            updated_at_ms: now_ms,
-            requested_price: Some(order.requested_price),
-            limit_price: Some(order.limit_price),
-            requested_size: Some(order.requested_size),
-            accepted_size: response.accepted_size,
-            details_json: response.details_json.clone(),
-        })
-    }
-
     /// Persist activity-recovered trades and user-stream health events.
     fn persist_activity_recovery(
         &self,
@@ -3671,32 +3405,100 @@ fn enqueue_strategy_evaluation(
 fn handle_strategy_decision_output(
     output: RuntimeDecisionOutput,
     persistence_writer: &LivePersistenceWriter,
+    strategy_worker: &StrategyWorker,
     live_submission_queue: Option<&LiveSubmissionQueue>,
     mut live_trading_monitor: Option<&mut LiveTradingMonitor>,
 ) {
     log_processed_order_outcomes(output.processed_outcomes);
     log_strategy_worker_events(output.log_events);
+    let mut critical_persistence_failed = false;
     for event in output.persistence_events {
         if !persistence_writer.try_enqueue(event) {
+            critical_persistence_failed = true;
             mark_live_submission_blocked(
                 live_trading_monitor.as_deref_mut(),
                 "runtime persistence queue rejected decision evidence",
             );
         }
     }
+    if critical_persistence_failed && !output.live_orders.is_empty() {
+        rollback_live_orders_after_runtime_rejection(
+            strategy_worker,
+            &output.live_orders,
+            output.now_ms,
+            "runtime persistence queue rejected decision evidence",
+            live_trading_monitor,
+        );
+        return;
+    }
     if !output.live_orders.is_empty()
         && let Some(queue) = live_submission_queue
         && let Some(window) = output.submission_window
         && !queue.try_submit(LiveSubmissionRequest {
             window,
-            orders: output.live_orders,
+            orders: output.live_orders.clone(),
             now_ms: output.now_ms,
         })
     {
+        rollback_live_orders_after_runtime_rejection(
+            strategy_worker,
+            &output.live_orders,
+            output.now_ms,
+            "live submission queue rejected strategy output",
+            live_trading_monitor.as_deref_mut(),
+        );
         mark_live_submission_blocked(
             live_trading_monitor,
             "live submission queue rejected strategy output",
         );
+    }
+}
+
+/// Release in-memory pending live orders when runtime queues reject them.
+fn rollback_live_orders_after_runtime_rejection(
+    strategy_worker: &StrategyWorker,
+    orders: &[QueuedOrderIntent],
+    now_ms: u64,
+    reason: &str,
+    mut monitor: Option<&mut LiveTradingMonitor>,
+) {
+    let rejected_signal_ids = orders
+        .iter()
+        .map(|order| order.signal_id)
+        .collect::<Vec<_>>();
+    let releases = orders
+        .iter()
+        .map(|order| (order.strategy.clone(), order.reserved_cost))
+        .collect::<Vec<_>>();
+    if !strategy_worker.try_apply_live_submission_feedback(Vec::new(), rejected_signal_ids, now_ms)
+    {
+        mark_live_submission_blocked_from_reborrow(
+            &mut monitor,
+            "strategy worker rejected runtime queue rollback",
+        );
+    }
+    if !strategy_worker.try_release_reservations(releases) {
+        mark_live_submission_blocked_from_reborrow(
+            &mut monitor,
+            "strategy worker rejected runtime queue reserve release",
+        );
+    }
+    warn!(
+        reason,
+        orders = orders.len(),
+        "rolled back live orders before venue submission"
+    );
+}
+
+/// Mark a live submission blocker through a reborrowed optional monitor.
+fn mark_live_submission_blocked_from_reborrow(
+    monitor: &mut Option<&mut LiveTradingMonitor>,
+    reason: &str,
+) {
+    if let Some(monitor) = monitor.as_mut()
+        && matches!(monitor.state.as_str(), "armed" | "stop_after_flat")
+    {
+        monitor.blocked_reason = Some(reason.to_string());
     }
 }
 
@@ -3725,16 +3527,15 @@ fn apply_live_submission_feedback(
     strategy_worker: &StrategyWorker,
     feedback: LiveSubmissionFeedback,
 ) {
-    let applied_feedback =
-        if feedback.filled_signal_ids.is_empty() && feedback.rejected_signal_ids.is_empty() {
-            true
-        } else {
-            strategy_worker.try_apply_live_submission_feedback(
-                feedback.filled_signal_ids,
-                feedback.rejected_signal_ids,
-                feedback.now_ms,
-            )
-        };
+    let applied_feedback = if feedback.fills.is_empty() && feedback.rejected_signal_ids.is_empty() {
+        true
+    } else {
+        strategy_worker.try_apply_live_submission_feedback(
+            feedback.fills,
+            feedback.rejected_signal_ids,
+            feedback.now_ms,
+        )
+    };
     if !applied_feedback {
         if let Some(monitor) = monitor.as_deref_mut() {
             mark_live_submission_blocked(
@@ -4094,6 +3895,31 @@ fn live_order_response_is_blocking(response: &LiveOrderIntentResponse) -> bool {
         response.status.as_str(),
         "unknown_submission" | "venue_restart" | "timeout" | "pending_unknown"
     )
+}
+
+/// Return the best typed fill price available from one sidecar response.
+fn live_response_fill_price(order: &QueuedOrderIntent, response: &LiveOrderIntentResponse) -> f64 {
+    response
+        .details_json
+        .as_deref()
+        .and_then(|details| serde_json::from_str::<serde_json::Value>(details).ok())
+        .and_then(|details| {
+            let raw = details.get("raw_response")?;
+            let taking = raw_amount(raw.get("takingAmount")?)?;
+            let making = raw_amount(raw.get("makingAmount")?)?;
+            (taking > 0.0 && making > 0.0).then_some(making / taking)
+        })
+        .filter(|price| price.is_finite() && *price > 0.0)
+        .unwrap_or(order.requested_price)
+}
+
+/// Parse one numeric CLOB amount from a raw order response fragment.
+fn raw_amount(value: &serde_json::Value) -> Option<f64> {
+    match value {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(text) => text.parse::<f64>().ok(),
+        _ => None,
+    }
 }
 
 /// Persist one discovered market outside the feed loop.
@@ -4726,8 +4552,12 @@ fn persist_runtime_capture_metadata(
         configured_replay_quality_class(profile),
         recorded_at_ms,
     )?;
-    db.set_run_metadata("replay_quality_class", capture_health, recorded_at_ms)?;
     db.set_run_metadata("runtime_capture_health", capture_health, recorded_at_ms)?;
+    db.set_run_metadata(
+        "runtime_observed_replay_quality_class",
+        capture_health,
+        recorded_at_ms,
+    )?;
     db.set_run_metadata(
         "runtime_capture_recorded_at_ms",
         &recorded_at_ms.to_string(),
@@ -5219,9 +5049,9 @@ mod tests {
 
         assert!(result.is_ok());
         let conn = rusqlite::Connection::open(tmp_db.path()).unwrap();
-        let quality: String = conn
+        let runtime_quality: String = conn
             .query_row(
-                "SELECT value FROM run_metadata WHERE key = 'replay_quality_class'",
+                "SELECT value FROM run_metadata WHERE key = 'runtime_observed_replay_quality_class'",
                 [],
                 |row| row.get(0),
             )
@@ -5233,7 +5063,15 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(quality, "empty");
+        let offline_quality_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM run_metadata WHERE key = 'replay_quality_class'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(runtime_quality, "empty");
+        assert_eq!(offline_quality_count, 0);
         assert_eq!(configured, "sweep_capable");
     }
 
@@ -5270,7 +5108,7 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.contains("replay-grade")));
     }
 
-    /// Verifies that runtime capture metadata does not scan rows or claim sweep grade.
+    /// Verifies that runtime capture metadata does not scan rows or claim offline sweep grade.
     #[test]
     fn runtime_capture_metadata_uses_incremental_health() {
         let tmp_db = NamedTempFile::new().unwrap();
@@ -5293,8 +5131,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
+        assert!(
             db.get_run_metadata("replay_quality_class")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            db.get_run_metadata("runtime_observed_replay_quality_class")
                 .unwrap()
                 .unwrap(),
             "observing"
@@ -5517,6 +5360,97 @@ mod tests {
         assert!(live_order_response_is_blocking(&response));
     }
 
+    /// Verifies fill price is derived from CLOB raw making/taking amounts when present.
+    #[test]
+    fn live_response_fill_price_uses_raw_response_amounts() {
+        let order = test_queued_order();
+        let response = LiveOrderIntentResponse {
+            ok: true,
+            venue_order_id: Some("venue-1".to_string()),
+            client_order_id: "client-1".to_string(),
+            status: "matched".to_string(),
+            status_reason: None,
+            accepted_size: Some(10.0),
+            details_json: Some(
+                json!({
+                    "raw_response": {
+                        "takingAmount": "10000000",
+                        "makingAmount": "5300000"
+                    }
+                })
+                .to_string(),
+            ),
+        };
+
+        assert!((live_response_fill_price(&order, &response) - 0.53).abs() < 1e-12);
+    }
+
+    /// Verifies a successful venue response without accepted size becomes unknown.
+    #[test]
+    fn live_order_response_missing_accepted_size_blocks() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        db.log_signal_with_context_and_id(
+            -1,
+            &test_signal(),
+            Some("mkt-test"),
+            Some(ReplayFidelity::RawEvent),
+            None,
+            None,
+        )
+        .unwrap();
+        let session_id = db
+            .insert_live_session(&LiveSession {
+                id: None,
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                status: "armed".to_string(),
+                execution_mode: "live_trading".to_string(),
+                wallet_address: None,
+                proxy_wallet: None,
+                enabled_strategies_json: "[]".to_string(),
+                config_fingerprint: "{}".to_string(),
+                cash_cap_usd: 100.0,
+                details_json: Some("{}".to_string()),
+            })
+            .unwrap();
+        db.close();
+        let order = test_queued_order();
+        let (intent_id, reject_reason) = persist_live_order_intent_from_worker(
+            db_path,
+            &Config::default(),
+            session_id,
+            &test_market_window(),
+            &order,
+            2_000,
+            order.requested_price * order.requested_size,
+        )
+        .unwrap();
+        assert_eq!(reject_reason, None);
+        let response = LiveOrderIntentResponse {
+            ok: true,
+            venue_order_id: Some("venue-1".to_string()),
+            client_order_id: "client-1".to_string(),
+            status: "matched".to_string(),
+            status_reason: None,
+            accepted_size: None,
+            details_json: None,
+        };
+
+        let result = handle_live_order_response_from_worker(
+            db_path, session_id, &order, intent_id, 2_100, &response,
+        );
+
+        assert!(matches!(
+            result,
+            LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                ..
+            }
+        ));
+    }
+
     /// Verifies that a queued preflight command refreshes sidecar state without arming.
     #[tokio::test]
     async fn preflight_control_refreshes_remote_state() {
@@ -5687,6 +5621,75 @@ mod tests {
             user_stream_events: Vec::new(),
             clob_trades: Vec::new(),
             details_json: None,
+        }
+    }
+
+    /// Build one market window with live order metadata.
+    fn test_market_window() -> MarketWindow {
+        MarketWindow {
+            market_id: "mkt-test".to_string(),
+            question: "Will BTC go up?".to_string(),
+            up_token_id: "up-token".to_string(),
+            down_token_id: "down-token".to_string(),
+            condition_id: "condition".to_string(),
+            start_time: 1_000,
+            end_time: 301_000,
+            slug: "btc-test".to_string(),
+            outcome: None,
+            resolution_source: Some("gamma".to_string()),
+            fee_profile: Some("crypto".to_string()),
+            order_min_size: Some(1.0),
+            order_price_min_tick_size: Some(0.01),
+            maker_base_fee: None,
+            taker_base_fee: None,
+            rewards_min_size: None,
+            rewards_max_spread: None,
+            fees_enabled: Some(true),
+            fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".to_string()),
+            token_fee_rates_json: None,
+            accepting_orders: Some(true),
+            accepting_orders_timestamp: Some("2026-05-08T00:00:00Z".to_string()),
+            clear_book_on_start: Some(false),
+        }
+    }
+
+    /// Build one queued order intent for live submission tests.
+    fn test_queued_order() -> QueuedOrderIntent {
+        QueuedOrderIntent {
+            signal_id: -1,
+            signal_timestamp: 1_900,
+            market_id: "mkt-test".to_string(),
+            strategy: "latency-arb".to_string(),
+            side: SignalDirection::Up,
+            token_id: "up-token".to_string(),
+            arrival_ts: 2_000,
+            requested_price: 0.50,
+            limit_price: 0.60,
+            requested_size: 10.0,
+            reserved_cost: 6.0,
+            execution_group_id: None,
+            execution_fidelity: ReplayFidelity::RawEvent,
+        }
+    }
+
+    /// Build one signal row for live intent foreign-key fixtures.
+    fn test_signal() -> crate::types::Signal {
+        crate::types::Signal {
+            timestamp: 1_900,
+            strategy: "latency-arb".to_string(),
+            strategy_version: "test".to_string(),
+            feature_mode: "raw_event_full".to_string(),
+            direction: SignalDirection::Up,
+            confidence: 0.75,
+            binance_price: 75_000.0,
+            chainlink_price: 75_000.0,
+            up_ask: 0.50,
+            down_ask: 0.50,
+            up_bid: 0.49,
+            down_bid: 0.49,
+            expected_edge: Some(0.05),
+            metadata: json!({}),
+            telemetry: None,
         }
     }
 }

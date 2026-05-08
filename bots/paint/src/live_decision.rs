@@ -60,6 +60,14 @@ pub(crate) struct RuntimeDecisionOutput {
     pub now_ms: u64,
 }
 
+/// Terminal venue feedback for one live order known to have filled.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LiveOrderFillFeedback {
+    pub signal_id: i64,
+    pub fill_price: f64,
+    pub filled_size: f64,
+}
+
 /// Operator-visible strategy events emitted without persistence side effects.
 #[derive(Debug, Clone)]
 pub(crate) enum RuntimeDecisionLogEvent {
@@ -406,27 +414,37 @@ impl RuntimeDecisionEngine {
     /// Apply terminal live-submission feedback to in-memory exposure state.
     pub(crate) fn apply_live_submission_feedback(
         &mut self,
-        filled_signal_ids: &[i64],
+        fills: &[LiveOrderFillFeedback],
         rejected_signal_ids: &[i64],
         now_ms: u64,
     ) {
         for signal_id in rejected_signal_ids {
             let _ = self.remove_pending_order(*signal_id);
         }
-        for signal_id in filled_signal_ids {
-            let Some(order) = self.remove_pending_order(*signal_id) else {
+        for fill in fills {
+            let Some(order) = self.remove_pending_order(fill.signal_id) else {
                 continue;
             };
+            if fill.filled_size <= 0.0 || fill.fill_price <= 0.0 {
+                continue;
+            }
+            let fill_cost = fill.filled_size * fill.fill_price;
+            if order.reserved_cost > fill_cost {
+                self.bankroll.release_reserved_for_strategy(
+                    order.reserved_cost - fill_cost,
+                    &order.strategy,
+                );
+            }
             let trade_id = self.allocate_trade_id();
             let trade = build_trade(
                 &order,
                 trade_id,
-                order.limit_price,
-                order.requested_size,
+                fill.fill_price,
+                fill.filled_size,
                 now_ms,
                 "live",
             );
-            self.record_fill(&order, order.limit_price, order.requested_size, now_ms);
+            self.record_fill(&order, fill.fill_price, fill.filled_size, now_ms);
             self.exposure.add_open_trade(trade, order.market_end_time);
         }
     }
@@ -506,10 +524,10 @@ impl RuntimeDecisionEngine {
         annotate_signal(&mut signal, regime, family);
         let signal_id = self.allocate_signal_id();
         if self.trend_tracker.should_suppress(family, signal.direction) {
-            persistence_events.push(signal_event(
+            persistence_events.push(decision_signal_event(
                 signal_id,
                 signal.clone(),
-                &request.window.market_id,
+                request,
                 ReplayFidelity::RawEvent,
                 None,
                 None,
@@ -536,10 +554,10 @@ impl RuntimeDecisionEngine {
                     calm_duplicate_rejection_sample(&request.ctx, &signal),
                 ),
             );
-            persistence_events.push(signal_event(
+            persistence_events.push(decision_signal_event(
                 signal_id,
                 signal,
-                &request.window.market_id,
+                request,
                 ReplayFidelity::RawEvent,
                 None,
                 None,
@@ -627,10 +645,10 @@ impl RuntimeDecisionEngine {
         if let Some(reason) =
             self.can_queue_single(&signal, &request.window, false, 1, request.now_ms)
         {
-            persistence_events.push(signal_event(
+            persistence_events.push(decision_signal_event(
                 signal_id,
                 signal.clone(),
-                &request.window.market_id,
+                request,
                 ReplayFidelity::RawEvent,
                 None,
                 None,
@@ -654,10 +672,10 @@ impl RuntimeDecisionEngine {
             &clock,
         );
         if requested_size <= 0.0 {
-            persistence_events.push(signal_event(
+            persistence_events.push(decision_signal_event(
                 signal_id,
                 signal,
-                &request.window.market_id,
+                request,
                 ReplayFidelity::RawEvent,
                 None,
                 None,
@@ -674,10 +692,10 @@ impl RuntimeDecisionEngine {
         ) {
             self.bankroll
                 .release_reserved_for_strategy(requested_size * limit_price, &signal.strategy);
-            persistence_events.push(signal_event(
+            persistence_events.push(decision_signal_event(
                 signal_id,
                 signal,
-                &request.window.market_id,
+                request,
                 ReplayFidelity::RawEvent,
                 None,
                 None,
@@ -708,10 +726,10 @@ impl RuntimeDecisionEngine {
         let queued = queued_order_intent(&order);
         self.record_submitted_order(&order);
         self.pending_orders.push_back(order);
-        persistence_events.push(signal_event(
+        persistence_events.push(decision_signal_event(
             signal_id,
             signal,
-            &request.window.market_id,
+            request,
             ReplayFidelity::RawEvent,
             Some(request.now_ms),
             Some(arrival_ts),
@@ -743,9 +761,9 @@ impl RuntimeDecisionEngine {
         };
         if let Some(reason) = self.can_queue_spread(signals, &request.window, request.now_ms) {
             Self::persist_spread_signals(
+                request,
                 signals,
                 signal_ids,
-                &request.window.market_id,
                 persistence_events,
                 None,
                 None,
@@ -765,9 +783,9 @@ impl RuntimeDecisionEngine {
         ) <= 0.0
         {
             Self::persist_spread_signals(
+                request,
                 signals,
                 signal_ids,
-                &request.window.market_id,
                 persistence_events,
                 None,
                 None,
@@ -788,9 +806,9 @@ impl RuntimeDecisionEngine {
         );
         if up_tokens <= 0.0 || down_tokens <= 0.0 {
             Self::persist_spread_signals(
+                request,
                 signals,
                 signal_ids,
-                &request.window.market_id,
                 persistence_events,
                 None,
                 None,
@@ -811,9 +829,9 @@ impl RuntimeDecisionEngine {
             self.bankroll
                 .release_reserved_for_strategy(reserved, &up_signal.strategy);
             Self::persist_spread_signals(
+                request,
                 signals,
                 signal_ids,
-                &request.window.market_id,
                 persistence_events,
                 None,
                 None,
@@ -850,9 +868,9 @@ impl RuntimeDecisionEngine {
         self.pending_orders.push_back(up_order);
         self.pending_orders.push_back(down_order);
         Self::persist_spread_signals(
+            request,
             signals,
             signal_ids,
-            &request.window.market_id,
             persistence_events,
             Some(request.now_ms),
             Some(arrival_ts),
@@ -1177,9 +1195,9 @@ impl RuntimeDecisionEngine {
     /// Persist spread signal evidence through the writer event stream.
     #[allow(clippy::too_many_arguments)]
     fn persist_spread_signals(
+        request: &RuntimeDecisionRequest,
         signals: &[Signal],
         signal_ids: &[i64],
-        market_id: &str,
         persistence_events: &mut Vec<LivePersistenceEvent>,
         order_submitted_at_ms: Option<u64>,
         expected_arrival_at_ms: Option<u64>,
@@ -1187,10 +1205,10 @@ impl RuntimeDecisionEngine {
         rejection_reason: Option<&str>,
     ) {
         for (signal, signal_id) in signals.iter().zip(signal_ids.iter().copied()) {
-            persistence_events.push(signal_event(
+            persistence_events.push(decision_signal_event(
                 signal_id,
                 signal.clone(),
-                market_id,
+                request,
                 ReplayFidelity::RawEvent,
                 order_submitted_at_ms,
                 expected_arrival_at_ms,
@@ -1373,6 +1391,49 @@ fn token_id_for_signal(signal: &Signal, window: &MarketWindow) -> String {
         SignalDirection::Up => window.up_token_id.clone(),
         SignalDirection::Down => window.down_token_id.clone(),
     }
+}
+
+/// Build one persistence event with compact decision evidence.
+#[allow(clippy::too_many_arguments)]
+fn decision_signal_event(
+    signal_id: i64,
+    signal: Signal,
+    request: &RuntimeDecisionRequest,
+    execution_fidelity: ReplayFidelity,
+    order_submitted_at_ms: Option<u64>,
+    expected_arrival_at_ms: Option<u64>,
+    decision_status: &str,
+    rejection_reason: Option<&str>,
+) -> LivePersistenceEvent {
+    signal_event(
+        signal_id,
+        signal_with_decision_evidence(signal, request, decision_status, rejection_reason),
+        &request.window.market_id,
+        execution_fidelity,
+        order_submitted_at_ms,
+        expected_arrival_at_ms,
+        decision_status,
+        rejection_reason,
+    )
+}
+
+/// Attach compact decision evidence to a signal without changing the schema.
+fn signal_with_decision_evidence(
+    mut signal: Signal,
+    request: &RuntimeDecisionRequest,
+    status: &str,
+    reason: Option<&str>,
+) -> Signal {
+    let evidence = decision_evidence_json(&signal, request, status, reason);
+    if let Some(metadata) = signal.metadata.as_object_mut() {
+        metadata.insert("decisionEvidence".to_string(), evidence);
+    } else {
+        signal.metadata = json!({
+            "originalMetadata": signal.metadata,
+            "decisionEvidence": evidence,
+        });
+    }
+    signal
 }
 
 /// Build one persistence event for signal evidence.
@@ -1657,7 +1718,6 @@ fn price_is_tick_aligned(price: f64, tick_size: f64) -> bool {
 }
 
 /// Build compact decision evidence for future live-fidelity debugging.
-#[allow(dead_code)]
 fn decision_evidence_json(
     signal: &Signal,
     request: &RuntimeDecisionRequest,

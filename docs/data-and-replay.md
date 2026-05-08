@@ -44,11 +44,11 @@ cargo run -p buba-paint --release -- validate-replay-data \
 
 Old runs that lack Binance book-ticker rows are descriptive evidence only. They can support postmortems, drawdown analysis, and operational diagnostics, but not trusted parameter selection.
 
-Live runtime metadata separates configured capture capability from observed DB evidence. `configured_replay_quality_class` records whether the selected storage profile can become replay-grade. `replay_quality_class` records only observed data quality from the database interval and must not be treated as `sweep_grade` until the required public feed classes are present.
+Live runtime metadata separates configured capture capability, recent capture health, and offline validation. `configured_replay_quality_class` records whether the selected storage profile can become replay-grade. The running bot records `runtime_observed_replay_quality_class`, recent missing classes, queue depth, writer lag, and drop/error state from incremental counters. The full `replay_quality_class` key is reserved for offline `validate-replay-data` or closeout output and must not be written by the trading loop.
 
 ## Live Fidelity Gate
 
-Funded live runs need a stricter private gate above public replay quality. `validate-replay-data` proves the public market inputs exist. `validate-live-fidelity` proves the DB can also explain live order intent, legality, marketability, venue lifecycle, fills, cancels, unknowns, account transitions, reconciliation, and operator controls.
+Funded live runs need a stricter private gate above public replay quality. `validate-replay-data` proves the public market inputs exist. `validate-live-fidelity` proves the DB can also explain live decision evidence, order intent, legality, marketability, venue lifecycle, fills, cancels, unknowns, account transitions, reconciliation, and operator controls.
 
 ```bash
 cargo run -p buba-paint --release -- validate-live-fidelity \
@@ -70,7 +70,7 @@ Sweeps over paper or `live_readonly` intervals use the public replay gate only. 
 
 Important run DB tables:
 
-- `run_metadata`: feed storage profile, configured capture capability, cheap runtime capture health, incremental feed-class counters, and offline validation results when `validate-replay-data`, `validate-live-fidelity`, or closeout are explicitly run. The live bot must not run full replay validators or whole-table feed scans while trading.
+- `run_metadata`: feed storage profile, configured capture capability, cheap runtime capture health, incremental feed-class counters, and offline validation results when `validate-replay-data`, `validate-live-fidelity`, or closeout are explicitly run. Runtime keys use `runtime_*` names; offline validation owns `replay_quality_class`. The live bot must not run full replay validators or whole-table feed scans while trading.
 - `feed_events`: canonical replay source when available.
 - `tick_data`: optional 1-second sampled telemetry for dashboards and coarse inspection. It is disabled by default for replay-grade long-running modes and should not be treated as the research source.
 - `markets`: one row per 5-minute window with token IDs, status, resolution, fee profile, min size, tick size, rewards, and accepting-orders metadata.
