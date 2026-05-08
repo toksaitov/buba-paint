@@ -77,6 +77,60 @@ def check_runtime_replay_metadata(errors: list[str]) -> None:
         errors.append("live.rs still defines replay-quality live gate scan helper")
 
 
+def check_decision_worker_purity(errors: list[str]) -> None:
+    """Check that the runtime decision engine has no database or venue side effects."""
+    text = read("bots/paint/src/live_decision.rs")
+    forbidden = [
+        "Database",
+        "rusqlite",
+        ".await",
+        "LiveSidecarClient",
+        "sidecar",
+        "run_strategy_cycle(",
+        "ExecutionEngine",
+        "log_signal",
+        ".open_trade(",
+        ".close_trade(",
+        "get_open_trades",
+        "count_open_trades",
+        "quick_check",
+        "storage_footprint(",
+        "validate-replay-data",
+        "validate_live_fidelity",
+    ]
+    for pattern in forbidden:
+        if pattern in text:
+            errors.append(f"runtime decision engine contains forbidden pattern: {pattern}")
+
+
+def check_legacy_strategy_cycle_absent_from_live(errors: list[str]) -> None:
+    """Check that live runtime no longer routes decisions through DB-backed cycle code."""
+    text = read("bots/paint/src/live.rs")
+    forbidden = [
+        "run_strategy_cycle(",
+        "ExecutionEngine::new(",
+        "process_due_orders_and_log(",
+        "log_execution_rollup_for_market(",
+        "handle_authoritative_resolution(",
+    ]
+    for pattern in forbidden:
+        if pattern in text:
+            errors.append(f"live runtime contains legacy DB-backed decision pattern: {pattern}")
+
+
+def check_direct_venue_submission_from_runtime(errors: list[str]) -> None:
+    """Check venue submissions are isolated outside the main feed runtime body."""
+    body = live_runtime_body()
+    forbidden = [
+        "submit_order_intent(",
+        "cancel_all().await",
+        "redeem_all().await",
+    ]
+    for pattern in forbidden:
+        if pattern in body:
+            errors.append(f"main feed runtime performs direct venue mutation: {pattern}")
+
+
 def check_tick_logging_default(errors: list[str]) -> None:
     """Check that legacy tick logging stays opt-in for replay-grade runs."""
     text = read("bots/paint/src/config.rs")
@@ -92,6 +146,9 @@ def main() -> int:
     check_forbidden_live_runtime_calls(errors)
     check_docker_healthchecks(errors)
     check_runtime_replay_metadata(errors)
+    check_decision_worker_purity(errors)
+    check_legacy_strategy_cycle_absent_from_live(errors)
+    check_direct_venue_submission_from_runtime(errors)
     check_tick_logging_default(errors)
     if re.search(r"healthcheck:\s*\n(?:.*\n){0,8}.*quick_check", read("docker-compose.yml")):
         errors.append("docker-compose.yml healthcheck still references quick_check")

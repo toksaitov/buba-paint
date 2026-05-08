@@ -76,7 +76,7 @@ make hot-path-audit
 make live-low-latency-local
 ```
 
-The hot-path audit rejects known full DB scans, runtime replay validators, direct feed-path SQLite calls, sidecar/account/control awaits in the runtime loop, direct live venue submissions from the feed path, opt-out `tick_data` defaults, and `quick_check` healthchecks. The local low-latency runner writes evidence under `/tmp` by default and checks the feed writer, concurrent-feed resilience, and Compose configuration without touching the deployment host.
+The hot-path audit rejects known full DB scans, runtime replay validators, DB or venue side effects inside the pure decision worker, direct feed-path SQLite calls, sidecar/account/control awaits in the runtime loop, direct live venue submissions from the feed path, opt-out `tick_data` defaults, and `quick_check` healthchecks. The local low-latency runner writes evidence under `/tmp` by default and checks the feed writer, concurrent-feed resilience, and Compose configuration without touching the deployment host.
 
 ## Comment and Docs Policy
 

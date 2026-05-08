@@ -66,6 +66,12 @@ pub struct UnresolvedTradeExposure {
     pub market_end_time: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct OpenTradeSnapshot {
+    pub trade: SimulatedTrade,
+    pub market_end_time: u64,
+}
+
 /// Mutable status fields for one live venue order row.
 #[derive(Debug, Clone, Copy)]
 pub struct LiveOrderStatusUpdate<'a> {
@@ -462,7 +468,79 @@ impl Database {
         order_submitted_at_ms: Option<u64>,
         order_arrival_at_ms: Option<u64>,
     ) -> anyhow::Result<i64> {
+        self.log_signal_with_optional_id(
+            None,
+            signal,
+            market_id,
+            execution_fidelity,
+            order_submitted_at_ms,
+            order_arrival_at_ms,
+        )
+    }
+
+    /// Log one signal with an explicit ID when supplied by the runtime decision path.
+    pub fn log_signal_with_context_and_id(
+        &self,
+        signal_id: i64,
+        signal: &Signal,
+        market_id: Option<&str>,
+        execution_fidelity: Option<ReplayFidelity>,
+        order_submitted_at_ms: Option<u64>,
+        order_arrival_at_ms: Option<u64>,
+    ) -> anyhow::Result<i64> {
+        self.log_signal_with_optional_id(
+            Some(signal_id),
+            signal,
+            market_id,
+            execution_fidelity,
+            order_submitted_at_ms,
+            order_arrival_at_ms,
+        )
+    }
+
+    /// Log one signal using either an explicit runtime ID or the database sequence.
+    fn log_signal_with_optional_id(
+        &self,
+        signal_id: Option<i64>,
+        signal: &Signal,
+        market_id: Option<&str>,
+        execution_fidelity: Option<ReplayFidelity>,
+        order_submitted_at_ms: Option<u64>,
+        order_arrival_at_ms: Option<u64>,
+    ) -> anyhow::Result<i64> {
         let metadata_json = serde_json::to_string(&signal.metadata)?;
+        if let Some(signal_id) = signal_id {
+            let mut stmt = self.conn.prepare_cached(
+                "INSERT OR REPLACE INTO signals (
+                    id, timestamp, strategy, direction, binance_price, chainlink_price,
+                    up_ask, down_ask, up_bid, down_bid, metadata, market_id, execution_fidelity,
+                    strategy_version, feature_mode, order_submitted_at_ms, order_arrival_at_ms
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                    ?14, ?15, ?16, ?17
+                 )",
+            )?;
+            stmt.execute(params![
+                signal_id,
+                signal.timestamp,
+                signal.strategy,
+                signal.direction.to_string(),
+                signal.binance_price,
+                signal.chainlink_price,
+                signal.up_ask,
+                signal.down_ask,
+                signal.up_bid,
+                signal.down_bid,
+                metadata_json,
+                market_id,
+                execution_fidelity.map(|f| f.to_string()),
+                signal.strategy_version,
+                signal.feature_mode,
+                order_submitted_at_ms,
+                order_arrival_at_ms,
+            ])?;
+            return Ok(signal_id);
+        }
         let mut stmt = self.conn.prepare_cached(
             "INSERT INTO signals (
                 timestamp, strategy, direction, binance_price, chainlink_price,
@@ -798,6 +876,9 @@ impl Database {
 
     /// Insert a new open trade and return the auto-generated row ID.
     pub fn open_trade(&self, trade: &SimulatedTrade) -> anyhow::Result<i64> {
+        if let Some(trade_id) = trade.id {
+            return self.open_trade_with_id(trade_id, trade);
+        }
         let mut stmt = self.conn.prepare_cached(
             "INSERT INTO simulated_trades (
                 timestamp, market_id, strategy, side, token_id, entry_price, size, status,
@@ -835,6 +916,48 @@ impl Database {
             trade.execution_fidelity,
         ])?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert a new open trade with a caller-supplied ID.
+    fn open_trade_with_id(&self, trade_id: i64, trade: &SimulatedTrade) -> anyhow::Result<i64> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT OR REPLACE INTO simulated_trades (
+                id, timestamp, market_id, strategy, side, token_id, entry_price, size, status,
+                signal_id, execution_mode, order_id, fill_price, requested_price, requested_size,
+                filled_size, avg_fill_price, fill_status, fill_reason, fill_latency_ms,
+                execution_group_id, execution_fidelity
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13, ?14, ?15,
+                ?16, ?17, ?18, ?19, ?20,
+                ?21, ?22
+             )",
+        )?;
+        stmt.execute(params![
+            trade_id,
+            trade.timestamp,
+            trade.market_id,
+            trade.strategy,
+            trade.side.to_string(),
+            trade.token_id,
+            trade.entry_price,
+            trade.size,
+            trade.status.to_string(),
+            trade.signal_id,
+            trade.execution_mode,
+            trade.order_id,
+            trade.fill_price,
+            trade.requested_price,
+            trade.requested_size,
+            trade.filled_size,
+            trade.avg_fill_price,
+            trade.fill_status,
+            trade.fill_reason,
+            trade.fill_latency_ms,
+            trade.execution_group_id,
+            trade.execution_fidelity,
+        ])?;
+        Ok(trade_id)
     }
 
     /// Close an open trade: update its status to `closed` and insert the
@@ -935,6 +1058,73 @@ impl Database {
             trades.push(row?);
         }
         Ok(trades)
+    }
+
+    /// Return every open trade with its market end time for runtime bootstrapping.
+    pub fn open_trade_snapshots(&self) -> anyhow::Result<Vec<OpenTradeSnapshot>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT st.id, st.timestamp, st.market_id, st.strategy, st.side, st.token_id,
+                    st.entry_price, st.size, st.status, st.signal_id, st.requested_price,
+                    st.requested_size, st.filled_size, st.avg_fill_price, st.fill_status,
+                    st.fill_reason, st.fill_latency_ms, st.execution_group_id,
+                    st.execution_fidelity, st.execution_mode, st.order_id, st.fill_price,
+                    m.end_time
+             FROM simulated_trades st
+             JOIN markets m
+               ON m.market_id = st.market_id
+             WHERE st.status = 'open'
+             ORDER BY st.id ASC",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let side_str: String = row.get(4)?;
+            let status_str: String = row.get(8)?;
+            Ok(OpenTradeSnapshot {
+                trade: SimulatedTrade {
+                    id: Some(row.get(0)?),
+                    timestamp: row.get(1)?,
+                    market_id: row.get(2)?,
+                    strategy: row.get(3)?,
+                    side: SignalDirection::from_str(&side_str).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            4,
+                            rusqlite::types::Type::Text,
+                            Box::from(e),
+                        )
+                    })?,
+                    token_id: row.get(5)?,
+                    entry_price: row.get(6)?,
+                    size: row.get(7)?,
+                    status: TradeStatus::from_str(&status_str).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            8,
+                            rusqlite::types::Type::Text,
+                            Box::from(e),
+                        )
+                    })?,
+                    signal_id: row.get(9)?,
+                    requested_price: row.get(10)?,
+                    requested_size: row.get(11)?,
+                    filled_size: row.get(12)?,
+                    avg_fill_price: row.get(13)?,
+                    fill_status: row.get(14)?,
+                    fill_reason: row.get(15)?,
+                    fill_latency_ms: row.get(16)?,
+                    execution_group_id: row.get(17)?,
+                    execution_fidelity: row.get(18)?,
+                    execution_mode: row.get(19)?,
+                    order_id: row.get(20)?,
+                    fill_price: row.get(21)?,
+                },
+                market_end_time: row.get(22)?,
+            })
+        })?;
+
+        let mut snapshots = Vec::new();
+        for row in rows {
+            snapshots.push(row?);
+        }
+        Ok(snapshots)
     }
 
     /// Count open trades.

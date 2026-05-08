@@ -100,18 +100,25 @@ impl BankrollManager {
     /// recovers from that value; otherwise it writes the initial `"init"` event.
     pub fn new(starting_balance: f64, config: &Config, db: &Database, clock: &dyn Clock) -> Self {
         let recovered = db.get_latest_balance().unwrap_or(None);
-
-        let (current, hwm) = if let Some(bal) = recovered {
-            (bal, starting_balance.max(bal))
+        let current = if let Some(bal) = recovered {
+            bal
         } else {
             let _ = db.log_balance_event(clock.now(), "init", None, 0.0, starting_balance);
-            (starting_balance, starting_balance)
+            starting_balance
         };
 
-        let mut manager = Self {
+        let mut manager = Self::new_in_memory(starting_balance, current, config);
+        manager.hydrate_unresolved_reserves(db, config, clock.now());
+        manager
+    }
+
+    /// Construct a `BankrollManager` without reading or writing storage.
+    #[must_use]
+    pub fn new_in_memory(starting_balance: f64, current_balance: f64, config: &Config) -> Self {
+        Self {
             starting_balance,
-            current_balance: current,
-            high_water_mark: hwm,
+            current_balance,
+            high_water_mark: starting_balance.max(current_balance),
             peak_drawdown_pct: 0.0,
             total_wins: 0,
             total_losses: 0,
@@ -129,10 +136,28 @@ impl BankrollManager {
             recent_results: Vec::new(),
             kelly_rolling_window: config.kelly_rolling_window as usize,
             last_blocked_log_ms: 0,
-        };
+        }
+    }
 
-        manager.hydrate_unresolved_reserves(db, config, clock.now());
-        manager
+    /// Hydrate reserve buckets from unresolved trade exposures loaded outside the hot path.
+    pub fn hydrate_unresolved_exposure_rows(
+        &mut self,
+        exposures: &[UnresolvedTradeExposure],
+        config: &Config,
+        now_ms: u64,
+    ) {
+        for exposure in exposures {
+            self.hydrate_trade_reserve(exposure, now_ms);
+        }
+        if !exposures.is_empty() && self.effective_reserved_capital(config) > 0.0 {
+            tracing::info!(
+                unresolved_trades = exposures.len(),
+                active_reserved = self.active_reserved_capital,
+                pending_reserved = self.pending_settlement_reserved_capital,
+                effective_reserved = self.effective_reserved_capital(config),
+                "rehydrated unresolved trade reserve state"
+            );
+        }
     }
 
     /// Reserve capital for a single-side (latency-arb) trade.
@@ -438,6 +463,62 @@ impl BankrollManager {
         );
 
         let _ = config;
+    }
+
+    /// Record a closed trade result in memory without touching storage.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_trade_result_in_memory(
+        &mut self,
+        entry_price: f64,
+        size: f64,
+        settlement_price: f64,
+        fee_amount: f64,
+        strategy: &str,
+    ) -> f64 {
+        let cost = entry_price * size;
+        let payout = settlement_price * size;
+        let pnl = payout - cost - fee_amount;
+
+        self.release_reserved_for_strategy(cost, strategy);
+        self.current_balance += pnl;
+        self.total_fees += fee_amount;
+        self.total_trades += 1;
+
+        let won = pnl > 0.0;
+        if won {
+            self.total_wins += 1;
+        } else {
+            self.total_losses += 1;
+        }
+
+        let stats = self
+            .strategy_stats
+            .entry(strategy.to_string())
+            .or_insert(StrategyRecord { wins: 0, losses: 0 });
+        if won {
+            stats.wins += 1;
+        } else {
+            stats.losses += 1;
+        }
+
+        self.recent_results.push(TradeResultRecord {
+            strategy: strategy.to_string(),
+            won,
+        });
+        if self.recent_results.len() > self.kelly_rolling_window {
+            self.recent_results.remove(0);
+        }
+
+        if self.current_balance > self.high_water_mark {
+            self.high_water_mark = self.current_balance;
+        }
+
+        let drawdown = self.get_drawdown_pct();
+        if drawdown > self.peak_drawdown_pct {
+            self.peak_drawdown_pct = drawdown;
+        }
+
+        pnl
     }
 
     /// Whether trading is allowed right now (balance, drawdown, peak-DD pause).

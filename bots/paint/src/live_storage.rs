@@ -4,11 +4,8 @@ use crate::config::FeedEventStorageProfile;
 use crate::types::{FeedEvent, OrderLevel};
 
 const BINANCE_DEPTH_BUCKET_MS: u64 = 250;
-const CLOB_TOP_OF_BOOK_BUCKET_MS: u64 = 100;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PersistedTopOfBook {
-    bucket_ms: u64,
     best_bid: f64,
     best_ask: f64,
     bid_size: f64,
@@ -46,7 +43,9 @@ impl FeedEventStorageState {
     ) -> FeedEvent {
         event.trade_size = Some(trade_size);
         event.signed_quantity = signed_quantity;
-        if self.profile != FeedEventStorageProfile::FullDebug {
+        if self.profile == FeedEventStorageProfile::ReplayGrade {
+            sanitize_replay_event(&mut event);
+        } else if self.profile != FeedEventStorageProfile::FullDebug {
             sanitize_hot_event(&mut event);
         }
         event
@@ -60,7 +59,7 @@ impl FeedEventStorageState {
         match self.profile {
             FeedEventStorageProfile::Compact => None,
             FeedEventStorageProfile::ReplayGrade => {
-                sanitize_hot_event(&mut event);
+                sanitize_replay_event(&mut event);
                 Some(event)
             }
             FeedEventStorageProfile::FullDebug => Some(event),
@@ -88,6 +87,10 @@ impl FeedEventStorageState {
         if self.profile == FeedEventStorageProfile::FullDebug {
             return Some(event);
         }
+        if self.profile == FeedEventStorageProfile::ReplayGrade {
+            sanitize_replay_event(&mut event);
+            return Some(event);
+        }
         let symbol = symbol.unwrap_or("binance");
         let bucket = bucket_ms(event.received_at_ms, BINANCE_DEPTH_BUCKET_MS);
         if self.binance_depth_buckets.get(symbol).copied() == Some(bucket) {
@@ -95,14 +98,14 @@ impl FeedEventStorageState {
         }
         self.binance_depth_buckets
             .insert(symbol.to_string(), bucket);
-        sanitize_hot_event(&mut event);
+        sanitize_replay_event(&mut event);
         Some(event)
     }
 
     /// Return one compact Chainlink price event.
     pub(crate) fn prepare_chainlink_price(&mut self, mut event: FeedEvent) -> FeedEvent {
         if self.profile != FeedEventStorageProfile::FullDebug {
-            sanitize_hot_event(&mut event);
+            sanitize_replay_event(&mut event);
         }
         event
     }
@@ -112,13 +115,10 @@ impl FeedEventStorageState {
         if self.profile == FeedEventStorageProfile::FullDebug {
             return Some(event);
         }
-        if event.event_type == "price_change" {
-            return None;
-        }
         let snapshot = persisted_top_of_book(&event)?;
         let key = clob_storage_key(&event);
         if let Some(previous) = self.clob_top_of_book.get(&key)
-            && (previous.bucket_ms == snapshot.bucket_ms || same_top_of_book(previous, &snapshot))
+            && same_top_of_book(previous, &snapshot)
         {
             return None;
         }
@@ -129,7 +129,7 @@ impl FeedEventStorageState {
             event.bid_size,
             event.ask_size,
         );
-        sanitize_hot_event(&mut event);
+        sanitize_replay_event(&mut event);
         Some(event)
     }
 
@@ -150,7 +150,7 @@ impl FeedEventStorageState {
             return None;
         }
         self.clob_book_connections.insert(key, connection_id);
-        sanitize_hot_event(&mut event);
+        sanitize_replay_event(&mut event);
         Some(event)
     }
 
@@ -161,7 +161,9 @@ impl FeedEventStorageState {
         {
             return None;
         }
-        if self.profile != FeedEventStorageProfile::FullDebug {
+        if self.profile == FeedEventStorageProfile::ReplayGrade {
+            sanitize_replay_event(&mut event);
+        } else if self.profile != FeedEventStorageProfile::FullDebug {
             event.payload_json = None;
         }
         Some(event)
@@ -188,6 +190,15 @@ fn sanitize_hot_event(event: &mut FeedEvent) {
     event.source_topic = None;
     event.connection_id = None;
     event.sequence_key = None;
+    if event.source == "binance" || event.source == "chainlink" {
+        event.market_id = None;
+    }
+}
+
+/// Strip bulky payloads while preserving replay-critical sequencing fields.
+fn sanitize_replay_event(event: &mut FeedEvent) {
+    event.payload_json = None;
+    event.details_json = None;
     if event.source == "binance" || event.source == "chainlink" {
         event.market_id = None;
     }
@@ -244,7 +255,6 @@ fn clob_storage_key(event: &FeedEvent) -> String {
 /// Extract a persisted top-of-book snapshot from one feed row.
 fn persisted_top_of_book(event: &FeedEvent) -> Option<PersistedTopOfBook> {
     Some(PersistedTopOfBook {
-        bucket_ms: bucket_ms(event.received_at_ms, CLOB_TOP_OF_BOOK_BUCKET_MS),
         best_bid: event.best_bid?,
         best_ask: event.best_ask?,
         bid_size: event.bid_size?,

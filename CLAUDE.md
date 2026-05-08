@@ -132,7 +132,7 @@ Use [docs/system-architecture.md](./docs/system-architecture.md) for the durable
 
 Replay-grade capture is the research default. Run `buba-paint validate-replay-data` before long sweeps. Funded live intervals also require `buba-paint validate-live-fidelity` before they can be used for parameter selection. See [docs/data-and-replay.md](./docs/data-and-replay.md).
 
-The bot hot path must not run whole-table scans, replay validators, `quick_check`, dashboard aggregation, sidecar/account/control awaits, or direct SQLite persistence. Replay-grade persistence and live submission are handled by bounded workers; validation is offline or closeout-only.
+The bot hot path must not run whole-table scans, replay validators, `quick_check`, dashboard aggregation, sidecar/account/control awaits, or direct SQLite persistence. Runtime decisions must stay pure and in-memory through the decision worker; replay-grade persistence, decision evidence, and live submission are handled by bounded workers. Validation is offline or closeout-only.
 
 ## Deployment Discipline
 

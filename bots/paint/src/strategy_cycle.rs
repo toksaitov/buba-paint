@@ -21,6 +21,7 @@ struct EvaluatedCandidate {
 }
 
 /// One caller-visible event emitted by the shared strategy cycle.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum StrategyCycleEvent {
     Suppressed {
