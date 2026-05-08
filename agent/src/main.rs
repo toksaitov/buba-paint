@@ -26,7 +26,7 @@ struct Cli {
     port: u16,
 
     /// Database polling interval in milliseconds
-    #[arg(long, default_value = "2000")]
+    #[arg(long, default_value = "10000")]
     poll_interval: u64,
 
     /// Shell command to start the bot (e.g. "cargo run --release -- live --db-path /data/bot.db")

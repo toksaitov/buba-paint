@@ -70,9 +70,9 @@ Sweeps over paper or `live_readonly` intervals use the public replay gate only. 
 
 Important run DB tables:
 
-- `run_metadata`: feed storage profile, configured capture capability, observed replay-quality class, validation interval, missing public replay requirements, and observed feed-event classes.
+- `run_metadata`: feed storage profile, configured capture capability, cheap runtime capture health, incremental feed-class counters, and offline validation results when `validate-replay-data`, `validate-live-fidelity`, or closeout are explicitly run. The live bot must not run full replay validators or whole-table feed scans while trading.
 - `feed_events`: canonical replay source when available.
-- `tick_data`: 1-second sampled telemetry for dashboards and coarse inspection.
+- `tick_data`: optional 1-second sampled telemetry for dashboards and coarse inspection. It is disabled by default for replay-grade long-running modes and should not be treated as the research source.
 - `markets`: one row per 5-minute window with token IDs, status, resolution, fee profile, min size, tick size, rewards, and accepting-orders metadata.
 - `signals`: strategy detection events.
 - `signal_metrics`: signal feature snapshots, queue decisions, execution timing, fill/miss state, and rejection reasons.

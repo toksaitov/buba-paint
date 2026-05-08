@@ -321,6 +321,7 @@ pub struct Config {
 
     pub gamma_poll_interval: u64,
     pub tick_interval: u64,
+    pub tick_data_logging_enabled: bool,
     pub clob_ping_interval: u64,
     pub rtds_ping_interval: u64,
     pub chainlink_stale_ms: u64,
@@ -416,6 +417,10 @@ pub struct Config {
     pub live_max_session_drawdown_usd: f64,
     pub live_min_required_cash_usd: f64,
     pub feed_event_storage_profile: FeedEventStorageProfile,
+    pub feed_event_writer_queue_capacity: usize,
+    pub feed_event_writer_batch_size: usize,
+    pub feed_event_writer_flush_ms: u64,
+    pub feed_event_writer_max_lag_ms: u64,
     pub sim_order_latency_ms: u64,
     pub max_book_staleness_ms: u64,
     pub max_signal_feed_age_ms: u64,
@@ -720,6 +725,7 @@ impl Config {
 
             gamma_poll_interval: env_u64("GAMMA_POLL_INTERVAL", 60_000),
             tick_interval: env_u64("TICK_INTERVAL", 1_000),
+            tick_data_logging_enabled: env_bool("TICK_DATA_LOGGING_ENABLED", false),
             clob_ping_interval: 10_000,
             rtds_ping_interval: 5_000,
             chainlink_stale_ms: env_u64("CHAINLINK_STALE_MS", 30_000),
@@ -863,6 +869,11 @@ impl Config {
             feed_event_storage_profile: FeedEventStorageProfile::from_env_value(
                 env::var("FEED_EVENT_STORAGE_PROFILE").ok().as_deref(),
             ),
+            feed_event_writer_queue_capacity: env_u64("FEED_EVENT_WRITER_QUEUE_CAPACITY", 50_000)
+                as usize,
+            feed_event_writer_batch_size: env_u64("FEED_EVENT_WRITER_BATCH_SIZE", 500) as usize,
+            feed_event_writer_flush_ms: env_u64("FEED_EVENT_WRITER_FLUSH_MS", 100),
+            feed_event_writer_max_lag_ms: env_u64("FEED_EVENT_WRITER_MAX_LAG_MS", 2_000),
             sim_order_latency_ms: env_u64("SIM_ORDER_LATENCY_MS", 250),
             max_book_staleness_ms: env_u64("MAX_BOOK_STALENESS_MS", 1_000),
             max_signal_feed_age_ms: env_u64("MAX_SIGNAL_FEED_AGE_MS", 1_000),
@@ -914,6 +925,7 @@ impl Default for Config {
 
             gamma_poll_interval: 60_000,
             tick_interval: 1_000,
+            tick_data_logging_enabled: false,
             clob_ping_interval: 10_000,
             rtds_ping_interval: 5_000,
             chainlink_stale_ms: 30_000,
@@ -1009,6 +1021,10 @@ impl Default for Config {
             live_max_session_drawdown_usd: 20.0,
             live_min_required_cash_usd: 25.0,
             feed_event_storage_profile: FeedEventStorageProfile::ReplayGrade,
+            feed_event_writer_queue_capacity: 50_000,
+            feed_event_writer_batch_size: 500,
+            feed_event_writer_flush_ms: 100,
+            feed_event_writer_max_lag_ms: 2_000,
             sim_order_latency_ms: 250,
             max_book_staleness_ms: 1_000,
             max_signal_feed_age_ms: 1_000,

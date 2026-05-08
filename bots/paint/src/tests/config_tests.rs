@@ -98,6 +98,7 @@ fn default_values_match_typescript() {
         cfg.feed_event_storage_profile,
         FeedEventStorageProfile::ReplayGrade
     );
+    assert!(!cfg.tick_data_logging_enabled);
 
     assert_eq!(cfg.resolution_poll_retries, 30);
     assert_eq!(cfg.resolution_initial_delay_ms, 30_000);

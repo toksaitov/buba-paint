@@ -40,6 +40,8 @@ Preferred remote process shape is Docker Compose with Caddy as the only public e
 
 - Caddy publishes ports `80` and `443`, provisions certificates, and reverse-proxies the dashboard.
 - dashboard, agent, bot, and sidecar stay on a private Docker network.
+- The bot is the latency-sensitive process. Agent, dashboard, and Caddy are observer/control services and must degrade before bot decision latency degrades.
+- Runtime healthchecks must stay cheap. SQLite `quick_check`, replay validators, and whole-run data scans belong in closeout or explicit diagnostics, not container liveness checks.
 - runtime DBs and logs are host bind mounts under `~/buba-paint-live/runtime/<runtime-name>`.
 - Caddy state is persisted under `~/buba-paint-live/caddy`.
 
@@ -125,7 +127,8 @@ After any deploy or restart:
 - `curl -I http://buba.toksaitov.com` redirects to HTTPS.
 - `curl https://buba.toksaitov.com/health` is healthy with a valid certificate.
 - internal sidecar, agent, and dashboard health checks pass through `docker compose exec`.
-- `sqlite3 ... "pragma quick_check;"` returns `ok`.
+- bot logs show bounded feed-writer queue depth and no runtime replay validator scans.
+- `sqlite3 ... "pragma quick_check;"` returns `ok` only when running closeout or explicit diagnostics, not as a service healthcheck.
 - `docker compose ps` shows only the intended project services.
 - bot logs show sane startup and expected strategy rollups.
 

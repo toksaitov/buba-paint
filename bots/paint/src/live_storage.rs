@@ -167,9 +167,9 @@ impl FeedEventStorageState {
         Some(event)
     }
 
-    /// Count one persisted row for periodic footprint reporting.
-    pub(crate) fn record_persisted(&mut self, event: &FeedEvent) {
-        let key = format!("{}:{}", event.source, event.event_type);
+    /// Count one accepted row by source and event type.
+    pub(crate) fn record_enqueued_key(&mut self, source: &str, event_type: &str) {
+        let key = format!("{source}:{event_type}");
         *self.rows_by_source_event.entry(key).or_insert(0) += 1;
     }
 

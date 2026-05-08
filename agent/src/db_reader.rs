@@ -31,6 +31,12 @@ struct SignalGroupAccumulator {
     execution_fidelity: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct StatusCache {
+    valid_until_ms: u64,
+    status: BotStatus,
+}
+
 /// Returns whether the given table currently exposes the requested column.
 fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
     let pragma = format!("PRAGMA table_info({table})");
@@ -55,6 +61,14 @@ fn has_table(conn: &Connection, table: &str) -> bool {
         |row| row.get::<_, i64>(0),
     )
     .is_ok_and(|exists| exists != 0)
+}
+
+/// Return wall-clock time in milliseconds for response-cache TTLs.
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Converts an accumulated signal burst into its serialized response row.
@@ -155,6 +169,7 @@ fn current_execution_mode_and_session_status(conn: &Connection) -> (String, Opti
 pub struct DbReader {
     db_path: Option<String>,
     conn: Arc<Mutex<Connection>>,
+    status_cache: Arc<Mutex<Option<StatusCache>>>,
 }
 
 impl DbReader {
@@ -172,6 +187,7 @@ impl DbReader {
         Ok(Self {
             db_path: Some(db_path.to_string()),
             conn: Arc::new(Mutex::new(conn)),
+            status_cache: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -181,11 +197,18 @@ impl DbReader {
         Self {
             db_path: None,
             conn: Arc::new(Mutex::new(conn)),
+            status_cache: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Get the bot's current status.
     pub async fn get_status(&self) -> Result<BotStatus, AgentError> {
+        let now_ms = current_time_ms();
+        if let Some(cache) = self.status_cache.lock().await.as_ref()
+            && cache.valid_until_ms > now_ms
+        {
+            return Ok(cache.status.clone());
+        }
         let conn = self.conn.lock().await;
         let pnl_expr = if has_column(&conn, "trade_results", "pnl_net") {
             "COALESCE(pnl_net, pnl_0pct)"
@@ -268,10 +291,6 @@ impl DbReader {
             )
             .unwrap_or(0);
 
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
         let current_window_ref_ms = last_tick.unwrap_or(now_ms);
         let current_window = conn
             .query_row(
@@ -291,7 +310,7 @@ impl DbReader {
 
         let max_dd = compute_max_drawdown(&conn);
 
-        Ok(BotStatus {
+        let status = BotStatus {
             balance,
             starting_balance,
             execution_mode,
@@ -311,7 +330,13 @@ impl DbReader {
             open_trades,
             last_tick_at: last_tick.or(Some(now_ms)),
             current_window,
-        })
+        };
+        drop(conn);
+        *self.status_cache.lock().await = Some(StatusCache {
+            valid_until_ms: now_ms.saturating_add(2_000),
+            status: status.clone(),
+        });
+        Ok(status)
     }
 
     /// Get paginated trade history.

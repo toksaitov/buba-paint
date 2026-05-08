@@ -1,5 +1,16 @@
 use crate::config::AgentConfig;
 use crate::error::DashboardError;
+use std::time::Duration;
+
+const AGENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Build a short-lived agent client with bounded request time.
+fn agent_client() -> Result<reqwest::Client, DashboardError> {
+    reqwest::Client::builder()
+        .timeout(AGENT_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| DashboardError::Proxy(format!("failed to build agent client: {e}")))
+}
 
 /// Proxy an `HTTP` GET request to an agent.
 pub async fn proxy_get(
@@ -15,7 +26,7 @@ pub async fn proxy_get(
         url.push_str(q);
     }
 
-    let client = reqwest::Client::new();
+    let client = agent_client()?;
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {}", agent.secret))
@@ -41,7 +52,7 @@ pub async fn proxy_post(
 ) -> Result<serde_json::Value, DashboardError> {
     let url = format!("{}{path}", agent.url);
 
-    let client = reqwest::Client::new();
+    let client = agent_client()?;
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", agent.secret))
@@ -68,7 +79,7 @@ pub async fn proxy_post_json(
 ) -> Result<serde_json::Value, DashboardError> {
     let url = format!("{}{path}", agent.url);
 
-    let client = reqwest::Client::new();
+    let client = agent_client()?;
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", agent.secret))

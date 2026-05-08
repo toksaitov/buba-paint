@@ -499,18 +499,18 @@ async fn live_bot_processes_one_market_window() {
         "Expected balance_log entries, got {balance_count}"
     );
 
-    let tick_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM tick_data", [], |r| r.get(0))
+    let feed_event_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM feed_events", [], |r| r.get(0))
         .unwrap();
     assert!(
-        tick_count > 0,
-        "Expected tick_data entries, got {tick_count}"
+        feed_event_count > 0,
+        "Expected feed_events entries, got {feed_event_count}"
     );
 }
 
 /// A1: Verify that the live bot actually executes trades, settles them on window
 /// close, and records results in the database.  The existing test only checks
-/// for market/balance\_log/tick\_data existence; this one verifies the full
+/// for market/balance\_log/feed\_events existence; this one verifies the full
 /// trade lifecycle: open -> close -> `trade_results`.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]

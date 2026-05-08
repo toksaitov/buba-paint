@@ -58,13 +58,66 @@ pub struct ReadonlyMonitor {
     finished: bool,
 }
 
+/// Result emitted by the readonly account refresh worker.
+#[derive(Debug)]
+pub struct ReadonlyRefreshResult {
+    /// Latest account state when the refresh succeeded.
+    pub account: Option<LiveAccountState>,
+    /// Latest persisted readonly session status.
+    pub status: String,
+    /// Current non-fatal readonly issues.
+    pub soft_issues: Vec<String>,
+    /// Refresh error when the worker degraded the session.
+    pub error: Option<String>,
+}
+
 impl ReadonlyMonitor {
     /// Fetch the latest remote account-state snapshot from the readonly sidecar.
+    #[allow(dead_code)]
     pub async fn fetch_account_state(&self) -> anyhow::Result<LiveAccountState> {
         self.sidecar.account_state().await
     }
 
+    /// Spawn one account refresh worker so the feed loop never awaits sidecar `HTTP`.
+    pub fn spawn_account_refresh(
+        &self,
+        db_path: String,
+        config: Config,
+        now_ms: u64,
+        tx: tokio::sync::mpsc::UnboundedSender<ReadonlyRefreshResult>,
+    ) {
+        let sidecar = self.sidecar.clone();
+        let mut session = self.session.clone();
+        let previous_account = self.previous_account.clone();
+        tokio::spawn(async move {
+            let result = refresh_readonly_account_worker(
+                sidecar,
+                db_path,
+                config,
+                now_ms,
+                &mut session,
+                previous_account,
+            )
+            .await;
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Apply one background refresh result to the in-memory readonly state.
+    pub fn apply_refresh_result(&mut self, result: ReadonlyRefreshResult) {
+        if let Some(account) = result.account {
+            self.previous_account = account.clone();
+            self.session.account = Some(account);
+        }
+        self.session.status = result.status;
+        self.session.soft_issues = result.soft_issues;
+        if let Some(error) = result.error {
+            warn!(%error, "readonly account refresh worker reported degradation");
+        }
+    }
+
     /// Persist one successfully fetched readonly account snapshot and refresh session status.
+    #[allow(dead_code)]
     pub fn apply_account_state(
         &mut self,
         db: &Database,
@@ -92,6 +145,7 @@ impl ReadonlyMonitor {
     }
 
     /// Record a non-fatal account refresh failure and degrade the readonly session.
+    #[allow(dead_code)]
     pub fn record_account_refresh_failure(
         &mut self,
         db: &Database,
@@ -186,6 +240,114 @@ impl ReadonlyMonitor {
         })?;
         self.finished = true;
         Ok(())
+    }
+}
+
+/// Fetch and persist one readonly account refresh outside the feed loop.
+async fn refresh_readonly_account_worker(
+    sidecar: LiveSidecarClient,
+    db_path: String,
+    config: Config,
+    now_ms: u64,
+    session: &mut ReadonlySessionState,
+    previous_account: LiveAccountState,
+) -> ReadonlyRefreshResult {
+    match sidecar.account_state().await {
+        Ok(account) => {
+            if let Err(error) = persist_readonly_account_refresh(
+                &db_path,
+                &config,
+                session,
+                Some(&previous_account),
+                &account,
+            ) {
+                return readonly_refresh_error(
+                    session,
+                    format!("persist account refresh: {error}"),
+                );
+            }
+            ReadonlyRefreshResult {
+                account: Some(account),
+                status: session.status.clone(),
+                soft_issues: session.soft_issues.clone(),
+                error: None,
+            }
+        }
+        Err(error) => {
+            let error = error.to_string();
+            if let Err(persist_error) =
+                persist_readonly_account_failure(&db_path, &config, now_ms, session, &error)
+            {
+                return readonly_refresh_error(
+                    session,
+                    format!("account refresh failed: {error}; persist failure: {persist_error}"),
+                );
+            }
+            ReadonlyRefreshResult {
+                account: None,
+                status: session.status.clone(),
+                soft_issues: session.soft_issues.clone(),
+                error: Some(error),
+            }
+        }
+    }
+}
+
+/// Persist one successful readonly account refresh.
+fn persist_readonly_account_refresh(
+    db_path: &str,
+    config: &Config,
+    session: &mut ReadonlySessionState,
+    previous_account: Option<&LiveAccountState>,
+    account: &LiveAccountState,
+) -> anyhow::Result<()> {
+    let db = Database::new(db_path)?;
+    db.log_live_account_snapshot(&account_snapshot(session.session_id, account))?;
+    persist_reconciliation_events(
+        &db,
+        readonly_reconciliation_events(session.session_id, previous_account, account),
+    )?;
+    session.account = Some(account.clone());
+    session.soft_issues =
+        readonly_soft_issues(&session.preflight, session.account.as_ref(), config);
+    update_session_status(&db, session, config)?;
+    db.close();
+    Ok(())
+}
+
+/// Persist one readonly account refresh failure.
+fn persist_readonly_account_failure(
+    db_path: &str,
+    config: &Config,
+    now_ms: u64,
+    session: &mut ReadonlySessionState,
+    error: &str,
+) -> anyhow::Result<()> {
+    let db = Database::new(db_path)?;
+    let event = LiveReconciliationEvent {
+        id: None,
+        session_id: session.session_id,
+        timestamp_ms: now_ms,
+        severity: "critical".to_string(),
+        event_type: "account_state_refresh_failed".to_string(),
+        local_value: None,
+        remote_value: None,
+        details_json: Some(json!({ "error": error }).to_string()),
+    };
+    persist_reconciliation_events(&db, vec![event])?;
+    session.soft_issues = vec![format!("Readonly account refresh failed: {error}")];
+    update_session_status(&db, session, config)?;
+    db.close();
+    Ok(())
+}
+
+/// Build a degraded refresh result when persistence itself fails.
+fn readonly_refresh_error(session: &ReadonlySessionState, error: String) -> ReadonlyRefreshResult {
+    ReadonlyRefreshResult {
+        account: None,
+        status: session.status.clone(),
+        soft_issues: session.soft_issues.clone(),
+        error: Some(error),
     }
 }
 

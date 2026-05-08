@@ -69,6 +69,15 @@ The TypeScript sidecar tests cover provider behavior, lifecycle, server routes, 
 
 Before live-money work touches the sidecar or bot runtime, re-check current official Polymarket docs and update tests to the current venue contract. The sidecar write boundary is implemented, and the bot `live_trading` runtime now has local disarmed CLI-control, admin dashboard-control queueing, terminal risk/halt enforcement, and `live-closeout` evidence export for verification. Deployment and real arming remain gated until later phases.
 
+Low-latency bot safety has its own gate:
+
+```bash
+make hot-path-audit
+make live-low-latency-local
+```
+
+The hot-path audit rejects known full DB scans, runtime replay validators, direct feed-path SQLite calls, sidecar/account/control awaits in the runtime loop, direct live venue submissions from the feed path, opt-out `tick_data` defaults, and `quick_check` healthchecks. The local low-latency runner writes evidence under `/tmp` by default and checks the feed writer, concurrent-feed resilience, and Compose configuration without touching the deployment host.
+
 ## Comment and Docs Policy
 
 `make lint` runs strict Rust and TypeScript comment audits.

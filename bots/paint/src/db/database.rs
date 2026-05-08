@@ -185,6 +185,62 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Logs a batch of feed events inside one transaction.
+    pub fn log_feed_events_batch(&self, events: &[FeedEvent]) -> anyhow::Result<u64> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO feed_events (
+                    received_at_ms, event_at_ms, received_at_us, event_at_us, source, event_type,
+                    source_topic, source_symbol, connection_id, sequence_key, market_id, asset_id,
+                    price, trade_size, signed_quantity, best_bid, best_ask, bid_size, ask_size,
+                    depth_bid_notional, depth_ask_notional, depth_imbalance, microprice,
+                    payload_json, details_json, fidelity
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6,
+                    ?7, ?8, ?9, ?10, ?11, ?12,
+                    ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                    ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                 )",
+            )?;
+            for event in events {
+                stmt.execute(params![
+                    event.received_at_ms,
+                    event.event_at_ms,
+                    event.received_at_us,
+                    event.event_at_us,
+                    event.source,
+                    event.event_type,
+                    event.source_topic,
+                    event.source_symbol,
+                    event.connection_id,
+                    event.sequence_key,
+                    event.market_id,
+                    event.asset_id,
+                    event.price,
+                    event.trade_size,
+                    event.signed_quantity,
+                    event.best_bid,
+                    event.best_ask,
+                    event.bid_size,
+                    event.ask_size,
+                    event.depth_bid_notional,
+                    event.depth_ask_notional,
+                    event.depth_imbalance,
+                    event.microprice,
+                    event.payload_json,
+                    event.details_json,
+                    event.fidelity.to_string(),
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(events.len() as u64)
+    }
+
     /// Upsert market.
     pub fn upsert_market(&self, window: &MarketWindow) -> anyhow::Result<()> {
         let mut stmt = self.conn.prepare_cached(

@@ -3,10 +3,11 @@ SIDECAR_DIR := polymarket-sidecar
 COMMENT_POLICY := cargo run --quiet --manifest-path tools/rust-comment-policy/Cargo.toml --
 TS_COMMENT_AUDIT := node scripts/ts_comment_audit.mjs
 
-.PHONY: lint comment-audit docs-audit live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
+.PHONY: lint comment-audit docs-audit hot-path-audit live-low-latency-local live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
 
 lint:
 	cargo fmt --all --check
+	python3 scripts/audit-hot-path.py
 	cargo clippy --workspace -- -D warnings
 	$(COMMENT_POLICY) check
 	$(TS_COMMENT_AUDIT) check
@@ -30,6 +31,13 @@ comment-audit:
 
 docs-audit:
 	python3 scripts/audit-docs.py
+
+hot-path-audit:
+	python3 scripts/audit-hot-path.py
+
+LIVE_LOW_LATENCY_ARGS ?=
+live-low-latency-local:
+	python3 scripts/live-low-latency-local.py $(LIVE_LOW_LATENCY_ARGS)
 
 LIVE_READINESS_ARGS ?=
 live-readiness-local:

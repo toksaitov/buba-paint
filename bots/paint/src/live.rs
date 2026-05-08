@@ -1,5 +1,8 @@
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -7,8 +10,7 @@ use serde_json::json;
 use tracing::{error, info, warn};
 
 use crate::backtest::momentum::MomentumCalculator;
-use crate::backtest::replay_quality::{self, ReplayQualityReport};
-use crate::bankroll::BankrollManager;
+use crate::bankroll::{BankrollManager, BankrollStats};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, FeedEventStorageProfile};
@@ -20,6 +22,7 @@ use crate::executor::{
 use crate::feeds::FeedMessage;
 use crate::feeds::util::now_us;
 use crate::live_control::{LiveControlAction, record_live_control_state};
+use crate::live_feed_writer::{FeedEventWriter, FeedEventWriterConfig, FeedEventWriterSnapshot};
 use crate::live_sidecar::{
     LiveAccountState, LiveActivityResponse, LiveCheckStatus, LiveOrderIntentRequest,
     LiveOrderIntentResponse, LivePreflightResponse, LiveSidecarClient,
@@ -61,10 +64,10 @@ struct LiveTradingRuntimeBootstrap {
     monitor: LiveTradingMonitor,
 }
 
+#[derive(Clone)]
 struct LiveTradingMonitor {
     sidecar: LiveSidecarClient,
     session_id: i64,
-    session_started_at_ms: u64,
     state: String,
     preflight: Option<LivePreflightResponse>,
     account: Option<LiveAccountState>,
@@ -132,6 +135,960 @@ fn build_strategies(config: &Config) -> Vec<Box<dyn Strategy>> {
     strategies
 }
 
+impl StrategyWorker {
+    /// Start one DB-backed strategy worker outside the feed hot path.
+    fn start(
+        db_path: String,
+        config: Config,
+        starting_balance: f64,
+        output_tx: tokio::sync::mpsc::UnboundedSender<StrategyWorkerOutput>,
+    ) -> anyhow::Result<Self> {
+        let (tx, rx) = sync_channel(config.feed_event_writer_queue_capacity.max(1));
+        let metrics = Arc::new(StrategyWorkerMetrics::default());
+        let stats = Arc::new(std::sync::RwLock::new(initial_bankroll_stats(
+            starting_balance,
+        )));
+        let worker_metrics = Arc::clone(&metrics);
+        let worker_stats = Arc::clone(&stats);
+        let join = thread::Builder::new()
+            .name("buba-strategy-worker".to_string())
+            .spawn(move || {
+                run_strategy_worker(StrategyWorkerRuntime {
+                    db_path,
+                    config,
+                    starting_balance,
+                    rx,
+                    metrics: worker_metrics,
+                    stats: worker_stats,
+                    output_tx,
+                });
+            })
+            .context("spawning strategy worker")?;
+        Ok(Self {
+            tx,
+            metrics,
+            stats,
+            join: Some(join),
+        })
+    }
+
+    /// Enqueue one strategy-evaluation request without blocking feed handling.
+    fn try_evaluate(&self, request: StrategyEvaluationRequest) -> bool {
+        self.try_send(StrategyWorkerMessage::Evaluate(Box::new(request)))
+    }
+
+    /// Enqueue one market-close event without blocking feed handling.
+    fn try_window_closed(
+        &self,
+        window: MarketWindow,
+        open_price: f64,
+        close_price: f64,
+        now_ms: u64,
+    ) -> bool {
+        self.try_send(StrategyWorkerMessage::WindowClosed {
+            window,
+            open_price,
+            close_price,
+            now_ms,
+        })
+    }
+
+    /// Enqueue one authoritative settlement result.
+    fn try_authoritative_resolution(
+        &self,
+        window: MarketWindow,
+        outcome: SignalDirection,
+        seeded_from_startup: bool,
+    ) -> bool {
+        self.try_send(StrategyWorkerMessage::AuthoritativeResolution {
+            window,
+            outcome,
+            seeded_from_startup,
+        })
+    }
+
+    /// Enqueue reserve releases requested by the live submission worker.
+    fn try_release_reservations(&self, releases: Vec<(String, f64)>) -> bool {
+        self.try_send(StrategyWorkerMessage::ReleaseReservations { releases })
+    }
+
+    /// Ask the worker to flush all pending rejection summaries.
+    fn try_flush_all(&self, now_ms: u64) -> bool {
+        self.try_send(StrategyWorkerMessage::FlushAll { now_ms })
+    }
+
+    /// Return a snapshot of worker counters and the latest bankroll stats.
+    fn snapshot(&self) -> StrategyWorkerSnapshot {
+        let stats = self
+            .stats
+            .read()
+            .map_or_else(|_| initial_bankroll_stats(0.0), |stats| stats.clone());
+        StrategyWorkerSnapshot {
+            enqueued: self.metrics.enqueued.load(Ordering::Relaxed),
+            dropped: self.metrics.dropped.load(Ordering::Relaxed),
+            processed: self.metrics.processed.load(Ordering::Relaxed),
+            last_processed_at_ms: self.metrics.last_processed_at_ms.load(Ordering::Relaxed),
+            stats,
+        }
+    }
+
+    /// Request shutdown and join the strategy worker.
+    fn shutdown(mut self) {
+        let _ = self.tx.send(StrategyWorkerMessage::Shutdown);
+        if let Some(join) = self.join.take()
+            && let Err(error) = join.join()
+        {
+            warn!(?error, "strategy worker thread panicked during shutdown");
+        }
+    }
+
+    /// Enqueue one worker message without blocking the caller.
+    fn try_send(&self, message: StrategyWorkerMessage) -> bool {
+        match self.tx.try_send(message) {
+            Ok(()) => {
+                self.metrics.enqueued.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+    }
+}
+
+impl LiveSubmissionQueue {
+    /// Start one asynchronous live submission worker.
+    fn start(
+        db_path: String,
+        config: Config,
+        session_id: i64,
+        sidecar: LiveSidecarClient,
+        feedback_tx: tokio::sync::mpsc::UnboundedSender<LiveSubmissionFeedback>,
+    ) -> Self {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<LiveSubmissionRequest>(
+            config.feed_event_writer_queue_capacity.max(1),
+        );
+        tokio::spawn(async move {
+            while let Some(request) = rx.recv().await {
+                let feedback = submit_live_orders_from_worker(
+                    &db_path, &config, session_id, &sidecar, request,
+                )
+                .await;
+                if feedback_tx.send(feedback).is_err() {
+                    warn!("live submission feedback receiver dropped");
+                    break;
+                }
+            }
+        });
+        Self { tx }
+    }
+
+    /// Queue one live submission batch without blocking the feed loop.
+    fn try_submit(&self, request: LiveSubmissionRequest) -> bool {
+        self.tx.try_send(request).is_ok()
+    }
+}
+
+/// Submit one live order batch outside the feed hot path.
+async fn submit_live_orders_from_worker(
+    db_path: &str,
+    config: &Config,
+    session_id: i64,
+    sidecar: &LiveSidecarClient,
+    request: LiveSubmissionRequest,
+) -> LiveSubmissionFeedback {
+    let mut feedback = LiveSubmissionFeedback {
+        state_update: None,
+        releases: Vec::new(),
+    };
+    let mut successful = 0_u64;
+    for order in &request.orders {
+        match submit_one_live_order_from_worker(
+            db_path,
+            config,
+            session_id,
+            sidecar,
+            &request.window,
+            order,
+            request.now_ms,
+        )
+        .await
+        {
+            LiveSubmissionOrderResult::Filled => successful += 1,
+            LiveSubmissionOrderResult::Rejected { release } => {
+                feedback.releases.push((order.strategy.clone(), release));
+            }
+            LiveSubmissionOrderResult::Blocked {
+                reason,
+                release,
+                state,
+            } => {
+                if let Some(release) = release {
+                    feedback.releases.push((order.strategy.clone(), release));
+                }
+                feedback.state_update = Some(LiveSubmissionStateUpdate { state, reason });
+                break;
+            }
+        }
+    }
+    if feedback.state_update.is_none()
+        && request.orders.len() == 2
+        && request
+            .orders
+            .iter()
+            .any(|order| order.strategy.as_str() == "spread-capture")
+        && successful == 1
+    {
+        let reason = "spread residual exposure detected".to_string();
+        if let Err(error) = persist_live_worker_state(
+            db_path,
+            session_id,
+            "unknown_order",
+            "system",
+            &reason,
+            request.now_ms,
+            Some(
+                json!({
+                    "market_id": request.window.market_id,
+                    "successful_legs": successful,
+                    "submitted_legs": request.orders.len(),
+                })
+                .to_string(),
+            )
+            .as_deref(),
+        ) {
+            error!("failed to persist spread residual state: {error}");
+        }
+        feedback.state_update = Some(LiveSubmissionStateUpdate {
+            state: "unknown_order",
+            reason,
+        });
+    }
+    feedback
+}
+
+/// Result of one worker-side live order submission.
+enum LiveSubmissionOrderResult {
+    Filled,
+    Rejected {
+        release: f64,
+    },
+    Blocked {
+        state: &'static str,
+        reason: String,
+        release: Option<f64>,
+    },
+}
+
+/// Submit one live order intent from the submission worker.
+async fn submit_one_live_order_from_worker(
+    db_path: &str,
+    config: &Config,
+    session_id: i64,
+    sidecar: &LiveSidecarClient,
+    window: &MarketWindow,
+    order: &QueuedOrderIntent,
+    now_ms: u64,
+) -> LiveSubmissionOrderResult {
+    let notional = order.requested_price * order.requested_size;
+    let (intent_id, reject_reason) = match persist_live_order_intent_from_worker(
+        db_path, config, session_id, window, order, now_ms, notional,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            let reason = format!("failed to persist live order intent: {error}");
+            return LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                reason,
+                release: None,
+            };
+        }
+    };
+    if let Some(reason) = reject_reason {
+        info!(
+            intent_id,
+            signal_id = order.signal_id,
+            strategy = %order.strategy,
+            reason,
+            "live order rejected before venue submission"
+        );
+        return LiveSubmissionOrderResult::Rejected {
+            release: order.reserved_cost,
+        };
+    }
+    let request = build_live_order_request_from_worker(session_id, intent_id, order, notional);
+    match sidecar.submit_order_intent(&request).await {
+        Ok(response) => handle_live_order_response_from_worker(
+            db_path, session_id, order, intent_id, now_ms, &response,
+        ),
+        Err(error) => {
+            handle_live_order_error_from_worker(
+                LiveOrderErrorContext {
+                    db_path,
+                    session_id,
+                    sidecar,
+                    order,
+                    request: &request,
+                    intent_id,
+                    now_ms,
+                },
+                error,
+            )
+            .await
+        }
+    }
+}
+
+/// Persist one worker-side live order intent before sidecar submission.
+fn persist_live_order_intent_from_worker(
+    db_path: &str,
+    config: &Config,
+    session_id: i64,
+    window: &MarketWindow,
+    order: &QueuedOrderIntent,
+    now_ms: u64,
+    notional: f64,
+) -> anyhow::Result<(i64, Option<&'static str>)> {
+    let (intent_status, reject_reason) = live_order_pre_submit_rejection(order, notional, config);
+    let db = Database::new(db_path)?;
+    let intent_id = db.log_live_order_intent(&LiveOrderIntent {
+        id: None,
+        session_id,
+        signal_id: Some(order.signal_id),
+        market_id: order.market_id.clone(),
+        strategy: order.strategy.clone(),
+        side: order.side.to_string(),
+        order_type: "FOK".to_string(),
+        status: intent_status.to_string(),
+        created_at_ms: now_ms,
+        requested_price: Some(order.requested_price),
+        requested_size: Some(order.requested_size),
+        limit_price: Some(order.limit_price),
+        fee_schedule_json: window.fee_schedule_json.clone(),
+        token_fee_rates_json: window.token_fee_rates_json.clone(),
+        execution_group_id: order.execution_group_id.clone(),
+        details_json: Some(
+            json!({
+                "signal_timestamp": order.signal_timestamp,
+                "arrival_ts": order.arrival_ts,
+                "execution_fidelity": order.execution_fidelity.to_string(),
+                "amount_usd": notional,
+                "reject_reason": reject_reason,
+            })
+            .to_string(),
+        ),
+    })?;
+    db.close();
+    Ok((intent_id, reject_reason))
+}
+
+/// Build one worker-side sidecar order request.
+fn build_live_order_request_from_worker(
+    session_id: i64,
+    intent_id: i64,
+    order: &QueuedOrderIntent,
+    notional: f64,
+) -> LiveOrderIntentRequest {
+    LiveOrderIntentRequest {
+        session_id,
+        intent_id,
+        market_id: order.market_id.clone(),
+        token_id: order.token_id.clone(),
+        side: "BUY".to_string(),
+        order_type: "FOK".to_string(),
+        limit_price: order.limit_price,
+        size: order.requested_size,
+        amount_usd: Some(notional),
+        client_order_id: format!("buba-live-{session_id}-{intent_id}"),
+        details_json: Some(
+            json!({
+                "strategy": order.strategy,
+                "signal_id": order.signal_id,
+                "execution_group_id": order.execution_group_id,
+            })
+            .to_string(),
+        ),
+    }
+}
+
+/// Persist one worker-side live order response.
+fn handle_live_order_response_from_worker(
+    db_path: &str,
+    session_id: i64,
+    order: &QueuedOrderIntent,
+    intent_id: i64,
+    now_ms: u64,
+    response: &LiveOrderIntentResponse,
+) -> LiveSubmissionOrderResult {
+    let db = match Database::new(db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            return LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                reason: format!("failed to open database for live order response: {error}"),
+                release: None,
+            };
+        }
+    };
+    let live_order_id = match persist_order_response_from_worker(
+        &db, session_id, intent_id, order, now_ms, response,
+    ) {
+        Ok(live_order_id) => live_order_id,
+        Err(error) => {
+            db.close();
+            return LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                reason: format!("failed to persist live order response: {error}"),
+                release: None,
+            };
+        }
+    };
+    if !response.ok {
+        if live_order_response_is_blocking(response) {
+            let details = response.details_json.clone().unwrap_or_else(|| {
+                json!({ "status": response.status, "reason": response.status_reason }).to_string()
+            });
+            if let Err(error) = persist_live_worker_state(
+                db_path,
+                session_id,
+                "unknown_order",
+                "system",
+                "blocking venue order response",
+                now_ms,
+                Some(&details),
+            ) {
+                error!("failed to persist blocking live order response state: {error}");
+            }
+            db.close();
+            return LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                reason: "blocking venue order response".to_string(),
+                release: Some(order.reserved_cost),
+            };
+        }
+        db.close();
+        return LiveSubmissionOrderResult::Rejected {
+            release: order.reserved_cost,
+        };
+    }
+    if let Err(error) = persist_response_fill_from_worker(
+        &db,
+        session_id,
+        intent_id,
+        live_order_id,
+        order,
+        now_ms,
+        response,
+    ) {
+        error!("failed to persist live response fill: {error}");
+    }
+    db.close();
+    LiveSubmissionOrderResult::Filled
+}
+
+/// Persist one worker-side unknown submission and try cancel-all.
+async fn handle_live_order_error_from_worker(
+    context: LiveOrderErrorContext<'_>,
+    error: anyhow::Error,
+) -> LiveSubmissionOrderResult {
+    let error_message = error.to_string();
+    match Database::new(context.db_path) {
+        Ok(db) => {
+            if let Err(error) = db.log_live_order(&LiveOrder {
+                id: None,
+                session_id: context.session_id,
+                intent_id: context.intent_id,
+                venue_order_id: None,
+                client_order_id: Some(context.request.client_order_id.clone()),
+                market_id: context.order.market_id.clone(),
+                token_id: Some(context.order.token_id.clone()),
+                side: "BUY".to_string(),
+                order_type: "FOK".to_string(),
+                status: "unknown_submission".to_string(),
+                status_reason: Some(error_message.clone()),
+                created_at_ms: context.now_ms,
+                acknowledged_at_ms: None,
+                updated_at_ms: context.now_ms,
+                requested_price: Some(context.order.requested_price),
+                limit_price: Some(context.order.limit_price),
+                requested_size: Some(context.order.requested_size),
+                accepted_size: None,
+                details_json: Some(json!({ "error": error_message }).to_string()),
+            }) {
+                error!("failed to persist unknown live order: {error}");
+            }
+            if let Err(error) = db.log_live_reconciliation_event(&LiveReconciliationEvent {
+                id: None,
+                session_id: context.session_id,
+                timestamp_ms: context.now_ms,
+                severity: "critical".to_string(),
+                event_type: "unknown_submission".to_string(),
+                local_value: None,
+                remote_value: None,
+                details_json: Some(
+                    json!({
+                        "intent_id": context.intent_id,
+                        "client_order_id": context.request.client_order_id,
+                        "market_id": context.order.market_id,
+                        "error": error_message,
+                    })
+                    .to_string(),
+                ),
+            }) {
+                error!("failed to persist unknown live reconciliation event: {error}");
+            }
+            db.close();
+        }
+        Err(error) => error!("failed to open database for unknown live order: {error}"),
+    }
+    let cancel_result = context.sidecar.cancel_all().await;
+    let cancel_details = match cancel_result {
+        Ok(response) => json!({ "ok": true, "response": response }),
+        Err(error) => json!({ "ok": false, "error": error.to_string() }),
+    };
+    let details = json!({
+        "intent_id": context.intent_id,
+        "client_order_id": context.request.client_order_id,
+        "cancel_all": cancel_details,
+    })
+    .to_string();
+    if let Err(error) = persist_live_worker_state(
+        context.db_path,
+        context.session_id,
+        "unknown_order",
+        "system",
+        "sidecar order submission outcome unknown",
+        context.now_ms,
+        Some(&details),
+    ) {
+        error!("failed to persist unknown order state: {error}");
+    }
+    LiveSubmissionOrderResult::Blocked {
+        state: "unknown_order",
+        reason: "sidecar order submission outcome unknown".to_string(),
+        release: None,
+    }
+}
+
+/// Persist one live state transition from a worker.
+fn persist_live_worker_state(
+    db_path: &str,
+    session_id: i64,
+    state: &str,
+    actor: &str,
+    reason: &str,
+    now_ms: u64,
+    details_json: Option<&str>,
+) -> anyhow::Result<()> {
+    let db = Database::new(db_path)?;
+    record_live_control_state(&db, session_id, state, actor, reason, now_ms, details_json)?;
+    db.update_live_session_metadata(session_id, state, None, None, details_json)?;
+    db.close();
+    Ok(())
+}
+
+/// Persist one sidecar order response as a live order row.
+fn persist_order_response_from_worker(
+    db: &Database,
+    session_id: i64,
+    intent_id: i64,
+    order: &QueuedOrderIntent,
+    now_ms: u64,
+    response: &LiveOrderIntentResponse,
+) -> anyhow::Result<i64> {
+    db.log_live_order(&LiveOrder {
+        id: None,
+        session_id,
+        intent_id,
+        venue_order_id: response.venue_order_id.clone(),
+        client_order_id: Some(response.client_order_id.clone()),
+        market_id: order.market_id.clone(),
+        token_id: Some(order.token_id.clone()),
+        side: "BUY".to_string(),
+        order_type: "FOK".to_string(),
+        status: response.status.clone(),
+        status_reason: response.status_reason.clone(),
+        created_at_ms: now_ms,
+        acknowledged_at_ms: Some(now_ms),
+        updated_at_ms: now_ms,
+        requested_price: Some(order.requested_price),
+        limit_price: Some(order.limit_price),
+        requested_size: Some(order.requested_size),
+        accepted_size: response.accepted_size,
+        details_json: response.details_json.clone(),
+    })
+}
+
+/// Persist one fill inferred from a successful sidecar order response.
+fn persist_response_fill_from_worker(
+    db: &Database,
+    session_id: i64,
+    intent_id: i64,
+    live_order_id: i64,
+    order: &QueuedOrderIntent,
+    now_ms: u64,
+    response: &LiveOrderIntentResponse,
+) -> anyhow::Result<()> {
+    if let Some(accepted_size) = response.accepted_size
+        && accepted_size > 0.0
+    {
+        db.log_live_fill(&LiveFill {
+            id: None,
+            session_id,
+            intent_id: Some(intent_id),
+            live_order_id: Some(live_order_id),
+            venue_trade_id: None,
+            filled_at_ms: now_ms,
+            price: order.requested_price,
+            size: accepted_size,
+            fee_amount: None,
+            fee_rate: None,
+            liquidity_side: Some("taker".to_string()),
+            tx_hash: None,
+            status: "venue_response_pending_reconciliation".to_string(),
+            details_json: response.details_json.clone(),
+        })?;
+    }
+    Ok(())
+}
+
+/// Run the blocking strategy worker loop on its own OS thread.
+fn run_strategy_worker(runtime: StrategyWorkerRuntime) {
+    let StrategyWorkerRuntime {
+        db_path,
+        config,
+        starting_balance,
+        rx,
+        metrics,
+        stats,
+        output_tx,
+    } = runtime;
+    let db = match Database::new(&db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            error!(%error, "strategy worker failed to open database");
+            return;
+        }
+    };
+    let clock = SystemClock;
+    let mut strategies = build_strategies(&config);
+    let mut execution_engine = ExecutionEngine::new();
+    let mut bankroll = BankrollManager::new(starting_balance, &config, &db, &clock);
+    let mut position_manager = PositionManager::new();
+    let mut circuit_breaker = CircuitBreaker::new(
+        config.circuit_breaker_losses as u32,
+        config.circuit_breaker_pause_ms,
+    );
+    let mut trend_tracker = ScopedTrendTracker::new(
+        config.trend_filter_window as usize,
+        config.trend_filter_enabled,
+        config.trend_filter_threshold,
+        config.trend_filter_per_strategy,
+    );
+    let mut rejection_tracker = StrategyRejectionTracker::new();
+    update_strategy_worker_stats(&stats, &bankroll);
+    while let Ok(message) = rx.recv() {
+        match message {
+            StrategyWorkerMessage::Evaluate(request) => handle_strategy_worker_evaluate(
+                *request,
+                &config,
+                &clock,
+                &db,
+                &mut strategies,
+                &mut execution_engine,
+                &mut bankroll,
+                &mut circuit_breaker,
+                &mut trend_tracker,
+                &mut rejection_tracker,
+                &output_tx,
+            ),
+            StrategyWorkerMessage::WindowClosed {
+                window,
+                open_price,
+                close_price,
+                now_ms,
+            } => handle_strategy_worker_window_closed(
+                &window,
+                open_price,
+                close_price,
+                now_ms,
+                &config,
+                &clock,
+                &db,
+                &mut bankroll,
+                &mut rejection_tracker,
+            ),
+            StrategyWorkerMessage::AuthoritativeResolution {
+                window,
+                outcome,
+                seeded_from_startup,
+            } => handle_authoritative_resolution(
+                &window,
+                outcome,
+                seeded_from_startup,
+                &db,
+                &mut position_manager,
+                &mut bankroll,
+                &mut trend_tracker,
+                &mut circuit_breaker,
+                &config,
+                &clock,
+            ),
+            StrategyWorkerMessage::ReleaseReservations { releases } => {
+                for (strategy, amount) in releases {
+                    bankroll.release_reserved_for_strategy(amount, &strategy);
+                }
+            }
+            StrategyWorkerMessage::FlushAll { now_ms } => {
+                flush_all_rejection_summaries(&db, &mut rejection_tracker, now_ms);
+            }
+            StrategyWorkerMessage::Shutdown => break,
+        }
+        update_strategy_worker_stats(&stats, &bankroll);
+        metrics.processed.fetch_add(1, Ordering::Relaxed);
+        metrics
+            .last_processed_at_ms
+            .store(clock.now(), Ordering::Relaxed);
+    }
+    flush_all_rejection_summaries(&db, &mut rejection_tracker, clock.now());
+    update_strategy_worker_stats(&stats, &bankroll);
+    db.close();
+    info!("strategy worker stopped");
+}
+
+/// Handle one strategy-evaluation snapshot inside the worker.
+#[allow(clippy::too_many_arguments)]
+fn handle_strategy_worker_evaluate(
+    request: StrategyEvaluationRequest,
+    config: &Config,
+    clock: &SystemClock,
+    db: &Database,
+    strategies: &mut [Box<dyn Strategy>],
+    execution_engine: &mut ExecutionEngine,
+    bankroll: &mut BankrollManager,
+    circuit_breaker: &mut CircuitBreaker,
+    trend_tracker: &mut ScopedTrendTracker,
+    rejection_tracker: &mut StrategyRejectionTracker,
+    output_tx: &tokio::sync::mpsc::UnboundedSender<StrategyWorkerOutput>,
+) {
+    process_due_orders_and_log(
+        execution_engine,
+        request.now_ms,
+        request.now_us,
+        Some(&request.window),
+        &request.book_state,
+        db,
+        bankroll,
+        config,
+        clock,
+    );
+    if !circuit_breaker.can_trade(request.now_ms) {
+        circuit_breaker.log_if_paused(request.now_ms);
+        return;
+    }
+    if config.execution_mode == crate::config::ExecutionMode::LiveTrading
+        && !request.live_trading_can_submit
+    {
+        return;
+    }
+    match run_strategy_cycle(
+        &request.ctx,
+        &request.window,
+        config,
+        clock,
+        db,
+        strategies,
+        execution_engine,
+        bankroll,
+        trend_tracker,
+        rejection_tracker,
+        ReplayFidelity::RawEvent,
+        request.now_ms,
+    ) {
+        Ok(outcome) => handle_strategy_worker_outcome(request, config, outcome, output_tx),
+        Err(error) => error!("failed to evaluate strategies: {error}"),
+    }
+}
+
+/// Log a strategy cycle outcome and forward live venue orders.
+fn handle_strategy_worker_outcome(
+    request: StrategyEvaluationRequest,
+    config: &Config,
+    outcome: crate::strategy_cycle::StrategyCycleResult,
+    output_tx: &tokio::sync::mpsc::UnboundedSender<StrategyWorkerOutput>,
+) {
+    let mut live_orders = Vec::new();
+    for event in outcome.events {
+        match event {
+            StrategyCycleEvent::Suppressed {
+                strategy,
+                direction,
+                regime,
+            } => {
+                info!(
+                    strategy = %strategy,
+                    direction = %direction,
+                    regime = regime.as_str(),
+                    "signal suppressed by trend filter"
+                );
+            }
+            StrategyCycleEvent::SingleSubmitted {
+                strategy,
+                direction,
+                regime,
+                outcome,
+            } => match outcome {
+                SubmissionOutcome::Queued { signal_ids, orders } => {
+                    info!(
+                        signal_id = signal_ids.first().copied().unwrap_or_default(),
+                        strategy = %strategy,
+                        direction = %direction,
+                        regime = regime.as_str(),
+                        "signal queued"
+                    );
+                    if config.execution_mode == crate::config::ExecutionMode::LiveTrading {
+                        live_orders.extend(orders);
+                    }
+                }
+                SubmissionOutcome::Rejected { signal_ids, reason } => {
+                    info!(
+                        signal_id = signal_ids.first().copied().unwrap_or_default(),
+                        strategy = %strategy,
+                        direction = %direction,
+                        reason = %reason,
+                        regime = regime.as_str(),
+                        "signal rejected before queue"
+                    );
+                }
+            },
+            StrategyCycleEvent::BatchSubmitted {
+                strategy,
+                count,
+                regime,
+                outcome,
+            } => match outcome {
+                SubmissionOutcome::Queued { signal_ids, orders } => {
+                    info!(
+                        strategy = %strategy,
+                        count = signal_ids.len().max(count),
+                        regime = regime.as_str(),
+                        "batch queued"
+                    );
+                    if config.execution_mode == crate::config::ExecutionMode::LiveTrading {
+                        live_orders.extend(orders);
+                    }
+                }
+                SubmissionOutcome::Rejected { signal_ids, reason } => {
+                    info!(
+                        strategy = %strategy,
+                        count = signal_ids.len().max(count),
+                        reason = %reason,
+                        regime = regime.as_str(),
+                        "batch rejected before queue"
+                    );
+                }
+            },
+        }
+    }
+    if !live_orders.is_empty()
+        && output_tx
+            .send(StrategyWorkerOutput::LiveOrders {
+                window: request.window,
+                orders: live_orders,
+                now_ms: request.now_ms,
+            })
+            .is_err()
+    {
+        error!("failed to forward live orders from strategy worker");
+    }
+}
+
+/// Handle one market-close event inside the strategy worker.
+#[allow(clippy::too_many_arguments)]
+fn handle_strategy_worker_window_closed(
+    window: &MarketWindow,
+    open_price: f64,
+    close_price: f64,
+    now_ms: u64,
+    config: &Config,
+    clock: &SystemClock,
+    db: &Database,
+    bankroll: &mut BankrollManager,
+    rejection_tracker: &mut StrategyRejectionTracker,
+) {
+    if let Err(error) = db.resolve_market(&window.market_id, "closed") {
+        warn!(market_id = %window.market_id, "failed to mark market closed: {error}");
+    }
+    let provisional_outcome = if close_price >= open_price {
+        SignalDirection::Up
+    } else {
+        SignalDirection::Down
+    };
+    info!(
+        market_id = %window.market_id,
+        provisional_outcome = %provisional_outcome,
+        provisional_open = open_price,
+        provisional_close = close_price,
+        "window closed; awaiting authoritative resolution before settlement"
+    );
+    match db.get_open_trades_for_market(&window.market_id) {
+        Ok(trades) => {
+            for trade in &trades {
+                bankroll.transition_trade_to_pending_settlement(
+                    trade.entry_price * trade.size,
+                    &trade.strategy,
+                );
+            }
+        }
+        Err(error) => {
+            warn!(
+                market_id = %window.market_id,
+                "failed to load open trades for pending-settlement reclassification: {error}"
+            );
+        }
+    }
+    flush_rejection_summaries_for_market(db, rejection_tracker, &window.market_id, now_ms);
+    log_execution_rollup_for_market(db, &window.market_id);
+    if config.execution_mode == crate::config::ExecutionMode::Paper {
+        let stats = bankroll.get_stats();
+        if stats.current_balance < config.min_balance_threshold {
+            warn!(
+                current_balance = stats.current_balance,
+                min_balance_threshold = config.min_balance_threshold,
+                "paper balance below configured threshold"
+            );
+        }
+    }
+    let _ = clock;
+}
+
+/// Update the shared bankroll stats snapshot.
+fn update_strategy_worker_stats(
+    stats_slot: &Arc<std::sync::RwLock<BankrollStats>>,
+    bankroll: &BankrollManager,
+) {
+    if let Ok(mut stats) = stats_slot.write() {
+        *stats = bankroll.get_stats();
+    }
+}
+
+/// Build an initial bankroll stats snapshot before worker hydration completes.
+fn initial_bankroll_stats(starting_balance: f64) -> BankrollStats {
+    BankrollStats {
+        starting_balance,
+        current_balance: starting_balance,
+        high_water_mark: starting_balance,
+        max_drawdown_pct: 0.0,
+        total_trades: 0,
+        wins: 0,
+        losses: 0,
+        win_rate: 0.0,
+        total_pnl: 0.0,
+        total_fees: 0.0,
+    }
+}
+
 /// Local receive-time pair captured when a feed message enters the live loop.
 struct ReceiveTimes {
     ms: u64,
@@ -154,15 +1111,150 @@ struct LiveClobLogEvent<'a> {
     details_json: Option<&'a str>,
 }
 
-/// Context required to persist one feed-health event.
-struct FeedHealthLogEvent<'a> {
+/// Owned feed-health record passed to the persistence worker task.
+#[derive(Debug, Clone)]
+struct OwnedFeedHealthLogEvent {
     timestamp_ms: u64,
     timestamp_micros: Option<u64>,
-    source: &'a str,
-    event_type: &'a str,
-    connection_id: Option<&'a str>,
-    market_id: Option<&'a str>,
-    details_json: Option<&'a str>,
+    source: String,
+    event_type: String,
+    connection_id: Option<String>,
+    market_id: Option<String>,
+    details_json: Option<String>,
+}
+
+/// One strategy-evaluation snapshot sent out of the feed hot path.
+struct StrategyEvaluationRequest {
+    ctx: StrategyContext,
+    window: MarketWindow,
+    book_state: crate::types::BookState,
+    now_ms: u64,
+    now_us: Option<u64>,
+    live_trading_can_submit: bool,
+}
+
+/// Work item accepted by the strategy worker.
+enum StrategyWorkerMessage {
+    Evaluate(Box<StrategyEvaluationRequest>),
+    WindowClosed {
+        window: MarketWindow,
+        open_price: f64,
+        close_price: f64,
+        now_ms: u64,
+    },
+    AuthoritativeResolution {
+        window: MarketWindow,
+        outcome: SignalDirection,
+        seeded_from_startup: bool,
+    },
+    ReleaseReservations {
+        releases: Vec<(String, f64)>,
+    },
+    FlushAll {
+        now_ms: u64,
+    },
+    Shutdown,
+}
+
+/// Strategy worker output consumed by the async runtime.
+enum StrategyWorkerOutput {
+    LiveOrders {
+        window: MarketWindow,
+        orders: Vec<QueuedOrderIntent>,
+        now_ms: u64,
+    },
+}
+
+/// Snapshot of strategy worker health.
+#[derive(Debug, Clone)]
+struct StrategyWorkerSnapshot {
+    enqueued: u64,
+    dropped: u64,
+    processed: u64,
+    last_processed_at_ms: u64,
+    stats: BankrollStats,
+}
+
+/// Non-blocking handle for the DB-backed strategy and paper-execution worker.
+struct StrategyWorker {
+    tx: SyncSender<StrategyWorkerMessage>,
+    metrics: Arc<StrategyWorkerMetrics>,
+    stats: Arc<std::sync::RwLock<BankrollStats>>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+/// Atomic strategy worker counters.
+#[derive(Debug, Default)]
+struct StrategyWorkerMetrics {
+    enqueued: AtomicU64,
+    dropped: AtomicU64,
+    processed: AtomicU64,
+    last_processed_at_ms: AtomicU64,
+}
+
+/// Runtime context owned by the DB-backed strategy worker thread.
+struct StrategyWorkerRuntime {
+    db_path: String,
+    config: Config,
+    starting_balance: f64,
+    rx: Receiver<StrategyWorkerMessage>,
+    metrics: Arc<StrategyWorkerMetrics>,
+    stats: Arc<std::sync::RwLock<BankrollStats>>,
+    output_tx: tokio::sync::mpsc::UnboundedSender<StrategyWorkerOutput>,
+}
+
+/// Request sent to the live submission worker.
+struct LiveSubmissionRequest {
+    window: MarketWindow,
+    orders: Vec<QueuedOrderIntent>,
+    now_ms: u64,
+}
+
+/// Feedback from the live submission worker back to the runtime.
+struct LiveSubmissionFeedback {
+    state_update: Option<LiveSubmissionStateUpdate>,
+    releases: Vec<(String, f64)>,
+}
+
+/// Worker context for persisting an unknown live order submission.
+struct LiveOrderErrorContext<'a> {
+    db_path: &'a str,
+    session_id: i64,
+    sidecar: &'a LiveSidecarClient,
+    order: &'a QueuedOrderIntent,
+    request: &'a LiveOrderIntentRequest,
+    intent_id: i64,
+    now_ms: u64,
+}
+
+/// State transition discovered by the live submission worker.
+struct LiveSubmissionStateUpdate {
+    state: &'static str,
+    reason: String,
+}
+
+/// Non-blocking handle for live venue submissions.
+struct LiveSubmissionQueue {
+    tx: tokio::sync::mpsc::Sender<LiveSubmissionRequest>,
+}
+
+/// Kind of live monitor worker running outside the feed loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveMonitorWorkerKind {
+    Controls,
+    RemoteRefresh,
+}
+
+/// Live monitor worker result returned to the runtime.
+struct LiveMonitorWorkerOutput {
+    kind: LiveMonitorWorkerKind,
+    result: Result<LiveTradingMonitor, String>,
+}
+
+/// One asynchronous authoritative-resolution fetch result.
+struct ResolutionFetchResult {
+    pending: PendingResolution,
+    result: anyhow::Result<Option<SignalDirection>>,
 }
 
 const FEED_HEALTH_ROLLUP_INTERVAL_SECS: u64 = 5 * 60;
@@ -487,42 +1579,27 @@ async fn run_live_runtime(
         };
     let runtime_started_at_ms = clock.now();
     let pending_policy = config.pending_settlement_policy_unchecked();
-    let initial_replay_quality = persist_replay_quality_metadata(
+    persist_runtime_capture_metadata(
         &db,
         config.feed_event_storage_profile,
         runtime_started_at_ms,
-        runtime_started_at_ms,
-        runtime_started_at_ms,
+        "empty",
+        "runtime_start",
     )?;
     info!(
         balance = runtime_balance,
         db = %db_path,
         execution_mode = config.execution_mode.as_str(),
         feed_event_storage_profile = config.feed_event_storage_profile.as_str(),
-        replay_quality_class = initial_replay_quality.class.as_str(),
+        replay_quality_class = "empty",
         pending_settlement_mode = pending_policy.mode.as_str(),
         pending_settlement_family_reserve_fraction = pending_policy.family_reserve_fraction,
         pending_settlement_global_reserve_fraction = pending_policy.global_reserve_fraction,
         pending_settlement_counts_as_open_position = pending_policy.counts_as_open_position,
         "starting live runtime"
     );
-    let mut bankroll = BankrollManager::new(runtime_balance, &config, &db, &clock);
-    let mut position_manager = PositionManager::new();
-    let mut execution_engine = ExecutionEngine::new();
-    let mut circuit_breaker = CircuitBreaker::new(
-        config.circuit_breaker_losses as u32,
-        config.circuit_breaker_pause_ms,
-    );
-    let mut trend_tracker = ScopedTrendTracker::new(
-        config.trend_filter_window as usize,
-        config.trend_filter_enabled,
-        config.trend_filter_threshold,
-        config.trend_filter_per_strategy,
-    );
-
-    let mut strategies = build_strategies(&config);
     let enabled_strategies = config.enabled_strategy_names();
-    if strategies.is_empty() {
+    if enabled_strategies.is_empty() {
         bail!(
             "no strategies enabled after config parsing; boolean env values must be true/false or 1/0"
         );
@@ -534,6 +1611,25 @@ async fn run_live_runtime(
     );
 
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
+    let (strategy_output_tx, mut strategy_output_rx) =
+        tokio::sync::mpsc::unbounded_channel::<StrategyWorkerOutput>();
+    let strategy_worker = StrategyWorker::start(
+        db_path.to_string(),
+        config.clone(),
+        runtime_balance,
+        strategy_output_tx,
+    )?;
+    let (live_feedback_tx, mut live_feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<LiveSubmissionFeedback>();
+    let live_submission_queue = live_trading_monitor.as_ref().map(|monitor| {
+        LiveSubmissionQueue::start(
+            db_path.to_string(),
+            config.clone(),
+            monitor.session_id,
+            monitor.sidecar.clone(),
+            live_feedback_tx,
+        )
+    });
 
     let (feed_tx, mut feed_rx) = tokio::sync::mpsc::channel::<FeedMessage>(512);
 
@@ -565,22 +1661,43 @@ async fn run_live_runtime(
     let mut discovery = market_discovery::run_market_discovery(&config).await;
 
     let tick_logger_state = Arc::new(tokio::sync::RwLock::new(TickLoggerState::default()));
-    let tick_logger_state_clone = Arc::clone(&tick_logger_state);
-    let tick_interval = config.tick_interval;
-    let tick_logger_db_path = db_path.to_string();
-    tokio::spawn(async move {
-        tick_logger::run_tick_logger(tick_logger_db_path, tick_interval, tick_logger_state_clone)
+    if config.tick_data_logging_enabled {
+        let tick_logger_state_clone = Arc::clone(&tick_logger_state);
+        let tick_interval = config.tick_interval;
+        let tick_logger_db_path = db_path.to_string();
+        tokio::spawn(async move {
+            tick_logger::run_tick_logger(
+                tick_logger_db_path,
+                tick_interval,
+                tick_logger_state_clone,
+            )
             .await;
-    });
+        });
+    }
 
     let mut state = LiveState::new();
     let mut storage_state = FeedEventStorageState::new(config.feed_event_storage_profile);
+    let feed_writer = FeedEventWriter::start(
+        db_path.to_string(),
+        FeedEventWriterConfig {
+            queue_capacity: config.feed_event_writer_queue_capacity,
+            batch_size: config.feed_event_writer_batch_size,
+            flush_interval_ms: config.feed_event_writer_flush_ms,
+        },
+    )?;
     let mut feed_health_tracker = FeedHealthTracker::default();
-    let mut rejection_tracker = StrategyRejectionTracker::new();
     let mut pending_resolutions = seed_pending_resolutions(&db, &config, &clock);
+    let (resolution_result_tx, mut resolution_result_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ResolutionFetchResult>();
+    let (readonly_refresh_tx, mut readonly_refresh_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::live_readonly::ReadonlyRefreshResult>();
+    let mut readonly_refresh_inflight = false;
+    let (live_monitor_tx, mut live_monitor_rx) =
+        tokio::sync::mpsc::unbounded_channel::<LiveMonitorWorkerOutput>();
+    let mut live_monitor_inflight: Option<LiveMonitorWorkerKind> = None;
 
     let (activate_tx, mut activate_rx) = tokio::sync::mpsc::channel::<MarketWindow>(32);
-    let mut storage_report_timer = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
+    let mut storage_report_timer = tokio::time::interval(std::time::Duration::from_secs(60));
     storage_report_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let _ = storage_report_timer.tick().await;
     let mut feed_health_report_timer = tokio::time::interval(std::time::Duration::from_secs(
@@ -664,8 +1781,6 @@ async fn run_live_runtime(
                             receive.micros,
                         );
                         momentum.push(price, receive.ms);
-                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
-
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.binance_price = Some(price);
                         }
@@ -703,51 +1818,28 @@ async fn run_live_runtime(
                             quantity,
                             signed_quantity,
                         );
-                        let _ = persist_feed_event(&db, &mut storage_state, &event);
+                        enqueue_counted_feed_event(&feed_writer, &mut storage_state, event);
 
                         if let Some(ref w) = state.current_window {
                             state.window_open_prices.entry(w.market_id.clone()).or_insert(price);
                         }
 
-                        process_due_orders_and_log(
-                            &mut execution_engine,
-                            receive.ms,
-                            receive.micros,
-                            state.current_window.as_ref(),
-                            &state.signal_state.book_state,
-                            &db,
-                            &mut bankroll,
-                            &config,
-                            &clock,
-                        );
-
-                        let live_orders = evaluate_strategies(
+                        if !enqueue_strategy_evaluation(
                             &mut state,
                             &momentum,
                             &config,
-                            &clock,
-                            &db,
-                            &mut strategies,
-                            &mut execution_engine,
-                            &mut bankroll,
-                            &mut circuit_breaker,
-                            &mut trend_tracker,
-                            &mut rejection_tracker,
+                            &strategy_worker,
                             live_trading_monitor
                                 .as_ref()
                                 .is_none_or(LiveTradingMonitor::can_submit_orders),
                             receive.ms,
-                        );
-                        submit_live_orders_if_any(
-                            live_trading_monitor.as_mut(),
-                            db_path,
-                            &config,
-                            &mut bankroll,
-                            state.current_window.as_ref(),
-                            live_orders,
-                            receive.ms,
-                        )
-                        .await;
+                            receive.micros,
+                        ) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "strategy worker queue rejected evaluation",
+                            );
+                        }
                     }
 
                     FeedMessage::BinanceBookTicker {
@@ -773,8 +1865,6 @@ async fn run_live_runtime(
                             receive.ms,
                             sequence_key.clone(),
                         );
-                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
-
                         if let Some(event) = storage_state.prepare_binance_book_ticker(FeedEvent {
                             id: None,
                             received_at_ms: receive.ms,
@@ -804,48 +1894,25 @@ async fn run_live_runtime(
                             details_json,
                             fidelity: ReplayFidelity::RawEvent,
                         }) {
-                            let _ = persist_feed_event(&db, &mut storage_state, &event);
+                            enqueue_counted_feed_event(&feed_writer, &mut storage_state, event);
                         }
 
-                        process_due_orders_and_log(
-                            &mut execution_engine,
-                            receive.ms,
-                            receive.micros,
-                            state.current_window.as_ref(),
-                            &state.signal_state.book_state,
-                            &db,
-                            &mut bankroll,
-                            &config,
-                            &clock,
-                        );
-
-                        let live_orders = evaluate_strategies(
+                        if !enqueue_strategy_evaluation(
                             &mut state,
                             &momentum,
                             &config,
-                            &clock,
-                            &db,
-                            &mut strategies,
-                            &mut execution_engine,
-                            &mut bankroll,
-                            &mut circuit_breaker,
-                            &mut trend_tracker,
-                            &mut rejection_tracker,
+                            &strategy_worker,
                             live_trading_monitor
                                 .as_ref()
                                 .is_none_or(LiveTradingMonitor::can_submit_orders),
                             receive.ms,
-                        );
-                        submit_live_orders_if_any(
-                            live_trading_monitor.as_mut(),
-                            db_path,
-                            &config,
-                            &mut bankroll,
-                            state.current_window.as_ref(),
-                            live_orders,
-                            receive.ms,
-                        )
-                        .await;
+                            receive.micros,
+                        ) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "strategy worker queue rejected evaluation",
+                            );
+                        }
                     }
 
                     FeedMessage::BinanceDepth {
@@ -905,51 +1972,26 @@ async fn run_live_runtime(
                             receive.ms,
                             sequence_key.clone(),
                         );
-                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
-
                         if let Some(event) = depth_event {
-                            let _ = persist_feed_event(&db, &mut storage_state, &event);
+                            enqueue_counted_feed_event(&feed_writer, &mut storage_state, event);
                         }
 
-                        process_due_orders_and_log(
-                            &mut execution_engine,
-                            receive.ms,
-                            receive.micros,
-                            state.current_window.as_ref(),
-                            &state.signal_state.book_state,
-                            &db,
-                            &mut bankroll,
-                            &config,
-                            &clock,
-                        );
-
-                        let live_orders = evaluate_strategies(
+                        if !enqueue_strategy_evaluation(
                             &mut state,
                             &momentum,
                             &config,
-                            &clock,
-                            &db,
-                            &mut strategies,
-                            &mut execution_engine,
-                            &mut bankroll,
-                            &mut circuit_breaker,
-                            &mut trend_tracker,
-                            &mut rejection_tracker,
+                            &strategy_worker,
                             live_trading_monitor
                                 .as_ref()
                                 .is_none_or(LiveTradingMonitor::can_submit_orders),
                             receive.ms,
-                        );
-                        submit_live_orders_if_any(
-                            live_trading_monitor.as_mut(),
-                            db_path,
-                            &config,
-                            &mut bankroll,
-                            state.current_window.as_ref(),
-                            live_orders,
-                            receive.ms,
-                        )
-                        .await;
+                            receive.micros,
+                        ) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "strategy worker queue rejected evaluation",
+                            );
+                        }
                     }
 
                     FeedMessage::ChainlinkPrice {
@@ -966,8 +2008,6 @@ async fn run_live_runtime(
                         state
                             .signal_state
                             .update_chainlink(price, receive.ms, receive.micros);
-                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
-
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.chainlink_price = Some(price);
                         }
@@ -1001,19 +2041,24 @@ async fn run_live_runtime(
                             details_json,
                             fidelity: ReplayFidelity::RawEvent,
                         });
-                        let _ = persist_feed_event(&db, &mut storage_state, &event);
+                        enqueue_counted_feed_event(&feed_writer, &mut storage_state, event);
 
-                        process_due_orders_and_log(
-                            &mut execution_engine,
+                        if !enqueue_strategy_evaluation(
+                            &mut state,
+                            &momentum,
+                            &config,
+                            &strategy_worker,
+                            live_trading_monitor
+                                .as_ref()
+                                .is_none_or(LiveTradingMonitor::can_submit_orders),
                             receive.ms,
                             receive.micros,
-                            state.current_window.as_ref(),
-                            &state.signal_state.book_state,
-                            &db,
-                            &mut bankroll,
-                            &config,
-                            &clock,
-                        );
+                        ) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "strategy worker queue rejected evaluation",
+                            );
+                        }
                     }
 
                     FeedMessage::ClobBook {
@@ -1030,14 +2075,12 @@ async fn run_live_runtime(
                         state
                             .signal_state
                             .update_clob(book_state.clone(), receive.ms, receive.micros);
-                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
-
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.book_state = book_state.clone();
                         }
 
-                        let _ = log_live_clob_event(
-                            &db,
+                        log_live_clob_event(
+                            &feed_writer,
                             &mut storage_state,
                             &LiveClobLogEvent {
                                 receive_ms: receive.ms,
@@ -1055,45 +2098,22 @@ async fn run_live_runtime(
                             },
                         );
 
-                        process_due_orders_and_log(
-                            &mut execution_engine,
-                            receive.ms,
-                            receive.micros,
-                            state.current_window.as_ref(),
-                            &state.signal_state.book_state,
-                            &db,
-                            &mut bankroll,
-                            &config,
-                            &clock,
-                        );
-
-                        let live_orders = evaluate_strategies(
+                        if !enqueue_strategy_evaluation(
                             &mut state,
                             &momentum,
                             &config,
-                            &clock,
-                            &db,
-                            &mut strategies,
-                            &mut execution_engine,
-                            &mut bankroll,
-                            &mut circuit_breaker,
-                            &mut trend_tracker,
-                            &mut rejection_tracker,
+                            &strategy_worker,
                             live_trading_monitor
                                 .as_ref()
                                 .is_none_or(LiveTradingMonitor::can_submit_orders),
                             receive.ms,
-                        );
-                        submit_live_orders_if_any(
-                            live_trading_monitor.as_mut(),
-                            db_path,
-                            &config,
-                            &mut bankroll,
-                            state.current_window.as_ref(),
-                            live_orders,
-                            receive.ms,
-                        )
-                        .await;
+                            receive.micros,
+                        ) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "strategy worker queue rejected evaluation",
+                            );
+                        }
                     }
 
                     FeedMessage::ClobPriceChange {
@@ -1110,14 +2130,12 @@ async fn run_live_runtime(
                         state
                             .signal_state
                             .update_clob(book_state.clone(), receive.ms, receive.micros);
-                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
-
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.book_state = book_state.clone();
                         }
 
-                        let _ = log_live_clob_event(
-                            &db,
+                        log_live_clob_event(
+                            &feed_writer,
                             &mut storage_state,
                             &LiveClobLogEvent {
                                 receive_ms: receive.ms,
@@ -1135,45 +2153,22 @@ async fn run_live_runtime(
                             },
                         );
 
-                        process_due_orders_and_log(
-                            &mut execution_engine,
-                            receive.ms,
-                            receive.micros,
-                            state.current_window.as_ref(),
-                            &state.signal_state.book_state,
-                            &db,
-                            &mut bankroll,
-                            &config,
-                            &clock,
-                        );
-
-                        let live_orders = evaluate_strategies(
+                        if !enqueue_strategy_evaluation(
                             &mut state,
                             &momentum,
                             &config,
-                            &clock,
-                            &db,
-                            &mut strategies,
-                            &mut execution_engine,
-                            &mut bankroll,
-                            &mut circuit_breaker,
-                            &mut trend_tracker,
-                            &mut rejection_tracker,
+                            &strategy_worker,
                             live_trading_monitor
                                 .as_ref()
                                 .is_none_or(LiveTradingMonitor::can_submit_orders),
                             receive.ms,
-                        );
-                        submit_live_orders_if_any(
-                            live_trading_monitor.as_mut(),
-                            db_path,
-                            &config,
-                            &mut bankroll,
-                            state.current_window.as_ref(),
-                            live_orders,
-                            receive.ms,
-                        )
-                        .await;
+                            receive.micros,
+                        ) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "strategy worker queue rejected evaluation",
+                            );
+                        }
                     }
 
                     FeedMessage::ClobBestBidAsk {
@@ -1190,14 +2185,12 @@ async fn run_live_runtime(
                         state
                             .signal_state
                             .update_clob(book_state.clone(), receive.ms, receive.micros);
-                        execution_engine.note_replay_fidelity(ReplayFidelity::RawEvent);
-
                         if let Ok(mut tls) = tick_logger_state.try_write() {
                             tls.book_state = book_state.clone();
                         }
 
-                        let _ = log_live_clob_event(
-                            &db,
+                        log_live_clob_event(
+                            &feed_writer,
                             &mut storage_state,
                             &LiveClobLogEvent {
                                 receive_ms: receive.ms,
@@ -1215,45 +2208,22 @@ async fn run_live_runtime(
                             },
                         );
 
-                        process_due_orders_and_log(
-                            &mut execution_engine,
-                            receive.ms,
-                            receive.micros,
-                            state.current_window.as_ref(),
-                            &state.signal_state.book_state,
-                            &db,
-                            &mut bankroll,
-                            &config,
-                            &clock,
-                        );
-
-                        let live_orders = evaluate_strategies(
+                        if !enqueue_strategy_evaluation(
                             &mut state,
                             &momentum,
                             &config,
-                            &clock,
-                            &db,
-                            &mut strategies,
-                            &mut execution_engine,
-                            &mut bankroll,
-                            &mut circuit_breaker,
-                            &mut trend_tracker,
-                            &mut rejection_tracker,
+                            &strategy_worker,
                             live_trading_monitor
                                 .as_ref()
                                 .is_none_or(LiveTradingMonitor::can_submit_orders),
                             receive.ms,
-                        );
-                        submit_live_orders_if_any(
-                            live_trading_monitor.as_mut(),
-                            db_path,
-                            &config,
-                            &mut bankroll,
-                            state.current_window.as_ref(),
-                            live_orders,
-                            receive.ms,
-                        )
-                        .await;
+                            receive.micros,
+                        ) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "strategy worker queue rejected evaluation",
+                            );
+                        }
                     }
 
                     FeedMessage::ClobMetaEvent {
@@ -1296,25 +2266,22 @@ async fn run_live_runtime(
                             details_json,
                             fidelity: ReplayFidelity::RawEvent,
                         }) {
-                            let _ = persist_feed_event(&db, &mut storage_state, &event);
+                            enqueue_counted_feed_event(&feed_writer, &mut storage_state, event);
                         }
                     }
 
                     FeedMessage::FeedConnected { name, connection_id } => {
                         info!(feed = %name, "feed connected");
                         feed_health_tracker.note_connected(&name, clock.now());
-                        let _ = log_feed_health_event(
-                            &db,
-                            &FeedHealthLogEvent {
-                                timestamp_ms: clock.now(),
-                                timestamp_micros: Some(now_us()),
-                                source: &name,
-                                event_type: "connected",
-                                connection_id: Some(&connection_id),
-                                market_id: state.current_window.as_ref().map(|w| w.market_id.as_str()),
-                                details_json: None,
-                            },
-                        );
+                        spawn_feed_health_event_write(db_path.to_string(), OwnedFeedHealthLogEvent {
+                            timestamp_ms: clock.now(),
+                            timestamp_micros: Some(now_us()),
+                            source: name,
+                            event_type: "connected".to_string(),
+                            connection_id: Some(connection_id),
+                            market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                            details_json: None,
+                        });
                     }
 
                     FeedMessage::FeedDisconnected {
@@ -1325,18 +2292,15 @@ async fn run_live_runtime(
                     } => {
                         warn!(feed = %name, cause_class, "feed disconnected");
                         feed_health_tracker.note_disconnected(&name, cause_class, clock.now());
-                        let _ = log_feed_health_event(
-                            &db,
-                            &FeedHealthLogEvent {
-                                timestamp_ms: clock.now(),
-                                timestamp_micros: Some(now_us()),
-                                source: &name,
-                                event_type: "disconnected",
-                                connection_id: connection_id.as_deref(),
-                                market_id: state.current_window.as_ref().map(|w| w.market_id.as_str()),
-                                details_json: details_json.as_deref(),
-                            },
-                        );
+                        spawn_feed_health_event_write(db_path.to_string(), OwnedFeedHealthLogEvent {
+                            timestamp_ms: clock.now(),
+                            timestamp_micros: Some(now_us()),
+                            source: name,
+                            event_type: "disconnected".to_string(),
+                            connection_id,
+                            market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                            details_json,
+                        });
                     }
 
                     FeedMessage::ChainlinkStale {
@@ -1345,18 +2309,15 @@ async fn run_live_runtime(
                     } => {
                         warn!("chainlink price is stale");
                         state.signal_state.chainlink_price = None;
-                        let _ = log_feed_health_event(
-                            &db,
-                            &FeedHealthLogEvent {
-                                timestamp_ms: clock.now(),
-                                timestamp_micros: Some(now_us()),
-                                source: "chainlink",
-                                event_type: "stale",
-                                connection_id: connection_id.as_deref(),
-                                market_id: state.current_window.as_ref().map(|w| w.market_id.as_str()),
-                                details_json: details_json.as_deref(),
-                            },
-                        );
+                        spawn_feed_health_event_write(db_path.to_string(), OwnedFeedHealthLogEvent {
+                            timestamp_ms: clock.now(),
+                            timestamp_micros: Some(now_us()),
+                            source: "chainlink".to_string(),
+                            event_type: "stale".to_string(),
+                            connection_id,
+                            market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
+                            details_json,
+                        });
                     }
                 }
             }
@@ -1375,16 +2336,14 @@ async fn run_live_runtime(
                             "new market window discovered"
                         );
 
-                        if let Err(e) = db.upsert_market(&window) {
-                            error!("failed to upsert market: {e}");
-                        }
+                        spawn_market_upsert(db_path.to_string(), window.clone());
 
                         state.known_windows.insert(window.market_id.clone(), window.clone());
 
                         let now_ms = clock.now();
                         if window.start_time <= now_ms {
 
-                            activate_window(&db, &mut state, &window, &clob_handle);
+                            activate_window(&mut state, &window, &clob_handle);
                         } else {
 
                             let delay_ms = window.start_time.saturating_sub(now_ms);
@@ -1407,67 +2366,29 @@ async fn run_live_runtime(
 
                         let closed_id = closed_window.market_id.clone();
                         if let Some(window) = state.known_windows.remove(&closed_id) {
-                            if let Err(e) = db.resolve_market(&closed_id, "closed") {
-                                warn!(market_id = %closed_id, "failed to mark market closed: {e}");
-                            }
                             let open = state.window_open_prices.remove(&closed_id).unwrap_or_else(|| {
-                                warn!(market_id = %closed_id, "no cached open price captured, recovering from persisted ticks");
-                                recover_window_open_price(&db, &state, &window).unwrap_or(0.0)
+                                warn!(market_id = %closed_id, "no cached open price captured, using latest in-memory Binance price");
+                                state.signal_state.binance_price.unwrap_or(0.0)
                             });
                             let close = state.signal_state.binance_price.unwrap_or(open);
-                            let provisional_outcome = if close >= open {
-                                SignalDirection::Up
-                            } else {
-                                SignalDirection::Down
-                            };
-                            info!(
-                                market_id = %closed_id,
-                                provisional_outcome = %provisional_outcome,
-                                provisional_open = open,
-                                provisional_close = close,
-                                "window closed; awaiting authoritative resolution before settlement"
-                            );
-
-                            match db.get_open_trades_for_market(&closed_id) {
-                                Ok(trades) if !trades.is_empty() => {
-                                    for trade in &trades {
-                                        bankroll.transition_trade_to_pending_settlement(
-                                            trade.entry_price * trade.size,
-                                            &trade.strategy,
-                                        );
-                                    }
-                                    let first_attempt_at_ms = window
-                                        .end_time
-                                        .saturating_add(config.resolution_initial_delay_ms)
-                                        .max(clock.now());
-                                    schedule_pending_resolution(
-                                        &mut pending_resolutions,
-                                        &window,
-                                        first_attempt_at_ms,
-                                        false,
-                                    );
-                                }
-                                Ok(_) => {}
-                                Err(e) => {
-                                    warn!(
-                                        market_id = %closed_id,
-                                        "failed to load open trades for pending-settlement reclassification: {e}"
-                                    );
-                                }
+                            if !strategy_worker.try_window_closed(window.clone(), open, close, clock.now()) {
+                                warn!(market_id = %closed_id, "strategy worker dropped market-close event");
                             }
+                            let first_attempt_at_ms = window
+                                .end_time
+                                .saturating_add(config.resolution_initial_delay_ms)
+                                .max(clock.now());
+                            schedule_pending_resolution(
+                                &mut pending_resolutions,
+                                &window,
+                                first_attempt_at_ms,
+                                false,
+                            );
 
                             if state.current_window.as_ref().is_some_and(|w| w.market_id == closed_id) {
                                 state.current_window = None;
                                 state.signal_state.book_state = crate::types::BookState::default();
                             }
-
-                            flush_rejection_summaries_for_market(
-                                &db,
-                                &mut rejection_tracker,
-                                &closed_id,
-                                clock.now(),
-                            );
-                            log_execution_rollup_for_market(&db, &closed_id);
                         }
                     }
                 }
@@ -1475,45 +2396,52 @@ async fn run_live_runtime(
 
             window = activate_rx.recv() => {
                 if let Some(window) = window {
-                    activate_window(&db, &mut state, &window, &clob_handle);
+                    activate_window(&mut state, &window, &clob_handle);
                 }
             }
 
             _ = storage_report_timer.tick() => {
-                log_rejection_rollups(&rejection_tracker.snapshot_all(clock.now()));
-                if let Ok(footprint) = db.storage_footprint() {
-                    let rows = storage_state.take_row_counts();
-                    let row_summary = rows
-                        .iter()
-                        .map(|(key, count)| format!("{key}={count}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let now = clock.now();
-                    let replay_quality = match persist_replay_quality_metadata(
-                        &db,
-                        config.feed_event_storage_profile,
-                        runtime_started_at_ms,
-                        now,
-                        now,
-                    ) {
-                        Ok(report) => report.class.as_str().to_string(),
-                        Err(error) => {
-                            warn!(%error, "failed to persist replay quality metadata");
-                            "unknown".to_string()
-                        }
-                    };
-                    info!(
-                        db_bytes = footprint.db_bytes,
-                        wal_bytes = footprint.wal_bytes,
-                        feed_events = footprint.feed_event_count,
-                        rows = row_summary,
-                        replay_quality_class = %replay_quality,
-                        "live storage footprint"
-                    );
-                    if let Err(error) = db.set_run_metadata("feed_event_classes", &row_summary, now) {
-                        warn!(%error, "failed to persist feed class metadata");
-                    }
-                }
+                let rows = storage_state.take_row_counts();
+                let row_summary = rows
+                    .iter()
+                    .map(|(key, count)| format!("{key}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let writer_snapshot = feed_writer.snapshot();
+                let now = clock.now();
+                let capture_health = runtime_capture_health(
+                    &writer_snapshot,
+                    &row_summary,
+                    now,
+                    config.feed_event_writer_max_lag_ms,
+                );
+                info!(
+                    queued_rows = writer_snapshot.enqueued,
+                    persisted_rows = writer_snapshot.persisted,
+                    dropped_rows = writer_snapshot.dropped,
+                    queue_full = writer_snapshot.queue_full,
+                    write_errors = writer_snapshot.write_errors,
+                    max_batch_write_ms = writer_snapshot.max_write_ms,
+                    last_persisted_at_ms = writer_snapshot.last_persisted_at_ms,
+                    rows = row_summary,
+                    replay_runtime_capture_health = %capture_health,
+                    "live storage writer rollup"
+                );
+                spawn_runtime_capture_metadata_write(
+                    db_path.to_string(),
+                    config.feed_event_storage_profile,
+                    now,
+                    capture_health.to_string(),
+                    row_summary.clone(),
+                );
+                let strategy_snapshot = strategy_worker.snapshot();
+                info!(
+                    strategy_enqueued = strategy_snapshot.enqueued,
+                    strategy_processed = strategy_snapshot.processed,
+                    strategy_dropped = strategy_snapshot.dropped,
+                    strategy_last_processed_at_ms = strategy_snapshot.last_processed_at_ms,
+                    "strategy worker rollup"
+                );
             }
 
             _ = feed_health_report_timer.tick() => {
@@ -1522,63 +2450,59 @@ async fn run_live_runtime(
 
             _ = resolution_retry_timer.tick() => {
                 let ready_pending = take_ready_pending_resolutions(&mut pending_resolutions, clock.now());
-                for mut pending in ready_pending {
-                    match db.get_open_trades_for_market(&pending.market_id) {
-                        Ok(trades) if trades.is_empty() => {
-                            tracing::debug!(
-                                market_id = %pending.market_id,
-                                "dropping pending authoritative settlement for market with no open trades"
-                            );
-                            continue;
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(
-                                market_id = %pending.market_id,
-                                "failed to inspect open trades before authoritative settlement retry: {e}"
-                            );
-                            pending.next_attempt_at_ms = clock.now().saturating_add(config.resolution_poll_delay_ms);
-                            pending_resolutions.insert(pending.market_id.clone(), pending);
-                            continue;
-                        }
-                    }
-
+                for pending in ready_pending {
                     let slug = pending.window.slug.clone();
                     let gamma_api_url = config.gamma_api_url.clone();
-                    match crate::market_discovery::fetch_resolution_once(&gamma_api_url, &slug).await {
+                    let tx = resolution_result_tx.clone();
+                    tokio::spawn(async move {
+                        let result =
+                            crate::market_discovery::fetch_resolution_once(&gamma_api_url, &slug)
+                                .await;
+                        let _ = tx.send(ResolutionFetchResult { pending, result });
+                    });
+                }
+            }
+
+            resolution = resolution_result_rx.recv() => {
+                if let Some(mut resolution) = resolution {
+                    match resolution.result {
                         Ok(Some(outcome)) => {
-                            handle_authoritative_resolution(
-                                &pending.window,
+                            if !strategy_worker.try_authoritative_resolution(
+                                resolution.pending.window,
                                 outcome,
-                                pending.seeded_from_startup,
-                                &db,
-                                &mut position_manager,
-                                &mut bankroll,
-                                &mut trend_tracker,
-                                &mut circuit_breaker,
-                                &config,
-                                &clock,
-                            );
+                                resolution.pending.seeded_from_startup,
+                            ) {
+                                warn!(
+                                    market_id = %resolution.pending.market_id,
+                                    "strategy worker dropped authoritative settlement"
+                                );
+                            }
                         }
                         Ok(None) => {
                             tracing::debug!(
-                                market_id = %pending.market_id,
-                                slug = %pending.window.slug,
+                                market_id = %resolution.pending.market_id,
+                                slug = %resolution.pending.window.slug,
                                 "authoritative settlement still unresolved, will retry"
                             );
-                            pending.next_attempt_at_ms =
+                            resolution.pending.next_attempt_at_ms =
                                 clock.now().saturating_add(config.resolution_poll_delay_ms);
-                            pending_resolutions.insert(pending.market_id.clone(), pending);
-                        }
-                        Err(e) => {
-                            warn!(
-                                market_id = %pending.market_id,
-                                slug = %pending.window.slug,
-                                "authoritative settlement fetch failed: {e}"
+                            pending_resolutions.insert(
+                                resolution.pending.market_id.clone(),
+                                resolution.pending,
                             );
-                            pending.next_attempt_at_ms =
+                        }
+                        Err(error) => {
+                            warn!(
+                                market_id = %resolution.pending.market_id,
+                                slug = %resolution.pending.window.slug,
+                                "authoritative settlement fetch failed: {error}"
+                            );
+                            resolution.pending.next_attempt_at_ms =
                                 clock.now().saturating_add(config.resolution_poll_delay_ms);
-                            pending_resolutions.insert(pending.market_id.clone(), pending);
+                            pending_resolutions.insert(
+                                resolution.pending.market_id.clone(),
+                                resolution.pending,
+                            );
                         }
                     }
                 }
@@ -1589,17 +2513,24 @@ async fn run_live_runtime(
                     timer.tick().await;
                 }
             }, if readonly_monitor.is_some() => {
-                if let Some(monitor) = readonly_monitor.as_mut() {
-                    match monitor.fetch_account_state().await {
-                        Ok(account) => monitor.apply_account_state(&db, &config, account)?,
-                        Err(error) => {
-                            monitor.record_account_refresh_failure(
-                                &db,
-                                &config,
-                                &clock,
-                                &error.to_string(),
-                            )?;
-                        }
+                if !readonly_refresh_inflight
+                    && let Some(monitor) = readonly_monitor.as_ref()
+                {
+                    monitor.spawn_account_refresh(
+                        db_path.to_string(),
+                        config.clone(),
+                        clock.now(),
+                        readonly_refresh_tx.clone(),
+                    );
+                    readonly_refresh_inflight = true;
+                }
+            }
+
+            readonly_refresh = readonly_refresh_rx.recv() => {
+                if let Some(result) = readonly_refresh {
+                    readonly_refresh_inflight = false;
+                    if let Some(monitor) = readonly_monitor.as_mut() {
+                        monitor.apply_refresh_result(result);
                     }
                 }
             }
@@ -1610,7 +2541,7 @@ async fn run_live_runtime(
                 }
             }, if readonly_monitor.is_some() => {
                 if let Some(monitor) = readonly_monitor.as_ref() {
-                    monitor.log_shadow_rollup(&bankroll.get_stats());
+                    monitor.log_shadow_rollup(&strategy_worker.snapshot().stats);
                 }
             }
 
@@ -1619,10 +2550,17 @@ async fn run_live_runtime(
                     timer.tick().await;
                 }
             }, if live_trading_monitor.is_some() => {
-                if let Some(monitor) = live_trading_monitor.as_mut()
-                    && let Err(error) = monitor.apply_pending_controls(db_path, &config, &clock).await
+                if live_monitor_inflight.is_none()
+                    && let Some(monitor) = live_trading_monitor.as_ref()
                 {
-                    error!("failed to apply live-control command: {error}");
+                    spawn_live_monitor_worker(
+                        monitor,
+                        LiveMonitorWorkerKind::Controls,
+                        db_path.to_string(),
+                        config.clone(),
+                        live_monitor_tx.clone(),
+                    );
+                    live_monitor_inflight = Some(LiveMonitorWorkerKind::Controls);
                 }
             }
 
@@ -1631,10 +2569,48 @@ async fn run_live_runtime(
                     timer.tick().await;
                 }
             }, if live_trading_monitor.is_some() => {
-                if let Some(monitor) = live_trading_monitor.as_mut()
-                    && let Err(error) = monitor.refresh_remote_state(db_path, &config, &clock).await
+                if live_monitor_inflight.is_none()
+                    && let Some(monitor) = live_trading_monitor.as_ref()
                 {
-                    error!("failed to refresh live-trading remote state: {error}");
+                    spawn_live_monitor_worker(
+                        monitor,
+                        LiveMonitorWorkerKind::RemoteRefresh,
+                        db_path.to_string(),
+                        config.clone(),
+                        live_monitor_tx.clone(),
+                    );
+                    live_monitor_inflight = Some(LiveMonitorWorkerKind::RemoteRefresh);
+                }
+            }
+
+            live_monitor_output = live_monitor_rx.recv() => {
+                if let Some(output) = live_monitor_output {
+                    live_monitor_inflight = None;
+                    if let Some(monitor) = live_trading_monitor.as_mut() {
+                        apply_live_monitor_worker_output(monitor, output);
+                    }
+                }
+            }
+
+            output = strategy_output_rx.recv() => {
+                if let Some(StrategyWorkerOutput::LiveOrders { window, orders, now_ms }) = output
+                    && let Some(queue) = live_submission_queue.as_ref()
+                    && !queue.try_submit(LiveSubmissionRequest { window, orders, now_ms })
+                {
+                    mark_live_submission_blocked(
+                        live_trading_monitor.as_mut(),
+                        "live submission queue rejected strategy output",
+                    );
+                }
+            }
+
+            feedback = live_feedback_rx.recv() => {
+                if let Some(feedback) = feedback {
+                    apply_live_submission_feedback(
+                        live_trading_monitor.as_mut(),
+                        &strategy_worker,
+                        feedback,
+                    );
                 }
             }
 
@@ -1645,9 +2621,8 @@ async fn run_live_runtime(
         }
     }
 
-    flush_all_rejection_summaries(&db, &mut rejection_tracker, clock.now());
-
-    let final_stats = bankroll.get_stats();
+    let _ = strategy_worker.try_flush_all(clock.now());
+    let final_stats = strategy_worker.snapshot().stats;
     info!(
         starting_balance = final_stats.starting_balance,
         final_balance = final_stats.current_balance,
@@ -1668,12 +2643,27 @@ async fn run_live_runtime(
         monitor.finish_stopped(&db, &clock)?;
     }
 
+    let writer_snapshot = feed_writer.snapshot();
+    info!(
+        queued_rows = writer_snapshot.enqueued,
+        persisted_rows = writer_snapshot.persisted,
+        dropped_rows = writer_snapshot.dropped,
+        queue_full = writer_snapshot.queue_full,
+        write_errors = writer_snapshot.write_errors,
+        max_batch_write_ms = writer_snapshot.max_write_ms,
+        last_persisted_at_ms = writer_snapshot.last_persisted_at_ms,
+        "stopping feed writer"
+    );
+    strategy_worker.shutdown();
+    feed_writer.shutdown();
+
     db.close();
     info!("database closed, goodbye");
 
     Ok(())
 }
 
+#[allow(dead_code)]
 impl LiveTradingMonitor {
     /// Return whether new venue submissions may be attempted right now.
     fn can_submit_orders(&self) -> bool {
@@ -1802,12 +2792,7 @@ impl LiveTradingMonitor {
         db.log_live_account_snapshot(&live_account_snapshot(self.session_id, &account))?;
         self.persist_activity_recovery(&db, &activity)?;
         let mut issues = live_gate_issues(&preflight, &account, &activity, config);
-        issues.extend(replay_quality_issues_for_live(
-            &db,
-            config.feed_event_storage_profile,
-            self.session_started_at_ms,
-            clock.now(),
-        )?);
+        issues.extend(runtime_capture_issues_for_live(&db, config, clock.now())?);
         issues.sort();
         issues.dedup();
         self.preflight = Some(preflight);
@@ -2666,32 +3651,140 @@ fn ensure_state_allows_disarm(state: &str) -> anyhow::Result<()> {
     }
 }
 
-/// Submit live orders from one strategy cycle when a live monitor is active.
-async fn submit_live_orders_if_any(
-    monitor: Option<&mut LiveTradingMonitor>,
-    db_path: &str,
+/// Build and enqueue one strategy-evaluation snapshot from current feed state.
+fn enqueue_strategy_evaluation(
+    state: &mut LiveState,
+    momentum: &MomentumCalculator,
     config: &Config,
-    bankroll: &mut BankrollManager,
-    window: Option<&MarketWindow>,
-    orders: Vec<QueuedOrderIntent>,
+    strategy_worker: &StrategyWorker,
+    live_trading_can_submit: bool,
     now_ms: u64,
-) {
-    if orders.is_empty() {
-        return;
-    }
-    let Some(monitor) = monitor else {
-        return;
+    receive_us: Option<u64>,
+) -> bool {
+    let Some(window) = state.current_window.as_ref() else {
+        return true;
     };
-    let Some(window) = window else {
-        error!("live orders generated without an active window");
-        return;
+    let Some(binance_price) = state.signal_state.binance_price else {
+        return true;
     };
-    if let Err(error) = monitor
-        .submit_orders(db_path, config, bankroll, window, &orders, now_ms)
-        .await
+    let window_open_price = state.window_open_prices.get(&window.market_id).copied();
+    let features = SignalFeatureEngine::compute(
+        &mut state.signal_state,
+        Some(window),
+        window_open_price,
+        momentum.get(),
+        now_ms,
+        receive_us,
+        config,
+    );
+    let ctx = StrategyContext {
+        binance_price,
+        binance_momentum: momentum.get(),
+        chainlink_price: state.signal_state.chainlink_price,
+        book_state: state.signal_state.book_state.clone(),
+        window_open_price,
+        window_time_remaining_ms: window.end_time.saturating_sub(now_ms),
+        now_us: receive_us,
+        features,
+    };
+    strategy_worker.try_evaluate(StrategyEvaluationRequest {
+        ctx,
+        window: window.clone(),
+        book_state: state.signal_state.book_state.clone(),
+        now_ms,
+        now_us: receive_us,
+        live_trading_can_submit,
+    })
+}
+
+/// Mark live submissions blocked when a worker queue rejects critical work.
+fn mark_live_submission_blocked(monitor: Option<&mut LiveTradingMonitor>, reason: &str) {
+    if let Some(monitor) = monitor
+        && matches!(monitor.state.as_str(), "armed" | "stop_after_flat")
     {
-        error!("failed to submit live orders: {error}");
+        monitor.blocked_reason = Some(reason.to_string());
     }
+}
+
+/// Apply feedback emitted by the live submission worker.
+fn apply_live_submission_feedback(
+    mut monitor: Option<&mut LiveTradingMonitor>,
+    strategy_worker: &StrategyWorker,
+    feedback: LiveSubmissionFeedback,
+) {
+    if !feedback.releases.is_empty() && !strategy_worker.try_release_reservations(feedback.releases)
+    {
+        if let Some(monitor) = monitor.as_deref_mut() {
+            mark_live_submission_blocked(Some(monitor), "strategy worker rejected reserve release");
+        }
+        return;
+    }
+    if let Some(update) = feedback.state_update
+        && let Some(monitor) = monitor
+    {
+        monitor.state = update.state.to_string();
+        monitor.blocked_reason = Some(update.reason);
+    }
+}
+
+/// Start one live monitor worker if no previous monitor task is still running.
+fn spawn_live_monitor_worker(
+    monitor: &LiveTradingMonitor,
+    kind: LiveMonitorWorkerKind,
+    db_path: String,
+    config: Config,
+    tx: tokio::sync::mpsc::UnboundedSender<LiveMonitorWorkerOutput>,
+) {
+    let mut worker_monitor = monitor.clone();
+    tokio::spawn(async move {
+        let clock = SystemClock;
+        let result = match kind {
+            LiveMonitorWorkerKind::Controls => {
+                worker_monitor
+                    .apply_pending_controls(&db_path, &config, &clock)
+                    .await
+            }
+            LiveMonitorWorkerKind::RemoteRefresh => worker_monitor
+                .refresh_remote_state(&db_path, &config, &clock)
+                .await
+                .map(|_| ()),
+        };
+        let result = result
+            .map(|()| worker_monitor)
+            .map_err(|error| error.to_string());
+        let _ = tx.send(LiveMonitorWorkerOutput { kind, result });
+    });
+}
+
+/// Merge one background monitor result without clearing terminal local state.
+fn apply_live_monitor_worker_output(
+    monitor: &mut LiveTradingMonitor,
+    output: LiveMonitorWorkerOutput,
+) {
+    match output.result {
+        Ok(updated) => merge_live_monitor_state(monitor, updated),
+        Err(error) => {
+            if matches!(monitor.state.as_str(), "armed" | "stop_after_flat") {
+                monitor.blocked_reason = Some(format!("{:?} worker failed: {error}", output.kind));
+            }
+            warn!(kind = ?output.kind, %error, "live monitor worker failed");
+        }
+    }
+}
+
+/// Merge a worker-owned monitor snapshot back into the runtime snapshot.
+fn merge_live_monitor_state(target: &mut LiveTradingMonitor, updated: LiveTradingMonitor) {
+    let target_terminal = matches!(target.state.as_str(), "halted" | "unknown_order");
+    let updated_terminal = matches!(updated.state.as_str(), "halted" | "unknown_order");
+    if target_terminal && !updated_terminal {
+        target.preflight = updated.preflight;
+        target.account = updated.account;
+        target.activity = updated.activity;
+        target.risk = updated.risk;
+        target.degradation = updated.degradation;
+        return;
+    }
+    *target = updated;
 }
 
 /// Bootstrap a disarmed live-trading runtime session.
@@ -2740,7 +3833,6 @@ async fn bootstrap_live_trading_runtime(
     let mut monitor = LiveTradingMonitor {
         sidecar: LiveSidecarClient::new(&config.live_sidecar_url),
         session_id,
-        session_started_at_ms: started_at_ms,
         state: "disarmed".to_string(),
         preflight: None,
         account: None,
@@ -2972,10 +4064,26 @@ fn live_order_response_is_blocking(response: &LiveOrderIntentResponse) -> bool {
     )
 }
 
+/// Persist one discovered market outside the feed loop.
+fn spawn_market_upsert(db_path: String, window: MarketWindow) {
+    tokio::spawn(async move {
+        if let Err(error) = persist_market_upsert(&db_path, &window) {
+            error!(market_id = %window.market_id, "failed to upsert market: {error}");
+        }
+    });
+}
+
+/// Persist one discovered market row.
+fn persist_market_upsert(db_path: &str, window: &MarketWindow) -> anyhow::Result<()> {
+    let db = Database::new(db_path)?;
+    db.upsert_market(window)?;
+    db.close();
+    Ok(())
+}
+
 /// Activate a market window: set it as current, resubscribe the `CLOB` feed to
 /// the window's tokens, reset the book state, and capture the open price.
 fn activate_window(
-    db: &Database,
     state: &mut LiveState,
     window: &MarketWindow,
     clob_handle: &crate::feeds::clob_feed::ClobFeedHandle,
@@ -2996,7 +4104,7 @@ fn activate_window(
 
     state.signal_state.book_state = crate::types::BookState::default();
 
-    if let Some(open_price) = recover_window_open_price(db, state, window) {
+    if let Some(open_price) = recover_window_open_price(state, window) {
         state
             .window_open_prices
             .entry(window.market_id.clone())
@@ -3007,19 +4115,12 @@ fn activate_window(
 }
 
 /// Returns the best available market-open price for one live window.
-fn recover_window_open_price(
-    db: &Database,
-    state: &LiveState,
-    window: &MarketWindow,
-) -> Option<f64> {
-    match db.earliest_binance_price_in_window(window.start_time, window.end_time) {
-        Ok(Some(price)) => Some(price),
-        Ok(None) => state.signal_state.binance_price,
-        Err(error) => {
-            warn!(market_id = %window.market_id, "failed to recover persisted window open price: {error}");
-            state.signal_state.binance_price
-        }
+fn recover_window_open_price(state: &LiveState, window: &MarketWindow) -> Option<f64> {
+    let price = state.signal_state.binance_price;
+    if price.is_none() {
+        warn!(market_id = %window.market_id, "no in-memory Binance price available for window open");
     }
+    price
 }
 
 /// Persists and logs every pending rejection summary for all active markets.
@@ -3440,15 +4541,19 @@ fn append_integer_metric(metrics: &mut Vec<String>, label: &str, value: Option<f
     }
 }
 
-/// Insert one persisted feed row and update storage counters on success.
-fn persist_feed_event(
-    db: &Database,
+/// Queue one feed row and count the accepted row by feed class.
+fn enqueue_counted_feed_event(
+    writer: &FeedEventWriter,
     storage_state: &mut FeedEventStorageState,
-    event: &FeedEvent,
-) -> anyhow::Result<()> {
-    db.log_feed_event(event)?;
-    storage_state.record_persisted(event);
-    Ok(())
+    event: FeedEvent,
+) {
+    let source = event.source.clone();
+    let event_type = event.event_type.clone();
+    if writer.try_enqueue(event) {
+        storage_state.record_enqueued_key(&source, &event_type);
+    } else {
+        warn!(%source, %event_type, "feed writer queue rejected event");
+    }
 }
 
 /// Carry the fields that vary between materialized per-side `CLOB` rows.
@@ -3597,10 +4702,10 @@ fn push_live_clob_event(
 
 /// Logs live clob event.
 fn log_live_clob_event(
-    db: &Database,
+    writer: &FeedEventWriter,
     storage_state: &mut FeedEventStorageState,
     event: &LiveClobLogEvent<'_>,
-) -> anyhow::Result<()> {
+) {
     for feed_event in build_live_clob_events(event) {
         let prepared = match event.event_type {
             "book" => storage_state.prepare_clob_book_snapshot(feed_event),
@@ -3608,24 +4713,37 @@ fn log_live_clob_event(
             _ => Some(feed_event),
         };
         if let Some(feed_event) = prepared {
-            persist_feed_event(db, storage_state, &feed_event)?;
+            enqueue_counted_feed_event(writer, storage_state, feed_event);
         }
     }
-    Ok(())
 }
 
-/// Record one feed lifecycle or health event in the database.
-fn log_feed_health_event(db: &Database, event: &FeedHealthLogEvent<'_>) -> anyhow::Result<()> {
+/// Persist one feed lifecycle event outside the feed loop.
+fn spawn_feed_health_event_write(db_path: String, event: OwnedFeedHealthLogEvent) {
+    tokio::spawn(async move {
+        if let Err(error) = persist_owned_feed_health_event(&db_path, &event) {
+            warn!(%error, "failed to persist feed-health event");
+        }
+    });
+}
+
+/// Persist one owned feed lifecycle event.
+fn persist_owned_feed_health_event(
+    db_path: &str,
+    event: &OwnedFeedHealthLogEvent,
+) -> anyhow::Result<()> {
+    let db = Database::new(db_path)?;
     db.log_feed_health_event(&FeedHealthEvent {
         id: None,
         timestamp_ms: event.timestamp_ms,
         timestamp_us: event.timestamp_micros,
-        source: event.source.to_string(),
-        event_type: event.event_type.to_string(),
-        connection_id: event.connection_id.map(str::to_string),
-        market_id: event.market_id.map(str::to_string),
-        details_json: event.details_json.map(str::to_string),
+        source: event.source.clone(),
+        event_type: event.event_type.clone(),
+        connection_id: event.connection_id.clone(),
+        market_id: event.market_id.clone(),
+        details_json: event.details_json.clone(),
     })?;
+    db.close();
     Ok(())
 }
 
@@ -3670,15 +4788,15 @@ fn configured_replay_quality_class(profile: FeedEventStorageProfile) -> &'static
     }
 }
 
-/// Persist observed replay-quality metadata for one runtime interval.
-fn persist_replay_quality_metadata(
+/// Persist cheap runtime capture metadata without scanning historical feed rows.
+fn persist_runtime_capture_metadata(
     db: &Database,
     profile: FeedEventStorageProfile,
-    start_time: u64,
-    end_time: u64,
     recorded_at_ms: u64,
-) -> anyhow::Result<ReplayQualityReport> {
-    let report = replay_quality::analyze_connection(db.conn(), start_time, end_time)?;
+    capture_health: &str,
+    row_summary: &str,
+) -> anyhow::Result<()> {
+    let missing = missing_required_feed_classes(row_summary).join(", ");
     db.set_run_metadata(
         "feed_event_storage_profile",
         profile.as_str(),
@@ -3689,33 +4807,32 @@ fn persist_replay_quality_metadata(
         configured_replay_quality_class(profile),
         recorded_at_ms,
     )?;
+    db.set_run_metadata("replay_quality_class", capture_health, recorded_at_ms)?;
+    db.set_run_metadata("runtime_capture_health", capture_health, recorded_at_ms)?;
     db.set_run_metadata(
-        "replay_quality_class",
-        report.class.as_str(),
+        "runtime_capture_recorded_at_ms",
+        &recorded_at_ms.to_string(),
         recorded_at_ms,
     )?;
+    db.set_run_metadata("runtime_capture_rows_window", row_summary, recorded_at_ms)?;
     db.set_run_metadata(
         "replay_quality_validated_at_ms",
-        &recorded_at_ms.to_string(),
+        "not_validated_in_runtime",
         recorded_at_ms,
     )?;
     db.set_run_metadata(
         "replay_quality_validation_interval",
-        &json!({
-            "start_time": start_time,
-            "end_time": end_time,
-        })
-        .to_string(),
+        "not_validated_in_runtime",
         recorded_at_ms,
     )?;
     db.set_run_metadata(
         "replay_quality_missing_required_classes",
-        &report.missing_required_keys().join(","),
+        &missing,
         recorded_at_ms,
     )?;
     db.set_run_metadata(
         "replay_quality_observed_feed_classes",
-        &report.requirement_count_summary(),
+        row_summary,
         recorded_at_ms,
     )?;
     db.set_run_metadata(
@@ -3723,42 +4840,131 @@ fn persist_replay_quality_metadata(
         required_feed_event_classes(),
         recorded_at_ms,
     )?;
-    Ok(report)
+    Ok(())
 }
 
-/// Return live arming issues after recording current replay-quality metadata.
-fn replay_quality_issues_for_live(
-    db: &Database,
+/// Persist runtime capture metadata outside the feed loop.
+fn spawn_runtime_capture_metadata_write(
+    db_path: String,
     profile: FeedEventStorageProfile,
-    start_time: u64,
+    recorded_at_ms: u64,
+    capture_health: String,
+    row_summary: String,
+) {
+    tokio::spawn(async move {
+        if let Err(error) = persist_runtime_capture_metadata_worker(
+            &db_path,
+            profile,
+            recorded_at_ms,
+            &capture_health,
+            &row_summary,
+        ) {
+            warn!(%error, "failed to persist runtime capture metadata");
+        }
+    });
+}
+
+/// Persist one runtime capture metadata snapshot.
+fn persist_runtime_capture_metadata_worker(
+    db_path: &str,
+    profile: FeedEventStorageProfile,
+    recorded_at_ms: u64,
+    capture_health: &str,
+    row_summary: &str,
+) -> anyhow::Result<()> {
+    let db = Database::new(db_path)?;
+    db.set_run_metadata("feed_event_classes", row_summary, recorded_at_ms)?;
+    persist_runtime_capture_metadata(&db, profile, recorded_at_ms, capture_health, row_summary)?;
+    db.close();
+    Ok(())
+}
+
+/// Classify current writer health from incremental counters.
+fn runtime_capture_health(
+    snapshot: &FeedEventWriterSnapshot,
+    row_summary: &str,
+    now_ms: u64,
+    max_lag_ms: u64,
+) -> &'static str {
+    let writer_degraded =
+        snapshot.write_errors > 0 || snapshot.queue_full > 0 || snapshot.dropped > 0;
+    let writer_stale = snapshot.last_persisted_at_ms > 0
+        && snapshot
+            .last_persisted_at_ms
+            .saturating_add(max_lag_ms.max(1))
+            < now_ms;
+    if writer_degraded || writer_stale {
+        "degraded"
+    } else if missing_required_feed_classes(row_summary).is_empty() {
+        "sweep_grade"
+    } else if snapshot.persisted > 0 {
+        "observing"
+    } else {
+        "empty"
+    }
+}
+
+/// Return live arming issues from cheap runtime capture metadata only.
+fn runtime_capture_issues_for_live(
+    db: &Database,
+    config: &Config,
     now_ms: u64,
 ) -> anyhow::Result<Vec<String>> {
-    let report = persist_replay_quality_metadata(db, profile, start_time, now_ms, now_ms)?;
-    Ok(replay_quality_gate_issue(&report).into_iter().collect())
-}
-
-/// Return an arming issue when observed replay quality is incomplete.
-fn replay_quality_gate_issue(report: &ReplayQualityReport) -> Option<String> {
-    if report.is_sweep_grade() {
-        return None;
+    if config.feed_event_storage_profile == FeedEventStorageProfile::Compact {
+        return Ok(vec![
+            "live trading requires replay-grade feed capture; compact capture is descriptive-only"
+                .to_string(),
+        ]);
     }
-    let missing = report.missing_required_keys();
-    if missing.is_empty() {
-        Some(format!(
-            "feed capture is not replay-grade: replay_quality={}",
-            report.class.as_str()
-        ))
-    } else {
-        Some(format!(
-            "feed capture is not replay-grade: missing {}",
-            missing.join(",")
-        ))
+    let Some(health) = db.get_run_metadata("runtime_capture_health")? else {
+        return Ok(vec![
+            "live trading requires observed replay-grade capture health before arming".to_string(),
+        ]);
+    };
+    let mut issues = Vec::new();
+    match health.as_str() {
+        "sweep_grade" => {}
+        "observing" => issues.push(
+            "live trading requires every replay-grade feed class in recent capture metadata"
+                .to_string(),
+        ),
+        "empty" => issues.push(
+            "live trading requires persisted replay-grade feed rows before arming".to_string(),
+        ),
+        "degraded" => issues.push(
+            "live trading capture writer is degraded; reconcile persistence before arming"
+                .to_string(),
+        ),
+        other => issues.push(format!("live trading capture health is not ready: {other}")),
     }
+    if let Some(missing) = db.get_run_metadata("replay_quality_missing_required_classes")?
+        && !missing.trim().is_empty()
+        && health == "observing"
+    {
+        issues.push(format!("missing replay-grade feed classes: {missing}"));
+    }
+    if let Some(recorded) = db.get_run_metadata("runtime_capture_recorded_at_ms")?
+        && let Ok(recorded_at_ms) = recorded.parse::<u64>()
+    {
+        let max_age_ms = config.feed_event_writer_max_lag_ms.max(60_000);
+        if recorded_at_ms.saturating_add(max_age_ms) < now_ms {
+            issues.push("live trading capture health metadata is stale".to_string());
+        }
+    }
+    Ok(issues)
 }
 
 /// Return the required feed classes for sweep-grade replay.
 fn required_feed_event_classes() -> &'static str {
     "binance:aggTrade, binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:top_of_book, clob_down:top_of_book"
+}
+
+/// Return required feed classes absent from one row-count summary.
+fn missing_required_feed_classes(row_summary: &str) -> Vec<&'static str> {
+    required_feed_event_classes()
+        .split(", ")
+        .filter(|required| !row_summary.contains(required))
+        .collect()
 }
 
 /// Register or update one market that still needs authoritative settlement.
@@ -3917,155 +5123,9 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// Insert every feed class required for sweep-grade replay into a test DB.
-    fn insert_sweep_grade_feed_events(db: &Database) {
-        for (
-            source,
-            event_type,
-            price,
-            trade_size,
-            signed_quantity,
-            best_bid,
-            best_ask,
-            bid_size,
-            ask_size,
-            depth_bid_notional,
-            depth_ask_notional,
-            depth_imbalance,
-        ) in [
-            (
-                "binance",
-                "aggTrade",
-                Some(42_000.0),
-                Some(0.2),
-                Some(-0.2),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ),
-            (
-                "binance",
-                "bookTicker",
-                None,
-                None,
-                None,
-                Some(41_999.0),
-                Some(42_001.0),
-                Some(0.4),
-                Some(0.5),
-                None,
-                None,
-                None,
-            ),
-            (
-                "binance",
-                "depth",
-                None,
-                None,
-                None,
-                Some(41_999.0),
-                Some(42_001.0),
-                Some(0.4),
-                Some(0.5),
-                Some(10_000.0),
-                Some(11_000.0),
-                Some(-0.047),
-            ),
-            (
-                "chainlink",
-                "chainlink_price",
-                Some(42_000.5),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ),
-            (
-                "clob_up",
-                "best_bid_ask",
-                None,
-                None,
-                None,
-                Some(0.45),
-                Some(0.55),
-                Some(20.0),
-                Some(30.0),
-                None,
-                None,
-                None,
-            ),
-            (
-                "clob_down",
-                "best_bid_ask",
-                None,
-                None,
-                None,
-                Some(0.44),
-                Some(0.56),
-                Some(21.0),
-                Some(31.0),
-                None,
-                None,
-                None,
-            ),
-        ] {
-            db.conn()
-                .execute(
-                    "INSERT INTO feed_events (
-                        received_at_ms,
-                        event_at_ms,
-                        source,
-                        event_type,
-                        price,
-                        trade_size,
-                        signed_quantity,
-                        best_bid,
-                        best_ask,
-                        bid_size,
-                        ask_size,
-                        depth_bid_notional,
-                        depth_ask_notional,
-                        depth_imbalance,
-                        fidelity
-                    ) VALUES (1000, 1000, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'raw_event')",
-                    rusqlite::params![
-                        source,
-                        event_type,
-                        price,
-                        trade_size,
-                        signed_quantity,
-                        best_bid,
-                        best_ask,
-                        bid_size,
-                        ask_size,
-                        depth_bid_notional,
-                        depth_ask_notional,
-                        depth_imbalance
-                    ],
-                )
-                .unwrap();
-        }
-    }
-
-    /// Verifies that persisted Binance ticks take precedence when recovering a window open.
+    /// Verifies that live window-open recovery uses only in-memory feed state.
     #[test]
-    fn recover_window_open_price_prefers_persisted_tick() {
-        let tmp_db = NamedTempFile::new().unwrap();
-        let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
-        db.log_tick(1_100, "binance", Some(42_100.0), None, None, None, None)
-            .unwrap();
-        db.log_tick(1_200, "binance", Some(42_200.0), None, None, None, None)
-            .unwrap();
-
+    fn recover_window_open_price_uses_live_price_without_db() {
         let mut state = LiveState::new();
         state.signal_state.binance_price = Some(43_000.0);
         let window = MarketWindow {
@@ -4094,46 +5154,42 @@ mod tests {
             clear_book_on_start: None,
         };
 
-        let open_price = recover_window_open_price(&db, &state, &window);
-        assert_eq!(open_price, Some(42_100.0));
-    }
-
-    /// Verifies that the latest in-memory Binance price is used only when no persisted tick exists.
-    #[test]
-    fn recover_window_open_price_falls_back_to_live_price() {
-        let tmp_db = NamedTempFile::new().unwrap();
-        let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
-
-        let mut state = LiveState::new();
-        state.signal_state.binance_price = Some(43_000.0);
-        let window = MarketWindow {
-            market_id: "mkt-1".to_string(),
-            question: "Will BTC go up?".to_string(),
-            up_token_id: "up".to_string(),
-            down_token_id: "down".to_string(),
-            condition_id: "cond-1".to_string(),
-            start_time: 1_000,
-            end_time: 2_000,
-            slug: "btc-updown-5m-1".to_string(),
-            outcome: None,
-            resolution_source: None,
-            fee_profile: None,
-            order_min_size: None,
-            order_price_min_tick_size: None,
-            maker_base_fee: None,
-            taker_base_fee: None,
-            rewards_min_size: None,
-            rewards_max_spread: None,
-            fees_enabled: None,
-            fee_schedule_json: None,
-            token_fee_rates_json: None,
-            accepting_orders: None,
-            accepting_orders_timestamp: None,
-            clear_book_on_start: None,
-        };
-
-        let open_price = recover_window_open_price(&db, &state, &window);
+        let open_price = recover_window_open_price(&state, &window);
         assert_eq!(open_price, Some(43_000.0));
+    }
+
+    /// Verifies that missing live price returns no synthetic open value.
+    #[test]
+    fn recover_window_open_price_returns_none_without_live_price() {
+        let state = LiveState::new();
+        let window = MarketWindow {
+            market_id: "mkt-1".to_string(),
+            question: "Will BTC go up?".to_string(),
+            up_token_id: "up".to_string(),
+            down_token_id: "down".to_string(),
+            condition_id: "cond-1".to_string(),
+            start_time: 1_000,
+            end_time: 2_000,
+            slug: "btc-updown-5m-1".to_string(),
+            outcome: None,
+            resolution_source: None,
+            fee_profile: None,
+            order_min_size: None,
+            order_price_min_tick_size: None,
+            maker_base_fee: None,
+            taker_base_fee: None,
+            rewards_min_size: None,
+            rewards_max_spread: None,
+            fees_enabled: None,
+            fee_schedule_json: None,
+            token_fee_rates_json: None,
+            accepting_orders: None,
+            accepting_orders_timestamp: None,
+            clear_book_on_start: None,
+        };
+
+        let open_price = recover_window_open_price(&state, &window);
+        assert_eq!(open_price, None);
     }
 
     /// Verifies that operator-facing rejection rollups stay concise while
@@ -4350,37 +5406,34 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.contains("replay-grade")));
     }
 
-    /// Verifies that observed replay-quality metadata starts empty and then reaches sweep-grade from actual rows.
+    /// Verifies that runtime capture metadata does not scan rows or claim sweep grade.
     #[test]
-    fn replay_quality_metadata_uses_observed_rows() {
+    fn runtime_capture_metadata_uses_incremental_health() {
         let tmp_db = NamedTempFile::new().unwrap();
         let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
 
-        let empty = persist_replay_quality_metadata(
+        persist_runtime_capture_metadata(
             &db,
             FeedEventStorageProfile::ReplayGrade,
-            0,
             2_000,
-            2_000,
+            "empty",
+            "",
         )
         .unwrap();
-        insert_sweep_grade_feed_events(&db);
-        let sweep = persist_replay_quality_metadata(
+        persist_runtime_capture_metadata(
             &db,
             FeedEventStorageProfile::ReplayGrade,
-            0,
-            2_000,
             2_500,
+            "observing",
+            "binance:aggTrade=10",
         )
         .unwrap();
 
-        assert_eq!(empty.class.as_str(), "empty");
-        assert_eq!(sweep.class.as_str(), "sweep_grade");
         assert_eq!(
             db.get_run_metadata("replay_quality_class")
                 .unwrap()
                 .unwrap(),
-            "sweep_grade"
+            "observing"
         );
         assert_eq!(
             db.get_run_metadata("configured_replay_quality_class")
@@ -4392,27 +5445,108 @@ mod tests {
             db.get_run_metadata("replay_quality_missing_required_classes")
                 .unwrap()
                 .unwrap(),
-            ""
+            "binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:top_of_book, clob_down:top_of_book"
         );
     }
 
-    /// Verifies that replay quality gate issues come from observed DB evidence.
+    /// Verifies that live arming uses cheap runtime capture health metadata.
     #[test]
-    fn replay_quality_gate_issue_names_missing_classes() {
+    fn runtime_capture_issues_use_metadata_not_full_scan() {
         let tmp_db = NamedTempFile::new().unwrap();
         let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
-        insert_sweep_grade_feed_events(&db);
-        db.conn()
-            .execute(
-                "DELETE FROM feed_events WHERE source = 'binance' AND event_type = 'bookTicker'",
-                [],
-            )
-            .unwrap();
-        let report = replay_quality::analyze_connection(db.conn(), 0, 2_000).unwrap();
+        let config = Config::default();
 
-        let issue = replay_quality_gate_issue(&report).unwrap();
+        let missing = runtime_capture_issues_for_live(&db, &config, 2_000).unwrap();
+        assert!(missing[0].contains("capture health"));
 
-        assert!(issue.contains("binance_book_ticker"));
+        persist_runtime_capture_metadata(
+            &db,
+            FeedEventStorageProfile::ReplayGrade,
+            2_000,
+            "observing",
+            "binance:aggTrade=10",
+        )
+        .unwrap();
+        let missing_classes = runtime_capture_issues_for_live(&db, &config, 3_000).unwrap();
+        assert!(
+            missing_classes
+                .iter()
+                .any(|issue| issue.contains("missing replay-grade"))
+        );
+
+        persist_runtime_capture_metadata(
+            &db,
+            FeedEventStorageProfile::ReplayGrade,
+            3_500,
+            "sweep_grade",
+            required_feed_event_classes(),
+        )
+        .unwrap();
+        let ready = runtime_capture_issues_for_live(&db, &config, 3_750).unwrap();
+        assert!(ready.is_empty());
+
+        persist_runtime_capture_metadata(
+            &db,
+            FeedEventStorageProfile::ReplayGrade,
+            4_000,
+            "degraded",
+            "binance:aggTrade=10",
+        )
+        .unwrap();
+        let degraded = runtime_capture_issues_for_live(&db, &config, 5_000).unwrap();
+        assert!(degraded[0].contains("degraded"));
+    }
+
+    /// Verifies that runtime capture health reflects writer loss counters.
+    #[test]
+    fn runtime_capture_health_degrades_on_writer_loss() {
+        let mut snapshot = FeedEventWriterSnapshot {
+            enqueued: 1,
+            persisted: 1,
+            dropped: 0,
+            queue_full: 0,
+            write_errors: 0,
+            batches: 1,
+            total_write_ms: 1,
+            max_write_ms: 1,
+            last_persisted_at_ms: 2_000,
+        };
+        assert_eq!(
+            runtime_capture_health(&snapshot, "binance:aggTrade=1", 2_100, 5_000),
+            "observing"
+        );
+        assert_eq!(
+            runtime_capture_health(&snapshot, required_feed_event_classes(), 2_100, 5_000),
+            "sweep_grade"
+        );
+
+        snapshot.queue_full = 1;
+        assert_eq!(
+            runtime_capture_health(&snapshot, required_feed_event_classes(), 2_100, 5_000),
+            "degraded"
+        );
+    }
+
+    /// Verifies that compact capture is rejected from metadata-only live gates.
+    #[test]
+    fn runtime_capture_issues_reject_compact_profile() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
+        let mut config = Config::default();
+        config.feed_event_storage_profile = FeedEventStorageProfile::Compact;
+
+        persist_runtime_capture_metadata(
+            &db,
+            FeedEventStorageProfile::Compact,
+            2_000,
+            "observing",
+            "binance:aggTrade=10",
+        )
+        .unwrap();
+
+        let issues = runtime_capture_issues_for_live(&db, &config, 3_000).unwrap();
+
+        assert!(issues[0].contains("replay-grade"));
     }
 
     /// Verifies that live risk state halts on session drawdown.
@@ -4589,7 +5723,6 @@ mod tests {
         let mut monitor = LiveTradingMonitor {
             sidecar: LiveSidecarClient::new(&server.uri()),
             session_id,
-            session_started_at_ms: 1_000,
             state: "disarmed".to_string(),
             preflight: None,
             account: None,
@@ -4692,157 +5825,4 @@ mod tests {
             details_json: None,
         }
     }
-}
-
-/// Evaluate strategies.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn evaluate_strategies(
-    state: &mut LiveState,
-    momentum: &MomentumCalculator,
-    config: &Config,
-    clock: &SystemClock,
-    db: &Database,
-    strategies: &mut [Box<dyn Strategy>],
-    execution_engine: &mut ExecutionEngine,
-    bankroll: &mut BankrollManager,
-    circuit_breaker: &mut CircuitBreaker,
-    trend_tracker: &mut ScopedTrendTracker,
-    rejection_tracker: &mut StrategyRejectionTracker,
-    live_trading_can_submit: bool,
-    now: u64,
-) -> Vec<QueuedOrderIntent> {
-    let Some(window) = state.current_window.as_ref() else {
-        return Vec::new();
-    };
-    let Some(binance_price) = state.signal_state.binance_price else {
-        return Vec::new();
-    };
-
-    if !circuit_breaker.can_trade(now) {
-        circuit_breaker.log_if_paused(now);
-        return Vec::new();
-    }
-    if config.execution_mode == crate::config::ExecutionMode::LiveTrading
-        && !live_trading_can_submit
-    {
-        return Vec::new();
-    }
-
-    let window_open_price = state.window_open_prices.get(&window.market_id).copied();
-    let now_us = Some(now_us());
-    let features = SignalFeatureEngine::compute(
-        &mut state.signal_state,
-        Some(window),
-        window_open_price,
-        momentum.get(),
-        now,
-        now_us,
-        config,
-    );
-
-    let ctx = StrategyContext {
-        binance_price,
-        binance_momentum: momentum.get(),
-        chainlink_price: state.signal_state.chainlink_price,
-        book_state: state.signal_state.book_state.clone(),
-        window_open_price,
-        window_time_remaining_ms: window.end_time.saturating_sub(now),
-        now_us,
-        features,
-    };
-
-    let mut live_orders = Vec::new();
-    match run_strategy_cycle(
-        &ctx,
-        window,
-        config,
-        clock,
-        db,
-        strategies,
-        execution_engine,
-        bankroll,
-        trend_tracker,
-        rejection_tracker,
-        ReplayFidelity::RawEvent,
-        now,
-    ) {
-        Ok(outcome) => {
-            for event in outcome.events {
-                match event {
-                    StrategyCycleEvent::Suppressed {
-                        strategy,
-                        direction,
-                        regime,
-                    } => {
-                        info!(
-                            strategy = %strategy,
-                            direction = %direction,
-                            regime = regime.as_str(),
-                            "signal suppressed by trend filter"
-                        );
-                    }
-                    StrategyCycleEvent::SingleSubmitted {
-                        strategy,
-                        direction,
-                        regime,
-                        outcome,
-                    } => match outcome {
-                        SubmissionOutcome::Queued { signal_ids, orders } => {
-                            info!(
-                                signal_id = signal_ids.first().copied().unwrap_or_default(),
-                                strategy = %strategy,
-                                direction = %direction,
-                                regime = regime.as_str(),
-                                "signal queued"
-                            );
-                            if config.execution_mode == crate::config::ExecutionMode::LiveTrading {
-                                live_orders.extend(orders);
-                            }
-                        }
-                        SubmissionOutcome::Rejected { signal_ids, reason } => {
-                            info!(
-                                signal_id = signal_ids.first().copied().unwrap_or_default(),
-                                strategy = %strategy,
-                                direction = %direction,
-                                reason = %reason,
-                                regime = regime.as_str(),
-                                "signal rejected before queue"
-                            );
-                        }
-                    },
-                    StrategyCycleEvent::BatchSubmitted {
-                        strategy,
-                        count,
-                        regime,
-                        outcome,
-                    } => match outcome {
-                        SubmissionOutcome::Queued { signal_ids, orders } => {
-                            info!(
-                                strategy = %strategy,
-                                count = signal_ids.len().max(count),
-                                regime = regime.as_str(),
-                                "batch queued"
-                            );
-                            if config.execution_mode == crate::config::ExecutionMode::LiveTrading {
-                                live_orders.extend(orders);
-                            }
-                        }
-                        SubmissionOutcome::Rejected { signal_ids, reason } => {
-                            info!(
-                                strategy = %strategy,
-                                count = signal_ids.len().max(count),
-                                reason = %reason,
-                                regime = regime.as_str(),
-                                "batch rejected before queue"
-                            );
-                        }
-                    },
-                }
-            }
-        }
-        Err(error) => {
-            error!("failed to evaluate strategies: {error}");
-        }
-    }
-    live_orders
 }

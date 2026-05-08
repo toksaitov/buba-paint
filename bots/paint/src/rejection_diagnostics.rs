@@ -182,6 +182,7 @@ impl StrategyRejectionTracker {
 
     /// Builds a non-destructive snapshot of every current rejection summary.
     #[must_use]
+    #[allow(dead_code)]
     pub fn snapshot_all(&self, timestamp_ms: u64) -> Vec<StrategyRejectionSummaryRecord> {
         self.aggregates
             .iter()

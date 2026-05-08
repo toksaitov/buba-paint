@@ -65,6 +65,8 @@ FEED_EVENT_STORAGE_PROFILE=replay_grade
 
 Run `buba-paint validate-replay-data` before any long sweep. For funded live intervals, also run `buba-paint validate-live-fidelity`. Sweeps refuse non-sweep-grade inputs, and funded intervals must be `research_grade_live`. Old runs that lack required Binance book state are descriptive evidence only, not trusted optimization inputs.
 
+Runtime replay capture is isolated from the decision path. The bot records feed rows through a bounded writer worker and keeps full replay/fidelity validation offline, in closeout, or in explicit diagnostics.
+
 ## Main Commands
 
 ```bash

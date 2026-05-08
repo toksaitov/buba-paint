@@ -14,6 +14,7 @@ pub mod latency_probe;
 pub mod live;
 pub mod live_closeout;
 pub mod live_control;
+mod live_feed_writer;
 mod live_readonly;
 pub mod live_sidecar;
 mod live_storage;
