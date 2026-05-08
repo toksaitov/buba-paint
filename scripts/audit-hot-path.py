@@ -102,6 +102,18 @@ def check_decision_evidence_wired(errors: list[str]) -> None:
         errors.append("decision evidence helper is still marked dead code")
     if "decision_signal_event(" not in text:
         errors.append("decision evidence is not wired into signal persistence")
+    required_fields = [
+        '"config_fingerprint"',
+        '"market"',
+        '"bankroll"',
+        '"exposure"',
+        '"pending_order_count"',
+        '"decision_sequence"',
+        '"decision_input_at_us"',
+    ]
+    for field in required_fields:
+        if field not in text:
+            errors.append(f"decision evidence is missing {field}")
 
 
 def check_decision_worker_purity(errors: list[str]) -> None:
@@ -170,12 +182,43 @@ def check_live_worker_boundaries(errors: list[str]) -> None:
     )
     if submission_start and "feed_event_writer_queue_capacity" in submission_start.group("body"):
         errors.append("live submission queue still reuses feed writer capacity")
+    strategy_start = re.search(
+        r"impl StrategyWorker \{(?P<body>.*?)/// Enqueue one strategy-evaluation request",
+        live,
+        re.S,
+    )
+    if strategy_start and "feed_event_writer_queue_capacity" in strategy_start.group("body"):
+        errors.append("strategy decision queue still reuses feed writer capacity")
+    persistence_start = re.search(
+        r"LivePersistenceWriter::start\((?P<body>.*?)\)\?;",
+        live,
+        re.S,
+    )
+    if persistence_start and "feed_event_writer_queue_capacity" in persistence_start.group("body"):
+        errors.append("runtime persistence queue still reuses feed writer capacity")
+    if "unbounded_channel::<StrategyWorkerOutput>" in live:
+        errors.append("strategy decision output channel is unbounded")
+    if "fn stale_live_decision_output(" not in live:
+        errors.append("live runtime lacks stale-decision output gate")
+    if "max_live_decision_age_ms" not in live:
+        errors.append("live runtime does not apply max live decision age")
     if "let mut live_monitor_inflight" in live:
         errors.append("live monitor controls and remote refresh still share one inflight slot")
     if "critical_events: Vec<LivePersistenceEvent>" not in live:
         errors.append("live submission requests do not carry critical decision evidence")
     if "log_live_order_intent_with_decision_evidence" not in live:
         errors.append("live submission worker does not persist evidence with order intent")
+    forbidden_db_spawn_helpers = [
+        "spawn_feed_health_event_write",
+        "spawn_runtime_capture_metadata_write",
+        "spawn_market_upsert",
+        "persist_owned_feed_health_event",
+        "persist_runtime_capture_metadata_worker",
+        "persist_market_upsert",
+    ]
+    for pattern in forbidden_db_spawn_helpers:
+        if pattern in live:
+            errors.append(f"ad-hoc runtime DB task remains: {pattern}")
     for path, text in {
         "live.rs": live,
         "live_feed_writer.rs": feed_writer,

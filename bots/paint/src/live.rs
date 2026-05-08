@@ -1,7 +1,8 @@
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -59,6 +60,7 @@ struct LiveState {
     current_window: Option<MarketWindow>,
     window_open_prices: std::collections::HashMap<String, f64>,
     known_windows: std::collections::HashMap<String, MarketWindow>,
+    latest_decision_sequence: u64,
 }
 
 struct LiveTradingRuntimeBootstrap {
@@ -143,13 +145,15 @@ impl StrategyWorker {
         config: Config,
         strategies: Vec<Box<dyn Strategy>>,
         seed: RuntimeDecisionSeed,
-        output_tx: tokio::sync::mpsc::UnboundedSender<StrategyWorkerOutput>,
+        output_tx: tokio::sync::mpsc::Sender<StrategyWorkerOutput>,
     ) -> anyhow::Result<Self> {
-        let (tx, rx) = sync_channel(config.feed_event_writer_queue_capacity.max(1));
+        let (tx, rx) = sync_channel(config.live_decision_queue_capacity.max(1));
+        let latest = Arc::new(LatestStrategyEvaluation::default());
         let metrics = Arc::new(StrategyWorkerMetrics::default());
         let stats = Arc::new(std::sync::RwLock::new(initial_bankroll_stats(
             seed.starting_balance,
         )));
+        let worker_latest = Arc::clone(&latest);
         let worker_metrics = Arc::clone(&metrics);
         let worker_stats = Arc::clone(&stats);
         let join = thread::Builder::new()
@@ -160,6 +164,7 @@ impl StrategyWorker {
                     strategies,
                     seed,
                     rx,
+                    latest: worker_latest,
                     metrics: worker_metrics,
                     stats: worker_stats,
                     output_tx,
@@ -168,6 +173,7 @@ impl StrategyWorker {
             .context("spawning strategy worker")?;
         Ok(Self {
             tx,
+            latest,
             metrics,
             stats,
             join: Some(join),
@@ -176,7 +182,20 @@ impl StrategyWorker {
 
     /// Enqueue one strategy-evaluation request without blocking feed handling.
     fn try_evaluate(&self, request: StrategyEvaluationRequest) -> bool {
-        self.try_send(StrategyWorkerMessage::Evaluate(Box::new(request)))
+        if self.metrics.output_dropped.load(Ordering::Relaxed) > 0 {
+            self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        let Ok(mut latest) = self.latest.request.lock() else {
+            self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+        if latest.replace(Box::new(request)).is_some() {
+            self.metrics.replaced.fetch_add(1, Ordering::Relaxed);
+        }
+        self.metrics.enqueued.fetch_add(1, Ordering::Relaxed);
+        self.latest.wake.notify_one();
+        true
     }
 
     /// Enqueue one market-close event without blocking feed handling.
@@ -232,8 +251,10 @@ impl StrategyWorker {
             .map_or_else(|_| initial_bankroll_stats(0.0), |stats| stats.clone());
         StrategyWorkerSnapshot {
             enqueued: self.metrics.enqueued.load(Ordering::Relaxed),
+            replaced: self.metrics.replaced.load(Ordering::Relaxed),
             dropped: self.metrics.dropped.load(Ordering::Relaxed),
             processed: self.metrics.processed.load(Ordering::Relaxed),
+            output_dropped: self.metrics.output_dropped.load(Ordering::Relaxed),
             last_processed_at_ms: self.metrics.last_processed_at_ms.load(Ordering::Relaxed),
             shutdown_timed_out: self.metrics.shutdown_timed_out.load(Ordering::Relaxed),
             stats,
@@ -265,6 +286,7 @@ impl StrategyWorker {
         match self.tx.try_send(message) {
             Ok(()) => {
                 self.metrics.enqueued.fetch_add(1, Ordering::Relaxed);
+                self.latest.wake.notify_one();
                 true
             }
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
@@ -981,6 +1003,7 @@ fn run_strategy_worker(runtime: StrategyWorkerRuntime) {
         strategies,
         seed,
         rx,
+        latest,
         metrics,
         stats,
         output_tx,
@@ -988,69 +1011,133 @@ fn run_strategy_worker(runtime: StrategyWorkerRuntime) {
     let clock = SystemClock;
     let mut decision_engine = RuntimeDecisionEngine::new(config.clone(), strategies, seed);
     update_strategy_worker_stats(&stats, &decision_engine.stats());
-    while let Ok(message) = rx.recv() {
-        match message {
-            StrategyWorkerMessage::Evaluate(request) => {
-                let output = decision_engine.evaluate(RuntimeDecisionRequest {
-                    ctx: request.ctx,
-                    window: request.window,
-                    book_state: request.book_state,
-                    now_ms: request.now_ms,
-                    now_us: request.now_us,
-                    live_trading_can_submit: request.live_trading_can_submit,
-                });
-                forward_strategy_output(output, &output_tx);
-            }
-            StrategyWorkerMessage::WindowClosed { window, now_ms } => {
-                forward_strategy_output(decision_engine.window_closed(&window, now_ms), &output_tx);
-            }
-            StrategyWorkerMessage::AuthoritativeResolution { window, outcome } => {
-                forward_strategy_output(
-                    decision_engine.authoritative_resolution(&window, outcome, clock.now()),
-                    &output_tx,
-                );
-            }
-            StrategyWorkerMessage::ReleaseReservations { releases } => {
-                decision_engine.release_reservations(releases);
-            }
-            StrategyWorkerMessage::LiveSubmissionFeedback {
-                fills,
-                rejected_signal_ids,
-                now_ms,
-            } => {
-                decision_engine.apply_live_submission_feedback(
-                    &fills,
-                    &rejected_signal_ids,
+    loop {
+        let mut did_work = false;
+        loop {
+            match rx.try_recv() {
+                Ok(StrategyWorkerMessage::WindowClosed { window, now_ms }) => {
+                    forward_strategy_output(
+                        decision_engine.window_closed(&window, now_ms),
+                        &output_tx,
+                        &mut decision_engine,
+                        &metrics,
+                    );
+                    did_work = true;
+                }
+                Ok(StrategyWorkerMessage::AuthoritativeResolution { window, outcome }) => {
+                    forward_strategy_output(
+                        decision_engine.authoritative_resolution(&window, outcome, clock.now()),
+                        &output_tx,
+                        &mut decision_engine,
+                        &metrics,
+                    );
+                    did_work = true;
+                }
+                Ok(StrategyWorkerMessage::ReleaseReservations { releases }) => {
+                    decision_engine.release_reservations(releases);
+                    did_work = true;
+                }
+                Ok(StrategyWorkerMessage::LiveSubmissionFeedback {
+                    fills,
+                    rejected_signal_ids,
                     now_ms,
-                );
+                }) => {
+                    decision_engine.apply_live_submission_feedback(
+                        &fills,
+                        &rejected_signal_ids,
+                        now_ms,
+                    );
+                    did_work = true;
+                }
+                Ok(StrategyWorkerMessage::FlushAll { now_ms }) => {
+                    forward_strategy_output(
+                        decision_engine.flush_all(now_ms),
+                        &output_tx,
+                        &mut decision_engine,
+                        &metrics,
+                    );
+                    did_work = true;
+                }
+                Ok(StrategyWorkerMessage::Shutdown) | Err(TryRecvError::Disconnected) => {
+                    forward_strategy_output(
+                        decision_engine.flush_all(clock.now()),
+                        &output_tx,
+                        &mut decision_engine,
+                        &metrics,
+                    );
+                    update_strategy_worker_stats(&stats, &decision_engine.stats());
+                    info!("strategy worker stopped");
+                    return;
+                }
+                Err(TryRecvError::Empty) => break,
             }
-            StrategyWorkerMessage::FlushAll { now_ms } => {
-                forward_strategy_output(decision_engine.flush_all(now_ms), &output_tx);
-            }
-            StrategyWorkerMessage::Shutdown => break,
         }
-        update_strategy_worker_stats(&stats, &decision_engine.stats());
-        metrics.processed.fetch_add(1, Ordering::Relaxed);
-        metrics
-            .last_processed_at_ms
-            .store(clock.now(), Ordering::Relaxed);
+        let request = latest.request.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(request) = request {
+            let output = decision_engine.evaluate(RuntimeDecisionRequest {
+                decision_sequence: request.decision_sequence,
+                ctx: request.ctx,
+                window: request.window,
+                book_state: request.book_state,
+                now_ms: request.now_ms,
+                now_us: request.now_us,
+                live_trading_can_submit: request.live_trading_can_submit,
+            });
+            forward_strategy_output(output, &output_tx, &mut decision_engine, &metrics);
+            did_work = true;
+        }
+        if did_work {
+            update_strategy_worker_stats(&stats, &decision_engine.stats());
+            metrics.processed.fetch_add(1, Ordering::Relaxed);
+            metrics
+                .last_processed_at_ms
+                .store(clock.now(), Ordering::Relaxed);
+        } else if let Ok(guard) = latest.request.lock() {
+            let _ = latest.wake.wait_timeout(guard, Duration::from_millis(10));
+        }
     }
-    forward_strategy_output(decision_engine.flush_all(clock.now()), &output_tx);
-    update_strategy_worker_stats(&stats, &decision_engine.stats());
-    info!("strategy worker stopped");
 }
 
 /// Forward one decision-worker output to the async runtime.
 fn forward_strategy_output(
     output: RuntimeDecisionOutput,
-    output_tx: &tokio::sync::mpsc::UnboundedSender<StrategyWorkerOutput>,
+    output_tx: &tokio::sync::mpsc::Sender<StrategyWorkerOutput>,
+    decision_engine: &mut RuntimeDecisionEngine,
+    metrics: &StrategyWorkerMetrics,
 ) {
-    if output_tx
-        .send(StrategyWorkerOutput::Decision(output))
-        .is_err()
-    {
-        error!("failed to forward strategy worker output");
+    match output_tx.try_send(StrategyWorkerOutput::Decision(output)) {
+        Ok(()) => {}
+        Err(
+            tokio::sync::mpsc::error::TrySendError::Full(StrategyWorkerOutput::Decision(output))
+            | tokio::sync::mpsc::error::TrySendError::Closed(StrategyWorkerOutput::Decision(output)),
+        ) => {
+            metrics.output_dropped.fetch_add(1, Ordering::Relaxed);
+            rollback_live_orders_after_worker_output_drop(decision_engine, &output);
+            error!("failed to forward strategy worker output");
+        }
     }
+}
+
+/// Release in-memory live reservations when worker output cannot be delivered.
+fn rollback_live_orders_after_worker_output_drop(
+    decision_engine: &mut RuntimeDecisionEngine,
+    output: &RuntimeDecisionOutput,
+) {
+    if output.live_orders.is_empty() {
+        return;
+    }
+    let rejected_signal_ids = output
+        .live_orders
+        .iter()
+        .map(|order| order.signal_id)
+        .collect::<Vec<_>>();
+    let releases = output
+        .live_orders
+        .iter()
+        .map(|order| (order.strategy.clone(), order.reserved_cost))
+        .collect::<Vec<_>>();
+    decision_engine.apply_live_submission_feedback(&[], &rejected_signal_ids, output.now_ms);
+    decision_engine.release_reservations(releases);
 }
 
 /// Log a pure strategy decision outcome.
@@ -1250,6 +1337,7 @@ struct OwnedFeedHealthLogEvent {
 
 /// One strategy-evaluation snapshot sent out of the feed hot path.
 struct StrategyEvaluationRequest {
+    decision_sequence: u64,
     ctx: StrategyContext,
     window: MarketWindow,
     book_state: crate::types::BookState,
@@ -1258,9 +1346,14 @@ struct StrategyEvaluationRequest {
     live_trading_can_submit: bool,
 }
 
+#[derive(Default)]
+struct LatestStrategyEvaluation {
+    request: Mutex<Option<Box<StrategyEvaluationRequest>>>,
+    wake: Condvar,
+}
+
 /// Work item accepted by the strategy worker.
 enum StrategyWorkerMessage {
-    Evaluate(Box<StrategyEvaluationRequest>),
     WindowClosed {
         window: MarketWindow,
         now_ms: u64,
@@ -1292,8 +1385,10 @@ enum StrategyWorkerOutput {
 #[derive(Debug, Clone)]
 struct StrategyWorkerSnapshot {
     enqueued: u64,
+    replaced: u64,
     dropped: u64,
     processed: u64,
+    output_dropped: u64,
     last_processed_at_ms: u64,
     shutdown_timed_out: u64,
     stats: BankrollStats,
@@ -1302,6 +1397,7 @@ struct StrategyWorkerSnapshot {
 /// Non-blocking handle for the pure strategy and paper-execution worker.
 struct StrategyWorker {
     tx: SyncSender<StrategyWorkerMessage>,
+    latest: Arc<LatestStrategyEvaluation>,
     metrics: Arc<StrategyWorkerMetrics>,
     stats: Arc<std::sync::RwLock<BankrollStats>>,
     join: Option<thread::JoinHandle<()>>,
@@ -1311,8 +1407,10 @@ struct StrategyWorker {
 #[derive(Debug, Default)]
 struct StrategyWorkerMetrics {
     enqueued: AtomicU64,
+    replaced: AtomicU64,
     dropped: AtomicU64,
     processed: AtomicU64,
+    output_dropped: AtomicU64,
     last_processed_at_ms: AtomicU64,
     shutdown_timed_out: AtomicU64,
 }
@@ -1323,9 +1421,10 @@ struct StrategyWorkerRuntime {
     strategies: Vec<Box<dyn Strategy>>,
     seed: RuntimeDecisionSeed,
     rx: Receiver<StrategyWorkerMessage>,
+    latest: Arc<LatestStrategyEvaluation>,
     metrics: Arc<StrategyWorkerMetrics>,
     stats: Arc<std::sync::RwLock<BankrollStats>>,
-    output_tx: tokio::sync::mpsc::UnboundedSender<StrategyWorkerOutput>,
+    output_tx: tokio::sync::mpsc::Sender<StrategyWorkerOutput>,
 }
 
 /// Request sent to the live submission worker.
@@ -1646,6 +1745,7 @@ impl LiveState {
             current_window: None,
             window_open_prices: std::collections::HashMap::new(),
             known_windows: std::collections::HashMap::new(),
+            latest_decision_sequence: 0,
         }
     }
 }
@@ -1741,7 +1841,9 @@ async fn run_live_runtime(
 
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
     let (strategy_output_tx, mut strategy_output_rx) =
-        tokio::sync::mpsc::unbounded_channel::<StrategyWorkerOutput>();
+        tokio::sync::mpsc::channel::<StrategyWorkerOutput>(
+            config.live_decision_output_queue_capacity.max(1),
+        );
     let worker_seed = runtime_decision_seed(&db, runtime_balance, &config, runtime_started_at_ms);
     let mut strategy_worker = StrategyWorker::start(
         config.clone(),
@@ -1818,7 +1920,7 @@ async fn run_live_runtime(
     let mut persistence_writer = LivePersistenceWriter::start(
         db_path.to_string(),
         LivePersistenceWriterConfig {
-            queue_capacity: config.feed_event_writer_queue_capacity,
+            queue_capacity: config.live_runtime_persistence_queue_capacity,
             batch_size: config.feed_event_writer_batch_size,
             flush_interval_ms: config.feed_event_writer_flush_ms,
         },
@@ -2436,7 +2538,7 @@ async fn run_live_runtime(
                     FeedMessage::FeedConnected { name, connection_id } => {
                         info!(feed = %name, "feed connected");
                         feed_health_tracker.note_connected(&name, clock.now());
-                        spawn_feed_health_event_write(db_path.to_string(), OwnedFeedHealthLogEvent {
+                        enqueue_feed_health_event(&persistence_writer, OwnedFeedHealthLogEvent {
                             timestamp_ms: clock.now(),
                             timestamp_micros: Some(now_us()),
                             source: name,
@@ -2444,7 +2546,7 @@ async fn run_live_runtime(
                             connection_id: Some(connection_id),
                             market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
                             details_json: None,
-                        });
+                        }, live_trading_monitor.as_mut());
                     }
 
                     FeedMessage::FeedDisconnected {
@@ -2455,7 +2557,7 @@ async fn run_live_runtime(
                     } => {
                         warn!(feed = %name, cause_class, "feed disconnected");
                         feed_health_tracker.note_disconnected(&name, cause_class, clock.now());
-                        spawn_feed_health_event_write(db_path.to_string(), OwnedFeedHealthLogEvent {
+                        enqueue_feed_health_event(&persistence_writer, OwnedFeedHealthLogEvent {
                             timestamp_ms: clock.now(),
                             timestamp_micros: Some(now_us()),
                             source: name,
@@ -2463,7 +2565,7 @@ async fn run_live_runtime(
                             connection_id,
                             market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
                             details_json,
-                        });
+                        }, live_trading_monitor.as_mut());
                     }
 
                     FeedMessage::ChainlinkStale {
@@ -2472,7 +2574,7 @@ async fn run_live_runtime(
                     } => {
                         warn!("chainlink price is stale");
                         state.signal_state.chainlink_price = None;
-                        spawn_feed_health_event_write(db_path.to_string(), OwnedFeedHealthLogEvent {
+                        enqueue_feed_health_event(&persistence_writer, OwnedFeedHealthLogEvent {
                             timestamp_ms: clock.now(),
                             timestamp_micros: Some(now_us()),
                             source: "chainlink".to_string(),
@@ -2480,7 +2582,7 @@ async fn run_live_runtime(
                             connection_id,
                             market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
                             details_json,
-                        });
+                        }, live_trading_monitor.as_mut());
                     }
                 }
             }
@@ -2499,7 +2601,14 @@ async fn run_live_runtime(
                             "new market window discovered"
                         );
 
-                        spawn_market_upsert(db_path.to_string(), window.clone());
+                        if !persistence_writer.try_enqueue(LivePersistenceEvent::MarketUpsert(
+                            Box::new(window.clone()),
+                        )) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "runtime persistence queue rejected market metadata",
+                            );
+                        }
 
                         state.known_windows.insert(window.market_id.clone(), window.clone());
 
@@ -2590,18 +2699,26 @@ async fn run_live_runtime(
                     replay_runtime_capture_health = %capture_health,
                     "live storage writer rollup"
                 );
-                spawn_runtime_capture_metadata_write(
-                    db_path.to_string(),
-                    config.feed_event_storage_profile,
-                    now,
-                    capture_health.to_string(),
-                    row_summary.clone(),
-                );
+                if !persistence_writer.try_enqueue(LivePersistenceEvent::RunMetadata(
+                    runtime_capture_metadata_rows(
+                        config.feed_event_storage_profile,
+                        now,
+                        capture_health.to_string(),
+                        row_summary.clone(),
+                    ),
+                )) {
+                    mark_live_submission_blocked(
+                        live_trading_monitor.as_mut(),
+                        "runtime persistence queue rejected capture metadata",
+                    );
+                }
                 let strategy_snapshot = strategy_worker.snapshot();
                 info!(
                     strategy_enqueued = strategy_snapshot.enqueued,
+                    strategy_replaced = strategy_snapshot.replaced,
                     strategy_processed = strategy_snapshot.processed,
                     strategy_dropped = strategy_snapshot.dropped,
+                    strategy_output_dropped = strategy_snapshot.output_dropped,
                     strategy_last_processed_at_ms = strategy_snapshot.last_processed_at_ms,
                     "strategy worker rollup"
                 );
@@ -2762,13 +2879,27 @@ async fn run_live_runtime(
 
             output = strategy_output_rx.recv() => {
                 if let Some(StrategyWorkerOutput::Decision(output)) = output {
-                    handle_strategy_decision_output(
-                        output,
-                        &persistence_writer,
-                        &strategy_worker,
-                        live_submission_queue.as_ref(),
-                        live_trading_monitor.as_mut(),
-                    );
+                    if stale_live_decision_output(
+                        &output,
+                        state.latest_decision_sequence,
+                        clock.now(),
+                        &config,
+                    ) {
+                        reject_stale_live_decision_output(
+                            &output,
+                            &persistence_writer,
+                            &strategy_worker,
+                            live_trading_monitor.as_mut(),
+                        );
+                    } else {
+                        handle_strategy_decision_output(
+                            output,
+                            &persistence_writer,
+                            &strategy_worker,
+                            live_submission_queue.as_ref(),
+                            live_trading_monitor.as_mut(),
+                        );
+                    }
                 }
             }
 
@@ -2794,13 +2925,27 @@ async fn run_live_runtime(
         let mut drained = false;
         while let Ok(StrategyWorkerOutput::Decision(output)) = strategy_output_rx.try_recv() {
             drained = true;
-            handle_strategy_decision_output(
-                output,
-                &persistence_writer,
-                &strategy_worker,
-                live_submission_queue.as_ref(),
-                live_trading_monitor.as_mut(),
-            );
+            if stale_live_decision_output(
+                &output,
+                state.latest_decision_sequence,
+                clock.now(),
+                &config,
+            ) {
+                reject_stale_live_decision_output(
+                    &output,
+                    &persistence_writer,
+                    &strategy_worker,
+                    live_trading_monitor.as_mut(),
+                );
+            } else {
+                handle_strategy_decision_output(
+                    output,
+                    &persistence_writer,
+                    &strategy_worker,
+                    live_submission_queue.as_ref(),
+                    live_trading_monitor.as_mut(),
+                );
+            }
         }
         if drained {
             continue;
@@ -2844,8 +2989,10 @@ async fn run_live_runtime(
     let strategy_snapshot = strategy_worker.snapshot();
     info!(
         enqueued = strategy_snapshot.enqueued,
+        replaced = strategy_snapshot.replaced,
         processed = strategy_snapshot.processed,
         dropped = strategy_snapshot.dropped,
+        output_dropped = strategy_snapshot.output_dropped,
         last_processed_at_ms = strategy_snapshot.last_processed_at_ms,
         shutdown_timed_out = strategy_snapshot.shutdown_timed_out,
         "stopping strategy worker"
@@ -3507,6 +3654,8 @@ fn enqueue_strategy_evaluation(
         return true;
     };
     let window_open_price = state.window_open_prices.get(&window.market_id).copied();
+    state.latest_decision_sequence = state.latest_decision_sequence.saturating_add(1);
+    let decision_sequence = state.latest_decision_sequence;
     let features = SignalFeatureEngine::compute(
         &mut state.signal_state,
         Some(window),
@@ -3527,6 +3676,7 @@ fn enqueue_strategy_evaluation(
         features,
     };
     strategy_worker.try_evaluate(StrategyEvaluationRequest {
+        decision_sequence,
         ctx,
         window: window.clone(),
         book_state: state.signal_state.book_state.clone(),
@@ -3610,6 +3760,82 @@ fn handle_strategy_decision_output(
             "live submission queue rejected strategy output",
         );
     }
+}
+
+/// Return whether one live decision output is too stale to submit.
+fn stale_live_decision_output(
+    output: &RuntimeDecisionOutput,
+    latest_sequence: u64,
+    now_ms: u64,
+    config: &Config,
+) -> bool {
+    if output.live_orders.is_empty() || output.decision_sequence == 0 {
+        return false;
+    }
+    if output.decision_sequence < latest_sequence {
+        return true;
+    }
+    output
+        .decision_input_at_ms
+        .saturating_add(config.max_live_decision_age_ms.max(1))
+        < now_ms
+}
+
+/// Reject one stale live output before it can reach the venue.
+fn reject_stale_live_decision_output(
+    output: &RuntimeDecisionOutput,
+    persistence_writer: &LivePersistenceWriter,
+    strategy_worker: &StrategyWorker,
+    mut live_trading_monitor: Option<&mut LiveTradingMonitor>,
+) {
+    for event in stale_decision_signal_events(output) {
+        if !persistence_writer.try_enqueue(event) {
+            mark_live_submission_blocked(
+                live_trading_monitor.as_deref_mut(),
+                "runtime persistence queue rejected stale-decision evidence",
+            );
+            return;
+        }
+    }
+    rollback_live_orders_after_runtime_rejection(
+        strategy_worker,
+        &output.live_orders,
+        output.now_ms,
+        "stale live decision output",
+        live_trading_monitor,
+    );
+}
+
+/// Build rejected signal evidence for live orders discarded as stale.
+fn stale_decision_signal_events(output: &RuntimeDecisionOutput) -> Vec<LivePersistenceEvent> {
+    let signal_ids = output
+        .live_orders
+        .iter()
+        .map(|order| order.signal_id)
+        .collect::<std::collections::HashSet<_>>();
+    output
+        .persistence_events
+        .iter()
+        .filter_map(|event| match event {
+            LivePersistenceEvent::Signal {
+                signal_id,
+                signal,
+                market_id,
+                execution_fidelity,
+                ..
+            } if signal_ids.contains(signal_id) => Some(LivePersistenceEvent::Signal {
+                signal_id: *signal_id,
+                signal: signal.clone(),
+                market_id: market_id.clone(),
+                execution_fidelity: *execution_fidelity,
+                order_submitted_at_ms: None,
+                expected_arrival_at_ms: None,
+                decision_status: "rejected".to_string(),
+                rejection_reason: Some("stale_decision_output".to_string()),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Return whether one event is critical evidence for a live order in this output.
@@ -4133,23 +4359,6 @@ fn raw_amount(value: &serde_json::Value) -> Option<f64> {
         serde_json::Value::String(text) => text.parse::<f64>().ok(),
         _ => None,
     }
-}
-
-/// Persist one discovered market outside the feed loop.
-fn spawn_market_upsert(db_path: String, window: MarketWindow) {
-    tokio::spawn(async move {
-        if let Err(error) = persist_market_upsert(&db_path, &window) {
-            error!(market_id = %window.market_id, "failed to upsert market: {error}");
-        }
-    });
-}
-
-/// Persist one discovered market row.
-fn persist_market_upsert(db_path: &str, window: &MarketWindow) -> anyhow::Result<()> {
-    let db = Database::new(db_path)?;
-    db.upsert_market(window)?;
-    db.close();
-    Ok(())
 }
 
 /// Activate a market window: set it as current, resubscribe the `CLOB` feed to
@@ -4677,32 +4886,28 @@ fn log_live_clob_event(
 }
 
 /// Persist one feed lifecycle event outside the feed loop.
-fn spawn_feed_health_event_write(db_path: String, event: OwnedFeedHealthLogEvent) {
-    tokio::spawn(async move {
-        if let Err(error) = persist_owned_feed_health_event(&db_path, &event) {
-            warn!(%error, "failed to persist feed-health event");
-        }
-    });
-}
-
-/// Persist one owned feed lifecycle event.
-fn persist_owned_feed_health_event(
-    db_path: &str,
-    event: &OwnedFeedHealthLogEvent,
-) -> anyhow::Result<()> {
-    let db = Database::new(db_path)?;
-    db.log_feed_health_event(&FeedHealthEvent {
-        id: None,
-        timestamp_ms: event.timestamp_ms,
-        timestamp_us: event.timestamp_micros,
-        source: event.source.clone(),
-        event_type: event.event_type.clone(),
-        connection_id: event.connection_id.clone(),
-        market_id: event.market_id.clone(),
-        details_json: event.details_json.clone(),
-    })?;
-    db.close();
-    Ok(())
+fn enqueue_feed_health_event(
+    persistence_writer: &LivePersistenceWriter,
+    event: OwnedFeedHealthLogEvent,
+    monitor: Option<&mut LiveTradingMonitor>,
+) {
+    if !persistence_writer.try_enqueue(LivePersistenceEvent::FeedHealth(Box::new(
+        FeedHealthEvent {
+            id: None,
+            timestamp_ms: event.timestamp_ms,
+            timestamp_us: event.timestamp_micros,
+            source: event.source,
+            event_type: event.event_type,
+            connection_id: event.connection_id,
+            market_id: event.market_id,
+            details_json: event.details_json,
+        },
+    ))) {
+        mark_live_submission_blocked(
+            monitor,
+            "runtime persistence queue rejected feed-health event",
+        );
+    }
 }
 
 /// Emit concise operator-facing feed-health rollups for recent disconnect activity.
@@ -4754,91 +4959,87 @@ fn persist_runtime_capture_metadata(
     capture_health: &str,
     row_summary: &str,
 ) -> anyhow::Result<()> {
-    let missing = missing_required_feed_classes(row_summary).join(", ");
-    db.set_run_metadata(
-        "feed_event_storage_profile",
-        profile.as_str(),
+    for (key, value, recorded_at_ms) in runtime_capture_metadata_rows(
+        profile,
         recorded_at_ms,
-    )?;
-    db.set_run_metadata(
-        "configured_replay_quality_class",
-        configured_replay_quality_class(profile),
-        recorded_at_ms,
-    )?;
-    db.set_run_metadata("runtime_capture_health", capture_health, recorded_at_ms)?;
-    db.set_run_metadata(
-        "runtime_observed_replay_quality_class",
-        capture_health,
-        recorded_at_ms,
-    )?;
-    db.set_run_metadata(
-        "runtime_capture_recorded_at_ms",
-        &recorded_at_ms.to_string(),
-        recorded_at_ms,
-    )?;
-    db.set_run_metadata("runtime_capture_rows_window", row_summary, recorded_at_ms)?;
-    db.set_run_metadata(
-        "replay_quality_validated_at_ms",
-        "not_validated_in_runtime",
-        recorded_at_ms,
-    )?;
-    db.set_run_metadata(
-        "replay_quality_validation_interval",
-        "not_validated_in_runtime",
-        recorded_at_ms,
-    )?;
-    db.set_run_metadata(
-        "replay_quality_missing_required_classes",
-        &missing,
-        recorded_at_ms,
-    )?;
-    db.set_run_metadata(
-        "replay_quality_observed_feed_classes",
-        row_summary,
-        recorded_at_ms,
-    )?;
-    db.set_run_metadata(
-        "required_feed_event_classes",
-        required_feed_event_classes(),
-        recorded_at_ms,
-    )?;
+        capture_health.to_string(),
+        row_summary.to_string(),
+    ) {
+        db.set_run_metadata(&key, &value, recorded_at_ms)?;
+    }
     Ok(())
 }
 
-/// Persist runtime capture metadata outside the feed loop.
-fn spawn_runtime_capture_metadata_write(
-    db_path: String,
+/// Build cheap runtime capture metadata rows without scanning historical feed rows.
+fn runtime_capture_metadata_rows(
     profile: FeedEventStorageProfile,
     recorded_at_ms: u64,
     capture_health: String,
     row_summary: String,
-) {
-    tokio::spawn(async move {
-        if let Err(error) = persist_runtime_capture_metadata_worker(
-            &db_path,
-            profile,
+) -> Vec<(String, String, u64)> {
+    let missing = missing_required_feed_classes(&row_summary).join(", ");
+    vec![
+        (
+            "feed_event_storage_profile".to_string(),
+            profile.as_str().to_string(),
             recorded_at_ms,
-            &capture_health,
-            &row_summary,
-        ) {
-            warn!(%error, "failed to persist runtime capture metadata");
-        }
-    });
-}
-
-/// Persist one runtime capture metadata snapshot.
-fn persist_runtime_capture_metadata_worker(
-    db_path: &str,
-    profile: FeedEventStorageProfile,
-    recorded_at_ms: u64,
-    capture_health: &str,
-    row_summary: &str,
-) -> anyhow::Result<()> {
-    let db = Database::new(db_path)?;
-    db.set_run_metadata("feed_event_classes", row_summary, recorded_at_ms)?;
-    persist_runtime_capture_metadata(&db, profile, recorded_at_ms, capture_health, row_summary)?;
-    db.close();
-    Ok(())
+        ),
+        (
+            "configured_replay_quality_class".to_string(),
+            configured_replay_quality_class(profile).to_string(),
+            recorded_at_ms,
+        ),
+        (
+            "runtime_capture_health".to_string(),
+            capture_health.clone(),
+            recorded_at_ms,
+        ),
+        (
+            "runtime_observed_replay_quality_class".to_string(),
+            capture_health,
+            recorded_at_ms,
+        ),
+        (
+            "runtime_capture_recorded_at_ms".to_string(),
+            recorded_at_ms.to_string(),
+            recorded_at_ms,
+        ),
+        (
+            "runtime_capture_rows_window".to_string(),
+            row_summary.clone(),
+            recorded_at_ms,
+        ),
+        (
+            "feed_event_classes".to_string(),
+            row_summary.clone(),
+            recorded_at_ms,
+        ),
+        (
+            "replay_quality_validated_at_ms".to_string(),
+            "not_validated_in_runtime".to_string(),
+            recorded_at_ms,
+        ),
+        (
+            "replay_quality_validation_interval".to_string(),
+            "not_validated_in_runtime".to_string(),
+            recorded_at_ms,
+        ),
+        (
+            "replay_quality_missing_required_classes".to_string(),
+            missing,
+            recorded_at_ms,
+        ),
+        (
+            "replay_quality_observed_feed_classes".to_string(),
+            row_summary,
+            recorded_at_ms,
+        ),
+        (
+            "required_feed_event_classes".to_string(),
+            required_feed_event_classes().to_string(),
+            recorded_at_ms,
+        ),
+    ]
 }
 
 /// Classify current writer health from incremental counters.
@@ -5922,6 +6123,96 @@ mod tests {
         assert!(ensure_state_is("unknown_order", "disarmed", "arm").is_err());
     }
 
+    /// Verifies older decision outputs cannot submit live orders after newer feed state arrives.
+    #[test]
+    fn stale_live_decision_rejects_older_sequence() {
+        let config = Config::default();
+        let output = RuntimeDecisionOutput {
+            decision_sequence: 3,
+            decision_input_at_ms: 10_000,
+            persistence_events: vec![test_critical_signal_event(-1)],
+            live_orders: vec![test_queued_order()],
+            processed_outcomes: Vec::new(),
+            log_events: Vec::new(),
+            submission_window: Some(test_market_window()),
+            now_ms: 10_000,
+        };
+
+        assert!(stale_live_decision_output(&output, 4, 10_001, &config));
+    }
+
+    /// Verifies live decisions past the configured age budget are blocked.
+    #[test]
+    fn stale_live_decision_rejects_old_input_timestamp() {
+        let mut config = Config::default();
+        config.max_live_decision_age_ms = 50;
+        let output = RuntimeDecisionOutput {
+            decision_sequence: 4,
+            decision_input_at_ms: 10_000,
+            persistence_events: vec![test_critical_signal_event(-1)],
+            live_orders: vec![test_queued_order()],
+            processed_outcomes: Vec::new(),
+            log_events: Vec::new(),
+            submission_window: Some(test_market_window()),
+            now_ms: 10_000,
+        };
+
+        assert!(stale_live_decision_output(&output, 4, 10_051, &config));
+    }
+
+    /// Verifies current, fresh live decisions are allowed through the runtime gate.
+    #[test]
+    fn fresh_live_decision_allows_current_sequence() {
+        let mut config = Config::default();
+        config.max_live_decision_age_ms = 50;
+        let output = RuntimeDecisionOutput {
+            decision_sequence: 4,
+            decision_input_at_ms: 10_000,
+            persistence_events: vec![test_critical_signal_event(-1)],
+            live_orders: vec![test_queued_order()],
+            processed_outcomes: Vec::new(),
+            log_events: Vec::new(),
+            submission_window: Some(test_market_window()),
+            now_ms: 10_000,
+        };
+
+        assert!(!stale_live_decision_output(&output, 4, 10_050, &config));
+    }
+
+    /// Verifies latest-state decision storage replaces stale feed snapshots.
+    #[test]
+    fn latest_strategy_evaluation_slot_keeps_newest_request() {
+        let latest = LatestStrategyEvaluation::default();
+        {
+            let mut slot = latest.request.lock().unwrap();
+            assert!(slot.replace(Box::new(test_strategy_request(1))).is_none());
+            assert!(slot.replace(Box::new(test_strategy_request(2))).is_some());
+        }
+
+        let request = latest.request.lock().unwrap().take().unwrap();
+        assert_eq!(request.decision_sequence, 2);
+    }
+
+    /// Verifies runtime capture metadata rows are bounded payloads for the persistence writer.
+    #[test]
+    fn runtime_capture_metadata_rows_use_recent_counter_payload() {
+        let rows = runtime_capture_metadata_rows(
+            FeedEventStorageProfile::ReplayGrade,
+            10_000,
+            "observing".to_string(),
+            "binance:aggTrade=10".to_string(),
+        );
+        let keys = rows
+            .iter()
+            .map(|(key, _, _)| key.as_str())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert!(keys.contains("runtime_capture_health"));
+        assert!(keys.contains("feed_event_classes"));
+        assert!(keys.contains("replay_quality_missing_required_classes"));
+        assert!(!keys.contains("replay_quality_class"));
+    }
+
     /// Build one passing preflight fixture for live gate tests.
     fn test_preflight_response() -> LivePreflightResponse {
         LivePreflightResponse {
@@ -5967,6 +6258,30 @@ mod tests {
             user_stream_events: Vec::new(),
             clob_trades: Vec::new(),
             details_json: None,
+        }
+    }
+
+    /// Build one strategy-evaluation request for latest-slot tests.
+    fn test_strategy_request(decision_sequence: u64) -> StrategyEvaluationRequest {
+        let now_ms = 10_000 + decision_sequence;
+        let ctx = StrategyContext {
+            binance_price: 75_000.0,
+            binance_momentum: 0.01,
+            chainlink_price: Some(75_000.0),
+            book_state: crate::types::BookState::default(),
+            window_open_price: Some(74_900.0),
+            window_time_remaining_ms: 120_000,
+            now_us: Some(now_ms * 1_000),
+            features: crate::signal_features::SignalFeatureSnapshot::default(),
+        };
+        StrategyEvaluationRequest {
+            decision_sequence,
+            book_state: ctx.book_state.clone(),
+            now_us: ctx.now_us,
+            ctx,
+            window: test_market_window(),
+            now_ms,
+            live_trading_can_submit: true,
         }
     }
 

@@ -41,6 +41,7 @@ pub(crate) struct RuntimeDecisionSeed {
 
 /// One pure strategy evaluation request.
 pub(crate) struct RuntimeDecisionRequest {
+    pub decision_sequence: u64,
     pub ctx: StrategyContext,
     pub window: MarketWindow,
     pub book_state: BookState,
@@ -52,6 +53,8 @@ pub(crate) struct RuntimeDecisionRequest {
 /// Output emitted by one pure decision pass.
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeDecisionOutput {
+    pub decision_sequence: u64,
+    pub decision_input_at_ms: u64,
     pub persistence_events: Vec<LivePersistenceEvent>,
     pub live_orders: Vec<QueuedOrderIntent>,
     pub processed_outcomes: Vec<ProcessedOrderOutcome>,
@@ -168,6 +171,14 @@ struct RuntimeMissContext {
     freshness_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+struct DecisionStateEvidence {
+    bankroll: serde_json::Value,
+    exposure: serde_json::Value,
+    pending_order_count: usize,
+    config_fingerprint: String,
+}
+
 struct DecisionClock {
     now_ms: u64,
 }
@@ -233,6 +244,7 @@ impl RuntimeDecisionEngine {
                 log_events,
                 Some(request.window),
                 request.now_ms,
+                request.decision_sequence,
             );
         }
         if self.config.execution_mode == ExecutionMode::LiveTrading
@@ -245,6 +257,7 @@ impl RuntimeDecisionEngine {
                 log_events,
                 Some(request.window),
                 request.now_ms,
+                request.decision_sequence,
             );
         }
 
@@ -297,6 +310,7 @@ impl RuntimeDecisionEngine {
             log_events,
             Some(request.window),
             request.now_ms,
+            request.decision_sequence,
         )
     }
 
@@ -326,6 +340,7 @@ impl RuntimeDecisionEngine {
             Vec::new(),
             None,
             now_ms,
+            0,
         )
     }
 
@@ -400,6 +415,7 @@ impl RuntimeDecisionEngine {
             Vec::new(),
             None,
             now_ms,
+            0,
         )
     }
 
@@ -464,12 +480,30 @@ impl RuntimeDecisionEngine {
             Vec::new(),
             None,
             now_ms,
+            0,
         )
     }
 
     /// Return current bankroll statistics.
     pub(crate) fn stats(&self) -> BankrollStats {
         self.bankroll.get_stats()
+    }
+
+    /// Build compact in-memory state evidence for one decision.
+    fn decision_state_evidence(&self, window: &MarketWindow, now_ms: u64) -> DecisionStateEvidence {
+        let stats = self.bankroll.get_stats();
+        DecisionStateEvidence {
+            bankroll: json!({
+                "starting_balance": stats.starting_balance,
+                "current_balance": stats.current_balance,
+                "high_water_mark": stats.high_water_mark,
+                "max_drawdown_pct": stats.max_drawdown_pct,
+                "total_trades": stats.total_trades,
+            }),
+            exposure: self.exposure.evidence_json(window, &self.config, now_ms),
+            pending_order_count: self.pending_orders.len(),
+            config_fingerprint: decision_config_fingerprint(&self.config, window),
+        }
     }
 
     /// Collect actionable strategy candidates for one context.
@@ -524,10 +558,12 @@ impl RuntimeDecisionEngine {
         annotate_signal(&mut signal, regime, family);
         let signal_id = self.allocate_signal_id();
         if self.trend_tracker.should_suppress(family, signal.direction) {
+            let evidence = self.decision_state_evidence(&request.window, request.now_ms);
             persistence_events.push(decision_signal_event(
                 signal_id,
                 signal.clone(),
                 request,
+                &evidence,
                 ReplayFidelity::RawEvent,
                 None,
                 None,
@@ -554,10 +590,12 @@ impl RuntimeDecisionEngine {
                     calm_duplicate_rejection_sample(&request.ctx, &signal),
                 ),
             );
+            let evidence = self.decision_state_evidence(&request.window, request.now_ms);
             persistence_events.push(decision_signal_event(
                 signal_id,
                 signal,
                 request,
+                &evidence,
                 ReplayFidelity::RawEvent,
                 None,
                 None,
@@ -645,16 +683,16 @@ impl RuntimeDecisionEngine {
         if let Some(reason) =
             self.can_queue_single(&signal, &request.window, false, 1, request.now_ms)
         {
-            persistence_events.push(decision_signal_event(
+            self.push_single_decision_event(
+                persistence_events,
                 signal_id,
                 signal.clone(),
                 request,
-                ReplayFidelity::RawEvent,
                 None,
                 None,
                 "rejected",
                 Some(reason.as_str()),
-            ));
+            );
             return rejected(vec![signal_id], reason.as_str());
         }
         let requested_price = signal_entry_ask(&signal);
@@ -672,16 +710,16 @@ impl RuntimeDecisionEngine {
             &clock,
         );
         if requested_size <= 0.0 {
-            persistence_events.push(decision_signal_event(
+            self.push_single_decision_event(
+                persistence_events,
                 signal_id,
                 signal,
                 request,
-                ReplayFidelity::RawEvent,
                 None,
                 None,
                 "rejected",
                 Some("strategy_sleeve_exhausted"),
-            ));
+            );
             return rejected(vec![signal_id], "strategy_sleeve_exhausted");
         }
         if let Some(reason) = submission_size_rejection_reason(
@@ -692,16 +730,16 @@ impl RuntimeDecisionEngine {
         ) {
             self.bankroll
                 .release_reserved_for_strategy(requested_size * limit_price, &signal.strategy);
-            persistence_events.push(decision_signal_event(
+            self.push_single_decision_event(
+                persistence_events,
                 signal_id,
                 signal,
                 request,
-                ReplayFidelity::RawEvent,
                 None,
                 None,
                 "rejected",
                 Some(reason),
-            ));
+            );
             return rejected(vec![signal_id], reason);
         }
         let arrival_ts = signal
@@ -726,20 +764,47 @@ impl RuntimeDecisionEngine {
         let queued = queued_order_intent(&order);
         self.record_submitted_order(&order);
         self.pending_orders.push_back(order);
-        persistence_events.push(decision_signal_event(
+        self.push_single_decision_event(
+            persistence_events,
             signal_id,
             signal,
             request,
-            ReplayFidelity::RawEvent,
             Some(request.now_ms),
             Some(arrival_ts),
             "submitted",
             None,
-        ));
+        );
         SubmissionOutcome::Queued {
             signal_ids: vec![signal_id],
             orders: vec![queued],
         }
+    }
+
+    /// Push one single-candidate signal persistence event with decision evidence.
+    #[allow(clippy::too_many_arguments)]
+    fn push_single_decision_event(
+        &self,
+        persistence_events: &mut Vec<LivePersistenceEvent>,
+        signal_id: i64,
+        signal: Signal,
+        request: &RuntimeDecisionRequest,
+        order_submitted_at_ms: Option<u64>,
+        expected_arrival_at_ms: Option<u64>,
+        decision_status: &str,
+        rejection_reason: Option<&str>,
+    ) {
+        let evidence = self.decision_state_evidence(&request.window, request.now_ms);
+        persistence_events.push(decision_signal_event(
+            signal_id,
+            signal,
+            request,
+            &evidence,
+            ReplayFidelity::RawEvent,
+            order_submitted_at_ms,
+            expected_arrival_at_ms,
+            decision_status,
+            rejection_reason,
+        ));
     }
 
     /// Submit one spread candidate into in-memory queues.
@@ -760,7 +825,7 @@ impl RuntimeDecisionEngine {
             };
         };
         if let Some(reason) = self.can_queue_spread(signals, &request.window, request.now_ms) {
-            Self::persist_spread_signals(
+            self.persist_spread_signals(
                 request,
                 signals,
                 signal_ids,
@@ -782,7 +847,7 @@ impl RuntimeDecisionEngine {
             fee_params.exponent,
         ) <= 0.0
         {
-            Self::persist_spread_signals(
+            self.persist_spread_signals(
                 request,
                 signals,
                 signal_ids,
@@ -805,7 +870,7 @@ impl RuntimeDecisionEngine {
             &clock,
         );
         if up_tokens <= 0.0 || down_tokens <= 0.0 {
-            Self::persist_spread_signals(
+            self.persist_spread_signals(
                 request,
                 signals,
                 signal_ids,
@@ -828,7 +893,7 @@ impl RuntimeDecisionEngine {
             let reserved = (up_tokens * up_signal.up_ask) + (down_tokens * down_signal.down_ask);
             self.bankroll
                 .release_reserved_for_strategy(reserved, &up_signal.strategy);
-            Self::persist_spread_signals(
+            self.persist_spread_signals(
                 request,
                 signals,
                 signal_ids,
@@ -867,7 +932,7 @@ impl RuntimeDecisionEngine {
         ];
         self.pending_orders.push_back(up_order);
         self.pending_orders.push_back(down_order);
-        Self::persist_spread_signals(
+        self.persist_spread_signals(
             request,
             signals,
             signal_ids,
@@ -1195,6 +1260,7 @@ impl RuntimeDecisionEngine {
     /// Persist spread signal evidence through the writer event stream.
     #[allow(clippy::too_many_arguments)]
     fn persist_spread_signals(
+        &self,
         request: &RuntimeDecisionRequest,
         signals: &[Signal],
         signal_ids: &[i64],
@@ -1204,11 +1270,13 @@ impl RuntimeDecisionEngine {
         decision_status: &str,
         rejection_reason: Option<&str>,
     ) {
+        let evidence = self.decision_state_evidence(&request.window, request.now_ms);
         for (signal, signal_id) in signals.iter().zip(signal_ids.iter().copied()) {
             persistence_events.push(decision_signal_event(
                 signal_id,
                 signal.clone(),
                 request,
+                &evidence,
                 ReplayFidelity::RawEvent,
                 order_submitted_at_ms,
                 expected_arrival_at_ms,
@@ -1272,8 +1340,11 @@ impl RuntimeDecisionEngine {
         log_events: Vec<RuntimeDecisionLogEvent>,
         submission_window: Option<MarketWindow>,
         now_ms: u64,
+        decision_sequence: u64,
     ) -> RuntimeDecisionOutput {
         RuntimeDecisionOutput {
+            decision_sequence,
+            decision_input_at_ms: now_ms,
             persistence_events,
             live_orders,
             processed_outcomes,
@@ -1306,6 +1377,32 @@ impl InMemoryExposureState {
             market_end_time,
             pending_settlement: false,
         });
+    }
+
+    /// Build compact exposure evidence for decision explainability.
+    fn evidence_json(
+        &self,
+        window: &MarketWindow,
+        config: &Config,
+        now_ms: u64,
+    ) -> serde_json::Value {
+        let open_count = self.queue_relevant_count(config, now_ms);
+        let market_count = self
+            .open
+            .iter()
+            .filter(|entry| entry.trade.market_id == window.market_id)
+            .count();
+        let pending_settlement_count = self
+            .open
+            .iter()
+            .filter(|entry| entry.pending_settlement)
+            .count();
+        json!({
+            "queue_relevant_open_count": open_count,
+            "market_open_count": market_count,
+            "pending_settlement_count": pending_settlement_count,
+            "total_open_count": self.open.len(),
+        })
     }
 
     /// Count queue-relevant open trades.
@@ -1399,6 +1496,7 @@ fn decision_signal_event(
     signal_id: i64,
     signal: Signal,
     request: &RuntimeDecisionRequest,
+    state: &DecisionStateEvidence,
     execution_fidelity: ReplayFidelity,
     order_submitted_at_ms: Option<u64>,
     expected_arrival_at_ms: Option<u64>,
@@ -1407,7 +1505,7 @@ fn decision_signal_event(
 ) -> LivePersistenceEvent {
     signal_event(
         signal_id,
-        signal_with_decision_evidence(signal, request, decision_status, rejection_reason),
+        signal_with_decision_evidence(signal, request, state, decision_status, rejection_reason),
         &request.window.market_id,
         execution_fidelity,
         order_submitted_at_ms,
@@ -1421,10 +1519,11 @@ fn decision_signal_event(
 fn signal_with_decision_evidence(
     mut signal: Signal,
     request: &RuntimeDecisionRequest,
+    state: &DecisionStateEvidence,
     status: &str,
     reason: Option<&str>,
 ) -> Signal {
-    let evidence = decision_evidence_json(&signal, request, status, reason);
+    let evidence = decision_evidence_json(&signal, request, state, status, reason);
     if let Some(metadata) = signal.metadata.as_object_mut() {
         metadata.insert("decisionEvidence".to_string(), evidence);
     } else {
@@ -1721,6 +1820,7 @@ fn price_is_tick_aligned(price: f64, tick_size: f64) -> bool {
 fn decision_evidence_json(
     signal: &Signal,
     request: &RuntimeDecisionRequest,
+    state: &DecisionStateEvidence,
     status: &str,
     reason: Option<&str>,
 ) -> serde_json::Value {
@@ -1728,15 +1828,59 @@ fn decision_evidence_json(
         "strategy": signal.strategy,
         "side": signal.direction.to_string(),
         "market_id": request.window.market_id,
+        "decision_sequence": request.decision_sequence,
         "decision_at_ms": request.now_ms,
+        "decision_input_at_ms": request.now_ms,
+        "decision_input_at_us": request.now_us,
+        "config_fingerprint": state.config_fingerprint,
+        "market": market_decision_evidence_json(&request.window),
+        "token_id": token_id_for_signal(signal, &request.window),
         "features": request.ctx.features.to_json(),
         "book_state": {
             "up": request.ctx.book_state.up.as_ref().map(top_of_book_json),
             "down": request.ctx.book_state.down.as_ref().map(top_of_book_json),
         },
+        "bankroll": state.bankroll,
+        "exposure": state.exposure,
+        "pending_order_count": state.pending_order_count,
         "status": status,
         "reason": reason,
     })
+}
+
+/// Build compact market metadata needed to explain order legality.
+fn market_decision_evidence_json(window: &MarketWindow) -> serde_json::Value {
+    json!({
+        "condition_id": window.condition_id,
+        "up_token_id": window.up_token_id,
+        "down_token_id": window.down_token_id,
+        "order_min_size": window.order_min_size,
+        "order_price_min_tick_size": window.order_price_min_tick_size,
+        "fee_profile": window.fee_profile,
+        "fee_schedule_json": window.fee_schedule_json,
+        "token_fee_rates_json": window.token_fee_rates_json,
+        "accepting_orders": window.accepting_orders,
+        "accepting_orders_timestamp": window.accepting_orders_timestamp,
+    })
+}
+
+/// Build a local strategy and market fingerprint for decision evidence.
+fn decision_config_fingerprint(config: &Config, window: &MarketWindow) -> String {
+    json!({
+        "execution_mode": config.execution_mode.as_str(),
+        "enabled_strategies": config.enabled_strategy_names(),
+        "latency_arb_max_ask": config.latency_arb_max_ask,
+        "latency_arb_min_ask": config.latency_arb_min_ask,
+        "latency_arb_momentum_threshold": config.latency_arb_momentum_threshold,
+        "max_position_fraction": config.max_position_fraction,
+        "max_open_positions": config.max_open_positions,
+        "market_id": window.market_id,
+        "order_min_size": window.order_min_size,
+        "order_price_min_tick_size": window.order_price_min_tick_size,
+        "fee_profile": window.fee_profile,
+        "fee_schedule_json": window.fee_schedule_json,
+    })
+    .to_string()
 }
 
 /// Convert one top-of-book snapshot into JSON evidence.

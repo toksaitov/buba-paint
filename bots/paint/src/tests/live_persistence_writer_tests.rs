@@ -5,7 +5,9 @@ use tempfile::NamedTempFile;
 
 use super::{LivePersistenceEvent, LivePersistenceWriter, LivePersistenceWriterConfig};
 use crate::db::database::Database;
-use crate::types::{ReplayFidelity, Signal, SignalDirection, SignalTelemetry};
+use crate::types::{
+    FeedHealthEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection, SignalTelemetry,
+};
 
 /// Build one telemetry-bearing signal for persistence writer tests.
 fn sample_signal(index: i64) -> Signal {
@@ -61,6 +63,35 @@ fn signal_event(signal_id: i64) -> LivePersistenceEvent {
         expected_arrival_at_ms: Some(10_125),
         decision_status: "submitted".to_string(),
         rejection_reason: None,
+    }
+}
+
+/// Build one market window for metadata persistence tests.
+fn market_window() -> MarketWindow {
+    MarketWindow {
+        market_id: "mkt-test".to_string(),
+        question: "Will BTC go up?".to_string(),
+        up_token_id: "up-token".to_string(),
+        down_token_id: "down-token".to_string(),
+        condition_id: "condition".to_string(),
+        start_time: 1_000,
+        end_time: 301_000,
+        slug: "btc-test".to_string(),
+        outcome: None,
+        resolution_source: Some("gamma".to_string()),
+        fee_profile: Some("crypto".to_string()),
+        order_min_size: Some(1.0),
+        order_price_min_tick_size: Some(0.01),
+        maker_base_fee: None,
+        taker_base_fee: None,
+        rewards_min_size: None,
+        rewards_max_spread: None,
+        fees_enabled: Some(true),
+        fee_schedule_json: Some("{\"exponent\":1,\"rate\":0.072}".to_string()),
+        token_fee_rates_json: None,
+        accepting_orders: Some(true),
+        accepting_orders_timestamp: Some("2026-05-08T00:00:00Z".to_string()),
+        clear_book_on_start: Some(false),
     }
 }
 
@@ -138,4 +169,67 @@ fn writer_shutdown_with_full_queue_is_bounded() {
     let started = Instant::now();
     assert!(writer.shutdown_with_timeout(Duration::from_millis(500)));
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+/// Verifies runtime maintenance rows are persisted through the bounded writer.
+fn writer_persists_feed_health_metadata_and_market_upsert() {
+    let tmp_db = NamedTempFile::new().unwrap();
+    let writer = LivePersistenceWriter::start(
+        tmp_db.path().to_string_lossy().to_string(),
+        LivePersistenceWriterConfig {
+            queue_capacity: 16,
+            batch_size: 4,
+            flush_interval_ms: 10,
+        },
+    )
+    .unwrap();
+
+    assert!(writer.try_enqueue(LivePersistenceEvent::MarketUpsert(
+        Box::new(market_window())
+    )));
+    assert!(
+        writer.try_enqueue(LivePersistenceEvent::FeedHealth(Box::new(
+            FeedHealthEvent {
+                id: None,
+                timestamp_ms: 2_000,
+                timestamp_us: Some(2_000_000),
+                source: "clob".to_string(),
+                event_type: "connected".to_string(),
+                connection_id: Some("conn-1".to_string()),
+                market_id: Some("mkt-test".to_string()),
+                details_json: None,
+            },
+        )))
+    );
+    assert!(writer.try_enqueue(LivePersistenceEvent::RunMetadata(vec![(
+        "runtime_capture_health".to_string(),
+        "observing".to_string(),
+        2_000,
+    )])));
+    writer.shutdown();
+
+    let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
+    let market_count: u64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM markets WHERE market_id = 'mkt-test'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let feed_health_count: u64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM feed_health_events WHERE source = 'clob'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let metadata = db.get_run_metadata("runtime_capture_health").unwrap();
+    db.close();
+
+    assert_eq!(market_count, 1);
+    assert_eq!(feed_health_count, 1);
+    assert_eq!(metadata.as_deref(), Some("observing"));
 }

@@ -9,8 +9,8 @@ use tracing::{error, warn};
 
 use crate::db::database::Database;
 use crate::types::{
-    MarketWindow, ReplayFidelity, Signal, SimulatedTrade, StrategyRejectionSummaryRecord,
-    TradeResult,
+    FeedHealthEvent, MarketWindow, ReplayFidelity, Signal, SimulatedTrade,
+    StrategyRejectionSummaryRecord, TradeResult,
 };
 
 /// Configuration for the runtime persistence writer.
@@ -84,6 +84,7 @@ pub(crate) enum LivePersistenceEvent {
         decision_status: String,
         rejection_reason: Option<String>,
     },
+    MarketUpsert(Box<MarketWindow>),
     OpenTrade(Box<SimulatedTrade>),
     CloseTrade {
         trade_id: i64,
@@ -98,6 +99,8 @@ pub(crate) enum LivePersistenceEvent {
         outcome: String,
     },
     RejectionSummaries(Vec<StrategyRejectionSummaryRecord>),
+    FeedHealth(Box<FeedHealthEvent>),
+    RunMetadata(Vec<(String, String, u64)>),
 }
 
 /// Balance-log row emitted by the in-memory bankroll.
@@ -341,6 +344,7 @@ fn persist_event(db: &Database, event: LivePersistenceEvent) -> anyhow::Result<(
             &decision_status,
             rejection_reason.as_deref(),
         ),
+        LivePersistenceEvent::MarketUpsert(window) => db.upsert_market(&window),
         LivePersistenceEvent::OpenTrade(trade) => db.open_trade(&trade).map(|_| ()),
         LivePersistenceEvent::CloseTrade {
             trade_id,
@@ -363,6 +367,13 @@ fn persist_event(db: &Database, event: LivePersistenceEvent) -> anyhow::Result<(
         LivePersistenceEvent::RejectionSummaries(rows) => {
             for row in rows {
                 db.log_strategy_rejection_summary(&row)?;
+            }
+            Ok(())
+        }
+        LivePersistenceEvent::FeedHealth(event) => db.log_feed_health_event(&event).map(|_| ()),
+        LivePersistenceEvent::RunMetadata(rows) => {
+            for (key, value, recorded_at_ms) in rows {
+                db.set_run_metadata(&key, &value, recorded_at_ms)?;
             }
             Ok(())
         }

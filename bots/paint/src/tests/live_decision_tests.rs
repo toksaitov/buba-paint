@@ -123,6 +123,7 @@ fn decision_request(
 ) -> RuntimeDecisionRequest {
     let ctx = test_context(now_ms);
     RuntimeDecisionRequest {
+        decision_sequence: now_ms,
         book_state: ctx.book_state.clone(),
         now_us: ctx.now_us,
         ctx,
@@ -298,13 +299,22 @@ fn decision_signal_event_includes_compact_decision_evidence() {
     let mut engine = engine(ExecutionMode::Paper);
     let output = engine.evaluate(decision_request(test_window(), 10_000, true));
 
-    let evidence_present = output.persistence_events.iter().any(|event| match event {
-        LivePersistenceEvent::Signal { signal, .. } => signal
-            .metadata
-            .get("decisionEvidence")
-            .and_then(|value| value.get("book_state"))
-            .is_some(),
-        _ => false,
-    });
-    assert!(evidence_present);
+    let evidence = output
+        .persistence_events
+        .iter()
+        .find_map(|event| match event {
+            LivePersistenceEvent::Signal { signal, .. } => {
+                signal.metadata.get("decisionEvidence").cloned()
+            }
+            _ => None,
+        });
+    let evidence = evidence.expect("decision evidence should be present");
+    assert_eq!(evidence["decision_sequence"], serde_json::json!(10_000));
+    assert_eq!(evidence["market"]["order_min_size"], serde_json::json!(1.0));
+    assert_eq!(evidence["token_id"], serde_json::json!("up-token"));
+    assert!(evidence.get("config_fingerprint").is_some());
+    assert!(evidence.get("book_state").is_some());
+    assert!(evidence.get("bankroll").is_some());
+    assert!(evidence.get("exposure").is_some());
+    assert!(evidence.get("pending_order_count").is_some());
 }
