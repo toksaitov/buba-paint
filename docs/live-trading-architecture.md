@@ -34,7 +34,7 @@ The venue boundary is intentionally narrow:
 - `LiveReadonlyVenue`: authenticated account and venue state, but no order placement
 - `LiveVenue`: real order submission, fills, redemption, and reconciliation behind explicit local arming
 
-In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` can start locally, but it starts disarmed, requires audited live-control commands from the CLI or admin dashboard, and blocks on unhealthy preflight, stale account state, missing replay-grade capture, terminal halt state, or unresolved reconciliation.
+In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` can start locally, but it starts disarmed, requires audited live-control commands from the CLI or admin dashboard, atomically persists critical decision evidence plus live intents before sidecar submission, and blocks on unhealthy preflight, stale account state, missing replay-grade capture, terminal halt state, or unresolved reconciliation.
 
 ## Authenticated sidecar
 
@@ -110,6 +110,8 @@ The current collateral model is pUSD. Internal account values remain USD-denomin
 ## Strategy readiness
 
 The implementation target is live capability for all strategy families. The initial funded rollout policy is intentionally narrower: enable `latency-arb` only by runtime config and keep `calm-persistence` and `spread-capture` disabled until real-money data and residual-exposure handling justify enabling them.
+
+Control-command application is isolated from remote account/preflight/activity refresh so emergency operator commands are not delayed behind venue polling. Feed, persistence, strategy, and submission workers use bounded queues and timed shutdown; closeout should report any worker that cannot flush within the configured shutdown budget.
 
 The readiness matrix is surfaced in the sidecar preflight request and should stay aligned with actual rollout policy. Spread capture is not atomic because each leg is an independent order, so it needs explicit residual-exposure handling before it can be enabled with real money.
 

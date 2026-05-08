@@ -30,6 +30,7 @@ pub(crate) struct FeedEventWriterSnapshot {
     pub total_write_ms: u64,
     pub max_write_ms: u64,
     pub last_persisted_at_ms: u64,
+    pub shutdown_timed_out: u64,
 }
 
 /// Non-blocking handle used by the trading loop to enqueue feed rows.
@@ -56,6 +57,7 @@ struct FeedEventWriterMetrics {
     total_write_ms: AtomicU64,
     max_write_ms: AtomicU64,
     last_persisted_at_ms: AtomicU64,
+    shutdown_timed_out: AtomicU64,
 }
 
 impl FeedEventWriter {
@@ -114,12 +116,28 @@ impl FeedEventWriter {
     }
 
     /// Requests shutdown and joins the worker after flushing queued rows.
+    #[cfg(test)]
     pub(crate) fn shutdown(mut self) {
-        let _ = self.tx.send(FeedEventWriterMessage::Shutdown);
-        if let Some(join) = self.join.take()
-            && let Err(error) = join.join()
-        {
-            warn!(?error, "feed writer thread panicked during shutdown");
+        self.shutdown_with_timeout(Duration::from_secs(5));
+    }
+
+    /// Requests shutdown and waits up to the supplied timeout.
+    pub(crate) fn shutdown_with_timeout(&mut self, timeout: Duration) -> bool {
+        let _ = self.tx.try_send(FeedEventWriterMessage::Shutdown);
+        let (replacement_tx, _replacement_rx) = sync_channel(1);
+        let original_tx = std::mem::replace(&mut self.tx, replacement_tx);
+        drop(original_tx);
+        let Some(join) = self.join.take() else {
+            return true;
+        };
+        if join_with_timeout(join, timeout) {
+            true
+        } else {
+            self.metrics
+                .shutdown_timed_out
+                .fetch_add(1, Ordering::Relaxed);
+            warn!("feed writer shutdown timed out; worker left detached");
+            false
         }
     }
 }
@@ -137,8 +155,24 @@ impl FeedEventWriterMetrics {
             total_write_ms: self.total_write_ms.load(Ordering::Relaxed),
             max_write_ms: self.max_write_ms.load(Ordering::Relaxed),
             last_persisted_at_ms: self.last_persisted_at_ms.load(Ordering::Relaxed),
+            shutdown_timed_out: self.shutdown_timed_out.load(Ordering::Relaxed),
         }
     }
+}
+
+/// Join one worker thread without waiting past the configured shutdown budget.
+fn join_with_timeout(join: thread::JoinHandle<()>, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while !join.is_finished() {
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    if let Err(error) = join.join() {
+        warn!(?error, "feed writer thread panicked during shutdown");
+    }
+    true
 }
 
 /// Runs the blocking writer loop on its own OS thread.

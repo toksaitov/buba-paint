@@ -158,6 +158,35 @@ def check_direct_venue_submission_from_runtime(errors: list[str]) -> None:
             errors.append(f"main feed runtime performs direct venue mutation: {pattern}")
 
 
+def check_live_worker_boundaries(errors: list[str]) -> None:
+    """Check live workers keep evidence, control, and shutdown boundaries explicit."""
+    live = read("bots/paint/src/live.rs")
+    feed_writer = read("bots/paint/src/live_feed_writer.rs")
+    persistence_writer = read("bots/paint/src/live_persistence_writer.rs")
+    submission_start = re.search(
+        r"impl LiveSubmissionQueue \{(?P<body>.*?)/// Queue one live submission batch",
+        live,
+        re.S,
+    )
+    if submission_start and "feed_event_writer_queue_capacity" in submission_start.group("body"):
+        errors.append("live submission queue still reuses feed writer capacity")
+    if "let mut live_monitor_inflight" in live:
+        errors.append("live monitor controls and remote refresh still share one inflight slot")
+    if "critical_events: Vec<LivePersistenceEvent>" not in live:
+        errors.append("live submission requests do not carry critical decision evidence")
+    if "log_live_order_intent_with_decision_evidence" not in live:
+        errors.append("live submission worker does not persist evidence with order intent")
+    for path, text in {
+        "live.rs": live,
+        "live_feed_writer.rs": feed_writer,
+        "live_persistence_writer.rs": persistence_writer,
+    }.items():
+        if re.search(r"\.tx\.send\([^)]*Shutdown", text):
+            errors.append(f"{path} uses blocking shutdown send")
+        if ".join()" in text and "join_with_timeout" not in text:
+            errors.append(f"{path} uses unbounded worker join")
+
+
 def check_tick_logging_default(errors: list[str]) -> None:
     """Check that legacy tick logging stays opt-in for replay-grade runs."""
     text = read("bots/paint/src/config.rs")
@@ -178,6 +207,7 @@ def main() -> int:
     check_decision_worker_purity(errors)
     check_legacy_strategy_cycle_absent_from_live(errors)
     check_direct_venue_submission_from_runtime(errors)
+    check_live_worker_boundaries(errors)
     check_tick_logging_default(errors)
     if re.search(r"healthcheck:\s*\n(?:.*\n){0,8}.*quick_check", read("docker-compose.yml")):
         errors.append("docker-compose.yml healthcheck still references quick_check")

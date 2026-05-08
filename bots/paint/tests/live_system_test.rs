@@ -1,6 +1,6 @@
 mod support;
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use buba_paint::config::Config;
 use wiremock::matchers::{method, path_regex};
@@ -225,6 +225,32 @@ async fn send_clob_best_bid_ask_without_sizes(clob_mock: &MockWsServer) {
             r#"{"event_type":"best_bid_ask","asset_id":"tok-down-sys","best_bid":"0.40","best_ask":"0.50"}"#,
         )
         .await;
+}
+
+/// Helper: wait until the replay feed table contains a sized `CLOB` snapshot.
+async fn wait_for_persisted_clob_snapshot_with_sizes(db_path: &str) {
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM feed_events
+                 WHERE event_type = 'book'
+                   AND source IN ('clob_up', 'clob_down')
+                   AND ask_size > 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if count > 0 {
+            return;
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Helper: send `CLOB` books that remain too expensive for spread-capture and latency-arb.
@@ -1338,7 +1364,7 @@ async fn live_bot_best_bid_ask_without_sizes_still_opens_trade() {
     send_chainlink_price(&chainlink_mock).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     send_clob_book(&clob_mock).await;
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_persisted_clob_snapshot_with_sizes(&db_path).await;
     send_rising_binance_ticks(&binance_mock, 6).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     send_clob_best_bid_ask_without_sizes(&clob_mock).await;

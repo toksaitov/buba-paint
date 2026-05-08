@@ -1,5 +1,5 @@
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tempfile::NamedTempFile;
 
@@ -88,4 +88,25 @@ fn writer_reports_disconnected_worker_drop() {
 
     assert!(!result);
     assert!(snapshot.dropped > 0);
+}
+
+/// Verifies shutdown is bounded even when the channel is full.
+#[test]
+fn writer_shutdown_with_full_queue_is_bounded() {
+    let tmp_db = NamedTempFile::new().unwrap();
+    let mut writer = FeedEventWriter::start(
+        tmp_db.path().to_string_lossy().to_string(),
+        FeedEventWriterConfig {
+            queue_capacity: 1,
+            batch_size: 10_000,
+            flush_interval_ms: 60_000,
+        },
+    )
+    .unwrap();
+    let _ = writer.try_enqueue(sample_event(1));
+    let _ = writer.try_enqueue(sample_event(2));
+
+    let started = Instant::now();
+    assert!(writer.shutdown_with_timeout(Duration::from_millis(500)));
+    assert!(started.elapsed() < Duration::from_secs(2));
 }

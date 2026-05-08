@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use serde_json::json;
@@ -13,7 +13,7 @@ use crate::backtest::momentum::MomentumCalculator;
 use crate::bankroll::BankrollStats;
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, FeedEventStorageProfile};
-use crate::db::database::Database;
+use crate::db::database::{Database, LiveDecisionEvidence};
 use crate::executor::{
     OrderOutcomeDisposition, ProcessedOrderOutcome, QueuedOrderIntent, SubmissionOutcome,
 };
@@ -26,7 +26,8 @@ use crate::live_decision::{
 };
 use crate::live_feed_writer::{FeedEventWriter, FeedEventWriterConfig, FeedEventWriterSnapshot};
 use crate::live_persistence_writer::{
-    LivePersistenceWriter, LivePersistenceWriterConfig, LivePersistenceWriterSnapshot,
+    LivePersistenceEvent, LivePersistenceWriter, LivePersistenceWriterConfig,
+    LivePersistenceWriterSnapshot,
 };
 use crate::live_sidecar::{
     LiveAccountState, LiveActivityResponse, LiveCheckStatus, LiveOrderIntentRequest,
@@ -234,17 +235,28 @@ impl StrategyWorker {
             dropped: self.metrics.dropped.load(Ordering::Relaxed),
             processed: self.metrics.processed.load(Ordering::Relaxed),
             last_processed_at_ms: self.metrics.last_processed_at_ms.load(Ordering::Relaxed),
+            shutdown_timed_out: self.metrics.shutdown_timed_out.load(Ordering::Relaxed),
             stats,
         }
     }
 
-    /// Request shutdown and join the strategy worker.
-    fn shutdown(mut self) {
-        let _ = self.tx.send(StrategyWorkerMessage::Shutdown);
-        if let Some(join) = self.join.take()
-            && let Err(error) = join.join()
-        {
-            warn!(?error, "strategy worker thread panicked during shutdown");
+    /// Request shutdown and wait up to the supplied timeout.
+    fn shutdown_with_timeout(&mut self, timeout: Duration) -> bool {
+        let _ = self.tx.try_send(StrategyWorkerMessage::Shutdown);
+        let (replacement_tx, _replacement_rx) = sync_channel(1);
+        let original_tx = std::mem::replace(&mut self.tx, replacement_tx);
+        drop(original_tx);
+        let Some(join) = self.join.take() else {
+            return true;
+        };
+        if join_with_timeout(join, timeout, "strategy worker") {
+            true
+        } else {
+            self.metrics
+                .shutdown_timed_out
+                .fetch_add(1, Ordering::Relaxed);
+            warn!("strategy worker shutdown timed out; worker left detached");
+            false
         }
     }
 
@@ -263,6 +275,25 @@ impl StrategyWorker {
     }
 }
 
+/// Join one runtime worker thread without waiting past the closeout budget.
+fn join_with_timeout(join: thread::JoinHandle<()>, timeout: Duration, label: &str) -> bool {
+    let started = Instant::now();
+    while !join.is_finished() {
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    if let Err(error) = join.join() {
+        warn!(
+            ?error,
+            worker = label,
+            "runtime worker panicked during shutdown"
+        );
+    }
+    true
+}
+
 impl LiveSubmissionQueue {
     /// Start one asynchronous live submission worker.
     fn start(
@@ -273,7 +304,7 @@ impl LiveSubmissionQueue {
         feedback_tx: tokio::sync::mpsc::UnboundedSender<LiveSubmissionFeedback>,
     ) -> Self {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<LiveSubmissionRequest>(
-            config.feed_event_writer_queue_capacity.max(1),
+            config.live_submission_queue_capacity.max(1),
         );
         tokio::spawn(async move {
             while let Some(request) = rx.recv().await {
@@ -313,15 +344,18 @@ async fn submit_live_orders_from_worker(
     };
     let mut successful = 0_u64;
     for order in &request.orders {
-        match submit_one_live_order_from_worker(
+        let decision_event =
+            critical_signal_event_for_order(&request.critical_events, order.signal_id);
+        match submit_one_live_order_from_worker(LiveOrderWorkerSubmission {
             db_path,
             config,
             session_id,
             sidecar,
-            &request.window,
+            window: &request.window,
             order,
-            request.now_ms,
-        )
+            decision_event,
+            now_ms: request.now_ms,
+        })
         .await
         {
             LiveSubmissionOrderResult::Filled {
@@ -405,30 +439,58 @@ enum LiveSubmissionOrderResult {
     },
 }
 
+/// Worker-side immutable context for one live order submission.
+struct LiveOrderWorkerSubmission<'a> {
+    db_path: &'a str,
+    config: &'a Config,
+    session_id: i64,
+    sidecar: &'a LiveSidecarClient,
+    window: &'a MarketWindow,
+    order: &'a QueuedOrderIntent,
+    decision_event: Option<&'a LivePersistenceEvent>,
+    now_ms: u64,
+}
+
+/// Worker-side immutable context for live intent persistence.
+struct LiveIntentPersistenceInput<'a> {
+    db_path: &'a str,
+    config: &'a Config,
+    session_id: i64,
+    window: &'a MarketWindow,
+    order: &'a QueuedOrderIntent,
+    decision_event: Option<&'a LivePersistenceEvent>,
+    now_ms: u64,
+    notional: f64,
+}
+
 /// Submit one live order intent from the submission worker.
 async fn submit_one_live_order_from_worker(
-    db_path: &str,
-    config: &Config,
-    session_id: i64,
-    sidecar: &LiveSidecarClient,
-    window: &MarketWindow,
-    order: &QueuedOrderIntent,
-    now_ms: u64,
+    input: LiveOrderWorkerSubmission<'_>,
 ) -> LiveSubmissionOrderResult {
+    let order = input.order;
     let notional = order.requested_price * order.requested_size;
-    let (intent_id, reject_reason) = match persist_live_order_intent_from_worker(
-        db_path, config, session_id, window, order, now_ms, notional,
-    ) {
-        Ok(result) => result,
-        Err(error) => {
-            let reason = format!("failed to persist live order intent: {error}");
-            return LiveSubmissionOrderResult::Blocked {
-                state: "unknown_order",
-                reason,
-                release: None,
-            };
-        }
-    };
+    let (intent_id, reject_reason) =
+        match persist_live_order_intent_from_worker(&LiveIntentPersistenceInput {
+            db_path: input.db_path,
+            config: input.config,
+            session_id: input.session_id,
+            window: input.window,
+            order,
+            decision_event: input.decision_event,
+            now_ms: input.now_ms,
+            notional,
+        }) {
+            Ok(result) => result,
+            Err(error) => {
+                let reason =
+                    format!("failed to persist live decision evidence and intent: {error}");
+                return LiveSubmissionOrderResult::Blocked {
+                    state: "disarmed",
+                    reason,
+                    release: Some(order.reserved_cost),
+                };
+            }
+        };
     if let Some(reason) = reject_reason {
         info!(
             intent_id,
@@ -441,21 +503,27 @@ async fn submit_one_live_order_from_worker(
             release: order.reserved_cost,
         };
     }
-    let request = build_live_order_request_from_worker(session_id, intent_id, order, notional);
-    match sidecar.submit_order_intent(&request).await {
+    let request =
+        build_live_order_request_from_worker(input.session_id, intent_id, order, notional);
+    match input.sidecar.submit_order_intent(&request).await {
         Ok(response) => handle_live_order_response_from_worker(
-            db_path, session_id, order, intent_id, now_ms, &response,
+            input.db_path,
+            input.session_id,
+            order,
+            intent_id,
+            input.now_ms,
+            &response,
         ),
         Err(error) => {
             handle_live_order_error_from_worker(
                 LiveOrderErrorContext {
-                    db_path,
-                    session_id,
-                    sidecar,
+                    db_path: input.db_path,
+                    session_id: input.session_id,
+                    sidecar: input.sidecar,
                     order,
                     request: &request,
                     intent_id,
-                    now_ms,
+                    now_ms: input.now_ms,
                 },
                 error,
             )
@@ -466,45 +534,93 @@ async fn submit_one_live_order_from_worker(
 
 /// Persist one worker-side live order intent before sidecar submission.
 fn persist_live_order_intent_from_worker(
-    db_path: &str,
-    config: &Config,
-    session_id: i64,
-    window: &MarketWindow,
-    order: &QueuedOrderIntent,
-    now_ms: u64,
-    notional: f64,
+    input: &LiveIntentPersistenceInput<'_>,
 ) -> anyhow::Result<(i64, Option<&'static str>)> {
-    let (intent_status, reject_reason) = live_order_pre_submit_rejection(order, notional, config);
-    let db = Database::new(db_path)?;
-    let intent_id = db.log_live_order_intent(&LiveOrderIntent {
+    let order = input.order;
+    let (intent_status, reject_reason) =
+        live_order_pre_submit_rejection(order, input.notional, input.config);
+    let db = Database::new(input.db_path)?;
+    let decision_evidence =
+        live_decision_evidence_from_event(input.decision_event, order.signal_id)?;
+    let intent = LiveOrderIntent {
         id: None,
-        session_id,
+        session_id: input.session_id,
         signal_id: Some(order.signal_id),
         market_id: order.market_id.clone(),
         strategy: order.strategy.clone(),
         side: order.side.to_string(),
         order_type: "FOK".to_string(),
         status: intent_status.to_string(),
-        created_at_ms: now_ms,
+        created_at_ms: input.now_ms,
         requested_price: Some(order.requested_price),
         requested_size: Some(order.requested_size),
         limit_price: Some(order.limit_price),
-        fee_schedule_json: window.fee_schedule_json.clone(),
-        token_fee_rates_json: window.token_fee_rates_json.clone(),
+        fee_schedule_json: input.window.fee_schedule_json.clone(),
+        token_fee_rates_json: input.window.token_fee_rates_json.clone(),
         execution_group_id: order.execution_group_id.clone(),
         details_json: Some(
             json!({
                 "signal_timestamp": order.signal_timestamp,
                 "arrival_ts": order.arrival_ts,
                 "execution_fidelity": order.execution_fidelity.to_string(),
-                "amount_usd": notional,
+                "amount_usd": input.notional,
                 "reject_reason": reject_reason,
             })
             .to_string(),
         ),
-    })?;
+    };
+    let intent_id = db.log_live_order_intent_with_decision_evidence(&decision_evidence, &intent)?;
     db.close();
     Ok((intent_id, reject_reason))
+}
+
+/// Return the critical signal evidence for one live order signal id.
+fn critical_signal_event_for_order(
+    events: &[LivePersistenceEvent],
+    signal_id: i64,
+) -> Option<&LivePersistenceEvent> {
+    events.iter().find(|event| {
+        matches!(
+            event,
+            LivePersistenceEvent::Signal {
+                signal_id: event_signal_id,
+                ..
+            } if *event_signal_id == signal_id
+        )
+    })
+}
+
+/// Convert a live persistence signal event into a DB-layer evidence view.
+fn live_decision_evidence_from_event(
+    event: Option<&LivePersistenceEvent>,
+    expected_signal_id: i64,
+) -> anyhow::Result<LiveDecisionEvidence<'_>> {
+    let Some(LivePersistenceEvent::Signal {
+        signal_id,
+        signal,
+        market_id,
+        execution_fidelity,
+        order_submitted_at_ms,
+        expected_arrival_at_ms,
+        decision_status,
+        rejection_reason,
+    }) = event
+    else {
+        bail!("missing critical decision evidence for signal_id={expected_signal_id}");
+    };
+    if *signal_id != expected_signal_id {
+        bail!("critical decision evidence signal id mismatch for signal_id={expected_signal_id}");
+    }
+    Ok(LiveDecisionEvidence {
+        signal_id: *signal_id,
+        signal: signal.as_ref(),
+        market_id,
+        execution_fidelity: *execution_fidelity,
+        order_submitted_at_ms: *order_submitted_at_ms,
+        expected_arrival_at_ms: *expected_arrival_at_ms,
+        decision_status,
+        rejection_reason: rejection_reason.as_deref(),
+    })
 }
 
 /// Build one worker-side sidecar order request.
@@ -1179,6 +1295,7 @@ struct StrategyWorkerSnapshot {
     dropped: u64,
     processed: u64,
     last_processed_at_ms: u64,
+    shutdown_timed_out: u64,
     stats: BankrollStats,
 }
 
@@ -1197,6 +1314,7 @@ struct StrategyWorkerMetrics {
     dropped: AtomicU64,
     processed: AtomicU64,
     last_processed_at_ms: AtomicU64,
+    shutdown_timed_out: AtomicU64,
 }
 
 /// Runtime context owned by the pure strategy worker thread.
@@ -1214,6 +1332,7 @@ struct StrategyWorkerRuntime {
 struct LiveSubmissionRequest {
     window: MarketWindow,
     orders: Vec<QueuedOrderIntent>,
+    critical_events: Vec<LivePersistenceEvent>,
     now_ms: u64,
 }
 
@@ -1624,7 +1743,7 @@ async fn run_live_runtime(
     let (strategy_output_tx, mut strategy_output_rx) =
         tokio::sync::mpsc::unbounded_channel::<StrategyWorkerOutput>();
     let worker_seed = runtime_decision_seed(&db, runtime_balance, &config, runtime_started_at_ms);
-    let strategy_worker = StrategyWorker::start(
+    let mut strategy_worker = StrategyWorker::start(
         config.clone(),
         build_strategies(&config),
         worker_seed,
@@ -1688,7 +1807,7 @@ async fn run_live_runtime(
 
     let mut state = LiveState::new();
     let mut storage_state = FeedEventStorageState::new(config.feed_event_storage_profile);
-    let feed_writer = FeedEventWriter::start(
+    let mut feed_writer = FeedEventWriter::start(
         db_path.to_string(),
         FeedEventWriterConfig {
             queue_capacity: config.feed_event_writer_queue_capacity,
@@ -1696,7 +1815,7 @@ async fn run_live_runtime(
             flush_interval_ms: config.feed_event_writer_flush_ms,
         },
     )?;
-    let persistence_writer = LivePersistenceWriter::start(
+    let mut persistence_writer = LivePersistenceWriter::start(
         db_path.to_string(),
         LivePersistenceWriterConfig {
             queue_capacity: config.feed_event_writer_queue_capacity,
@@ -1713,7 +1832,8 @@ async fn run_live_runtime(
     let mut readonly_refresh_inflight = false;
     let (live_monitor_tx, mut live_monitor_rx) =
         tokio::sync::mpsc::unbounded_channel::<LiveMonitorWorkerOutput>();
-    let mut live_monitor_inflight: Option<LiveMonitorWorkerKind> = None;
+    let mut live_control_inflight = false;
+    let mut live_remote_refresh_inflight = false;
 
     let (activate_tx, mut activate_rx) = tokio::sync::mpsc::channel::<MarketWindow>(32);
     let mut storage_report_timer = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -2593,7 +2713,7 @@ async fn run_live_runtime(
                     timer.tick().await;
                 }
             }, if live_trading_monitor.is_some() => {
-                if live_monitor_inflight.is_none()
+                if !live_control_inflight
                     && let Some(monitor) = live_trading_monitor.as_ref()
                 {
                     spawn_live_monitor_worker(
@@ -2603,7 +2723,7 @@ async fn run_live_runtime(
                         config.clone(),
                         live_monitor_tx.clone(),
                     );
-                    live_monitor_inflight = Some(LiveMonitorWorkerKind::Controls);
+                    live_control_inflight = true;
                 }
             }
 
@@ -2612,7 +2732,7 @@ async fn run_live_runtime(
                     timer.tick().await;
                 }
             }, if live_trading_monitor.is_some() => {
-                if live_monitor_inflight.is_none()
+                if !live_remote_refresh_inflight
                     && let Some(monitor) = live_trading_monitor.as_ref()
                 {
                     spawn_live_monitor_worker(
@@ -2622,13 +2742,18 @@ async fn run_live_runtime(
                         config.clone(),
                         live_monitor_tx.clone(),
                     );
-                    live_monitor_inflight = Some(LiveMonitorWorkerKind::RemoteRefresh);
+                    live_remote_refresh_inflight = true;
                 }
             }
 
             live_monitor_output = live_monitor_rx.recv() => {
                 if let Some(output) = live_monitor_output {
-                    live_monitor_inflight = None;
+                    match output.kind {
+                        LiveMonitorWorkerKind::Controls => live_control_inflight = false,
+                        LiveMonitorWorkerKind::RemoteRefresh => {
+                            live_remote_refresh_inflight = false;
+                        }
+                    }
                     if let Some(monitor) = live_trading_monitor.as_mut() {
                         apply_live_monitor_worker_output(monitor, output);
                     }
@@ -2716,9 +2841,19 @@ async fn run_live_runtime(
         "stopping feed writer"
     );
     log_persistence_writer_snapshot(&persistence_snapshot);
-    strategy_worker.shutdown();
-    persistence_writer.shutdown();
-    feed_writer.shutdown();
+    let strategy_snapshot = strategy_worker.snapshot();
+    info!(
+        enqueued = strategy_snapshot.enqueued,
+        processed = strategy_snapshot.processed,
+        dropped = strategy_snapshot.dropped,
+        last_processed_at_ms = strategy_snapshot.last_processed_at_ms,
+        shutdown_timed_out = strategy_snapshot.shutdown_timed_out,
+        "stopping strategy worker"
+    );
+    let worker_shutdown_timeout = Duration::from_millis(config.worker_shutdown_timeout_ms.max(1));
+    strategy_worker.shutdown_with_timeout(worker_shutdown_timeout);
+    persistence_writer.shutdown_with_timeout(worker_shutdown_timeout);
+    feed_writer.shutdown_with_timeout(worker_shutdown_timeout);
 
     db.close();
     info!("database closed, goodbye");
@@ -3411,8 +3546,18 @@ fn handle_strategy_decision_output(
 ) {
     log_processed_order_outcomes(output.processed_outcomes);
     log_strategy_worker_events(output.log_events);
+    let critical_signal_ids = output
+        .live_orders
+        .iter()
+        .map(|order| order.signal_id)
+        .collect::<std::collections::HashSet<_>>();
+    let mut critical_events = Vec::new();
     let mut critical_persistence_failed = false;
     for event in output.persistence_events {
+        if live_order_critical_signal_event(&event, &critical_signal_ids) {
+            critical_events.push(event);
+            continue;
+        }
         if !persistence_writer.try_enqueue(event) {
             critical_persistence_failed = true;
             mark_live_submission_blocked(
@@ -3432,11 +3577,24 @@ fn handle_strategy_decision_output(
         return;
     }
     if !output.live_orders.is_empty()
+        && !critical_live_evidence_is_complete(&critical_events, &critical_signal_ids)
+    {
+        rollback_live_orders_after_runtime_rejection(
+            strategy_worker,
+            &output.live_orders,
+            output.now_ms,
+            "missing critical live decision evidence",
+            live_trading_monitor,
+        );
+        return;
+    }
+    if !output.live_orders.is_empty()
         && let Some(queue) = live_submission_queue
         && let Some(window) = output.submission_window
         && !queue.try_submit(LiveSubmissionRequest {
             window,
             orders: output.live_orders.clone(),
+            critical_events,
             now_ms: output.now_ms,
         })
     {
@@ -3452,6 +3610,34 @@ fn handle_strategy_decision_output(
             "live submission queue rejected strategy output",
         );
     }
+}
+
+/// Return whether one event is critical evidence for a live order in this output.
+fn live_order_critical_signal_event(
+    event: &LivePersistenceEvent,
+    signal_ids: &std::collections::HashSet<i64>,
+) -> bool {
+    matches!(
+        event,
+        LivePersistenceEvent::Signal { signal_id, .. } if signal_ids.contains(signal_id)
+    )
+}
+
+/// Return whether every live order signal has exactly one critical evidence row.
+fn critical_live_evidence_is_complete(
+    events: &[LivePersistenceEvent],
+    signal_ids: &std::collections::HashSet<i64>,
+) -> bool {
+    let event_ids = events
+        .iter()
+        .filter_map(|event| match event {
+            LivePersistenceEvent::Signal { signal_id, .. } => Some(*signal_id),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    signal_ids
+        .iter()
+        .all(|signal_id| event_ids.contains(signal_id))
 }
 
 /// Release in-memory pending live orders when runtime queues reject them.
@@ -3594,8 +3780,9 @@ fn apply_live_monitor_worker_output(
     monitor: &mut LiveTradingMonitor,
     output: LiveMonitorWorkerOutput,
 ) {
+    let kind = output.kind;
     match output.result {
-        Ok(updated) => merge_live_monitor_state(monitor, updated),
+        Ok(updated) => merge_live_monitor_state(monitor, updated, kind),
         Err(error) => {
             if matches!(monitor.state.as_str(), "armed" | "stop_after_flat") {
                 monitor.blocked_reason = Some(format!("{:?} worker failed: {error}", output.kind));
@@ -3606,7 +3793,15 @@ fn apply_live_monitor_worker_output(
 }
 
 /// Merge a worker-owned monitor snapshot back into the runtime snapshot.
-fn merge_live_monitor_state(target: &mut LiveTradingMonitor, updated: LiveTradingMonitor) {
+fn merge_live_monitor_state(
+    target: &mut LiveTradingMonitor,
+    updated: LiveTradingMonitor,
+    kind: LiveMonitorWorkerKind,
+) {
+    if kind == LiveMonitorWorkerKind::RemoteRefresh {
+        merge_live_remote_refresh_state(target, updated);
+        return;
+    }
     let target_terminal = matches!(target.state.as_str(), "halted" | "unknown_order");
     let updated_terminal = matches!(updated.state.as_str(), "halted" | "unknown_order");
     if target_terminal && !updated_terminal {
@@ -3618,6 +3813,24 @@ fn merge_live_monitor_state(target: &mut LiveTradingMonitor, updated: LiveTradin
         return;
     }
     *target = updated;
+}
+
+/// Merge remote health/account data without overwriting newer control state.
+fn merge_live_remote_refresh_state(target: &mut LiveTradingMonitor, updated: LiveTradingMonitor) {
+    let target_terminal = matches!(target.state.as_str(), "halted" | "unknown_order");
+    let updated_terminal = matches!(updated.state.as_str(), "halted" | "unknown_order");
+    target.preflight = updated.preflight;
+    target.account = updated.account;
+    target.activity = updated.activity;
+    target.risk = updated.risk;
+    target.degradation = updated.degradation;
+    if updated_terminal || !target_terminal {
+        target.blocked_reason = updated.blocked_reason;
+    }
+    if updated_terminal {
+        target.state = updated.state;
+        target.finished = updated.finished;
+    }
 }
 
 /// Bootstrap a disarmed live-trading runtime session.
@@ -5217,6 +5430,7 @@ mod tests {
             total_write_ms: 1,
             max_write_ms: 1,
             last_persisted_at_ms: 2_000,
+            shutdown_timed_out: 0,
         };
         assert_eq!(
             runtime_capture_health(&snapshot, "binance:aggTrade=1", 2_100, 5_000),
@@ -5417,16 +5631,19 @@ mod tests {
             .unwrap();
         db.close();
         let order = test_queued_order();
-        let (intent_id, reject_reason) = persist_live_order_intent_from_worker(
-            db_path,
-            &Config::default(),
-            session_id,
-            &test_market_window(),
-            &order,
-            2_000,
-            order.requested_price * order.requested_size,
-        )
-        .unwrap();
+        let evidence = test_critical_signal_event(order.signal_id);
+        let (intent_id, reject_reason) =
+            persist_live_order_intent_from_worker(&LiveIntentPersistenceInput {
+                db_path,
+                config: &Config::default(),
+                session_id,
+                window: &test_market_window(),
+                order: &order,
+                decision_event: Some(&evidence),
+                now_ms: 2_000,
+                notional: order.requested_price * order.requested_size,
+            })
+            .unwrap();
         assert_eq!(reject_reason, None);
         let response = LiveOrderIntentResponse {
             ok: true,
@@ -5449,6 +5666,135 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Verifies critical evidence and live intent are durable before sidecar submission.
+    #[test]
+    fn live_intent_persistence_writes_critical_decision_evidence() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let session_id = db
+            .insert_live_session(&LiveSession {
+                id: None,
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                status: "armed".to_string(),
+                execution_mode: "live_trading".to_string(),
+                wallet_address: None,
+                proxy_wallet: None,
+                enabled_strategies_json: "[]".to_string(),
+                config_fingerprint: "{}".to_string(),
+                cash_cap_usd: 100.0,
+                details_json: Some("{}".to_string()),
+            })
+            .unwrap();
+        db.close();
+        let order = test_queued_order();
+        let evidence = test_critical_signal_event(order.signal_id);
+        let (intent_id, reject_reason) =
+            persist_live_order_intent_from_worker(&LiveIntentPersistenceInput {
+                db_path,
+                config: &Config::default(),
+                session_id,
+                window: &test_market_window(),
+                order: &order,
+                decision_event: Some(&evidence),
+                now_ms: 2_000,
+                notional: order.requested_price * order.requested_size,
+            })
+            .unwrap();
+
+        assert!(intent_id > 0);
+        assert_eq!(reject_reason, None);
+        let db = Database::new(db_path).unwrap();
+        let signal_count: u64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM signals WHERE id = -1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let intent_count: u64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM live_order_intents WHERE signal_id = -1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        db.close();
+        assert_eq!(signal_count, 1);
+        assert_eq!(intent_count, 1);
+    }
+
+    /// Verifies a live order is blocked before any venue call when evidence is absent.
+    #[tokio::test]
+    async fn live_submission_missing_critical_evidence_blocks_before_sidecar() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let session_id = db
+            .insert_live_session(&LiveSession {
+                id: None,
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                status: "armed".to_string(),
+                execution_mode: "live_trading".to_string(),
+                wallet_address: None,
+                proxy_wallet: None,
+                enabled_strategies_json: "[]".to_string(),
+                config_fingerprint: "{}".to_string(),
+                cash_cap_usd: 100.0,
+                details_json: Some("{}".to_string()),
+            })
+            .unwrap();
+        db.close();
+        let sidecar = LiveSidecarClient::new("http://127.0.0.1:9");
+        let window = test_market_window();
+        let order = test_queued_order();
+        let result = submit_one_live_order_from_worker(LiveOrderWorkerSubmission {
+            db_path,
+            config: &Config::default(),
+            session_id,
+            sidecar: &sidecar,
+            window: &window,
+            order: &order,
+            decision_event: None,
+            now_ms: 2_000,
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            LiveSubmissionOrderResult::Blocked {
+                state: "disarmed",
+                ..
+            }
+        ));
+        let db = Database::new(db_path).unwrap();
+        let intent_count: u64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM live_order_intents", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        db.close();
+        assert_eq!(intent_count, 0);
+    }
+
+    /// Verifies remote refresh cannot overwrite a newer operator control state.
+    #[test]
+    fn remote_refresh_merge_preserves_control_state() {
+        let mut target = test_live_monitor("disarmed");
+        let mut updated = test_live_monitor("armed");
+        updated.blocked_reason = Some("remote gate".to_string());
+        updated.account = Some(test_account_state());
+
+        merge_live_monitor_state(&mut target, updated, LiveMonitorWorkerKind::RemoteRefresh);
+
+        assert_eq!(target.state, "disarmed");
+        assert_eq!(target.blocked_reason.as_deref(), Some("remote gate"));
+        assert!(target.account.is_some());
     }
 
     /// Verifies that a queued preflight command refreshes sidecar state without arming.
@@ -5690,6 +6036,36 @@ mod tests {
             expected_edge: Some(0.05),
             metadata: json!({}),
             telemetry: None,
+        }
+    }
+
+    /// Build critical decision evidence for one live order test signal.
+    fn test_critical_signal_event(signal_id: i64) -> LivePersistenceEvent {
+        LivePersistenceEvent::Signal {
+            signal_id,
+            signal: Box::new(test_signal()),
+            market_id: "mkt-test".to_string(),
+            execution_fidelity: ReplayFidelity::RawEvent,
+            order_submitted_at_ms: Some(2_000),
+            expected_arrival_at_ms: Some(2_250),
+            decision_status: "submitted".to_string(),
+            rejection_reason: None,
+        }
+    }
+
+    /// Build a compact live monitor for merge tests.
+    fn test_live_monitor(state: &str) -> LiveTradingMonitor {
+        LiveTradingMonitor {
+            sidecar: LiveSidecarClient::new("http://127.0.0.1:9"),
+            session_id: 1,
+            state: state.to_string(),
+            preflight: None,
+            account: None,
+            activity: None,
+            risk: None,
+            degradation: LiveDegradationTracker::default(),
+            blocked_reason: None,
+            finished: false,
         }
     }
 }

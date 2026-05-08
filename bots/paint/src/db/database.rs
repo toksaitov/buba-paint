@@ -83,6 +83,18 @@ pub struct LiveOrderStatusUpdate<'a> {
     pub details_json: Option<&'a str>,
 }
 
+/// Signal evidence that must be durable before a funded live order reaches the venue.
+pub struct LiveDecisionEvidence<'a> {
+    pub signal_id: i64,
+    pub signal: &'a Signal,
+    pub market_id: &'a str,
+    pub execution_fidelity: ReplayFidelity,
+    pub order_submitted_at_ms: Option<u64>,
+    pub expected_arrival_at_ms: Option<u64>,
+    pub decision_status: &'a str,
+    pub rejection_reason: Option<&'a str>,
+}
+
 /// Mutable lifecycle fields for one live redemption row.
 #[derive(Debug, Clone, Copy)]
 pub struct LiveRedemptionStatusUpdate<'a> {
@@ -1289,6 +1301,23 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Atomically persist critical decision evidence and its live order intent.
+    pub fn log_live_order_intent_with_decision_evidence(
+        &self,
+        evidence: &LiveDecisionEvidence<'_>,
+        intent: &LiveOrderIntent,
+    ) -> anyhow::Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        insert_live_decision_signal_on_tx(&tx, evidence)?;
+        if let Some(record) = signal_metric_record_from_evidence(evidence)? {
+            upsert_signal_metrics_on_tx(&tx, &record)?;
+        }
+        insert_live_order_intent_on_tx(&tx, intent)?;
+        let intent_id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(intent_id)
+    }
+
     /// Insert one live venue order and return its row ID.
     pub fn log_live_order(&self, order: &LiveOrder) -> anyhow::Result<i64> {
         let mut stmt = self.conn.prepare_cached(
@@ -1989,6 +2018,205 @@ impl Database {
     pub fn conn(&self) -> &rusqlite::Connection {
         &self.conn
     }
+}
+
+/// Insert a critical live decision signal inside an existing transaction.
+fn insert_live_decision_signal_on_tx(
+    tx: &rusqlite::Transaction<'_>,
+    evidence: &LiveDecisionEvidence<'_>,
+) -> anyhow::Result<()> {
+    let metadata_json = serde_json::to_string(&evidence.signal.metadata)?;
+    tx.prepare_cached(
+        "INSERT OR REPLACE INTO signals (
+            id, timestamp, strategy, direction, binance_price, chainlink_price,
+            up_ask, down_ask, up_bid, down_bid, metadata, market_id, execution_fidelity,
+            strategy_version, feature_mode, order_submitted_at_ms, order_arrival_at_ms
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+            ?14, ?15, ?16, ?17
+         )",
+    )?
+    .execute(params![
+        evidence.signal_id,
+        evidence.signal.timestamp,
+        evidence.signal.strategy,
+        evidence.signal.direction.to_string(),
+        evidence.signal.binance_price,
+        evidence.signal.chainlink_price,
+        evidence.signal.up_ask,
+        evidence.signal.down_ask,
+        evidence.signal.up_bid,
+        evidence.signal.down_bid,
+        metadata_json,
+        evidence.market_id,
+        evidence.execution_fidelity.to_string(),
+        evidence.signal.strategy_version,
+        evidence.signal.feature_mode,
+        evidence.order_submitted_at_ms,
+        evidence.expected_arrival_at_ms,
+    ])?;
+    Ok(())
+}
+
+/// Build a critical signal metric row from live decision evidence.
+fn signal_metric_record_from_evidence(
+    evidence: &LiveDecisionEvidence<'_>,
+) -> anyhow::Result<Option<SignalMetricRecord>> {
+    let Some(telemetry) = evidence.signal.telemetry.as_ref() else {
+        return Ok(None);
+    };
+    let features_json = serde_json::to_string(&telemetry.features_json)?;
+    Ok(Some(SignalMetricRecord {
+        signal_id: evidence.signal_id,
+        generated_at_ms: telemetry.generated_at_ms,
+        generated_at_us: telemetry.generated_at_us,
+        order_submitted_at_ms: evidence
+            .order_submitted_at_ms
+            .or(telemetry.order_submitted_at_ms),
+        order_submitted_at_us: resolve_related_us(
+            telemetry.generated_at_ms,
+            telemetry.generated_at_us,
+            evidence
+                .order_submitted_at_ms
+                .or(telemetry.order_submitted_at_ms),
+            telemetry.order_submitted_at_us,
+        ),
+        expected_arrival_at_ms: evidence
+            .expected_arrival_at_ms
+            .or(telemetry.expected_arrival_at_ms),
+        expected_arrival_at_us: resolve_related_us(
+            telemetry.generated_at_ms,
+            telemetry.generated_at_us,
+            evidence
+                .expected_arrival_at_ms
+                .or(telemetry.expected_arrival_at_ms),
+            telemetry.expected_arrival_at_us,
+        ),
+        order_processed_at_ms: telemetry.order_processed_at_ms,
+        order_processed_at_us: telemetry.order_processed_at_us,
+        effective_arrival_delay_ms: telemetry.effective_arrival_delay_ms,
+        binance_age_ms: telemetry.binance_age_ms,
+        chainlink_age_ms: telemetry.chainlink_age_ms,
+        clob_age_ms: telemetry.clob_age_ms,
+        quote_age_ms: telemetry.quote_age_ms,
+        book_staleness_ms: telemetry.book_staleness_ms,
+        expected_fee: telemetry.expected_fee,
+        expected_slippage: telemetry.expected_slippage,
+        expected_edge: telemetry.expected_edge,
+        available_feature_count: telemetry.available_feature_count,
+        decision_status: evidence.decision_status.to_string(),
+        rejection_reason: evidence
+            .rejection_reason
+            .map(str::to_string)
+            .or_else(|| telemetry.rejection_reason.clone()),
+        features_json,
+    }))
+}
+
+/// Upsert one signal metric row inside an existing transaction.
+fn upsert_signal_metrics_on_tx(
+    tx: &rusqlite::Transaction<'_>,
+    record: &SignalMetricRecord,
+) -> anyhow::Result<()> {
+    tx.prepare_cached(
+        "INSERT INTO signal_metrics (
+            signal_id, generated_at_ms, generated_at_us, order_submitted_at_ms,
+            order_submitted_at_us, expected_arrival_at_ms, expected_arrival_at_us,
+            order_processed_at_ms, order_processed_at_us, effective_arrival_delay_ms,
+            binance_age_ms, chainlink_age_ms, clob_age_ms, quote_age_ms,
+            book_staleness_ms, expected_fee, expected_slippage, expected_edge,
+            available_feature_count, decision_status, rejection_reason, features_json
+         ) VALUES (
+            ?1, ?2, ?3, ?4,
+            ?5, ?6, ?7, ?8,
+            ?9, ?10, ?11, ?12,
+            ?13, ?14, ?15, ?16,
+            ?17, ?18, ?19, ?20,
+            ?21, ?22
+         )
+         ON CONFLICT(signal_id) DO UPDATE SET
+            generated_at_ms = excluded.generated_at_ms,
+            generated_at_us = excluded.generated_at_us,
+            order_submitted_at_ms = excluded.order_submitted_at_ms,
+            order_submitted_at_us = excluded.order_submitted_at_us,
+            expected_arrival_at_ms = excluded.expected_arrival_at_ms,
+            expected_arrival_at_us = excluded.expected_arrival_at_us,
+            order_processed_at_ms = excluded.order_processed_at_ms,
+            order_processed_at_us = excluded.order_processed_at_us,
+            effective_arrival_delay_ms = excluded.effective_arrival_delay_ms,
+            binance_age_ms = excluded.binance_age_ms,
+            chainlink_age_ms = excluded.chainlink_age_ms,
+            clob_age_ms = excluded.clob_age_ms,
+            quote_age_ms = excluded.quote_age_ms,
+            book_staleness_ms = excluded.book_staleness_ms,
+            expected_fee = excluded.expected_fee,
+            expected_slippage = excluded.expected_slippage,
+            expected_edge = excluded.expected_edge,
+            available_feature_count = excluded.available_feature_count,
+            decision_status = excluded.decision_status,
+            rejection_reason = excluded.rejection_reason,
+            features_json = excluded.features_json",
+    )?
+    .execute(params![
+        record.signal_id,
+        record.generated_at_ms,
+        record.generated_at_us,
+        record.order_submitted_at_ms,
+        record.order_submitted_at_us,
+        record.expected_arrival_at_ms,
+        record.expected_arrival_at_us,
+        record.order_processed_at_ms,
+        record.order_processed_at_us,
+        record.effective_arrival_delay_ms,
+        record.binance_age_ms,
+        record.chainlink_age_ms,
+        record.clob_age_ms,
+        record.quote_age_ms,
+        record.book_staleness_ms,
+        record.expected_fee,
+        record.expected_slippage,
+        record.expected_edge,
+        record.available_feature_count,
+        record.decision_status,
+        record.rejection_reason,
+        record.features_json,
+    ])?;
+    Ok(())
+}
+
+/// Insert one live order intent inside an existing transaction.
+fn insert_live_order_intent_on_tx(
+    tx: &rusqlite::Transaction<'_>,
+    intent: &LiveOrderIntent,
+) -> anyhow::Result<()> {
+    tx.prepare_cached(
+        "INSERT INTO live_order_intents (
+            session_id, signal_id, market_id, strategy, side, order_type, status,
+            created_at_ms, requested_price, requested_size, limit_price,
+            fee_schedule_json, token_fee_rates_json, execution_group_id, details_json
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+            ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+         )",
+    )?
+    .execute(params![
+        intent.session_id,
+        intent.signal_id,
+        intent.market_id,
+        intent.strategy,
+        intent.side,
+        intent.order_type,
+        intent.status,
+        intent.created_at_ms,
+        intent.requested_price,
+        intent.requested_size,
+        intent.limit_price,
+        intent.fee_schedule_json,
+        intent.token_fee_rates_json,
+        intent.execution_group_id,
+        intent.details_json,
+    ])?;
+    Ok(())
 }
 
 /// Derive a related microsecond timestamp from a millisecond delta when possible.

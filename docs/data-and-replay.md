@@ -46,6 +46,8 @@ Old runs that lack Binance book-ticker rows are descriptive evidence only. They 
 
 Live runtime metadata separates configured capture capability, recent capture health, and offline validation. `configured_replay_quality_class` records whether the selected storage profile can become replay-grade. The running bot records `runtime_observed_replay_quality_class`, recent missing classes, queue depth, writer lag, and drop/error state from incremental counters. The full `replay_quality_class` key is reserved for offline `validate-replay-data` or closeout output and must not be written by the trading loop.
 
+Funded live orders have a stricter evidence rule than paper decisions: the compact decision evidence row and the live order intent must be persisted atomically by the submission worker before any sidecar venue call. Async evidence queues are still used for paper, readonly, and lower-priority operator analytics, but a funded live order must never reach the venue with only queued, non-durable decision evidence.
+
 ## Live Fidelity Gate
 
 Funded live runs need a stricter private gate above public replay quality. `validate-replay-data` proves the public market inputs exist. `validate-live-fidelity` proves the DB can also explain live decision evidence, order intent, legality, marketability, venue lifecycle, fills, cancels, unknowns, account transitions, reconciliation, and operator controls.
