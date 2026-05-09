@@ -3,7 +3,7 @@ SIDECAR_DIR := polymarket-sidecar
 COMMENT_POLICY := cargo run --quiet --manifest-path tools/rust-comment-policy/Cargo.toml --
 TS_COMMENT_AUDIT := node scripts/ts_comment_audit.mjs
 
-.PHONY: lint comment-audit docs-audit hot-path-audit live-low-latency-local live-docker-smoke live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
+.PHONY: lint comment-audit docs-audit hot-path-audit live-low-latency-local live-docker-smoke live-runtime-profile live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
 
 lint:
 	cargo fmt --all --check
@@ -42,6 +42,10 @@ live-low-latency-local:
 LIVE_DOCKER_SMOKE_ARGS ?=
 live-docker-smoke:
 	python3 scripts/live-docker-smoke.py $(LIVE_DOCKER_SMOKE_ARGS)
+
+LIVE_RUNTIME_PROFILE_ARGS ?=
+live-runtime-profile:
+	python3 scripts/profile-live-runtime.py $(LIVE_RUNTIME_PROFILE_ARGS)
 
 LIVE_READINESS_ARGS ?=
 live-readiness-local:

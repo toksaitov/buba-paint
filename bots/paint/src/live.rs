@@ -68,6 +68,40 @@ struct LiveTradingRuntimeBootstrap {
     monitor: LiveTradingMonitor,
 }
 
+/// Feed-derived decision state awaiting one latest-state evaluation.
+#[derive(Debug, Default)]
+struct PendingDecisionEvaluation {
+    dirty: bool,
+    latest_input_at_ms: u64,
+    latest_input_at_us: Option<u64>,
+    dirty_events: u64,
+    coalesced_events: u64,
+    flushed_evaluations: u64,
+}
+
+impl PendingDecisionEvaluation {
+    /// Mark the current feed state as needing one decision evaluation.
+    fn mark_dirty(&mut self, observed_at_ms: u64, observed_at_micros: Option<u64>) {
+        if self.dirty {
+            self.coalesced_events = self.coalesced_events.saturating_add(1);
+        }
+        self.dirty = true;
+        self.latest_input_at_ms = observed_at_ms;
+        self.latest_input_at_us = observed_at_micros;
+        self.dirty_events = self.dirty_events.saturating_add(1);
+    }
+
+    /// Return the pending evaluation timestamp if a decision is required.
+    fn take(&mut self) -> Option<(u64, Option<u64>)> {
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        self.flushed_evaluations = self.flushed_evaluations.saturating_add(1);
+        Some((self.latest_input_at_ms, self.latest_input_at_us))
+    }
+}
+
 #[derive(Clone)]
 struct LiveTradingMonitor {
     sidecar: LiveSidecarClient,
@@ -1500,6 +1534,35 @@ struct ResolutionFetchResult {
     result: anyhow::Result<Option<SignalDirection>>,
 }
 
+/// Timer command sent to the runtime command queue.
+#[derive(Debug, Clone, Copy)]
+enum RuntimeTimerCommand {
+    StorageReport,
+    FeedHealthReport,
+    ResolutionRetry,
+    ReadonlyPoll,
+    ReadonlyRollup,
+    LiveControlPoll,
+    LiveRemotePoll,
+}
+
+/// Normal-priority command consumed by the live runtime reactor.
+enum RuntimeCommand {
+    MarketDiscovery(MarketDiscoveryEvent),
+    ActivateWindow(MarketWindow),
+    Timer(RuntimeTimerCommand),
+    ResolutionResult(Box<ResolutionFetchResult>),
+    ReadonlyRefresh(Box<crate::live_readonly::ReadonlyRefreshResult>),
+    LiveMonitorOutput(Box<LiveMonitorWorkerOutput>),
+}
+
+/// Urgent command consumed before normal maintenance work.
+enum UrgentRuntimeCommand {
+    StrategyOutput(Box<StrategyWorkerOutput>),
+    LiveFeedback(LiveSubmissionFeedback),
+    LiveMonitorOutput(Box<LiveMonitorWorkerOutput>),
+}
+
 const FEED_HEALTH_ROLLUP_INTERVAL_SECS: u64 = 5 * 60;
 const LIVE_TRADING_CONTROL_POLL_INTERVAL_SECS: u64 = 1;
 const LIVE_TRADING_POLL_INTERVAL_SECS: u64 = 15;
@@ -1795,6 +1858,153 @@ pub async fn run_live(
     run_live_runtime(config, db_path, balance, shutdown_rx).await
 }
 
+/// Forward market-discovery events into the runtime command queue.
+fn spawn_market_discovery_forwarder(
+    mut rx: tokio::sync::mpsc::Receiver<MarketDiscoveryEvent>,
+    tx: tokio::sync::mpsc::Sender<RuntimeCommand>,
+) {
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if tx
+                .send(RuntimeCommand::MarketDiscovery(event))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
+/// Forward resolution fetch results into the runtime command queue.
+fn spawn_resolution_result_forwarder(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<ResolutionFetchResult>,
+    tx: tokio::sync::mpsc::Sender<RuntimeCommand>,
+) {
+    tokio::spawn(async move {
+        while let Some(result) = rx.recv().await {
+            if tx
+                .send(RuntimeCommand::ResolutionResult(Box::new(result)))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
+/// Forward readonly refresh results into the runtime command queue.
+fn spawn_readonly_refresh_forwarder(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::live_readonly::ReadonlyRefreshResult>,
+    tx: tokio::sync::mpsc::Sender<RuntimeCommand>,
+) {
+    tokio::spawn(async move {
+        while let Some(result) = rx.recv().await {
+            if tx
+                .send(RuntimeCommand::ReadonlyRefresh(Box::new(result)))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
+/// Forward live monitor worker results to urgent or normal command queues.
+fn spawn_live_monitor_forwarder(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<LiveMonitorWorkerOutput>,
+    urgent_tx: tokio::sync::mpsc::Sender<UrgentRuntimeCommand>,
+    normal_tx: tokio::sync::mpsc::Sender<RuntimeCommand>,
+) {
+    tokio::spawn(async move {
+        while let Some(output) = rx.recv().await {
+            let sent = match output.kind {
+                LiveMonitorWorkerKind::Controls => urgent_tx
+                    .send(UrgentRuntimeCommand::LiveMonitorOutput(Box::new(output)))
+                    .await
+                    .is_ok(),
+                LiveMonitorWorkerKind::RemoteRefresh => normal_tx
+                    .send(RuntimeCommand::LiveMonitorOutput(Box::new(output)))
+                    .await
+                    .is_ok(),
+            };
+            if !sent {
+                break;
+            }
+        }
+    });
+}
+
+/// Forward strategy outputs into the urgent runtime command queue.
+fn spawn_strategy_output_forwarder(
+    mut rx: tokio::sync::mpsc::Receiver<StrategyWorkerOutput>,
+    tx: tokio::sync::mpsc::Sender<UrgentRuntimeCommand>,
+) {
+    tokio::spawn(async move {
+        while let Some(output) = rx.recv().await {
+            if tx
+                .send(UrgentRuntimeCommand::StrategyOutput(Box::new(output)))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
+/// Forward live submission feedback into the urgent runtime command queue.
+fn spawn_live_feedback_forwarder(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<LiveSubmissionFeedback>,
+    tx: tokio::sync::mpsc::Sender<UrgentRuntimeCommand>,
+) {
+    tokio::spawn(async move {
+        while let Some(feedback) = rx.recv().await {
+            if tx
+                .send(UrgentRuntimeCommand::LiveFeedback(feedback))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
+/// Send one repeated timer command without adding timer branches to the feed reactor.
+fn spawn_runtime_timer(
+    tx: tokio::sync::mpsc::Sender<RuntimeCommand>,
+    period: Duration,
+    missed_tick_behavior: tokio::time::MissedTickBehavior,
+    command: RuntimeTimerCommand,
+) {
+    tokio::spawn(async move {
+        let mut timer = tokio::time::interval(period);
+        timer.set_missed_tick_behavior(missed_tick_behavior);
+        let _ = timer.tick().await;
+        loop {
+            timer.tick().await;
+            if tx.send(RuntimeCommand::Timer(command)).await.is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// Send one delayed market activation command.
+fn spawn_market_activation(
+    tx: tokio::sync::mpsc::Sender<RuntimeCommand>,
+    window: MarketWindow,
+    delay_ms: u64,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        let _ = tx.send(RuntimeCommand::ActivateWindow(window)).await;
+    });
+}
+
 /// Run the shared paper or readonly live runtime.
 #[allow(clippy::too_many_lines)]
 async fn run_live_runtime(
@@ -1855,10 +2065,9 @@ async fn run_live_runtime(
     );
 
     let mut momentum = MomentumCalculator::new(config.momentum_window_ms);
-    let (strategy_output_tx, mut strategy_output_rx) =
-        tokio::sync::mpsc::channel::<StrategyWorkerOutput>(
-            config.live_decision_output_queue_capacity.max(1),
-        );
+    let (strategy_output_tx, strategy_output_rx) = tokio::sync::mpsc::channel::<StrategyWorkerOutput>(
+        config.live_decision_output_queue_capacity.max(1),
+    );
     let worker_seed = runtime_decision_seed(&db, runtime_balance, &config, runtime_started_at_ms);
     let mut strategy_worker = StrategyWorker::start(
         config.clone(),
@@ -1866,7 +2075,7 @@ async fn run_live_runtime(
         worker_seed,
         strategy_output_tx,
     )?;
-    let (live_feedback_tx, mut live_feedback_rx) =
+    let (live_feedback_tx, live_feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<LiveSubmissionFeedback>();
     let live_submission_queue = live_trading_monitor.as_ref().map(|monitor| {
         LiveSubmissionQueue::start(
@@ -1879,6 +2088,14 @@ async fn run_live_runtime(
     });
 
     let (feed_tx, mut feed_rx) = tokio::sync::mpsc::channel::<FeedMessage>(512);
+    let normal_command_capacity = config.live_runtime_persistence_queue_capacity.max(1);
+    let urgent_command_capacity = config.live_decision_output_queue_capacity.max(1);
+    let (runtime_command_tx, mut runtime_command_rx) =
+        tokio::sync::mpsc::channel::<RuntimeCommand>(normal_command_capacity);
+    let (urgent_command_tx, mut urgent_command_rx) =
+        tokio::sync::mpsc::channel::<UrgentRuntimeCommand>(urgent_command_capacity);
+    spawn_strategy_output_forwarder(strategy_output_rx, urgent_command_tx.clone());
+    spawn_live_feedback_forwarder(live_feedback_rx, urgent_command_tx.clone());
 
     let binance_config = config.clone();
     let binance_tx = feed_tx.clone();
@@ -1905,7 +2122,8 @@ async fn run_live_runtime(
     let (clob_handle, _clob_join) =
         crate::feeds::clob_feed::run_clob_feed(&clob_config, clob_tx).await;
 
-    let mut discovery = market_discovery::run_market_discovery(&config).await;
+    let discovery = market_discovery::run_market_discovery(&config).await;
+    spawn_market_discovery_forwarder(discovery.window_rx, runtime_command_tx.clone());
 
     let tick_logger_state = Arc::new(tokio::sync::RwLock::new(TickLoggerState::default()));
     if config.tick_data_logging_enabled {
@@ -1942,79 +2160,90 @@ async fn run_live_runtime(
     )?;
     let mut feed_health_tracker = FeedHealthTracker::default();
     let mut pending_resolutions = seed_pending_resolutions(&db, &config, &clock);
-    let (resolution_result_tx, mut resolution_result_rx) =
+    let (resolution_result_tx, resolution_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<ResolutionFetchResult>();
-    let (readonly_refresh_tx, mut readonly_refresh_rx) =
+    spawn_resolution_result_forwarder(resolution_result_rx, runtime_command_tx.clone());
+    let (readonly_refresh_tx, readonly_refresh_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::live_readonly::ReadonlyRefreshResult>();
+    spawn_readonly_refresh_forwarder(readonly_refresh_rx, runtime_command_tx.clone());
     let mut readonly_refresh_inflight = false;
-    let (live_monitor_tx, mut live_monitor_rx) =
+    let (live_monitor_tx, live_monitor_rx) =
         tokio::sync::mpsc::unbounded_channel::<LiveMonitorWorkerOutput>();
+    spawn_live_monitor_forwarder(
+        live_monitor_rx,
+        urgent_command_tx.clone(),
+        runtime_command_tx.clone(),
+    );
     let mut live_control_inflight = false;
     let mut live_remote_refresh_inflight = false;
 
-    let (activate_tx, mut activate_rx) = tokio::sync::mpsc::channel::<MarketWindow>(32);
-    let mut storage_report_timer = tokio::time::interval(std::time::Duration::from_secs(60));
-    storage_report_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let _ = storage_report_timer.tick().await;
-    let mut feed_health_report_timer = tokio::time::interval(std::time::Duration::from_secs(
-        FEED_HEALTH_ROLLUP_INTERVAL_SECS,
-    ));
-    feed_health_report_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let _ = feed_health_report_timer.tick().await;
-    let mut resolution_retry_timer = tokio::time::interval(std::time::Duration::from_secs(1));
-    resolution_retry_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut readonly_poll_timer = if readonly_monitor.is_some() {
-        let mut timer = tokio::time::interval(Duration::from_secs(
-            crate::live_readonly::READONLY_POLL_INTERVAL_SECS,
-        ));
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let _ = timer.tick().await;
-        Some(timer)
-    } else {
-        None
-    };
-    let mut readonly_rollup_timer = if readonly_monitor.is_some() {
-        let mut timer = tokio::time::interval(Duration::from_secs(
-            crate::live_readonly::READONLY_ROLLUP_INTERVAL_SECS,
-        ));
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let _ = timer.tick().await;
-        Some(timer)
-    } else {
-        None
-    };
-    let mut live_control_timer = if live_trading_monitor.is_some() {
-        let mut timer =
-            tokio::time::interval(Duration::from_secs(LIVE_TRADING_CONTROL_POLL_INTERVAL_SECS));
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let _ = timer.tick().await;
-        Some(timer)
-    } else {
-        None
-    };
-    let mut live_poll_timer = if live_trading_monitor.is_some() {
-        let mut timer = tokio::time::interval(Duration::from_secs(LIVE_TRADING_POLL_INTERVAL_SECS));
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let _ = timer.tick().await;
-        Some(timer)
-    } else {
-        None
-    };
+    spawn_runtime_timer(
+        runtime_command_tx.clone(),
+        Duration::from_secs(60),
+        tokio::time::MissedTickBehavior::Delay,
+        RuntimeTimerCommand::StorageReport,
+    );
+    spawn_runtime_timer(
+        runtime_command_tx.clone(),
+        Duration::from_secs(FEED_HEALTH_ROLLUP_INTERVAL_SECS),
+        tokio::time::MissedTickBehavior::Delay,
+        RuntimeTimerCommand::FeedHealthReport,
+    );
+    spawn_runtime_timer(
+        runtime_command_tx.clone(),
+        Duration::from_secs(1),
+        tokio::time::MissedTickBehavior::Delay,
+        RuntimeTimerCommand::ResolutionRetry,
+    );
+    if readonly_monitor.is_some() {
+        spawn_runtime_timer(
+            runtime_command_tx.clone(),
+            Duration::from_secs(crate::live_readonly::READONLY_POLL_INTERVAL_SECS),
+            tokio::time::MissedTickBehavior::Skip,
+            RuntimeTimerCommand::ReadonlyPoll,
+        );
+        spawn_runtime_timer(
+            runtime_command_tx.clone(),
+            Duration::from_secs(crate::live_readonly::READONLY_ROLLUP_INTERVAL_SECS),
+            tokio::time::MissedTickBehavior::Delay,
+            RuntimeTimerCommand::ReadonlyRollup,
+        );
+    }
+    if live_trading_monitor.is_some() {
+        spawn_runtime_timer(
+            runtime_command_tx.clone(),
+            Duration::from_secs(LIVE_TRADING_CONTROL_POLL_INTERVAL_SECS),
+            tokio::time::MissedTickBehavior::Skip,
+            RuntimeTimerCommand::LiveControlPoll,
+        );
+        spawn_runtime_timer(
+            runtime_command_tx.clone(),
+            Duration::from_secs(LIVE_TRADING_POLL_INTERVAL_SECS),
+            tokio::time::MissedTickBehavior::Skip,
+            RuntimeTimerCommand::LiveRemotePoll,
+        );
+    }
 
     info!("all tasks spawned, entering main loop");
 
     let mut shutdown_rx = shutdown_rx;
+    let mut feed_batch = Vec::with_capacity(config.live_feed_batch_max_messages.max(1));
+    let mut pending_decision = PendingDecisionEvaluation::default();
 
     loop {
         tokio::select! {
 
-            msg = feed_rx.recv() => {
-                let Some(msg) = msg else {
+            feed_count = feed_rx.recv_many(
+                &mut feed_batch,
+                config.live_feed_batch_max_messages.max(1),
+            ) => {
+                if feed_count == 0 {
                     warn!("all feed senders dropped, shutting down");
                     break;
-                };
+                }
 
-                match msg {
+                for msg in feed_batch.drain(..) {
+                    match msg {
                     FeedMessage::BinanceTrade {
                         price,
                         quantity,
@@ -2083,22 +2312,7 @@ async fn run_live_runtime(
                             state.window_open_prices.entry(w.market_id.clone()).or_insert(price);
                         }
 
-                        if !enqueue_strategy_evaluation(
-                            &mut state,
-                            &momentum,
-                            &config,
-                            &strategy_worker,
-                            live_trading_monitor
-                                .as_ref()
-                                .is_none_or(LiveTradingMonitor::can_submit_orders),
-                            receive.ms,
-                            receive.micros,
-                        ) {
-                            mark_live_submission_blocked(
-                                live_trading_monitor.as_mut(),
-                                "strategy worker queue rejected evaluation",
-                            );
-                        }
+                        pending_decision.mark_dirty(receive.ms, receive.micros);
                     }
 
                     FeedMessage::BinanceBookTicker {
@@ -2159,22 +2373,7 @@ async fn run_live_runtime(
                             );
                         }
 
-                        if !enqueue_strategy_evaluation(
-                            &mut state,
-                            &momentum,
-                            &config,
-                            &strategy_worker,
-                            live_trading_monitor
-                                .as_ref()
-                                .is_none_or(LiveTradingMonitor::can_submit_orders),
-                            receive.ms,
-                            receive.micros,
-                        ) {
-                            mark_live_submission_blocked(
-                                live_trading_monitor.as_mut(),
-                                "strategy worker queue rejected evaluation",
-                            );
-                        }
+                        pending_decision.mark_dirty(receive.ms, receive.micros);
                     }
 
                     FeedMessage::BinanceDepth {
@@ -2241,22 +2440,7 @@ async fn run_live_runtime(
                             );
                         }
 
-                        if !enqueue_strategy_evaluation(
-                            &mut state,
-                            &momentum,
-                            &config,
-                            &strategy_worker,
-                            live_trading_monitor
-                                .as_ref()
-                                .is_none_or(LiveTradingMonitor::can_submit_orders),
-                            receive.ms,
-                            receive.micros,
-                        ) {
-                            mark_live_submission_blocked(
-                                live_trading_monitor.as_mut(),
-                                "strategy worker queue rejected evaluation",
-                            );
-                        }
+                        pending_decision.mark_dirty(receive.ms, receive.micros);
                     }
 
                     FeedMessage::ChainlinkPrice {
@@ -2311,22 +2495,7 @@ async fn run_live_runtime(
                             enqueue_counted_feed_event(&feed_writer, &mut storage_state, event),
                         );
 
-                        if !enqueue_strategy_evaluation(
-                            &mut state,
-                            &momentum,
-                            &config,
-                            &strategy_worker,
-                            live_trading_monitor
-                                .as_ref()
-                                .is_none_or(LiveTradingMonitor::can_submit_orders),
-                            receive.ms,
-                            receive.micros,
-                        ) {
-                            mark_live_submission_blocked(
-                                live_trading_monitor.as_mut(),
-                                "strategy worker queue rejected evaluation",
-                            );
-                        }
+                        pending_decision.mark_dirty(receive.ms, receive.micros);
                     }
 
                     FeedMessage::ClobBook {
@@ -2369,22 +2538,7 @@ async fn run_live_runtime(
                             ),
                         );
 
-                        if !enqueue_strategy_evaluation(
-                            &mut state,
-                            &momentum,
-                            &config,
-                            &strategy_worker,
-                            live_trading_monitor
-                                .as_ref()
-                                .is_none_or(LiveTradingMonitor::can_submit_orders),
-                            receive.ms,
-                            receive.micros,
-                        ) {
-                            mark_live_submission_blocked(
-                                live_trading_monitor.as_mut(),
-                                "strategy worker queue rejected evaluation",
-                            );
-                        }
+                        pending_decision.mark_dirty(receive.ms, receive.micros);
                     }
 
                     FeedMessage::ClobPriceChange {
@@ -2427,22 +2581,7 @@ async fn run_live_runtime(
                             ),
                         );
 
-                        if !enqueue_strategy_evaluation(
-                            &mut state,
-                            &momentum,
-                            &config,
-                            &strategy_worker,
-                            live_trading_monitor
-                                .as_ref()
-                                .is_none_or(LiveTradingMonitor::can_submit_orders),
-                            receive.ms,
-                            receive.micros,
-                        ) {
-                            mark_live_submission_blocked(
-                                live_trading_monitor.as_mut(),
-                                "strategy worker queue rejected evaluation",
-                            );
-                        }
+                        pending_decision.mark_dirty(receive.ms, receive.micros);
                     }
 
                     FeedMessage::ClobBestBidAsk {
@@ -2485,22 +2624,7 @@ async fn run_live_runtime(
                             ),
                         );
 
-                        if !enqueue_strategy_evaluation(
-                            &mut state,
-                            &momentum,
-                            &config,
-                            &strategy_worker,
-                            live_trading_monitor
-                                .as_ref()
-                                .is_none_or(LiveTradingMonitor::can_submit_orders),
-                            receive.ms,
-                            receive.micros,
-                        ) {
-                            mark_live_submission_blocked(
-                                live_trading_monitor.as_mut(),
-                                "strategy worker queue rejected evaluation",
-                            );
-                        }
+                        pending_decision.mark_dirty(receive.ms, receive.micros);
                     }
 
                     FeedMessage::ClobMetaEvent {
@@ -2588,28 +2712,94 @@ async fn run_live_runtime(
                         details_json,
                     } => {
                         warn!("chainlink price is stale");
+                        let chainlink_stale_ms = clock.now();
+                        let chainlink_stale_micros = Some(now_us());
                         state.signal_state.chainlink_price = None;
                         enqueue_feed_health_event(&persistence_writer, OwnedFeedHealthLogEvent {
-                            timestamp_ms: clock.now(),
-                            timestamp_micros: Some(now_us()),
+                            timestamp_ms: chainlink_stale_ms,
+                            timestamp_micros: chainlink_stale_micros,
                             source: "chainlink".to_string(),
                             event_type: "stale".to_string(),
                             connection_id,
                             market_id: state.current_window.as_ref().map(|w| w.market_id.clone()),
                             details_json,
                         }, live_trading_monitor.as_mut());
+                        pending_decision.mark_dirty(chainlink_stale_ms, chainlink_stale_micros);
                     }
+                }
+                }
+                if let Some((decision_at_ms, decision_at_us)) = pending_decision.take()
+                    && !enqueue_strategy_evaluation(
+                        &mut state,
+                        &momentum,
+                        &config,
+                        &strategy_worker,
+                        live_trading_monitor
+                            .as_ref()
+                            .is_none_or(LiveTradingMonitor::can_submit_orders),
+                        decision_at_ms,
+                        decision_at_us,
+                    )
+                {
+                    mark_live_submission_blocked(
+                        live_trading_monitor.as_mut(),
+                        "strategy worker queue rejected evaluation",
+                    );
                 }
             }
 
-            event = discovery.window_rx.recv() => {
-                let Some(event) = event else {
-                    warn!("market discovery channel closed");
-                    continue;
+            urgent = urgent_command_rx.recv() => {
+                match urgent {
+                    Some(UrgentRuntimeCommand::StrategyOutput(output)) => match *output {
+                        StrategyWorkerOutput::Decision(output) => {
+                        if stale_live_decision_output(
+                            &output,
+                            state.latest_decision_sequence,
+                            clock.now(),
+                            &config,
+                        ) {
+                            reject_stale_live_decision_output(
+                                &output,
+                                &persistence_writer,
+                                &strategy_worker,
+                                live_trading_monitor.as_mut(),
+                            );
+                        } else {
+                            handle_strategy_decision_output(
+                                output,
+                                &persistence_writer,
+                                &strategy_worker,
+                                live_submission_queue.as_ref(),
+                                live_trading_monitor.as_mut(),
+                            );
+                        }
+                        }
+                    },
+                    Some(UrgentRuntimeCommand::LiveFeedback(feedback)) => {
+                        apply_live_submission_feedback(
+                            live_trading_monitor.as_mut(),
+                            &strategy_worker,
+                            feedback,
+                        );
+                    }
+                    Some(UrgentRuntimeCommand::LiveMonitorOutput(output)) => {
+                        live_control_inflight = false;
+                        if let Some(monitor) = live_trading_monitor.as_mut() {
+                            apply_live_monitor_worker_output(monitor, *output);
+                        }
+                    }
+                    None => {}
+                }
+            }
+
+            command = runtime_command_rx.recv() => {
+                let Some(command) = command else {
+                    warn!("runtime command channel closed, shutting down");
+                    break;
                 };
 
-                match event {
-                    MarketDiscoveryEvent::NewWindow(window) => {
+                match command {
+                    RuntimeCommand::MarketDiscovery(MarketDiscoveryEvent::NewWindow(window)) => {
                         info!(
                             market_id = %window.market_id,
                             question = %window.question,
@@ -2629,17 +2819,10 @@ async fn run_live_runtime(
 
                         let now_ms = clock.now();
                         if window.start_time <= now_ms {
-
                             activate_window(&mut state, &window, &clob_handle);
                         } else {
-
                             let delay_ms = window.start_time.saturating_sub(now_ms);
-                            let tx = activate_tx.clone();
-                            let w = window.clone();
-                            tokio::spawn(async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                                let _ = tx.send(w).await;
-                            });
+                            spawn_market_activation(runtime_command_tx.clone(), window.clone(), delay_ms);
                             info!(
                                 market_id = %window.market_id,
                                 delay_ms,
@@ -2648,7 +2831,7 @@ async fn run_live_runtime(
                         }
                     }
 
-                    MarketDiscoveryEvent::WindowClosed(closed_window) => {
+                    RuntimeCommand::MarketDiscovery(MarketDiscoveryEvent::WindowClosed(closed_window)) => {
                         info!(market_id = %closed_window.market_id, "market window closed");
 
                         let closed_id = closed_window.market_id.clone();
@@ -2678,90 +2861,85 @@ async fn run_live_runtime(
                             }
                         }
                     }
-                }
-            }
-
-            window = activate_rx.recv() => {
-                if let Some(window) = window {
-                    activate_window(&mut state, &window, &clob_handle);
-                }
-            }
-
-            _ = storage_report_timer.tick() => {
-                let rows = storage_state.take_row_counts();
-                let row_summary = rows
-                    .iter()
-                    .map(|(key, count)| format!("{key}={count}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let writer_snapshot = feed_writer.snapshot();
-                let now = clock.now();
-                let capture_health = runtime_capture_health(
-                    &writer_snapshot,
-                    &row_summary,
-                    now,
-                    config.feed_event_writer_max_lag_ms,
-                );
-                info!(
-                    queued_rows = writer_snapshot.enqueued,
-                    persisted_rows = writer_snapshot.persisted,
-                    dropped_rows = writer_snapshot.dropped,
-                    queue_full = writer_snapshot.queue_full,
-                    write_errors = writer_snapshot.write_errors,
-                    terminal_write_errors = writer_snapshot.terminal_write_errors,
-                    max_batch_write_ms = writer_snapshot.max_write_ms,
-                    last_persisted_at_ms = writer_snapshot.last_persisted_at_ms,
-                    rows = row_summary,
-                    replay_runtime_capture_health = %capture_health,
-                    "live storage writer rollup"
-                );
-                if !persistence_writer.try_enqueue(LivePersistenceEvent::RunMetadata(
-                    runtime_capture_metadata_rows(
-                        config.feed_event_storage_profile,
-                        now,
-                        capture_health.to_string(),
-                        row_summary.clone(),
-                    ),
-                )) {
-                    mark_live_submission_blocked(
-                        live_trading_monitor.as_mut(),
-                        "runtime persistence queue rejected capture metadata",
-                    );
-                }
-                let strategy_snapshot = strategy_worker.snapshot();
-                info!(
-                    strategy_enqueued = strategy_snapshot.enqueued,
-                    strategy_replaced = strategy_snapshot.replaced,
-                    strategy_processed = strategy_snapshot.processed,
-                    strategy_dropped = strategy_snapshot.dropped,
-                    strategy_output_dropped = strategy_snapshot.output_dropped,
-                    strategy_last_processed_at_ms = strategy_snapshot.last_processed_at_ms,
-                    "strategy worker rollup"
-                );
-            }
-
-            _ = feed_health_report_timer.tick() => {
-                log_feed_health_rollups(&feed_health_tracker.take_rollups(clock.now()));
-            }
-
-            _ = resolution_retry_timer.tick() => {
-                let ready_pending = take_ready_pending_resolutions(&mut pending_resolutions, clock.now());
-                for pending in ready_pending {
-                    let slug = pending.window.slug.clone();
-                    let gamma_api_url = config.gamma_api_url.clone();
-                    let tx = resolution_result_tx.clone();
-                    tokio::spawn(async move {
-                        let result =
-                            crate::market_discovery::fetch_resolution_once(&gamma_api_url, &slug)
-                                .await;
-                        let _ = tx.send(ResolutionFetchResult { pending, result });
-                    });
-                }
-            }
-
-            resolution = resolution_result_rx.recv() => {
-                if let Some(mut resolution) = resolution {
-                    match resolution.result {
+                    RuntimeCommand::ActivateWindow(window) => {
+                        activate_window(&mut state, &window, &clob_handle);
+                    }
+                    RuntimeCommand::Timer(RuntimeTimerCommand::StorageReport) => {
+                        let rows = storage_state.take_row_counts();
+                        let row_summary = rows
+                            .iter()
+                            .map(|(key, count)| format!("{key}={count}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let writer_snapshot = feed_writer.snapshot();
+                        let now = clock.now();
+                        let capture_health = runtime_capture_health(
+                            &writer_snapshot,
+                            &row_summary,
+                            now,
+                            config.feed_event_writer_max_lag_ms,
+                        );
+                        info!(
+                            queued_rows = writer_snapshot.enqueued,
+                            persisted_rows = writer_snapshot.persisted,
+                            dropped_rows = writer_snapshot.dropped,
+                            queue_full = writer_snapshot.queue_full,
+                            write_errors = writer_snapshot.write_errors,
+                            terminal_write_errors = writer_snapshot.terminal_write_errors,
+                            max_batch_write_ms = writer_snapshot.max_write_ms,
+                            last_persisted_at_ms = writer_snapshot.last_persisted_at_ms,
+                            rows = row_summary,
+                            replay_runtime_capture_health = %capture_health,
+                            decision_dirty_events = pending_decision.dirty_events,
+                            decision_coalesced_events = pending_decision.coalesced_events,
+                            decision_flushed_evaluations = pending_decision.flushed_evaluations,
+                            "live storage writer rollup"
+                        );
+                        if !persistence_writer.try_enqueue(LivePersistenceEvent::RunMetadata(
+                            runtime_capture_metadata_rows(
+                                config.feed_event_storage_profile,
+                                now,
+                                capture_health.to_string(),
+                                row_summary.clone(),
+                            ),
+                        )) {
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "runtime persistence queue rejected capture metadata",
+                            );
+                        }
+                        let strategy_snapshot = strategy_worker.snapshot();
+                        info!(
+                            strategy_enqueued = strategy_snapshot.enqueued,
+                            strategy_replaced = strategy_snapshot.replaced,
+                            strategy_processed = strategy_snapshot.processed,
+                            strategy_dropped = strategy_snapshot.dropped,
+                            strategy_output_dropped = strategy_snapshot.output_dropped,
+                            strategy_last_processed_at_ms = strategy_snapshot.last_processed_at_ms,
+                            "strategy worker rollup"
+                        );
+                    }
+                    RuntimeCommand::Timer(RuntimeTimerCommand::FeedHealthReport) => {
+                        log_feed_health_rollups(&feed_health_tracker.take_rollups(clock.now()));
+                    }
+                    RuntimeCommand::Timer(RuntimeTimerCommand::ResolutionRetry) => {
+                        let ready_pending =
+                            take_ready_pending_resolutions(&mut pending_resolutions, clock.now());
+                        for pending in ready_pending {
+                            let slug = pending.window.slug.clone();
+                            let gamma_api_url = config.gamma_api_url.clone();
+                            let tx = resolution_result_tx.clone();
+                            tokio::spawn(async move {
+                                let result =
+                                    crate::market_discovery::fetch_resolution_once(&gamma_api_url, &slug)
+                                        .await;
+                                let _ = tx.send(ResolutionFetchResult { pending, result });
+                            });
+                        }
+                    }
+                    RuntimeCommand::ResolutionResult(resolution) => {
+                        let mut resolution = *resolution;
+                        match resolution.result {
                         Ok(Some(outcome)) => {
                             if !strategy_worker.try_authoritative_resolution(
                                 resolution.pending.window,
@@ -2800,132 +2978,66 @@ async fn run_live_runtime(
                                 resolution.pending,
                             );
                         }
-                    }
-                }
-            }
-
-            () = async {
-                if let Some(timer) = readonly_poll_timer.as_mut() {
-                    timer.tick().await;
-                }
-            }, if readonly_monitor.is_some() => {
-                if !readonly_refresh_inflight
-                    && let Some(monitor) = readonly_monitor.as_ref()
-                {
-                    monitor.spawn_account_refresh(
-                        db_path.to_string(),
-                        config.clone(),
-                        clock.now(),
-                        readonly_refresh_tx.clone(),
-                    );
-                    readonly_refresh_inflight = true;
-                }
-            }
-
-            readonly_refresh = readonly_refresh_rx.recv() => {
-                if let Some(result) = readonly_refresh {
-                    readonly_refresh_inflight = false;
-                    if let Some(monitor) = readonly_monitor.as_mut() {
-                        monitor.apply_refresh_result(result);
-                    }
-                }
-            }
-
-            () = async {
-                if let Some(timer) = readonly_rollup_timer.as_mut() {
-                    timer.tick().await;
-                }
-            }, if readonly_monitor.is_some() => {
-                if let Some(monitor) = readonly_monitor.as_ref() {
-                    monitor.log_shadow_rollup(&strategy_worker.snapshot().stats);
-                }
-            }
-
-            () = async {
-                if let Some(timer) = live_control_timer.as_mut() {
-                    timer.tick().await;
-                }
-            }, if live_trading_monitor.is_some() => {
-                if !live_control_inflight
-                    && let Some(monitor) = live_trading_monitor.as_ref()
-                {
-                    spawn_live_monitor_worker(
-                        monitor,
-                        LiveMonitorWorkerKind::Controls,
-                        db_path.to_string(),
-                        config.clone(),
-                        live_monitor_tx.clone(),
-                    );
-                    live_control_inflight = true;
-                }
-            }
-
-            () = async {
-                if let Some(timer) = live_poll_timer.as_mut() {
-                    timer.tick().await;
-                }
-            }, if live_trading_monitor.is_some() => {
-                if !live_remote_refresh_inflight
-                    && let Some(monitor) = live_trading_monitor.as_ref()
-                {
-                    spawn_live_monitor_worker(
-                        monitor,
-                        LiveMonitorWorkerKind::RemoteRefresh,
-                        db_path.to_string(),
-                        config.clone(),
-                        live_monitor_tx.clone(),
-                    );
-                    live_remote_refresh_inflight = true;
-                }
-            }
-
-            live_monitor_output = live_monitor_rx.recv() => {
-                if let Some(output) = live_monitor_output {
-                    match output.kind {
-                        LiveMonitorWorkerKind::Controls => live_control_inflight = false,
-                        LiveMonitorWorkerKind::RemoteRefresh => {
-                            live_remote_refresh_inflight = false;
                         }
                     }
-                    if let Some(monitor) = live_trading_monitor.as_mut() {
-                        apply_live_monitor_worker_output(monitor, output);
+                    RuntimeCommand::Timer(RuntimeTimerCommand::ReadonlyPoll) => {
+                        if !readonly_refresh_inflight
+                            && let Some(monitor) = readonly_monitor.as_ref()
+                        {
+                            monitor.spawn_account_refresh(
+                                db_path.to_string(),
+                                config.clone(),
+                                clock.now(),
+                                readonly_refresh_tx.clone(),
+                            );
+                            readonly_refresh_inflight = true;
+                        }
                     }
-                }
-            }
-
-            output = strategy_output_rx.recv() => {
-                if let Some(StrategyWorkerOutput::Decision(output)) = output {
-                    if stale_live_decision_output(
-                        &output,
-                        state.latest_decision_sequence,
-                        clock.now(),
-                        &config,
-                    ) {
-                        reject_stale_live_decision_output(
-                            &output,
-                            &persistence_writer,
-                            &strategy_worker,
-                            live_trading_monitor.as_mut(),
-                        );
-                    } else {
-                        handle_strategy_decision_output(
-                            output,
-                            &persistence_writer,
-                            &strategy_worker,
-                            live_submission_queue.as_ref(),
-                            live_trading_monitor.as_mut(),
-                        );
+                    RuntimeCommand::ReadonlyRefresh(result) => {
+                        readonly_refresh_inflight = false;
+                        if let Some(monitor) = readonly_monitor.as_mut() {
+                            monitor.apply_refresh_result(*result);
+                        }
                     }
-                }
-            }
-
-            feedback = live_feedback_rx.recv() => {
-                if let Some(feedback) = feedback {
-                    apply_live_submission_feedback(
-                        live_trading_monitor.as_mut(),
-                        &strategy_worker,
-                        feedback,
-                    );
+                    RuntimeCommand::Timer(RuntimeTimerCommand::ReadonlyRollup) => {
+                        if let Some(monitor) = readonly_monitor.as_ref() {
+                            monitor.log_shadow_rollup(&strategy_worker.snapshot().stats);
+                        }
+                    }
+                    RuntimeCommand::Timer(RuntimeTimerCommand::LiveControlPoll) => {
+                        if !live_control_inflight
+                            && let Some(monitor) = live_trading_monitor.as_ref()
+                        {
+                            spawn_live_monitor_worker(
+                                monitor,
+                                LiveMonitorWorkerKind::Controls,
+                                db_path.to_string(),
+                                config.clone(),
+                                live_monitor_tx.clone(),
+                            );
+                            live_control_inflight = true;
+                        }
+                    }
+                    RuntimeCommand::Timer(RuntimeTimerCommand::LiveRemotePoll) => {
+                        if !live_remote_refresh_inflight
+                            && let Some(monitor) = live_trading_monitor.as_ref()
+                        {
+                            spawn_live_monitor_worker(
+                                monitor,
+                                LiveMonitorWorkerKind::RemoteRefresh,
+                                db_path.to_string(),
+                                config.clone(),
+                                live_monitor_tx.clone(),
+                            );
+                            live_remote_refresh_inflight = true;
+                        }
+                    }
+                    RuntimeCommand::LiveMonitorOutput(output) => {
+                        live_remote_refresh_inflight = false;
+                        if let Some(monitor) = live_trading_monitor.as_mut() {
+                            apply_live_monitor_worker_output(monitor, *output);
+                        }
+                    }
                 }
             }
 
@@ -2939,28 +3051,46 @@ async fn run_live_runtime(
     let _ = strategy_worker.try_flush_all(clock.now());
     for _ in 0..25 {
         let mut drained = false;
-        while let Ok(StrategyWorkerOutput::Decision(output)) = strategy_output_rx.try_recv() {
+        while let Ok(command) = urgent_command_rx.try_recv() {
             drained = true;
-            if stale_live_decision_output(
-                &output,
-                state.latest_decision_sequence,
-                clock.now(),
-                &config,
-            ) {
-                reject_stale_live_decision_output(
-                    &output,
-                    &persistence_writer,
-                    &strategy_worker,
-                    live_trading_monitor.as_mut(),
-                );
-            } else {
-                handle_strategy_decision_output(
-                    output,
-                    &persistence_writer,
-                    &strategy_worker,
-                    live_submission_queue.as_ref(),
-                    live_trading_monitor.as_mut(),
-                );
+            match command {
+                UrgentRuntimeCommand::StrategyOutput(output) => match *output {
+                    StrategyWorkerOutput::Decision(output) => {
+                        if stale_live_decision_output(
+                            &output,
+                            state.latest_decision_sequence,
+                            clock.now(),
+                            &config,
+                        ) {
+                            reject_stale_live_decision_output(
+                                &output,
+                                &persistence_writer,
+                                &strategy_worker,
+                                live_trading_monitor.as_mut(),
+                            );
+                        } else {
+                            handle_strategy_decision_output(
+                                output,
+                                &persistence_writer,
+                                &strategy_worker,
+                                live_submission_queue.as_ref(),
+                                live_trading_monitor.as_mut(),
+                            );
+                        }
+                    }
+                },
+                UrgentRuntimeCommand::LiveFeedback(feedback) => {
+                    apply_live_submission_feedback(
+                        live_trading_monitor.as_mut(),
+                        &strategy_worker,
+                        feedback,
+                    );
+                }
+                UrgentRuntimeCommand::LiveMonitorOutput(output) => {
+                    if let Some(monitor) = live_trading_monitor.as_mut() {
+                        apply_live_monitor_worker_output(monitor, *output);
+                    }
+                }
             }
         }
         if drained {
@@ -6253,6 +6383,33 @@ mod tests {
 
         let request = latest.request.lock().unwrap().take().unwrap();
         assert_eq!(request.decision_sequence, 2);
+    }
+
+    /// Verifies feed-derived decision requests collapse to one latest-state flush.
+    #[test]
+    fn pending_decision_evaluation_coalesces_feed_batch() {
+        let mut pending = PendingDecisionEvaluation::default();
+
+        pending.mark_dirty(1_000, Some(1_000_000));
+        pending.mark_dirty(1_001, Some(1_001_000));
+        pending.mark_dirty(1_002, Some(1_002_000));
+
+        assert_eq!(pending.dirty_events, 3);
+        assert_eq!(pending.coalesced_events, 2);
+        assert_eq!(pending.take(), Some((1_002, Some(1_002_000))));
+        assert_eq!(pending.take(), None);
+        assert_eq!(pending.flushed_evaluations, 1);
+    }
+
+    /// Verifies an isolated feed event flushes immediately without artificial debounce.
+    #[test]
+    fn pending_decision_evaluation_flushes_single_event() {
+        let mut pending = PendingDecisionEvaluation::default();
+
+        pending.mark_dirty(2_000, None);
+
+        assert_eq!(pending.take(), Some((2_000, None)));
+        assert_eq!(pending.coalesced_events, 0);
     }
 
     /// Verifies runtime capture metadata rows are bounded payloads for the persistence writer.

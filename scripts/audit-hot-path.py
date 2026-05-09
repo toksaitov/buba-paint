@@ -170,6 +170,35 @@ def check_direct_venue_submission_from_runtime(errors: list[str]) -> None:
             errors.append(f"main feed runtime performs direct venue mutation: {pattern}")
 
 
+def check_runtime_reactor_split(errors: list[str]) -> None:
+    """Check high-rate feed handling stays batched and separate from maintenance work."""
+    body = live_runtime_body()
+    forbidden = [
+        "msg = feed_rx.recv()",
+        "discovery.window_rx.recv()",
+        "storage_report_timer",
+        "feed_health_report_timer",
+        "resolution_retry_timer",
+        "readonly_poll_timer",
+        "readonly_rollup_timer",
+        "live_control_timer",
+        "live_poll_timer",
+        "strategy_output_rx.recv()",
+        "live_feedback_rx.recv()",
+    ]
+    for pattern in forbidden:
+        if pattern in body:
+            errors.append(f"runtime reactor still contains unbatched/maintenance branch: {pattern}")
+    if "feed_rx.recv_many(" not in body:
+        errors.append("runtime reactor does not batch feed messages")
+    if body.count("enqueue_strategy_evaluation(") != 1:
+        errors.append("runtime reactor should enqueue at most one strategy evaluation per feed batch")
+    if "pending_decision.mark_dirty(" not in body:
+        errors.append("runtime reactor does not coalesce feed-derived decision state")
+    if "RuntimeCommand::Timer" not in body or "UrgentRuntimeCommand" not in body:
+        errors.append("runtime reactor does not route maintenance/control work through command queues")
+
+
 def check_live_worker_boundaries(errors: list[str]) -> None:
     """Check live workers keep evidence, control, and shutdown boundaries explicit."""
     live = read("bots/paint/src/live.rs")
@@ -258,6 +287,7 @@ def main() -> int:
     check_decision_worker_purity(errors)
     check_legacy_strategy_cycle_absent_from_live(errors)
     check_direct_venue_submission_from_runtime(errors)
+    check_runtime_reactor_split(errors)
     check_live_worker_boundaries(errors)
     check_tick_logging_default(errors)
     if re.search(r"healthcheck:\s*\n(?:.*\n){0,8}.*quick_check", read("docker-compose.yml")):

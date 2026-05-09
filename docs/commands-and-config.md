@@ -65,6 +65,14 @@ make live-docker-smoke
 
 It runs the no-Caddy `live_readonly` stack for 10 minutes by default, uses a Docker-native runtime volume instead of a macOS bind mount, copies DB/log evidence to `/tmp/buba-live-docker-smoke-<timestamp>`, then runs offline DB/log checks and `validate-replay-data` when feed rows were captured. This is the local review loop for Docker runtime health. Do not treat macOS Docker Desktop bind-mounted SQLite WAL evidence as valid HFT or replay-grade smoke evidence.
 
+The standalone runtime profiler is:
+
+```bash
+make live-runtime-profile
+```
+
+It runs the latency-only paper runtime against a `/tmp` DB, samples process CPU, captures Linux `perf` data when available, and writes evidence under `/tmp/buba-live-runtime-profile-<timestamp>`.
+
 The host no-order soak runner is:
 
 ```bash
@@ -157,7 +165,7 @@ Important groups:
 - Feed freshness: `MAX_SIGNAL_FEED_AGE_MS`, `MAX_QUOTE_AGE_MS`, `WEBSOCKET_CONNECT_TIMEOUT_MS`, `BINANCE_NO_MESSAGE_RECONNECT_MS`, `CLOB_NO_MESSAGE_RECONNECT_MS`.
 - Pending settlement: `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION`, `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION`, `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION`, `BACKTEST_SETTLEMENT_MODE`.
 - Live caps: `LIVE_SESSION_CASH_CAP_USD`, `LIVE_MAX_SINGLE_ORDER_USD`, `LIVE_MAX_OPEN_NOTIONAL_USD`, `LIVE_MAX_DAILY_LOSS_USD`, `LIVE_MAX_SESSION_DRAWDOWN_USD`, `LIVE_MIN_REQUIRED_CASH_USD`.
-- Worker budgets: `FEED_EVENT_WRITER_QUEUE_CAPACITY`, `FEED_EVENT_WRITER_BATCH_SIZE`, `FEED_EVENT_WRITER_FLUSH_MS`, `FEED_EVENT_WRITER_MAX_LAG_MS`, `LIVE_DECISION_QUEUE_CAPACITY`, `LIVE_DECISION_OUTPUT_QUEUE_CAPACITY`, `LIVE_RUNTIME_PERSISTENCE_QUEUE_CAPACITY`, `LIVE_SUBMISSION_QUEUE_CAPACITY`, `MAX_LIVE_DECISION_AGE_MS`, `WORKER_SHUTDOWN_TIMEOUT_MS`.
+- Worker budgets: `FEED_EVENT_WRITER_QUEUE_CAPACITY`, `FEED_EVENT_WRITER_BATCH_SIZE`, `FEED_EVENT_WRITER_FLUSH_MS`, `FEED_EVENT_WRITER_MAX_LAG_MS`, `LIVE_FEED_BATCH_MAX_MESSAGES`, `LIVE_DECISION_QUEUE_CAPACITY`, `LIVE_DECISION_OUTPUT_QUEUE_CAPACITY`, `LIVE_RUNTIME_PERSISTENCE_QUEUE_CAPACITY`, `LIVE_SUBMISSION_QUEUE_CAPACITY`, `MAX_LIVE_DECISION_AGE_MS`, `WORKER_SHUTDOWN_TIMEOUT_MS`.
 - Strategy toggles: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, `CALM_PERSISTENCE_ENABLED`.
 - Sidecar: `LIVE_SIDECAR_URL`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_PROXY_WALLET`, `POLYMARKET_FUNDER`, `POLYMARKET_RELAYER_HOST`, `POLYMARKET_RELAYER_API_KEY`, `POLYMARKET_RELAYER_API_KEY_ADDRESS`, `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, `POLYMARKET_BUILDER_PASSPHRASE`.
 
