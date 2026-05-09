@@ -124,8 +124,8 @@ describe("mobileHeaderStateLabel", () => {
   });
 
   test("combines live runtime with trading state", () => {
-    expect(mobileHeaderStateLabel("live_readonly", "readonly")).toBe("Live Read only");
-    expect(mobileHeaderStateLabel("live_trading", "armed")).toBe("Live Armed");
-    expect(mobileHeaderStateLabel("live_readonly", "degraded")).toBe("Live Degraded");
+    expect(mobileHeaderStateLabel("live_readonly", "readonly")).toBe("Readonly");
+    expect(mobileHeaderStateLabel("live_trading", "armed")).toBe("Armed");
+    expect(mobileHeaderStateLabel("live_readonly", "degraded")).toBe("Degraded");
   });
 });

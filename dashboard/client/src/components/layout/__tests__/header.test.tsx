@@ -201,10 +201,18 @@ test("renders paper as a single mobile pill without duplicating desktop badges",
     data: { ...tradingSummary, runtime_mode: "paper", trading_state: "paper" },
   } as ReturnType<typeof useTradingSummary>);
 
-  renderHeader();
+  renderHeader({ isDesktop: false });
 
   expect(screen.getByText("Running")).toBeInTheDocument();
   expect(screen.getAllByText("Paper")).toHaveLength(1);
+});
+
+test("keeps mobile live mode chip compact in the primary header row", () => {
+  renderHeader({ isDesktop: false });
+
+  expect(screen.getByText("Readonly")).toBeInTheDocument();
+  expect(screen.queryByText("Live Read only")).not.toBeInTheDocument();
+  expect(screen.queryByText("Live Readonly")).not.toBeInTheDocument();
 });
 
 test("shows stopped process state when process is inactive", () => {

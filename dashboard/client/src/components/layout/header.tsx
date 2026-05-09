@@ -167,7 +167,7 @@ export function Header({
   return (
     <>
       <header className="app-header relative flex shrink-0 items-end justify-between border-b border-border bg-bg px-2 pb-0 pr-[max(0.5rem,var(--app-safe-right))] md:items-center md:px-4 md:pr-4">
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden md:gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden md:gap-3">
           <button
             onClick={onToggle}
             className="shrink-0 inline-flex items-center justify-center min-h-[44px] min-w-[44px] lg:min-h-0 lg:min-w-0 p-2 lg:p-2.5 transition-colors hover:bg-surface"
@@ -192,38 +192,42 @@ export function Header({
               <PanelLeft size={16} />
             )}
           </button>
-          <div className="flex min-w-0 items-center gap-2 overflow-hidden md:gap-3">
-            <StatusChip
-              label={processStateLabel(tradingSummary?.process_state ?? "stopped")}
-              tone={processStateTone(tradingSummary?.process_state ?? "stopped")}
-              dot={processRunning}
-              compact
-              title={
-                process?.uptime_secs != null && processRunning
-                  ? `Process uptime ${formatUptime(process.uptime_secs)}`
-                  : "Current bot process state"
-              }
-            />
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden md:gap-3">
+            <div className="flex shrink-0 items-center gap-1.5">
+              <StatusChip
+                label={processStateLabel(tradingSummary?.process_state ?? "stopped")}
+                tone={processStateTone(tradingSummary?.process_state ?? "stopped")}
+                dot={processRunning}
+                compact
+                title={
+                  process?.uptime_secs != null && processRunning
+                    ? `Process uptime ${formatUptime(process.uptime_secs)}`
+                    : "Current bot process state"
+                }
+              />
+              {!isDesktop && (
+                <StatusChip
+                  label={mobileHeaderStateLabel(runtimeMode, tradingState)}
+                  tone={runtimeMode === "paper" ? "muted" : tradingStateTone(tradingState)}
+                  compact
+                />
+              )}
+            </div>
             <div className="min-w-0">
               <div className="truncate text-[14px] font-semibold tracking-tight">
                 {bot?.name ?? "buba"}
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center">
                 {bot && <div className="truncate text-[11px] text-muted">{bot.id}</div>}
-                <span className="md:hidden">
-                  <StatusChip
-                    label={mobileHeaderStateLabel(runtimeMode, tradingState)}
-                    tone={runtimeMode === "paper" ? "muted" : tradingStateTone(tradingState)}
-                    compact
-                  />
-                </span>
               </div>
             </div>
-            <div className="hidden flex-wrap items-center gap-1.5 md:flex">
-              {stateBadges.map((badge) => (
-                <StatusChip key={badge.label} label={badge.label} tone={badge.tone} compact />
-              ))}
-            </div>
+            {isDesktop && (
+              <div className="hidden flex-wrap items-center gap-1.5 md:flex">
+                {stateBadges.map((badge) => (
+                  <StatusChip key={badge.label} label={badge.label} tone={badge.tone} compact />
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

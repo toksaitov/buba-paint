@@ -113,6 +113,12 @@ body {
   top: calc(var(--app-header-base-height) + var(--app-safe-top));
 }
 
+.app-main-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+}
+
 @media (min-width: 768px) {
   .app-header {
     height: var(--app-header-base-height);

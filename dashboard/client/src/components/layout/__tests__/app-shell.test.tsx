@@ -91,7 +91,9 @@ function renderShell(initialEntries: string[] = ["/"]) {
     },
   });
 
-  return render(
+  return {
+    queryClient,
+    ...render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={initialEntries}>
         <Routes>
@@ -102,7 +104,8 @@ function renderShell(initialEntries: string[] = ["/"]) {
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
-  );
+    ),
+  };
 }
 
 const bots: Bot[] = [
@@ -282,4 +285,37 @@ it("does not render the global intro bar on analysis pages", async () => {
     screen.queryByText("Shadow trade history and PnL. Real venue fills stay on Execution."),
   ).not.toBeInTheDocument();
   expect(screen.getByTestId("outlet")).toHaveTextContent("trades");
+});
+
+it("pulls the mobile main surface to refresh active dashboard queries", async () => {
+  useMediaQueryMock.mockReturnValue(false);
+  const { queryClient } = renderShell();
+  const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+  const refetchQueries = vi.spyOn(queryClient, "refetchQueries");
+
+  await waitFor(() => {
+    expect(screen.getByTestId("header-bot-id")).toHaveTextContent("bot-1");
+  });
+
+  const main = screen.getByTestId("app-main-scroll");
+  Object.defineProperty(main, "scrollTop", {
+    configurable: true,
+    value: 0,
+    writable: true,
+  });
+
+  fireEvent.touchStart(main, { touches: [{ clientY: 8 }] });
+  fireEvent.touchMove(main, {
+    cancelable: true,
+    touches: [{ clientY: 180 }],
+  });
+
+  expect(screen.getByText("Release to refresh")).toBeInTheDocument();
+
+  fireEvent.touchEnd(main);
+
+  await waitFor(() => {
+    expect(invalidateQueries).toHaveBeenCalled();
+  });
+  expect(refetchQueries).toHaveBeenCalledWith({ type: "active" });
 });

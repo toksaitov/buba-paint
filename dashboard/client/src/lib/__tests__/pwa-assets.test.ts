@@ -8,6 +8,7 @@ interface PngInfo {
   height: number;
   transparentPixels: number;
   cornerAlphas: number[];
+  pixelAt: (x: number, y: number) => [number, number, number, number];
 }
 
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -85,7 +86,11 @@ function readPngInfo(name: string): PngInfo {
     src += rowLength;
   }
 
-  const alphaAt = (x: number, y: number) => pixels[(y * width + x) * bytesPerPixel + 3];
+  const pixelAt = (x: number, y: number): [number, number, number, number] => {
+    const offset = (y * width + x) * bytesPerPixel;
+    return [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]];
+  };
+  const alphaAt = (x: number, y: number) => pixelAt(x, y)[3];
   return {
     width,
     height,
@@ -96,16 +101,28 @@ function readPngInfo(name: string): PngInfo {
       alphaAt(0, height - 1),
       alphaAt(width - 1, height - 1),
     ],
+    pixelAt,
   };
 }
 
 describe("PWA assets", () => {
-  test("apple touch icon is opaque and full canvas", () => {
+  test("browser favicon PNG keeps transparent corners and a white rounded border", () => {
+    const icon = readPngInfo("icon-32x32.png");
+    expect(icon.width).toBe(32);
+    expect(icon.height).toBe(32);
+    expect(icon.transparentPixels).toBeGreaterThan(0);
+    expect(icon.cornerAlphas).toEqual([0, 0, 0, 0]);
+    expect(icon.pixelAt(16, 2).slice(0, 3).every((channel) => channel >= 235)).toBe(true);
+  });
+
+  test("apple touch icon is opaque with visible white border artwork", () => {
     const icon = readPngInfo("apple-touch-icon.png");
     expect(icon.width).toBe(180);
     expect(icon.height).toBe(180);
     expect(icon.transparentPixels).toBe(0);
     expect(icon.cornerAlphas).toEqual([255, 255, 255, 255]);
+    expect(icon.pixelAt(90, 5).slice(0, 3).every((channel) => channel >= 235)).toBe(true);
+    expect(icon.pixelAt(90, 90).slice(0, 3)).toEqual([0, 0, 0]);
   });
 
   test("manifest has normal and maskable install icons", () => {
@@ -153,6 +170,8 @@ describe("PWA assets", () => {
     expect(html).toContain('name="apple-mobile-web-app-capable" content="yes"');
     expect(html).toContain('name="mobile-web-app-capable" content="yes"');
     expect(html).toContain('name="apple-mobile-web-app-title" content="Buba"');
-    expect(html).toContain('rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"');
+    expect(html).toContain('rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=20260509-pwa2"');
+    expect(html).toContain('rel="mask-icon" href="/mask-icon.svg?v=20260509-pwa2" color="#2ea44f"');
+    expect(html).toContain('rel="manifest" href="/site.webmanifest?v=20260509-pwa2"');
   });
 });

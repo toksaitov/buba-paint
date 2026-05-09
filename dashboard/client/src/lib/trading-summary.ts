@@ -120,7 +120,8 @@ export function alertSummaryLabel(summary: TradingSummary): string {
 
 export function mobileHeaderStateLabel(runtime: string, tradingState: string): string {
   if (runtime === "paper") return "Paper";
-  const runtimeLabel = runtime === "live_trading" ? "Live" : "Live";
-  const state = tradingStateLabel(tradingState);
-  return `${runtimeLabel} ${state}`;
+  if (runtime === "live_readonly" && tradingState === "readonly") return "Readonly";
+  if (runtime === "live_trading" && tradingState === "armed") return "Armed";
+  if (runtime === "live_trading" && tradingState === "disarmed") return "Disarmed";
+  return tradingStateLabel(tradingState);
 }

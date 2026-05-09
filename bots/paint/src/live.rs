@@ -3712,6 +3712,7 @@ fn handle_strategy_decision_output(
 ) {
     log_processed_order_outcomes(output.processed_outcomes);
     log_strategy_worker_events(output.log_events);
+    log_rejection_summary_events(&output.persistence_events);
     let critical_signal_ids = output
         .live_orders
         .iter()
@@ -3774,6 +3775,29 @@ fn handle_strategy_decision_output(
         mark_live_submission_blocked(
             live_trading_monitor,
             "live submission queue rejected strategy output",
+        );
+    }
+}
+
+/// Log concise rejection rollups from already-built decision output events.
+fn log_rejection_summary_events(events: &[LivePersistenceEvent]) {
+    for event in events {
+        if let LivePersistenceEvent::RejectionSummaries(rows) = event {
+            log_rejection_rollups(rows);
+        }
+    }
+}
+
+/// Log one concise operator line per market and strategy rejection rollup.
+fn log_rejection_rollups(rows: &[crate::types::StrategyRejectionSummaryRecord]) {
+    for rollup in build_rejection_rollups(rows) {
+        info!(
+            market_id = %rollup.market_id,
+            strategy = %rollup.strategy,
+            evaluations = rollup.total_count,
+            top_reasons = %rollup.reason_summary,
+            metrics = %rollup.metrics_summary,
+            "strategy rejection rollup"
         );
     }
 }
@@ -4428,14 +4452,12 @@ fn recover_window_open_price(state: &LiveState, window: &MarketWindow) -> Option
 }
 
 /// Track one weighted mean across already-aggregated rejection summaries.
-#[cfg(test)]
 #[derive(Default)]
 struct WeightedMetric {
     sum: f64,
     weight: u64,
 }
 
-#[cfg(test)]
 impl WeightedMetric {
     /// Record one optional value together with the number of evaluations it represents.
     fn record(&mut self, value: Option<f64>, weight: u64) {
@@ -4455,7 +4477,6 @@ impl WeightedMetric {
 }
 
 /// Aggregate all rejection reasons and numeric means for one market/strategy pair.
-#[cfg(test)]
 #[derive(Default)]
 struct RejectionRollup {
     market_id: String,
@@ -4477,7 +4498,6 @@ struct RejectionRollup {
 }
 
 /// Human-readable rejection rollup emitted into the operator log.
-#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 struct FormattedRejectionRollup {
     market_id: String,
@@ -4489,7 +4509,6 @@ struct FormattedRejectionRollup {
 
 /// Build concise operator-facing rejection rollups from persisted summaries.
 #[allow(clippy::too_many_lines)]
-#[cfg(test)]
 fn build_rejection_rollups(
     rows: &[crate::types::StrategyRejectionSummaryRecord],
 ) -> Vec<FormattedRejectionRollup> {
@@ -4686,25 +4705,21 @@ fn log_processed_order_outcomes(outcomes: Vec<ProcessedOrderOutcome>) {
 }
 
 /// Return one optional numeric value from a JSON summary node.
-#[cfg(test)]
 fn json_f64(value: Option<&serde_json::Value>) -> Option<f64> {
     value.and_then(serde_json::Value::as_f64)
 }
 
 /// Return one optional integer-like JSON value as a floating-point sample.
-#[cfg(test)]
 fn json_u64_as_f64(value: Option<&serde_json::Value>) -> Option<f64> {
     value.and_then(|value| value.as_u64().map(|value| value as f64))
 }
 
 /// Format one optional floating-point metric for concise operator logs.
-#[cfg(test)]
 fn format_optional_f64(value: Option<f64>, precision: usize) -> String {
     value.map_or_else(|| "na".to_string(), |value| format!("{value:.precision$}"))
 }
 
 /// Format one optional millisecond metric for concise operator logs.
-#[cfg(test)]
 fn format_optional_u64(value: Option<f64>) -> String {
     value.map_or_else(
         || "na".to_string(),
@@ -4713,7 +4728,6 @@ fn format_optional_u64(value: Option<f64>) -> String {
 }
 
 /// Append one optional floating-point metric to a concise rollup string.
-#[cfg(test)]
 fn append_metric(metrics: &mut Vec<String>, label: &str, value: Option<f64>, precision: usize) {
     if let Some(value) = value {
         metrics.push(format!("{label}={value:.precision$}"));
@@ -4721,7 +4735,6 @@ fn append_metric(metrics: &mut Vec<String>, label: &str, value: Option<f64>, pre
 }
 
 /// Append one optional integer-like metric to a concise rollup string.
-#[cfg(test)]
 fn append_integer_metric(metrics: &mut Vec<String>, label: &str, value: Option<f64>) {
     if let Some(value) = value {
         metrics.push(format!("{label}={}", value.round() as u64));

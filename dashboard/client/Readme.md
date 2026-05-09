@@ -38,11 +38,13 @@ An inline script in `index.html` applies the dark class before React hydrates, p
 
 The dashboard is a Progressive Web App installable from iPhone, iPad, and Android browsers via "Add to Home Screen". It runs in normal standalone app mode with `viewport-fit=cover` and explicit safe-area layout for notches, Dynamic Island devices, older iOS status bars, and Android display cutouts.
 
-On mobile (below 768px), the sidebar shows in compact icon-only mode by default, keeping all navigation one tap away without consuming screen width. Tapping the expand button in the header opens the full labeled drawer as an overlay. Header utilities collapse behind the "More header controls" button so process, theme, notification, and logout actions stay reachable without overflowing the iPhone toolbar. Nav items keep 44px touch targets. Trade and signal tables switch to a compact card-list layout. The equity chart height adapts across phone and desktop sizes.
+On mobile (below 768px), the sidebar shows in compact icon-only mode by default, keeping all navigation one tap away without consuming screen width. Tapping the expand button in the header opens the full labeled drawer as an overlay. Header utilities collapse behind the "More header controls" button so process, mode, theme, notification, and logout controls stay reachable without overflowing the iPhone toolbar. Nav items keep 44px touch targets. The main scroll surface supports a pull-to-refresh gesture that refreshes active dashboard queries without changing trading state. Trade and signal tables switch to a compact card-list layout. The equity chart height adapts across phone and desktop sizes.
 
 Trade notifications use the browser Notification API while the dashboard app or page is running and receiving WebSocket events. When a trade arrives and the page is hidden, a notification appears and clicking it focuses the dashboard where supported. Toggle via the bell icon in the header. Full background push requires Push API, VAPID keys, service-worker push handlers, and server-side subscription storage, and is intentionally not part of the current dashboard.
 
 A service worker (`public/sw.js`) caches the app shell for offline loading. API and WebSocket requests are never cached.
+
+Icon assets are intentionally split by platform. Browser favicons use transparent rounded-corner PNG/ICO/SVG artwork with the white border baked in. iOS uses an opaque `apple-touch-icon.png` because Web Clips select Apple touch icons instead of standard favicons. Android uses separate normal and maskable manifest icons so adaptive launchers do not add their own white background. Safari pinned tabs use `mask-icon.svg`, which is monochrome by design.
 
 ## Pages
 
