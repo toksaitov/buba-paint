@@ -19,7 +19,7 @@ services:
     command:
       - |
         touch "$$BUBA_SIDECAR_LOG_PATH"
-        node dist/index.js >> "$$BUBA_SIDECAR_LOG_PATH" 2>&1
+        exec node dist/index.js >> "$$BUBA_SIDECAR_LOG_PATH" 2>&1
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3210/health >/dev/null"]
       interval: 10s

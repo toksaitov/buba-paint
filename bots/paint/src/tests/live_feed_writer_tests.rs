@@ -3,9 +3,15 @@ use std::time::{Duration, Instant};
 
 use tempfile::NamedTempFile;
 
-use super::{FeedEventWriter, FeedEventWriterConfig};
+use super::{FeedEventWriter, FeedEventWriterConfig, terminal_sqlite_write_error};
 use crate::db::database::Database;
 use crate::types::{FeedEvent, ReplayFidelity};
+
+/// Initialize one temporary runtime database for worker tests.
+fn init_runtime_db(tmp_db: &NamedTempFile) {
+    let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
+    db.close();
+}
 
 /// Build one replay-grade feed event for writer tests.
 fn sample_event(index: u64) -> FeedEvent {
@@ -44,6 +50,7 @@ fn sample_event(index: u64) -> FeedEvent {
 #[test]
 fn writer_persists_queued_rows() {
     let tmp_db = NamedTempFile::new().unwrap();
+    init_runtime_db(&tmp_db);
     let writer = FeedEventWriter::start(
         tmp_db.path().to_string_lossy().to_string(),
         FeedEventWriterConfig {
@@ -94,6 +101,7 @@ fn writer_reports_disconnected_worker_drop() {
 #[test]
 fn writer_shutdown_with_full_queue_is_bounded() {
     let tmp_db = NamedTempFile::new().unwrap();
+    init_runtime_db(&tmp_db);
     let mut writer = FeedEventWriter::start(
         tmp_db.path().to_string_lossy().to_string(),
         FeedEventWriterConfig {
@@ -109,4 +117,18 @@ fn writer_shutdown_with_full_queue_is_bounded() {
     let started = Instant::now();
     assert!(writer.shutdown_with_timeout(Duration::from_millis(500)));
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// Verifies terminal SQLite writer errors are classified as runtime-fatal.
+#[test]
+fn writer_classifies_terminal_sqlite_errors() {
+    assert!(terminal_sqlite_write_error(&anyhow::anyhow!(
+        "database disk image is malformed"
+    )));
+    assert!(terminal_sqlite_write_error(&anyhow::anyhow!(
+        "disk I/O error"
+    )));
+    assert!(!terminal_sqlite_write_error(&anyhow::anyhow!(
+        "database is locked"
+    )));
 }

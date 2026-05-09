@@ -228,6 +228,14 @@ def check_live_worker_boundaries(errors: list[str]) -> None:
             errors.append(f"{path} uses blocking shutdown send")
         if ".join()" in text and "join_with_timeout" not in text:
             errors.append(f"{path} uses unbounded worker join")
+    for path, text in {
+        "live_feed_writer.rs": feed_writer,
+        "live_persistence_writer.rs": persistence_writer,
+    }.items():
+        if "Database::new(" in text:
+            errors.append(f"{path} runs migrations from a runtime worker")
+    if "LiveSidecarClient::new(&config.live_sidecar_url)" in live:
+        errors.append("live runtime builds sidecar client without configured timeouts")
 
 
 def check_tick_logging_default(errors: list[str]) -> None:

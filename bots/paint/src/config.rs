@@ -410,6 +410,8 @@ pub struct Config {
 
     pub execution_mode: ExecutionMode,
     pub live_sidecar_url: String,
+    pub live_sidecar_request_timeout_ms: u64,
+    pub live_sidecar_emergency_timeout_ms: u64,
     pub live_session_cash_cap_usd: f64,
     pub live_max_single_order_usd: f64,
     pub live_max_open_notional_usd: f64,
@@ -523,6 +525,12 @@ impl Config {
             }
             if self.live_sidecar_url.trim().is_empty() {
                 bail!("LIVE_SIDECAR_URL must be set for live execution modes");
+            }
+            if self.live_sidecar_request_timeout_ms == 0 {
+                bail!("LIVE_SIDECAR_REQUEST_TIMEOUT_MS must be > 0 for live execution modes");
+            }
+            if self.live_sidecar_emergency_timeout_ms == 0 {
+                bail!("LIVE_SIDECAR_EMERGENCY_TIMEOUT_MS must be > 0 for live execution modes");
             }
             validate_absolute_url("LIVE_SIDECAR_URL", &self.live_sidecar_url)?;
             validate_absolute_url("CLOB_API_URL", &self.clob_api_url)?;
@@ -866,6 +874,8 @@ impl Config {
                 env::var("EXECUTION_MODE").ok().as_deref(),
             ),
             live_sidecar_url: env_str("LIVE_SIDECAR_URL", "http://127.0.0.1:3210"),
+            live_sidecar_request_timeout_ms: env_u64("LIVE_SIDECAR_REQUEST_TIMEOUT_MS", 5_000),
+            live_sidecar_emergency_timeout_ms: env_u64("LIVE_SIDECAR_EMERGENCY_TIMEOUT_MS", 2_000),
             live_session_cash_cap_usd: env_f64("LIVE_SESSION_CASH_CAP_USD", 100.0),
             live_max_single_order_usd: env_f64("LIVE_MAX_SINGLE_ORDER_USD", 10.0),
             live_max_open_notional_usd: env_f64("LIVE_MAX_OPEN_NOTIONAL_USD", 25.0),
@@ -1033,6 +1043,8 @@ impl Default for Config {
 
             execution_mode: ExecutionMode::Paper,
             live_sidecar_url: "http://127.0.0.1:3210".to_string(),
+            live_sidecar_request_timeout_ms: 5_000,
+            live_sidecar_emergency_timeout_ms: 2_000,
             live_session_cash_cap_usd: 100.0,
             live_max_single_order_usd: 10.0,
             live_max_open_notional_usd: 25.0,

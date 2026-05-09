@@ -209,6 +209,19 @@ fn live_execution_validation_rejects_invalid_urls() {
     assert!(cfg.validate().is_err());
 }
 
+/// Verifies that live-execution validation rejects unbounded sidecar timeouts.
+#[test]
+fn live_execution_validation_rejects_zero_sidecar_timeouts() {
+    let mut cfg = Config::default();
+    cfg.execution_mode = ExecutionMode::LiveReadonly;
+    cfg.live_sidecar_request_timeout_ms = 0;
+    assert!(cfg.validate().is_err());
+
+    cfg.live_sidecar_request_timeout_ms = 5_000;
+    cfg.live_sidecar_emergency_timeout_ms = 0;
+    assert!(cfg.validate().is_err());
+}
+
 /// Verifies that resolve str override.
 #[test]
 fn resolve_str_override() {

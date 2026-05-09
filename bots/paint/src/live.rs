@@ -365,7 +365,7 @@ async fn submit_live_orders_from_worker(
         now_ms: request.now_ms,
     };
     let mut successful = 0_u64;
-    for order in &request.orders {
+    for (index, order) in request.orders.iter().enumerate() {
         let decision_event =
             critical_signal_event_for_order(&request.critical_events, order.signal_id);
         match submit_one_live_order_from_worker(LiveOrderWorkerSubmission {
@@ -404,6 +404,7 @@ async fn submit_live_orders_from_worker(
                     feedback.releases.push((order.strategy.clone(), release));
                     feedback.rejected_signal_ids.push(order.signal_id);
                 }
+                release_unsubmitted_orders_after_block(&mut feedback, &request.orders, index + 1);
                 feedback.state_update = Some(LiveSubmissionStateUpdate { state, reason });
                 break;
             }
@@ -443,6 +444,20 @@ async fn submit_live_orders_from_worker(
         });
     }
     feedback
+}
+
+/// Release not-yet-submitted reservations after a batch-level live blocker.
+fn release_unsubmitted_orders_after_block(
+    feedback: &mut LiveSubmissionFeedback,
+    orders: &[QueuedOrderIntent],
+    start_index: usize,
+) {
+    for order in orders.iter().skip(start_index) {
+        feedback
+            .releases
+            .push((order.strategy.clone(), order.reserved_cost));
+        feedback.rejected_signal_ids.push(order.signal_id);
+    }
 }
 
 /// Result of one worker-side live order submission.
@@ -561,7 +576,7 @@ fn persist_live_order_intent_from_worker(
     let order = input.order;
     let (intent_status, reject_reason) =
         live_order_pre_submit_rejection(order, input.notional, input.config);
-    let db = Database::new(input.db_path)?;
+    let db = Database::open_runtime(input.db_path)?;
     let decision_evidence =
         live_decision_evidence_from_event(input.decision_event, order.signal_id)?;
     let intent = LiveOrderIntent {
@@ -683,7 +698,7 @@ fn handle_live_order_response_from_worker(
     now_ms: u64,
     response: &LiveOrderIntentResponse,
 ) -> LiveSubmissionOrderResult {
-    let db = match Database::new(db_path) {
+    let db = match Database::open_runtime(db_path) {
         Ok(db) => db,
         Err(error) => {
             return LiveSubmissionOrderResult::Blocked {
@@ -836,7 +851,7 @@ async fn handle_live_order_error_from_worker(
     error: anyhow::Error,
 ) -> LiveSubmissionOrderResult {
     let error_message = error.to_string();
-    match Database::new(context.db_path) {
+    match Database::open_runtime(context.db_path) {
         Ok(db) => {
             if let Err(error) = db.log_live_order(&LiveOrder {
                 id: None,
@@ -924,7 +939,7 @@ fn persist_live_worker_state(
     now_ms: u64,
     details_json: Option<&str>,
 ) -> anyhow::Result<()> {
-    let db = Database::new(db_path)?;
+    let db = Database::open_runtime(db_path)?;
     record_live_control_state(&db, session_id, state, actor, reason, now_ms, details_json)?;
     db.update_live_session_metadata(session_id, state, None, None, details_json)?;
     db.close();
@@ -2693,6 +2708,7 @@ async fn run_live_runtime(
                     dropped_rows = writer_snapshot.dropped,
                     queue_full = writer_snapshot.queue_full,
                     write_errors = writer_snapshot.write_errors,
+                    terminal_write_errors = writer_snapshot.terminal_write_errors,
                     max_batch_write_ms = writer_snapshot.max_write_ms,
                     last_persisted_at_ms = writer_snapshot.last_persisted_at_ms,
                     rows = row_summary,
@@ -3027,7 +3043,7 @@ impl LiveTradingMonitor {
         clock: &dyn Clock,
     ) -> anyhow::Result<()> {
         let commands = {
-            let db = Database::new(db_path)?;
+            let db = Database::open_runtime(db_path)?;
             let commands = db.pending_live_control_commands(self.session_id)?;
             db.close();
             commands
@@ -3040,7 +3056,7 @@ impl LiveTradingMonitor {
                 Ok(action) => action,
                 Err(error) => {
                     let details = json!({ "error": error.to_string() }).to_string();
-                    let db = Database::new(db_path)?;
+                    let db = Database::open_runtime(db_path)?;
                     db.update_live_control_command_status(
                         command_id,
                         clock.now(),
@@ -3079,7 +3095,7 @@ impl LiveTradingMonitor {
                     )
                 }
             };
-            let db = Database::new(db_path)?;
+            let db = Database::open_runtime(db_path)?;
             db.update_live_control_command_status(
                 command_id,
                 applied_at_ms,
@@ -3132,7 +3148,7 @@ impl LiveTradingMonitor {
                     .await;
             }
         };
-        let db = Database::new(db_path)?;
+        let db = Database::open_runtime(db_path)?;
         db.log_live_account_snapshot(&live_account_snapshot(self.session_id, &account))?;
         self.persist_activity_recovery(&db, &activity)?;
         let mut issues = live_gate_issues(&preflight, &account, &activity, config);
@@ -3207,7 +3223,7 @@ impl LiveTradingMonitor {
         } else {
             None
         };
-        let db = Database::new(db_path)?;
+        let db = Database::open_runtime(db_path)?;
         self.update_session_metadata(&db)?;
         db.close();
         if let Some(breach) = breach {
@@ -3334,14 +3350,14 @@ impl LiveTradingMonitor {
             LiveControlAction::Arm => self.arm(db_path, config, clock, actor, reason).await,
             LiveControlAction::Disarm => {
                 ensure_state_allows_disarm(&self.state)?;
-                let db = Database::new(db_path)?;
+                let db = Database::open_runtime(db_path)?;
                 self.set_state(&db, "disarmed", actor, reason, clock.now(), None)?;
                 db.close();
                 Ok(json!({ "state": self.state }))
             }
             LiveControlAction::StopAfterFlat => {
                 ensure_state_is(&self.state, "armed", "stop-after-flat")?;
-                let db = Database::new(db_path)?;
+                let db = Database::open_runtime(db_path)?;
                 self.set_state(&db, "stop_after_flat", actor, reason, clock.now(), None)?;
                 db.close();
                 Ok(json!({ "state": self.state }))
@@ -3366,7 +3382,7 @@ impl LiveTradingMonitor {
         if !issues.is_empty() {
             bail!("live arming blocked: {}", issues.join("; "));
         }
-        let db = Database::new(db_path)?;
+        let db = Database::open_runtime(db_path)?;
         self.set_state(&db, "armed", actor, reason, clock.now(), None)?;
         db.close();
         Ok(json!({ "state": self.state }))
@@ -3418,7 +3434,7 @@ impl LiveTradingMonitor {
             "risk": self.risk.as_ref().map(LiveRiskMonitor::to_json),
             "cancel_all": cancel_details,
         });
-        let db = Database::new(db_path)?;
+        let db = Database::open_runtime(db_path)?;
         let details_json = details.to_string();
         self.set_state(&db, "halted", actor, reason, now, Some(&details_json))?;
         db.log_live_reconciliation_event(&LiveReconciliationEvent {
@@ -3452,7 +3468,7 @@ impl LiveTradingMonitor {
         reason: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let response = self.sidecar.cancel_all().await?;
-        let db = Database::new(db_path)?;
+        let db = Database::open_runtime(db_path)?;
         db.log_control_audit(&crate::types::ControlAuditEntry {
             id: None,
             timestamp_ms: clock.now(),
@@ -3481,7 +3497,7 @@ impl LiveTradingMonitor {
     ) -> anyhow::Result<serde_json::Value> {
         let now = clock.now();
         let response = self.sidecar.redeem_all().await?;
-        let db = Database::new(db_path)?;
+        let db = Database::open_runtime(db_path)?;
         if response.submitted > 0 {
             db.log_live_redemption(&LiveRedemption {
                 id: None,
@@ -3788,13 +3804,15 @@ fn reject_stale_live_decision_output(
     strategy_worker: &StrategyWorker,
     mut live_trading_monitor: Option<&mut LiveTradingMonitor>,
 ) {
+    let mut persistence_failed = false;
     for event in stale_decision_signal_events(output) {
         if !persistence_writer.try_enqueue(event) {
             mark_live_submission_blocked(
                 live_trading_monitor.as_deref_mut(),
                 "runtime persistence queue rejected stale-decision evidence",
             );
-            return;
+            persistence_failed = true;
+            break;
         }
     }
     rollback_live_orders_after_runtime_rejection(
@@ -3804,6 +3822,12 @@ fn reject_stale_live_decision_output(
         "stale live decision output",
         live_trading_monitor,
     );
+    if persistence_failed {
+        warn!(
+            orders = output.live_orders.len(),
+            "rolled back stale live decision after evidence queue failure"
+        );
+    }
 }
 
 /// Build rejected signal evidence for live orders discarded as stale.
@@ -4103,7 +4127,7 @@ async fn bootstrap_live_trading_runtime(
         None,
     )?;
     let mut monitor = LiveTradingMonitor {
-        sidecar: LiveSidecarClient::new(&config.live_sidecar_url),
+        sidecar: LiveSidecarClient::from_config(config),
         session_id,
         state: "disarmed".to_string(),
         preflight: None,
@@ -4121,7 +4145,7 @@ async fn bootstrap_live_trading_runtime(
             "live_trading started with degraded sidecar state: {error}"
         );
         monitor.blocked_reason = Some(error.to_string());
-        let db = Database::new(db_path)?;
+        let db = Database::open_runtime(db_path)?;
         monitor.update_session_metadata(&db)?;
         db.close();
     }
@@ -4140,7 +4164,7 @@ async fn bootstrap_live_trading_runtime(
         state = %monitor.state,
         "live_trading runtime bootstrapped disarmed"
     );
-    let db = Database::new(db_path)?;
+    let db = Database::open_runtime(db_path)?;
     Ok((
         db,
         LiveTradingRuntimeBootstrap {
@@ -5049,8 +5073,10 @@ fn runtime_capture_health(
     now_ms: u64,
     max_lag_ms: u64,
 ) -> &'static str {
-    let writer_degraded =
-        snapshot.write_errors > 0 || snapshot.queue_full > 0 || snapshot.dropped > 0;
+    let writer_degraded = snapshot.write_errors > 0
+        || snapshot.terminal_write_errors > 0
+        || snapshot.queue_full > 0
+        || snapshot.dropped > 0;
     let writer_stale = snapshot.last_persisted_at_ms > 0
         && snapshot
             .last_persisted_at_ms
@@ -5119,7 +5145,7 @@ fn runtime_capture_issues_for_live(
 
 /// Return the required feed classes for sweep-grade replay.
 fn required_feed_event_classes() -> &'static str {
-    "binance:aggTrade, binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:top_of_book, clob_down:top_of_book"
+    "binance:aggTrade, binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:best_bid_ask, clob_down:best_bid_ask"
 }
 
 /// Return required feed classes absent from one row-count summary.
@@ -5566,7 +5592,7 @@ mod tests {
             db.get_run_metadata("replay_quality_missing_required_classes")
                 .unwrap()
                 .unwrap(),
-            "binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:top_of_book, clob_down:top_of_book"
+            "binance:bookTicker, binance:depth, chainlink:chainlink_price, clob_up:best_bid_ask, clob_down:best_bid_ask"
         );
     }
 
@@ -5627,6 +5653,7 @@ mod tests {
             dropped: 0,
             queue_full: 0,
             write_errors: 0,
+            terminal_write_errors: 0,
             batches: 1,
             total_write_ms: 1,
             max_write_ms: 1,
@@ -6177,6 +6204,28 @@ mod tests {
         };
 
         assert!(!stale_live_decision_output(&output, 4, 10_050, &config));
+    }
+
+    /// Verifies unsubmitted orders are released after a batch-level blocker.
+    #[test]
+    fn blocked_live_batch_releases_unsubmitted_orders() {
+        let first = test_queued_order();
+        let mut second = test_queued_order();
+        second.signal_id = -2;
+        second.strategy = "spread-capture".to_string();
+        second.reserved_cost = 4.0;
+        let mut feedback = LiveSubmissionFeedback {
+            state_update: None,
+            releases: Vec::new(),
+            fills: Vec::new(),
+            rejected_signal_ids: Vec::new(),
+            now_ms: 2_000,
+        };
+
+        release_unsubmitted_orders_after_block(&mut feedback, &[first, second], 1);
+
+        assert_eq!(feedback.releases, vec![("spread-capture".to_string(), 4.0)]);
+        assert_eq!(feedback.rejected_signal_ids, vec![-2]);
     }
 
     /// Verifies latest-state decision storage replaces stale feed snapshots.

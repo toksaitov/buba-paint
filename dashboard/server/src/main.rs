@@ -123,9 +123,39 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("buba-dashboard listening on {addr}");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+/// Waits for a process shutdown signal.
+async fn shutdown_signal() {
+    tokio::select! {
+        () = async { let _ = tokio::signal::ctrl_c().await; } => {},
+        () = sigterm_future() => {},
+    }
+}
+
+/// Waits for `SIGTERM` on Unix platforms.
+#[cfg(unix)]
+async fn sigterm_future() {
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut signal) => {
+            signal.recv().await;
+        }
+        Err(error) => {
+            tracing::warn!(?error, "failed to register SIGTERM handler");
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Waits forever on platforms without Unix signals.
+#[cfg(not(unix))]
+async fn sigterm_future() {
+    std::future::pending::<()>().await
 }
 
 /// Returns a simple liveness payload for load balancers and smoke tests.

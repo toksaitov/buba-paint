@@ -15,6 +15,8 @@ pub const READONLY_POLL_INTERVAL_SECS: u64 = 60;
 /// Operator rollup cadence for combined venue and shadow-paper status logs.
 pub const READONLY_ROLLUP_INTERVAL_SECS: u64 = 5 * 60;
 const CASH_CHANGE_EPSILON_USD: f64 = 0.01;
+const READONLY_BOOTSTRAP_ACCOUNT_ATTEMPTS: usize = 5;
+const READONLY_BOOTSTRAP_ACCOUNT_RETRY_MS: u64 = 2_000;
 
 #[derive(Debug, Default, Deserialize)]
 struct AccountDetailsView {
@@ -301,7 +303,7 @@ fn persist_readonly_account_refresh(
     previous_account: Option<&LiveAccountState>,
     account: &LiveAccountState,
 ) -> anyhow::Result<()> {
-    let db = Database::new(db_path)?;
+    let db = Database::open_runtime(db_path)?;
     db.log_live_account_snapshot(&account_snapshot(session.session_id, account))?;
     persist_reconciliation_events(
         &db,
@@ -323,7 +325,7 @@ fn persist_readonly_account_failure(
     session: &mut ReadonlySessionState,
     error: &str,
 ) -> anyhow::Result<()> {
-    let db = Database::new(db_path)?;
+    let db = Database::open_runtime(db_path)?;
     let event = LiveReconciliationEvent {
         id: None,
         session_id: session.session_id,
@@ -390,7 +392,7 @@ pub async fn bootstrap_readonly_runtime(
         details_json: Some(json!({ "execution_mode": config.execution_mode.as_str() }).to_string()),
     })?;
 
-    let sidecar = LiveSidecarClient::new(&config.live_sidecar_url);
+    let sidecar = LiveSidecarClient::from_config(config);
     let preflight = match sidecar.preflight(config).await {
         Ok(preflight) => preflight,
         Err(error) => {
@@ -428,7 +430,7 @@ pub async fn bootstrap_readonly_runtime(
         );
     }
 
-    let initial_account = match sidecar.account_state().await {
+    let initial_account = match fetch_initial_readonly_account(&sidecar).await {
         Ok(account) => account,
         Err(error) => {
             let details = json!({
@@ -484,6 +486,37 @@ pub async fn bootstrap_readonly_runtime(
             },
         },
     ))
+}
+
+/// Fetch the initial account snapshot with bounded startup retries.
+async fn fetch_initial_readonly_account(
+    sidecar: &LiveSidecarClient,
+) -> anyhow::Result<LiveAccountState> {
+    let mut last_error: Option<anyhow::Error> = None;
+    for attempt in 1..=READONLY_BOOTSTRAP_ACCOUNT_ATTEMPTS {
+        match sidecar.account_state().await {
+            Ok(account) => return Ok(account),
+            Err(error) => {
+                warn!(
+                    attempt,
+                    max_attempts = READONLY_BOOTSTRAP_ACCOUNT_ATTEMPTS,
+                    %error,
+                    "readonly account bootstrap attempt failed"
+                );
+                last_error = Some(error);
+                if attempt < READONLY_BOOTSTRAP_ACCOUNT_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        READONLY_BOOTSTRAP_ACCOUNT_RETRY_MS,
+                    ))
+                    .await;
+                }
+            }
+        }
+    }
+    match last_error {
+        Some(error) => Err(error),
+        None => bail!("readonly account bootstrap did not run"),
+    }
 }
 
 /// Update the mutable readonly session status and persisted details.
@@ -911,6 +944,7 @@ fn persist_reconciliation_events(
 #[cfg(test)]
 mod tests {
     use tempfile::NamedTempFile;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -961,6 +995,46 @@ mod tests {
             "allowance_available": 92.0,
             "details_json": "{\"provider\":\"polymarket\",\"user_stream_status\":\"ok\",\"open_order_count\":0,\"position_count\":0,\"redeemable_position_count\":0,\"legal_order_min_usd\":5.0}"
         })
+    }
+
+    /// Return one local HTTP server that fails the first account request.
+    async fn transient_account_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0_u8; 2048];
+                let _ = stream.read(&mut buf).await.unwrap();
+                let (status, body) = if attempt == 0 {
+                    (
+                        "500 Internal Server Error",
+                        json!({ "error": "warming_up" }),
+                    )
+                } else {
+                    ("200 OK", ok_account_body())
+                };
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// Verifies that readonly account bootstrap tolerates transient readiness lag.
+    #[tokio::test]
+    async fn fetch_initial_readonly_account_retries_transient_failure() {
+        let url = transient_account_server().await;
+        let sidecar = LiveSidecarClient::new(&url);
+
+        let account = fetch_initial_readonly_account(&sidecar).await.unwrap();
+
+        assert_eq!(account.wallet_address, Some("0xwallet".to_string()));
+        assert!((account.cash_available - 92.0).abs() < f64::EPSILON);
     }
 
     /// Verifies that readonly bootstrap creates a ready session and account snapshot.

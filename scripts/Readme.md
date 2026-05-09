@@ -13,6 +13,7 @@ Root-level scripts are active automation or setup entry points. Manual charting 
 - `live-readiness-host-soak.py`: stages a reviewed release on `buba-paint`, runs the no-order `live_readonly` host soak, and writes non-secret evidence under `data/experiments/replay-grade-readonly-soak-001/`. Run through `make live-readiness-host-soak`; use `LIVE_HOST_SOAK_ARGS="--dry-run"` to inspect the command plan without touching the host.
 - `live-readiness-local.py`: runs the local live-money readiness gate and writes an evidence bundle outside the repository. Run through `make live-readiness-local`; use `LIVE_READINESS_ARGS="--dry-run"` for a safe manifest-only check.
 - `live-low-latency-local.py`: runs hot-path audit, targeted writer/feed tests, and Compose config checks, then writes an evidence bundle under `/tmp` by default. Run through `make live-low-latency-local`; use `LIVE_LOW_LATENCY_ARGS="--dry-run"` to inspect commands only.
+- `live-docker-smoke.py`: runs the local no-Caddy Docker `live_readonly` stack for 10 minutes on a Docker-native runtime volume, copies DB/log evidence to `/tmp`, and checks logs, restart counts, SQLite integrity, replay validation, feed classes, and zero live venue rows. Run through `make live-docker-smoke`; use `LIVE_DOCKER_SMOKE_ARGS="--dry-run"` to inspect the manifest only.
 - `ts_comment_audit.mjs`: enforces the TypeScript comment policy used by `make lint` and `make comment-audit`.
 
 ## Setup

@@ -45,6 +45,8 @@ Preferred remote process shape is Docker Compose with Caddy as the only public e
 - runtime DBs and logs are host bind mounts under `~/buba-paint-live/runtime/<runtime-name>`.
 - Caddy state is persisted under `~/buba-paint-live/caddy`.
 
+Local Docker smoke tests use `docker-compose.smoke.yml` with a Docker-native runtime volume. That is intentional: macOS Docker Desktop bind-mounted SQLite WAL paths are not accepted as HFT/replay smoke evidence. Production Linux runtime bind mounts remain the preferred operational layout unless a Linux soak reproduces SQLite I/O errors.
+
 Systemd templates under [ops/](../ops/) are retained as legacy/reference artifacts. Use Docker Compose for new deployments unless a phase plan explicitly says otherwise.
 
 ## Docker/Caddy Staging Flow

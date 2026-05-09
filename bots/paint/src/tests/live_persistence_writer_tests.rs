@@ -3,11 +3,20 @@ use std::time::{Duration, Instant};
 
 use tempfile::NamedTempFile;
 
-use super::{LivePersistenceEvent, LivePersistenceWriter, LivePersistenceWriterConfig};
+use super::{
+    LivePersistenceEvent, LivePersistenceWriter, LivePersistenceWriterConfig,
+    terminal_sqlite_write_error,
+};
 use crate::db::database::Database;
 use crate::types::{
     FeedHealthEvent, MarketWindow, ReplayFidelity, Signal, SignalDirection, SignalTelemetry,
 };
+
+/// Initialize one temporary runtime database for worker tests.
+fn init_runtime_db(tmp_db: &NamedTempFile) {
+    let db = Database::new(tmp_db.path().to_str().unwrap()).unwrap();
+    db.close();
+}
 
 /// Build one telemetry-bearing signal for persistence writer tests.
 fn sample_signal(index: i64) -> Signal {
@@ -99,6 +108,7 @@ fn market_window() -> MarketWindow {
 /// Verifies queued decision evidence is persisted off the hot path.
 fn writer_persists_decision_signal_events() {
     let tmp_db = NamedTempFile::new().unwrap();
+    init_runtime_db(&tmp_db);
     let writer = LivePersistenceWriter::start(
         tmp_db.path().to_string_lossy().to_string(),
         LivePersistenceWriterConfig {
@@ -154,6 +164,7 @@ fn writer_reports_disconnected_worker_drop() {
 #[test]
 fn writer_shutdown_with_full_queue_is_bounded() {
     let tmp_db = NamedTempFile::new().unwrap();
+    init_runtime_db(&tmp_db);
     let mut writer = LivePersistenceWriter::start(
         tmp_db.path().to_string_lossy().to_string(),
         LivePersistenceWriterConfig {
@@ -175,6 +186,7 @@ fn writer_shutdown_with_full_queue_is_bounded() {
 /// Verifies runtime maintenance rows are persisted through the bounded writer.
 fn writer_persists_feed_health_metadata_and_market_upsert() {
     let tmp_db = NamedTempFile::new().unwrap();
+    init_runtime_db(&tmp_db);
     let writer = LivePersistenceWriter::start(
         tmp_db.path().to_string_lossy().to_string(),
         LivePersistenceWriterConfig {
@@ -232,4 +244,15 @@ fn writer_persists_feed_health_metadata_and_market_upsert() {
     assert_eq!(market_count, 1);
     assert_eq!(feed_health_count, 1);
     assert_eq!(metadata.as_deref(), Some("observing"));
+}
+
+/// Verifies terminal SQLite errors are fatal for runtime evidence persistence.
+#[test]
+fn writer_classifies_terminal_sqlite_errors() {
+    assert!(terminal_sqlite_write_error(&anyhow::anyhow!(
+        "database disk image is malformed"
+    )));
+    assert!(!terminal_sqlite_write_error(&anyhow::anyhow!(
+        "constraint failed"
+    )));
 }

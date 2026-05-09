@@ -74,9 +74,12 @@ Low-latency bot safety has its own gate:
 ```bash
 make hot-path-audit
 make live-low-latency-local
+make live-docker-smoke
 ```
 
 The hot-path audit rejects known full DB scans, runtime replay validators, DB or venue side effects inside the pure decision worker, direct feed-path SQLite calls, sidecar/account/control awaits in the runtime loop, legacy direct live-submission methods, direct live venue submissions from the feed path, opt-out `tick_data` defaults, and `quick_check` healthchecks. The local low-latency runner writes evidence under `/tmp` by default and checks the feed writer, concurrent-feed resilience, and Compose configuration without touching the deployment host.
+
+The Docker smoke runner starts the local no-Caddy `live_readonly` stack on a Docker-native runtime volume, not a macOS bind-mounted SQLite WAL path. It fails on container restarts, `Bus error`, SQLite disk I/O or malformed-image errors, unintended live order/cancel/redeem rows, failed offline DB integrity checks after shutdown, or failed `validate-replay-data` when feed rows were captured.
 
 ## Comment and Docs Policy
 

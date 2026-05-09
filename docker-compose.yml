@@ -23,7 +23,7 @@ services:
         if [ ! -f "$$DB_PATH" ]; then
           buba-paint init-db --db-path "$$DB_PATH" --balance "$$STARTING_BALANCE" >> "$$BUBA_PAINT_LOG_PATH" 2>&1
         fi
-        buba-paint live --db-path "$$DB_PATH" --balance "$$STARTING_BALANCE" >> "$$BUBA_PAINT_LOG_PATH" 2>&1
+        exec buba-paint live --db-path "$$DB_PATH" --balance "$$STARTING_BALANCE" >> "$$BUBA_PAINT_LOG_PATH" 2>&1
     healthcheck:
       test: ["CMD-SHELL", "test -f /runtime/paint.db && test -f /runtime/paint.log"]
       interval: 10s
@@ -52,7 +52,7 @@ services:
       - |
         while [ ! -f /runtime/paint.db ]; do sleep 1; done
         touch /runtime/paint.log /runtime/agent.log
-        buba-agent --db-path /runtime/paint.db --port 9090 --poll-interval ${AGENT_POLL_INTERVAL_MS:-10000} --monitor-only --log-path /runtime/paint.log >> /runtime/agent.log 2>&1
+        exec buba-agent --db-path /runtime/paint.db --port 9090 --poll-interval ${AGENT_POLL_INTERVAL_MS:-10000} --monitor-only --log-path /runtime/paint.log >> /runtime/agent.log 2>&1
     depends_on:
       paint:
         condition: service_healthy
@@ -89,7 +89,7 @@ services:
     command:
       - |
         touch /runtime/dashboard.log
-        buba-dashboard --config /config/dashboard.toml --static-dir /srv/static >> /runtime/dashboard.log 2>&1
+        exec buba-dashboard --config /config/dashboard.toml --static-dir /srv/static >> /runtime/dashboard.log 2>&1
     depends_on:
       agent:
         condition: service_healthy

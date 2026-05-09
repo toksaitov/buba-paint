@@ -1,6 +1,7 @@
 use anyhow::{Context, bail};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::types::LiveStrategyReadiness;
@@ -162,15 +163,39 @@ pub struct LiveActivityResponse {
 pub struct LiveSidecarClient {
     base_url: String,
     client: reqwest::Client,
+    request_timeout: Duration,
+    emergency_timeout: Duration,
 }
 
 impl LiveSidecarClient {
     /// Construct a new client from a configured base URL.
     #[must_use]
     pub fn new(base_url: &str) -> Self {
+        Self::with_timeouts(base_url, Duration::from_secs(5), Duration::from_secs(2))
+    }
+
+    /// Construct a new client from bot config.
+    #[must_use]
+    pub fn from_config(config: &Config) -> Self {
+        Self::with_timeouts(
+            &config.live_sidecar_url,
+            Duration::from_millis(config.live_sidecar_request_timeout_ms.max(1)),
+            Duration::from_millis(config.live_sidecar_emergency_timeout_ms.max(1)),
+        )
+    }
+
+    /// Construct a new client with explicit request budgets.
+    #[must_use]
+    pub fn with_timeouts(
+        base_url: &str,
+        request_timeout: Duration,
+        emergency_timeout: Duration,
+    ) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
+            request_timeout,
+            emergency_timeout,
         }
     }
 
@@ -216,7 +241,12 @@ impl LiveSidecarClient {
 
     /// Cancel every currently open live order through the sidecar.
     pub async fn cancel_all(&self) -> anyhow::Result<LiveCancellationResponse> {
-        self.post_json("/cancel-all", &serde_json::json!({})).await
+        self.post_json_with_timeout(
+            "/cancel-all",
+            &serde_json::json!({}),
+            self.emergency_timeout,
+        )
+        .await
     }
 
     /// Trigger redemption for all currently redeemable positions.
@@ -233,6 +263,7 @@ impl LiveSidecarClient {
         let response = self
             .client
             .get(&url)
+            .timeout(self.request_timeout)
             .send()
             .await
             .with_context(|| format!("requesting {url}"))?;
@@ -250,6 +281,30 @@ impl LiveSidecarClient {
             .client
             .post(&url)
             .json(body)
+            .timeout(self.request_timeout)
+            .send()
+            .await
+            .with_context(|| format!("requesting {url}"))?;
+        Self::decode_response(response, &url).await
+    }
+
+    /// Issue one sidecar `POST` with a custom timeout and decode the response.
+    async fn post_json_with_timeout<T, B>(
+        &self,
+        path: &str,
+        body: &B,
+        timeout: Duration,
+    ) -> anyhow::Result<T>
+    where
+        T: for<'de> Deserialize<'de>,
+        B: Serialize + ?Sized,
+    {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .client
+            .post(&url)
+            .json(body)
+            .timeout(timeout)
             .send()
             .await
             .with_context(|| format!("requesting {url}"))?;

@@ -26,6 +26,7 @@ pub(crate) struct FeedEventWriterSnapshot {
     pub dropped: u64,
     pub queue_full: u64,
     pub write_errors: u64,
+    pub terminal_write_errors: u64,
     pub batches: u64,
     pub total_write_ms: u64,
     pub max_write_ms: u64,
@@ -53,6 +54,7 @@ struct FeedEventWriterMetrics {
     dropped: AtomicU64,
     queue_full: AtomicU64,
     write_errors: AtomicU64,
+    terminal_write_errors: AtomicU64,
     batches: AtomicU64,
     total_write_ms: AtomicU64,
     max_write_ms: AtomicU64,
@@ -151,6 +153,7 @@ impl FeedEventWriterMetrics {
             dropped: self.dropped.load(Ordering::Relaxed),
             queue_full: self.queue_full.load(Ordering::Relaxed),
             write_errors: self.write_errors.load(Ordering::Relaxed),
+            terminal_write_errors: self.terminal_write_errors.load(Ordering::Relaxed),
             batches: self.batches.load(Ordering::Relaxed),
             total_write_ms: self.total_write_ms.load(Ordering::Relaxed),
             max_write_ms: self.max_write_ms.load(Ordering::Relaxed),
@@ -184,7 +187,7 @@ fn run_feed_writer(
     batch_size: usize,
     flush_interval: Duration,
 ) {
-    let db = match Database::new(&db_path) {
+    let db = match Database::open_runtime(&db_path) {
         Ok(db) => db,
         Err(error) => {
             error!(%error, "feed writer failed to open database");
@@ -196,8 +199,8 @@ fn run_feed_writer(
         match rx.recv_timeout(flush_interval) {
             Ok(FeedEventWriterMessage::Event(event)) => {
                 batch.push(*event);
-                if batch.len() >= batch_size {
-                    flush_batch(&db, &metrics, &mut batch);
+                if batch.len() >= batch_size && !flush_batch(&db, &metrics, &mut batch) {
+                    break;
                 }
             }
             Ok(FeedEventWriterMessage::Shutdown) => {
@@ -206,7 +209,9 @@ fn run_feed_writer(
                 break;
             }
             Err(RecvTimeoutError::Timeout) => {
-                flush_batch(&db, &metrics, &mut batch);
+                if !flush_batch(&db, &metrics, &mut batch) {
+                    break;
+                }
             }
             Err(RecvTimeoutError::Disconnected) => {
                 flush_batch(&db, &metrics, &mut batch);
@@ -218,9 +223,13 @@ fn run_feed_writer(
 }
 
 /// Flushes the current batch and records writer metrics.
-fn flush_batch(db: &Database, metrics: &FeedEventWriterMetrics, batch: &mut Vec<FeedEvent>) {
+fn flush_batch(
+    db: &Database,
+    metrics: &FeedEventWriterMetrics,
+    batch: &mut Vec<FeedEvent>,
+) -> bool {
     if batch.is_empty() {
-        return;
+        return true;
     }
     let started = Instant::now();
     match db.log_feed_events_batch(batch) {
@@ -236,16 +245,35 @@ fn flush_batch(db: &Database, metrics: &FeedEventWriterMetrics, batch: &mut Vec<
                 .last_persisted_at_ms
                 .store(now_ms(), Ordering::Relaxed);
             batch.clear();
+            true
         }
         Err(error) => {
+            let terminal = terminal_sqlite_write_error(&error);
             metrics.write_errors.fetch_add(1, Ordering::Relaxed);
             metrics
                 .dropped
                 .fetch_add(batch.len() as u64, Ordering::Relaxed);
-            error!(%error, dropped = batch.len(), "feed writer failed to persist batch");
+            if terminal {
+                metrics
+                    .terminal_write_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                error!(%error, dropped = batch.len(), "feed writer terminal persistence failure");
+            } else {
+                error!(%error, dropped = batch.len(), "feed writer failed to persist batch");
+            }
             batch.clear();
+            !terminal
         }
     }
+}
+
+/// Return whether one writer error indicates the DB is no longer safe to use.
+fn terminal_sqlite_write_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("disk i/o error")
+        || message.contains("database disk image is malformed")
+        || message.contains("database is corrupt")
+        || message.contains("file is not a database")
 }
 
 /// Updates an atomic maximum value.

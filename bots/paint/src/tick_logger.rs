@@ -93,7 +93,7 @@ pub async fn run_tick_logger(
     tick_interval_ms: u64,
     state: Arc<RwLock<TickLoggerState>>,
 ) {
-    let db = match Database::new(&db_path) {
+    let db = match Database::open_runtime(&db_path) {
         Ok(db) => db,
         Err(e) => {
             error!(logger = "tick", "failed to open database: {e}");

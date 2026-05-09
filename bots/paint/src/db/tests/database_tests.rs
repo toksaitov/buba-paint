@@ -12,6 +12,26 @@ fn temp_db() -> (Database, NamedTempFile) {
     (db, tmp)
 }
 
+/// Verifies that runtime opens do not run schema migrations.
+#[test]
+fn open_runtime_does_not_create_schema() {
+    let tmp = NamedTempFile::new().unwrap();
+    let db_path = tmp.path().to_str().unwrap();
+    let db = Database::open_runtime(db_path).unwrap();
+    let table_count: u64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'run_metadata'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    db.close();
+
+    assert_eq!(table_count, 0);
+}
+
 /// Sample market window.
 fn sample_market_window() -> MarketWindow {
     MarketWindow {

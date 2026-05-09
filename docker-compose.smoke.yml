@@ -1,0 +1,56 @@
+services:
+  runtime-init:
+    image: alpine:3.22
+    command:
+      - sh
+      - -lc
+      - |
+        mkdir -p /runtime
+        chown -R "${BUBA_UID:-1000}:${BUBA_GID:-1000}" /runtime
+    volumes:
+      - type: volume
+        source: smoke-runtime
+        target: /runtime
+
+  paint:
+    depends_on:
+      runtime-init:
+        condition: service_completed_successfully
+    volumes:
+      - type: volume
+        source: smoke-runtime
+        target: /runtime
+
+  sidecar:
+    depends_on:
+      runtime-init:
+        condition: service_completed_successfully
+    volumes:
+      - type: volume
+        source: smoke-runtime
+        target: /runtime
+
+  agent:
+    depends_on:
+      runtime-init:
+        condition: service_completed_successfully
+    volumes:
+      - type: volume
+        source: smoke-runtime
+        target: /runtime
+
+  dashboard:
+    depends_on:
+      runtime-init:
+        condition: service_completed_successfully
+    volumes:
+      - type: volume
+        source: smoke-runtime
+        target: /runtime
+      - type: bind
+        source: ${BUBA_DASHBOARD_CONFIG:-./dashboard.toml}
+        target: /config/dashboard.toml
+        read_only: true
+
+volumes:
+  smoke-runtime:

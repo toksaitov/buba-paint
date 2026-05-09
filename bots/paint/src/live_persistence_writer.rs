@@ -29,6 +29,7 @@ pub(crate) struct LivePersistenceWriterSnapshot {
     pub dropped: u64,
     pub queue_full: u64,
     pub write_errors: u64,
+    pub terminal_write_errors: u64,
     pub batches: u64,
     pub total_write_ms: u64,
     pub max_write_ms: u64,
@@ -56,6 +57,7 @@ struct LivePersistenceWriterMetrics {
     dropped: AtomicU64,
     queue_full: AtomicU64,
     write_errors: AtomicU64,
+    terminal_write_errors: AtomicU64,
     batches: AtomicU64,
     total_write_ms: AtomicU64,
     max_write_ms: AtomicU64,
@@ -207,6 +209,7 @@ impl LivePersistenceWriterMetrics {
             dropped: self.dropped.load(Ordering::Relaxed),
             queue_full: self.queue_full.load(Ordering::Relaxed),
             write_errors: self.write_errors.load(Ordering::Relaxed),
+            terminal_write_errors: self.terminal_write_errors.load(Ordering::Relaxed),
             batches: self.batches.load(Ordering::Relaxed),
             total_write_ms: self.total_write_ms.load(Ordering::Relaxed),
             max_write_ms: self.max_write_ms.load(Ordering::Relaxed),
@@ -243,7 +246,7 @@ fn run_persistence_writer(
     batch_size: usize,
     flush_interval: Duration,
 ) {
-    let db = match Database::new(&db_path) {
+    let db = match Database::open_runtime(&db_path) {
         Ok(db) => db,
         Err(error) => {
             error!(%error, "live persistence writer failed to open database");
@@ -255,11 +258,15 @@ fn run_persistence_writer(
         match rx.recv_timeout(flush_interval) {
             Ok(LivePersistenceMessage::Event(event)) => {
                 batch.push(*event);
-                if batch.len() >= batch_size {
-                    flush_batch(&db, &metrics, &mut batch);
+                if batch.len() >= batch_size && !flush_batch(&db, &metrics, &mut batch) {
+                    break;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => flush_batch(&db, &metrics, &mut batch),
+            Err(RecvTimeoutError::Timeout) => {
+                if !flush_batch(&db, &metrics, &mut batch) {
+                    break;
+                }
+            }
             Ok(LivePersistenceMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
                 flush_batch(&db, &metrics, &mut batch);
                 break;
@@ -274,18 +281,31 @@ fn flush_batch(
     db: &Database,
     metrics: &LivePersistenceWriterMetrics,
     batch: &mut Vec<LivePersistenceEvent>,
-) {
+) -> bool {
     if batch.is_empty() {
-        return;
+        return true;
     }
     let started = Instant::now();
     let mut persisted = 0_u64;
     let mut failed = 0_u64;
+    let mut terminal = false;
     for event in batch.drain(..) {
+        if terminal {
+            failed += 1;
+            continue;
+        }
         match persist_event(db, event) {
             Ok(()) => persisted += 1,
             Err(error) => {
                 failed += 1;
+                if terminal_sqlite_write_error(&error) {
+                    terminal = true;
+                    metrics
+                        .terminal_write_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    error!(%error, "terminal live runtime evidence persistence failure");
+                    continue;
+                }
                 error!(%error, "failed to persist live runtime evidence");
             }
         }
@@ -304,6 +324,16 @@ fn flush_batch(
     metrics
         .last_persisted_at_ms
         .store(now_ms(), Ordering::Relaxed);
+    !terminal
+}
+
+/// Return whether one writer error indicates the DB is no longer safe to use.
+fn terminal_sqlite_write_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("disk i/o error")
+        || message.contains("database disk image is malformed")
+        || message.contains("database is corrupt")
+        || message.contains("file is not a database")
 }
 
 /// Persist one runtime evidence event.

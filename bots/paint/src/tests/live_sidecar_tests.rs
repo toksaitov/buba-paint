@@ -1,3 +1,4 @@
+use std::time::Duration;
 use wiremock::matchers::{body_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -164,6 +165,30 @@ async fn live_sidecar_client_reports_transport_failures() {
     let error = client.account_state().await.unwrap_err().to_string();
     assert!(error.contains("failed with 500"));
     assert!(error.contains("boom"));
+}
+
+/// Verifies that the Rust sidecar client enforces configured request timeouts.
+#[tokio::test]
+async fn live_sidecar_client_times_out_slow_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(200))
+                .set_body_json(serde_json::json!({ "ok": true })),
+        )
+        .mount(&server)
+        .await;
+
+    let client = LiveSidecarClient::with_timeouts(
+        &server.uri(),
+        Duration::from_millis(20),
+        Duration::from_millis(20),
+    );
+    let error = client.health().await.unwrap_err().to_string();
+
+    assert!(error.contains("/health"));
 }
 
 /// Verifies that additive sidecar health fields remain readable through the Rust client.

@@ -2,7 +2,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use rusqlite::params;
 
 use super::schema;
@@ -110,8 +110,26 @@ impl Database {
     /// Open (or create) the database at `db_path`, enable WAL mode + NORMAL
     /// synchronous, and run all schema migrations.
     pub fn new(db_path: &str) -> anyhow::Result<Self> {
+        Self::open_inner(db_path, true, false)
+    }
+
+    /// Open an already-initialized runtime database without running migrations.
+    pub fn open_runtime(db_path: &str) -> anyhow::Result<Self> {
+        Self::open_inner(db_path, false, true)
+    }
+
+    /// Open one `SQLite` connection with runtime PRAGMAs and optional migrations.
+    fn open_inner(
+        db_path: &str,
+        run_migrations: bool,
+        require_existing: bool,
+    ) -> anyhow::Result<Self> {
+        if require_existing && !Path::new(db_path).exists() {
+            bail!("runtime SQLite database does not exist at {db_path}; initialize it first");
+        }
         if let Some(parent) = Path::new(db_path).parent()
             && !parent.as_os_str().is_empty()
+            && !require_existing
         {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating directory for DB: {}", parent.display()))?;
@@ -120,13 +138,11 @@ impl Database {
         let conn = rusqlite::Connection::open(db_path)
             .with_context(|| format!("opening SQLite database at {db_path}"))?;
 
-        conn.busy_timeout(std::time::Duration::from_secs(30))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "wal_autocheckpoint", 10_000_i64)?;
-        conn.pragma_update(None, "journal_size_limit", 64_i64 * 1024 * 1024)?;
+        apply_runtime_pragmas(&conn)?;
 
-        schema::run_migrations(&conn)?;
+        if run_migrations {
+            schema::run_migrations(&conn)?;
+        }
 
         Ok(Self {
             conn,
@@ -2241,6 +2257,16 @@ fn file_size_at(path: &str) -> anyhow::Result<u64> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(error) => Err(error).with_context(|| format!("reading file size for {path}")),
     }
+}
+
+/// Apply runtime `SQLite` connection settings without changing schema.
+fn apply_runtime_pragmas(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "wal_autocheckpoint", 10_000_i64)?;
+    conn.pragma_update(None, "journal_size_limit", 64_i64 * 1024 * 1024)?;
+    Ok(())
 }
 
 /// Print a compact storage report for one database path.

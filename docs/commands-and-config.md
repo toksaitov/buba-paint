@@ -29,6 +29,7 @@ cd dashboard/client && npm run test:coverage
 cd polymarket-sidecar && npm test
 cd polymarket-sidecar && npm run build
 make live-readiness-local
+make live-docker-smoke
 ```
 
 ## Local Stack
@@ -55,6 +56,14 @@ make live-readiness-local LIVE_READINESS_ARGS="--dry-run --output-dir /tmp/buba-
 ```
 
 The manifest records git SHA, dirty status, host metadata, selected redacted environment values, each command, each log path, exit statuses, and final pass/fail. Treat any failed command as a blocker before moving to host verification.
+
+The short local Docker smoke runner is:
+
+```bash
+make live-docker-smoke
+```
+
+It runs the no-Caddy `live_readonly` stack for 10 minutes by default, uses a Docker-native runtime volume instead of a macOS bind mount, copies DB/log evidence to `/tmp/buba-live-docker-smoke-<timestamp>`, then runs offline DB/log checks and `validate-replay-data` when feed rows were captured. This is the local review loop for Docker runtime health. Do not treat macOS Docker Desktop bind-mounted SQLite WAL evidence as valid HFT or replay-grade smoke evidence.
 
 The host no-order soak runner is:
 

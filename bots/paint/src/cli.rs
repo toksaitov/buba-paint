@@ -354,7 +354,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 bail!("live-preflight requires EXECUTION_MODE=live_readonly or live_trading");
             }
 
-            let client = LiveSidecarClient::new(&config.live_sidecar_url);
+            let client = LiveSidecarClient::from_config(&config);
             let payload = client.preflight(&config).await?;
             println!("{}", serde_json::to_string_pretty(&payload)?);
         }
