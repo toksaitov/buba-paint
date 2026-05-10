@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { Loading } from "../components/common/loading";
-import { StateEmpty, Surface, TableToolbar } from "../components/ui/dashboard-primitives";
+import { StateEmpty, Surface } from "../components/ui/dashboard-primitives";
 import { useLogs } from "../hooks/use-logs";
 import { empty } from "../lib/copy";
 import { parseAnsi, stripAnsi } from "../lib/log-ansi";
@@ -27,6 +27,16 @@ type LogEventType =
   | "warnings"
   | "other";
 
+interface LogsPreferences {
+  lines: number;
+  follow: boolean;
+  wrap: boolean;
+  search: string;
+  severity: "all" | LogSeverity;
+  source: "all" | LogSource;
+  eventType: "all" | LogEventType;
+}
+
 interface ParsedLogLine {
   raw: string;
   display: string;
@@ -40,6 +50,16 @@ interface ParsedLogLine {
 
 const LEADING_RFC3339_UTC_PATTERN =
   /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)(.*)$/;
+const LOGS_PREFS_STORAGE_KEY = "buba.logs.preferences.v1";
+const DEFAULT_LOGS_PREFERENCES: LogsPreferences = {
+  lines: 200,
+  follow: true,
+  wrap: false,
+  search: "",
+  severity: "all",
+  source: "all",
+  eventType: "all",
+};
 
 const sourceOptions: Array<{ value: "all" | LogSource; label: string }> = [
   { value: "all", label: "All sources" },
@@ -62,6 +82,46 @@ const eventTypeOptions: Array<{ value: "all" | LogEventType; label: string }> = 
   { value: "warnings", label: "Warnings" },
   { value: "errors", label: "Errors" },
 ];
+
+function isLineCount(value: unknown): value is LogsPreferences["lines"] {
+  return value === 100 || value === 200 || value === 500 || value === 1000;
+}
+
+function isSeverity(value: unknown): value is LogsPreferences["severity"] {
+  return value === "all" || value === "error" || value === "warn" || value === "info";
+}
+
+function isSource(value: unknown): value is LogsPreferences["source"] {
+  return sourceOptions.some((option) => option.value === value) || value === "other";
+}
+
+function isEventType(value: unknown): value is LogsPreferences["eventType"] {
+  return eventTypeOptions.some((option) => option.value === value) || value === "other";
+}
+
+function readLogsPreferences(): LogsPreferences {
+  try {
+    const raw = localStorage.getItem(LOGS_PREFS_STORAGE_KEY);
+    if (!raw) return DEFAULT_LOGS_PREFERENCES;
+    const parsed = JSON.parse(raw) as Partial<LogsPreferences>;
+    return {
+      lines: isLineCount(parsed.lines) ? parsed.lines : DEFAULT_LOGS_PREFERENCES.lines,
+      follow:
+        typeof parsed.follow === "boolean" ? parsed.follow : DEFAULT_LOGS_PREFERENCES.follow,
+      wrap: typeof parsed.wrap === "boolean" ? parsed.wrap : DEFAULT_LOGS_PREFERENCES.wrap,
+      search: typeof parsed.search === "string" ? parsed.search : DEFAULT_LOGS_PREFERENCES.search,
+      severity: isSeverity(parsed.severity)
+        ? parsed.severity
+        : DEFAULT_LOGS_PREFERENCES.severity,
+      source: isSource(parsed.source) ? parsed.source : DEFAULT_LOGS_PREFERENCES.source,
+      eventType: isEventType(parsed.eventType)
+        ? parsed.eventType
+        : DEFAULT_LOGS_PREFERENCES.eventType,
+    };
+  } catch {
+    return DEFAULT_LOGS_PREFERENCES;
+  }
+}
 
 function lineSeverity(line: string): LogSeverity {
   if (line.includes(" ERROR ")) return "error";
@@ -181,13 +241,16 @@ function lineTone(line: ParsedLogLine) {
 
 export function LogsPage() {
   const { botId } = useOutletContext<{ botId: string }>();
-  const [lines, setLines] = useState(200);
-  const [follow, setFollow] = useState(true);
-  const [search, setSearch] = useState("");
-  const [severity, setSeverity] = useState<"all" | LogSeverity>("all");
-  const [source, setSource] = useState<"all" | LogSource>("all");
-  const [eventType, setEventType] = useState<"all" | LogEventType>("all");
-  const [wrap, setWrap] = useState(false);
+  const initialPreferences = useMemo(() => readLogsPreferences(), []);
+  const [lines, setLines] = useState(initialPreferences.lines);
+  const [follow, setFollow] = useState(initialPreferences.follow);
+  const [search, setSearch] = useState(initialPreferences.search);
+  const [severity, setSeverity] = useState<"all" | LogSeverity>(initialPreferences.severity);
+  const [source, setSource] = useState<"all" | LogSource>(initialPreferences.source);
+  const [eventType, setEventType] = useState<"all" | LogEventType>(
+    initialPreferences.eventType,
+  );
+  const [wrap, setWrap] = useState(initialPreferences.wrap);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const { data, isLoading } = useLogs(botId, lines);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -238,105 +301,113 @@ export function LogsPage() {
     }
   }, [filteredLines, follow]);
 
+  useEffect(() => {
+    const preferences: LogsPreferences = {
+      lines,
+      follow,
+      wrap,
+      search,
+      severity,
+      source,
+      eventType,
+    };
+    localStorage.setItem(LOGS_PREFS_STORAGE_KEY, JSON.stringify(preferences));
+  }, [eventType, follow, lines, search, severity, source, wrap]);
+
   if (isLoading) return <Loading label="Loading logs" />;
 
   return (
     <div className="flex h-full flex-col">
-    <Surface className="flex flex-1 flex-col overflow-hidden">
-        <TableToolbar
-          left={
-            <div className="flex flex-wrap items-center gap-2">
+      <Surface className="flex flex-1 flex-col overflow-hidden">
+        <div className="grid gap-2 border-b border-border px-3 py-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+          <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(12rem,1.1fr)_minmax(9rem,0.85fr)_minmax(10rem,0.9fr)_minmax(11rem,1fr)]">
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search log lines"
+              className="w-full border border-border bg-bg px-2 py-1 text-[11px]"
+            />
+            <button
+              type="button"
+              onClick={() => setFiltersOpen((open) => !open)}
+              className="border border-border bg-bg px-2 py-1 text-[11px] md:hidden"
+            >
+              {activeFilterCount > 0 ? `Filters (${activeFilterCount} active)` : "Filters"}
+            </button>
+            <select
+              aria-label="Severity"
+              value={severity}
+              onChange={(event) => setSeverity(event.target.value as "all" | LogSeverity)}
+              className="hidden border border-border bg-bg px-2 py-1 text-[11px] md:block"
+            >
+              <option value="all">All severities</option>
+              <option value="error">Errors</option>
+              <option value="warn">Warnings</option>
+              <option value="info">Info</option>
+            </select>
+            <select
+              aria-label="Source"
+              value={source}
+              onChange={(event) => setSource(event.target.value as "all" | LogSource)}
+              className="hidden border border-border bg-bg px-2 py-1 text-[11px] md:block"
+            >
+              {sourceOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Event type"
+              value={eventType}
+              onChange={(event) => setEventType(event.target.value as "all" | LogEventType)}
+              className="hidden border border-border bg-bg px-2 py-1 text-[11px] md:block"
+            >
+              {eventTypeOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.value === "all"
+                    ? option.label
+                    : `${option.label} (${eventCounts.get(option.value) ?? 0})`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 md:flex-nowrap md:justify-end">
+            <label className="inline-flex items-center text-[11px]">
               <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search log lines"
-                className="w-full border border-border bg-bg px-2 py-1 text-[11px] md:w-52"
+                type="checkbox"
+                checked={follow}
+                onChange={(event) => setFollow(event.target.checked)}
+                className="peer sr-only"
               />
-              <button
-                type="button"
-                onClick={() => setFiltersOpen((open) => !open)}
-                className="border border-border bg-bg px-2 py-1 text-[11px] md:hidden"
-              >
-                {activeFilterCount > 0
-                  ? `Filters (${activeFilterCount} active)`
-                  : "Filters"}
-              </button>
-              <div className="hidden flex-wrap items-center gap-2 md:flex">
-                <select
-                  aria-label="Severity"
-                  value={severity}
-                  onChange={(event) => setSeverity(event.target.value as "all" | LogSeverity)}
-                  className="border border-border bg-bg px-2 py-1 text-[11px]"
-                >
-                  <option value="all">All severities</option>
-                  <option value="error">Errors</option>
-                  <option value="warn">Warnings</option>
-                  <option value="info">Info</option>
-                </select>
-                <select
-                  aria-label="Source"
-                  value={source}
-                  onChange={(event) => setSource(event.target.value as "all" | LogSource)}
-                  className="border border-border bg-bg px-2 py-1 text-[11px]"
-                >
-                  {sourceOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Event type"
-                  value={eventType}
-                  onChange={(event) =>
-                    setEventType(event.target.value as "all" | LogEventType)
-                  }
-                  className="border border-border bg-bg px-2 py-1 text-[11px]"
-                >
-                  {eventTypeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.value === "all"
-                        ? option.label
-                        : `${option.label} (${eventCounts.get(option.value) ?? 0})`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          }
-          right={
-            <>
-              <label className="flex items-center gap-1.5 text-[11px] text-muted">
-                <input
-                  type="checkbox"
-                  checked={follow}
-                  onChange={(event) => setFollow(event.target.checked)}
-                  className="accent-current"
-                />
+              <span className="border border-border px-2 py-1 text-muted transition-colors peer-checked:border-text peer-checked:bg-text peer-checked:text-bg">
                 Follow
-              </label>
-              <label className="flex items-center gap-1.5 text-[11px] text-muted">
-                <input
-                  type="checkbox"
-                  checked={wrap}
-                  onChange={(event) => setWrap(event.target.checked)}
-                  className="accent-current"
-                />
+              </span>
+            </label>
+            <label className="inline-flex items-center text-[11px]">
+              <input
+                type="checkbox"
+                checked={wrap}
+                onChange={(event) => setWrap(event.target.checked)}
+                className="peer sr-only"
+              />
+              <span className="border border-border px-2 py-1 text-muted transition-colors peer-checked:border-text peer-checked:bg-text peer-checked:text-bg">
                 Wrap
-              </label>
-              <select
-                value={lines}
-                onChange={(event) => setLines(Number(event.target.value))}
-                className="border border-border bg-bg px-2 py-1 text-[11px]"
-              >
-                <option value={100}>100 lines</option>
-                <option value={200}>200 lines</option>
-                <option value={500}>500 lines</option>
-                <option value={1000}>1000 lines</option>
-              </select>
-            </>
-          }
-        />
+              </span>
+            </label>
+            <select
+              aria-label="Line count"
+              value={lines}
+              onChange={(event) => setLines(Number(event.target.value))}
+              className="border border-border bg-bg px-2 py-1 text-[11px]"
+            >
+              <option value={100}>100 lines</option>
+              <option value={200}>200 lines</option>
+              <option value={500}>500 lines</option>
+              <option value={1000}>1000 lines</option>
+            </select>
+          </div>
+        </div>
         {filtersOpen && (
           <div className="flex flex-col gap-2 border-b border-border px-3 py-2 md:hidden">
             <select

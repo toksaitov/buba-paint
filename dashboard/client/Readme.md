@@ -44,7 +44,7 @@ Trade notifications use the browser Notification API while the dashboard app or 
 
 A service worker (`public/sw.js`) caches the app shell for offline loading. API and WebSocket requests are never cached.
 
-Icon assets are intentionally split by platform. Browser favicons use transparent rounded-corner PNG/ICO/SVG artwork with the white border baked in. iOS uses an opaque `apple-touch-icon.png` because Web Clips select Apple touch icons instead of standard favicons. Android uses separate normal and maskable manifest icons so adaptive launchers do not add their own white background. Safari pinned tabs use `mask-icon.svg`, which is monochrome by design.
+Icon assets are intentionally split by platform. Browser tabs prefer `favicon.svg` for sharp rendering, then fall back to a multi-size PNG/ICO family (`favicon-16x16.png`, `favicon-32x32.png`, `favicon-48x48.png`, `favicon-64x64.png`, and `favicon.ico`) because Safari, Chrome, and Firefox choose competing favicon sources differently. iOS uses an opaque `apple-touch-icon.png` because Web Clips select Apple touch icons instead of standard favicons. Android uses separate normal and maskable manifest icons so adaptive launchers do not add their own white background. Safari pinned tabs use `mask-icon.svg`, which is monochrome by design.
 
 ## Pages
 
@@ -161,7 +161,9 @@ src/
 public/
   sw.js                            # service worker (network-first with offline shell fallback)
   site.webmanifest                 # PWA manifest (standalone, normal + maskable icons)
-  favicon.svg                      # vector favicon
+  favicon.ico                      # multi-size browser tab favicon
+  favicon-*.png                    # raster browser tab favicons
+  favicon.svg                      # vector source/reference favicon
   apple-touch-icon.png             # iOS home screen icon
   icon-*.png                       # raster icons (48 through 512, plus maskable)
 e2e/

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import type { Bot } from "../../../lib/types";
 import { useMobileNavStore } from "../../../stores/mobile-nav-store";
 
@@ -212,6 +212,16 @@ it("toggles desktop sidebar collapse from the header", async () => {
   expect(screen.getByTestId("nav-collapsed")).toHaveTextContent("true");
 });
 
+it("keeps the desktop rail safe-area-aware for installed iPad layouts", async () => {
+  renderShell();
+
+  await waitFor(() => {
+    expect(screen.getByTestId("header-bot-id")).toHaveTextContent("bot-1");
+  });
+
+  expect(screen.getByRole("complementary")).toHaveClass("app-sidebar");
+});
+
 it("opens the mobile drawer from the header toggle and closes it on navigation", async () => {
   const user = userEvent.setup();
   useMediaQueryMock.mockReturnValue(false);
@@ -304,13 +314,15 @@ it("pulls the mobile main surface to refresh active dashboard queries", async ()
     writable: true,
   });
 
-  fireEvent.touchStart(main, { touches: [{ clientY: 8 }] });
+  fireEvent.touchStart(main, { touches: [{ clientX: 24, clientY: 8 }] });
   fireEvent.touchMove(main, {
     cancelable: true,
-    touches: [{ clientY: 180 }],
+    touches: [{ clientX: 24, clientY: 180 }],
   });
 
-  expect(screen.getByText("Release to refresh")).toBeInTheDocument();
+  await waitFor(() => {
+    expect(screen.getByText("Release to refresh")).toBeInTheDocument();
+  });
 
   fireEvent.touchEnd(main);
 

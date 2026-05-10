@@ -1,6 +1,6 @@
 # Replay-Grade Readonly Soak: Colleague 002 (90-minute)
 
-Independent no-order `live_readonly` 90-minute soak attempt against `buba-paint-fin` per [PROMPT.md](../../../PROMPT.md). Triggered after [colleague-001](../replay-grade-readonly-soak-colleague-001/) (the 5-minute run) passed acceptance.
+Independent no-order `live_readonly` 90-minute soak attempt against `buba-paint-fin` per the former root `PROMPT.md` handoff. Triggered after [colleague-001](../replay-grade-readonly-soak-colleague-001/) (the 5-minute run) passed acceptance.
 
 ## Status
 

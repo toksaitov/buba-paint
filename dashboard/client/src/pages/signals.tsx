@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { Loading } from "../components/common/loading";
 import { SignalGroupTable, SignalTable } from "../components/signals/signal-table";
@@ -6,11 +6,31 @@ import { PageHeader } from "../components/ui/dashboard-primitives";
 import { useSignalGroups } from "../hooks/use-signal-groups";
 import { useSignals } from "../hooks/use-signals";
 
+type SignalsView = "groups" | "raw";
+
+const SIGNALS_VIEW_STORAGE_KEY = "buba.signals.view.v1";
+
+function readSignalsView(): SignalsView {
+  try {
+    const stored = localStorage.getItem(SIGNALS_VIEW_STORAGE_KEY);
+    return stored === "raw" || stored === "groups" ? stored : "groups";
+  } catch {
+    return "groups";
+  }
+}
+
 export function SignalsPage() {
   const { botId } = useOutletContext<{ botId: string }>();
-  const [view, setView] = useState<"groups" | "raw">("groups");
+  const [view, setView] = useState<SignalsView>(readSignalsView);
   const { data: groupedData, isLoading: groupsLoading } = useSignalGroups(botId);
   const { data: rawData, isLoading: rawLoading } = useSignals(botId, 100);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIGNALS_VIEW_STORAGE_KEY, view);
+    } catch {
+    }
+  }, [view]);
 
   if (groupsLoading || !groupedData || (view === "raw" && (rawLoading || !rawData))) {
     return <Loading label="Loading signals" />;

@@ -15,6 +15,13 @@ fn setup_test_db() -> rusqlite::Connection {
     conn
 }
 
+/// Create an in-memory live-runtime-style DB without derived backtest columns.
+fn setup_live_runtime_test_db() -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::schema::run_migrations(&conn).unwrap();
+    conn
+}
+
 /// Insert a settled market window into the test DB.
 fn insert_market(
     conn: &rusqlite::Connection,
@@ -70,6 +77,34 @@ fn insert_binance_feed_event(conn: &rusqlite::Connection, timestamp: i64, price:
             fidelity
          ) VALUES (?1, ?1, ?1 * 1000, ?1 * 1000, 'binance', 'aggTrade', ?2, 'raw_event')",
         params![timestamp, price],
+    )
+    .unwrap();
+}
+
+/// Insert a settled live-runtime-style market without derived price columns.
+fn insert_live_runtime_market(
+    conn: &rusqlite::Connection,
+    market_id: &str,
+    start_time: i64,
+    end_time: i64,
+    outcome: &str,
+) {
+    conn.execute(
+        "INSERT INTO markets (market_id, question, condition_id, slug, \
+                              up_token_id, down_token_id, start_time, end_time, \
+                              outcome, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'resolved')",
+        params![
+            market_id,
+            format!("Will BTC go {outcome}?"),
+            format!("cond-{market_id}"),
+            format!("slug-{market_id}"),
+            format!("up-{market_id}"),
+            format!("down-{market_id}"),
+            start_time,
+            end_time,
+            outcome,
+        ],
     )
     .unwrap();
 }
@@ -349,4 +384,20 @@ fn db_uses_raw_binance_open_price_when_tick_data_missing() {
     let opened = ev.opened.unwrap();
 
     assert!((opened.open_price - 42_025.0).abs() < f64::EPSILON);
+}
+
+/// Verifies that live-runtime markets do not need derived price columns.
+#[test]
+fn db_live_runtime_schema_derives_open_and_close_from_feed_events() {
+    let conn = setup_live_runtime_test_db();
+    insert_live_runtime_market(&conn, "m1", 1000, 2000, "UP");
+    insert_binance_feed_event(&conn, 1100, 42_025.0);
+    insert_binance_feed_event(&conn, 1900, 42_125.0);
+
+    let mut wm = WindowManager::new(&conn, 0, 3000).unwrap();
+    let ev = wm.advance(1000);
+    let opened = ev.opened.unwrap();
+
+    assert!((opened.open_price - 42_025.0).abs() < f64::EPSILON);
+    assert!((opened.close_price - 42_125.0).abs() < f64::EPSILON);
 }

@@ -1,6 +1,6 @@
 # CLOB v2 Auth Probe Runs
 
-Independent authenticated CLOB v2 reads against `https://clob.polymarket.com` outside the sidecar code, per the [PROMPT.md "Independent Auth Probe Requirement"](../../../../PROMPT.md). The probe script lives at [polymarket-sidecar/scripts/clob-auth-probe.mjs](../../../../polymarket-sidecar/scripts/clob-auth-probe.mjs); it depends only on `@ethersproject/wallet`, `node:https`, and `node:crypto`.
+Independent authenticated CLOB v2 reads against `https://clob.polymarket.com` outside the sidecar code, per the former root `PROMPT.md` "Independent Auth Probe Requirement". The probe script lives at [polymarket-sidecar/scripts/clob-auth-probe.mjs](../../../../polymarket-sidecar/scripts/clob-auth-probe.mjs); it depends only on `@ethersproject/wallet`, `node:https`, and `node:crypto`.
 
 ## Coverage
 

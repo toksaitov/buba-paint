@@ -1,6 +1,6 @@
 # Independent CLOB v2 Auth Probe Report
 
-Per [PROMPT.md "Independent Auth Probe Requirement"](../../../../PROMPT.md), the probe runs outside the sidecar code, depends only on `@ethersproject/wallet`, `node:https`, and `node:crypto`, and exercises the full auth surface needed for a no-order `live_readonly` soak.
+Per the former root `PROMPT.md` "Independent Auth Probe Requirement", the probe runs outside the sidecar code, depends only on `@ethersproject/wallet`, `node:https`, and `node:crypto`, and exercises the full auth surface needed for a no-order `live_readonly` soak.
 
 Probe script: [polymarket-sidecar/scripts/clob-auth-probe.mjs](../../../../polymarket-sidecar/scripts/clob-auth-probe.mjs).
 

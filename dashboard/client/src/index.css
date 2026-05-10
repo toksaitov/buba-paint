@@ -109,6 +109,10 @@ body {
   padding-top: var(--app-safe-top);
 }
 
+.app-sidebar {
+  padding-top: var(--app-safe-top);
+}
+
 .app-header-menu {
   top: calc(var(--app-header-base-height) + var(--app-safe-top));
 }
@@ -119,9 +123,13 @@ body {
   touch-action: pan-y;
 }
 
-@media (min-width: 768px) {
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
   .app-header {
     height: var(--app-header-base-height);
+    padding-top: 0;
+  }
+
+  .app-sidebar {
     padding-top: 0;
   }
 }

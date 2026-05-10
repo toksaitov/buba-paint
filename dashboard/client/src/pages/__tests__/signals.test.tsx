@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, vi } from "vitest";
 
 vi.mock("react-router-dom", () => ({
@@ -35,6 +36,7 @@ const mockUseSignalGroups = vi.mocked(useSignalGroups);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
 });
 
 test("shows loading state", () => {
@@ -65,4 +67,24 @@ test("renders the shadow signal page", () => {
     screen.getByText(/Signals grouped into bursts.*quiet gap 5000ms.*scanned 3 rows/),
   ).toBeInTheDocument();
   expect(screen.getByTestId("signal-group-table")).toBeInTheDocument();
+});
+
+test("remembers the selected signal view", async () => {
+  const user = userEvent.setup();
+  mockUseSignalGroups.mockReturnValue({
+    isLoading: false,
+    data: { groups: [{ id: "g1" }], raw_rows_scanned: 3, quiet_gap_ms: 5000 },
+  } as ReturnType<typeof useSignalGroups>);
+  mockUseSignals.mockReturnValue({
+    isLoading: false,
+    data: { signals: [{ id: 1 }] },
+  } as ReturnType<typeof useSignals>);
+  const firstRender = render(<SignalsPage />);
+
+  await user.click(screen.getByText("Raw"));
+  expect(screen.getByTestId("signal-table")).toBeInTheDocument();
+  firstRender.unmount();
+
+  render(<SignalsPage />);
+  expect(screen.getByTestId("signal-table")).toBeInTheDocument();
 });

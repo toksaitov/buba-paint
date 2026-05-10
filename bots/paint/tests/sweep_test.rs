@@ -413,3 +413,31 @@ fn sweep_produces_correct_csv_and_is_deterministic() {
         }
     }
 }
+
+/// Verifies that sweep blocks raw-complete inputs that are not backtest-ready.
+#[test]
+fn sweep_rejects_sweep_grade_input_without_loadable_windows() {
+    cleanup_sweep_temp_dbs();
+    let (_data_tmp, data_path) = create_fixture_data_db();
+    let conn = Connection::open(&data_path).unwrap();
+    conn.execute("DELETE FROM markets", []).unwrap();
+    drop(conn);
+
+    let csv_tmp = NamedTempFile::new().unwrap();
+    let csv_path = csv_tmp.path().to_str().unwrap().to_string();
+
+    let result = run_sweep(
+        &data_path,
+        &csv_path,
+        970_000,
+        1_330_000,
+        200.0,
+        &two_by_two_dimensions(),
+        &fixed_overrides(),
+        &Config::default(),
+    );
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("not backtest-ready"));
+    assert!(error.contains("no_settled_windows"));
+}

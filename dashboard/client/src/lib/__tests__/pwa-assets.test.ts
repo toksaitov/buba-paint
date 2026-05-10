@@ -14,6 +14,7 @@ interface PngInfo {
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const publicDir = join(process.cwd(), "public");
 const indexPath = join(process.cwd(), "index.html");
+const cssPath = join(process.cwd(), "src/index.css");
 
 function paeth(a: number, b: number, c: number) {
   const p = a + b - c;
@@ -115,6 +116,29 @@ describe("PWA assets", () => {
     expect(icon.pixelAt(16, 2).slice(0, 3).every((channel) => channel >= 235)).toBe(true);
   });
 
+  test("browser tab favicon provides vector artwork and multi-size raster fallbacks", () => {
+    const icon16 = readPngInfo("favicon-16x16.png");
+    const icon32 = readPngInfo("favicon-32x32.png");
+    const icon48 = readPngInfo("favicon-48x48.png");
+    const icon64 = readPngInfo("favicon-64x64.png");
+    expect(icon16.width).toBe(16);
+    expect(icon16.height).toBe(16);
+    expect(icon32.width).toBe(32);
+    expect(icon32.height).toBe(32);
+    expect(icon48.width).toBe(48);
+    expect(icon48.height).toBe(48);
+    expect(icon64.width).toBe(64);
+    expect(icon64.height).toBe(64);
+    expect(icon32.transparentPixels).toBeGreaterThan(0);
+    expect(icon32.cornerAlphas).toEqual([0, 0, 0, 0]);
+    expect(icon32.pixelAt(16, 3).slice(0, 3).every((channel) => channel >= 220)).toBe(true);
+    expect(icon32.pixelAt(16, 16).slice(0, 3)).toEqual([0, 0, 0]);
+    const svg = readFileSync(join(publicDir, "favicon.svg"), "utf8");
+    expect(svg).toContain('viewBox="0 0 64 64"');
+    expect(svg).toContain('fill="#000000"');
+    expect(svg).toContain('stroke="white"');
+  });
+
   test("apple touch icon is opaque with visible white border artwork", () => {
     const icon = readPngInfo("apple-touch-icon.png");
     expect(icon.width).toBe(180);
@@ -170,8 +194,23 @@ describe("PWA assets", () => {
     expect(html).toContain('name="apple-mobile-web-app-capable" content="yes"');
     expect(html).toContain('name="mobile-web-app-capable" content="yes"');
     expect(html).toContain('name="apple-mobile-web-app-title" content="Buba"');
-    expect(html).toContain('rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=20260509-pwa2"');
-    expect(html).toContain('rel="mask-icon" href="/mask-icon.svg?v=20260509-pwa2" color="#2ea44f"');
-    expect(html).toContain('rel="manifest" href="/site.webmanifest?v=20260509-pwa2"');
+    expect(html).toContain('rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260510-favicon3"');
+    expect(html).toContain('rel="icon" type="image/png" sizes="64x64" href="/favicon-64x64.png?v=20260510-favicon3"');
+    expect(html).toContain('rel="icon" type="image/png" sizes="48x48" href="/favicon-48x48.png?v=20260510-favicon3"');
+    expect(html).toContain('rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=20260510-favicon3"');
+    expect(html).toContain('rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=20260510-favicon3"');
+    expect(html).toContain('rel="icon" href="/favicon.ico?v=20260510-favicon3" sizes="any"');
+    expect(html).not.toContain("favicon-bordered.svg");
+    expect(html).toContain('rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=20260510-favicon3"');
+    expect(html).toContain('rel="mask-icon" href="/mask-icon.svg?v=20260510-favicon3" color="#2ea44f"');
+    expect(html).toContain('rel="manifest" href="/site.webmanifest?v=20260510-favicon3"');
+  });
+
+  test("safe-area CSS keeps tablet home-screen app chrome clear of the status bar", () => {
+    const css = readFileSync(cssPath, "utf8");
+    expect(css).toContain("--app-safe-top: env(safe-area-inset-top, 0px)");
+    expect(css).toContain(".app-sidebar");
+    expect(css).toContain("@media (min-width: 768px) and (hover: hover) and (pointer: fine)");
+    expect(css).not.toContain("@media (min-width: 768px) {\n  .app-header");
   });
 });

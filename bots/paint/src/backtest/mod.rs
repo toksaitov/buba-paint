@@ -1,3 +1,4 @@
+pub mod backtest_input;
 pub mod feed_state;
 pub mod momentum;
 pub mod replay_quality;

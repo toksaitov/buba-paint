@@ -29,9 +29,11 @@ Replay-grade capture persists typed decision inputs needed for future sweeps:
 
 `compact` is descriptive-only because it suppresses Binance book-ticker persistence. `full_debug` preserves payloads for short diagnostics and should not be a week-long run default.
 
+Replay-grade storage intentionally keeps CLOB UP and DOWN top-of-book rows as separate side rows because the current replay schema applies one side at a time. It drops CLOB `last_trade_price` telemetry outside `full_debug` because strategy replay consumes top-of-book, Binance, Chainlink, depth, market metadata, and decision evidence instead.
+
 ## Replay Quality Gate
 
-Run this before any long sweep:
+Run this to prove raw public feed completeness:
 
 ```bash
 cargo run -p buba-paint --release -- validate-replay-data \
@@ -40,9 +42,18 @@ cargo run -p buba-paint --release -- validate-replay-data \
   --end <time>
 ```
 
-`buba-paint sweep` refuses inputs that are not `sweep_grade`. Backtests remain runnable on lower-fidelity archives, but those results must be labeled honestly.
+`sweep_grade` means the interval contains the raw public decision inputs required for close replay. It does not, by itself, prove that the current backtester can load the DB shape, derive window prices, or replay the interval. Before any parameter sweep, run the backtest-input gate too:
 
-Old runs that lack Binance book-ticker rows are descriptive evidence only. They can support postmortems, drawdown analysis, and operational diagnostics, but not trusted parameter selection.
+```bash
+cargo run -p buba-paint --release -- validate-backtest-input \
+  --data <db> \
+  --start <time> \
+  --end <time>
+```
+
+`backtest_ready` means replay quality passed, windows were loadable, settled outcomes were available, missing open/close prices could be derived from raw Binance trades, and a bounded dry-run replay produced ticks. `buba-paint sweep` refuses inputs unless both public replay quality and backtest readiness pass. Backtests remain runnable on lower-fidelity archives, but those results must be labeled honestly.
+
+Old runs that lack Binance book-ticker rows are descriptive evidence only. Runs that pass `validate-replay-data` but fail `validate-backtest-input` are also blocked for sweeps until the tooling/schema issue is fixed. They can support postmortems, drawdown analysis, and operational diagnostics, but not trusted parameter selection.
 
 Live runtime metadata separates configured capture capability, recent capture health, and offline validation. `configured_replay_quality_class` records whether the selected storage profile can become replay-grade. The running bot records `runtime_observed_replay_quality_class`, recent missing classes, queue depth, writer lag, and drop/error state from incremental counters. The full `replay_quality_class` key is reserved for offline `validate-replay-data` or closeout output and must not be written by the trading loop.
 
@@ -75,7 +86,7 @@ Important run DB tables:
 - `run_metadata`: feed storage profile, configured capture capability, cheap runtime capture health, incremental feed-class counters, and offline validation results when `validate-replay-data`, `validate-live-fidelity`, or closeout are explicitly run. Runtime keys use `runtime_*` names; offline validation owns `replay_quality_class`. The live bot must not run full replay validators or whole-table feed scans while trading.
 - `feed_events`: canonical replay source when available.
 - `tick_data`: optional 1-second sampled telemetry for dashboards and coarse inspection. It is disabled by default for replay-grade long-running modes and should not be treated as the research source.
-- `markets`: one row per 5-minute window with token IDs, status, resolution, fee profile, min size, tick size, rewards, and accepting-orders metadata.
+- `markets`: one row per 5-minute window with token IDs, status, resolution, fee profile, min size, tick size, rewards, and accepting-orders metadata. Historical and live-runtime DBs may not contain derived `open_price` and `close_price` columns; the backtester derives missing values from raw Binance `aggTrade` feed events when available.
 - `signals`: strategy detection events.
 - `signal_metrics`: signal feature snapshots, queue decisions, execution timing, fill/miss state, and rejection reasons.
 - `strategy_rejection_summaries`: aggregated no-signal diagnostics.
@@ -89,7 +100,7 @@ See `bots/paint/src/db/schema.rs` for full DDL. Schema evolution is additive thr
 
 ## Backtesting Model
 
-When `feed_events` exist, the backtester replays raw events at recorded timestamps. If microsecond receive fields exist, replay orders by `received_at_us`; otherwise it falls back to millisecond ordering.
+When `feed_events` exist, the backtester replays raw events at recorded timestamps. If microsecond receive fields exist, replay orders by `received_at_us`; otherwise it falls back to millisecond ordering. Missing market open prices are derived from the first Binance `aggTrade` inside each market window. Missing close prices are derived from the last Binance `aggTrade` before the window close when needed for reporting. Settled outcomes still come from `markets.outcome`; missing outcomes fail validation instead of being guessed.
 
 When `feed_events` are absent, the backtester synthesizes `legacy_snapshot` replay from `tick_data`. This path is lower fidelity and should not be described as true latency reconstruction.
 

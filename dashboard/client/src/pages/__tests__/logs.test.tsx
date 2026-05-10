@@ -21,6 +21,7 @@ const mockUseLogs = vi.mocked(useLogs);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   Element.prototype.scrollIntoView = vi.fn();
 });
 
@@ -145,4 +146,38 @@ test("shows an empty-state message when filters remove every line", async () => 
 
   await user.type(screen.getByPlaceholderText("Search log lines"), "missing");
   expect(screen.getByText("No log lines match the current filters.")).toBeInTheDocument();
+});
+
+test("remembers log controls after leaving and returning to the page", async () => {
+  const user = userEvent.setup();
+  mockUseLogs.mockReturnValue({
+    isLoading: false,
+    data: {
+      lines: [
+        "2026-03-20 INFO buba_paint::live: strategy rejection rollup",
+        "2026-03-20 WARN buba_paint::clob: reconnecting feed",
+      ],
+    },
+  } as ReturnType<typeof useLogs>);
+
+  const firstRender = render(<LogsPage />);
+
+  await user.selectOptions(screen.getByLabelText("Line count"), "500");
+  await user.click(screen.getByLabelText("Follow"));
+  await user.click(screen.getByLabelText("Wrap"));
+  await user.type(screen.getByPlaceholderText("Search log lines"), "reconnecting");
+  await user.selectOptions(screen.getByLabelText("Severity"), "warn");
+  await user.selectOptions(screen.getByLabelText("Source"), "clob");
+  await user.selectOptions(screen.getByLabelText("Event type"), "feed_events");
+  firstRender.unmount();
+
+  render(<LogsPage />);
+
+  expect(screen.getByLabelText("Line count")).toHaveValue("500");
+  expect(screen.getByLabelText("Follow")).not.toBeChecked();
+  expect(screen.getByLabelText("Wrap")).toBeChecked();
+  expect(screen.getByPlaceholderText("Search log lines")).toHaveValue("reconnecting");
+  expect(screen.getByLabelText("Severity")).toHaveValue("warn");
+  expect(screen.getByLabelText("Source")).toHaveValue("clob");
+  expect(screen.getByLabelText("Event type")).toHaveValue("feed_events");
 });

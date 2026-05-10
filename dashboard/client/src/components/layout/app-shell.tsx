@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type TouchEvent } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCw } from "lucide-react";
@@ -19,6 +19,7 @@ import { cn } from "../../lib/utils";
 
 const PULL_REFRESH_THRESHOLD_PX = 72;
 const PULL_REFRESH_MAX_PX = 104;
+const PULL_REFRESH_START_PX = 8;
 
 function contextDescription(routeMeta: DashboardRouteMeta, summary?: TradingSummary) {
   const mode = summary?.runtime_mode ?? "paper";
@@ -41,7 +42,10 @@ export function AppShell() {
   const queryClient = useQueryClient();
   const mainScrollRef = useRef<HTMLElement | null>(null);
   const pullStartYRef = useRef<number | null>(null);
+  const pullStartXRef = useRef<number | null>(null);
+  const pullTrackingRef = useRef(false);
   const pullDistanceRef = useRef(0);
+  const pullRefreshingRef = useRef(false);
   const [collapsed, setCollapsed] = useState(false);
   const [pullDistance, setPullDistanceState] = useState(0);
   const [pullRefreshing, setPullRefreshing] = useState(false);
@@ -84,17 +88,23 @@ export function AppShell() {
     if (isDesktop) closeDrawer();
   }, [isDesktop, closeDrawer]);
 
-  const setPullDistance = (distance: number) => {
+  useEffect(() => {
+    pullRefreshingRef.current = pullRefreshing;
+  }, [pullRefreshing]);
+
+  const setPullDistance = useCallback((distance: number) => {
     pullDistanceRef.current = distance;
     setPullDistanceState(distance);
-  };
+  }, []);
 
-  const resetPullGesture = () => {
+  const resetPullGesture = useCallback(() => {
     pullStartYRef.current = null;
+    pullStartXRef.current = null;
+    pullTrackingRef.current = false;
     setPullDistance(0);
-  };
+  }, [setPullDistance]);
 
-  const refreshDashboard = async () => {
+  const refreshDashboard = useCallback(async () => {
     setPullRefreshing(true);
     try {
       await queryClient.invalidateQueries();
@@ -103,45 +113,96 @@ export function AppShell() {
       setPullRefreshing(false);
       resetPullGesture();
     }
-  };
+  }, [queryClient, resetPullGesture]);
 
-  const handleMainTouchStart = (event: TouchEvent<HTMLElement>) => {
-    if (isDesktop || pullRefreshing || (mainScrollRef.current?.scrollTop ?? 0) > 0) {
-      pullStartYRef.current = null;
-      return;
-    }
-    pullStartYRef.current = event.touches[0]?.clientY ?? null;
-  };
+  const beginPull = useCallback(
+    (clientX: number, clientY: number, touchCount: number) => {
+      const main = mainScrollRef.current;
+      if (pullRefreshingRef.current || touchCount !== 1 || (main?.scrollTop ?? 0) > 0) {
+        resetPullGesture();
+        return;
+      }
+      pullStartYRef.current = clientY;
+      pullStartXRef.current = clientX;
+      pullTrackingRef.current = false;
+    },
+    [resetPullGesture],
+  );
 
-  const handleMainTouchMove = (event: TouchEvent<HTMLElement>) => {
-    const startY = pullStartYRef.current;
-    if (startY == null || isDesktop || pullRefreshing) return;
+  const movePull = useCallback(
+    (clientX: number, clientY: number, preventDefault: () => void) => {
+      const main = mainScrollRef.current;
+      const startY = pullStartYRef.current;
+      const startX = pullStartXRef.current;
+      if (startY == null || startX == null || pullRefreshingRef.current) return;
 
-    const deltaY = (event.touches[0]?.clientY ?? startY) - startY;
-    if (deltaY <= 0) {
-      setPullDistance(0);
-      return;
-    }
+      const deltaY = clientY - startY;
+      const deltaX = clientX - startX;
+      if (deltaY <= 0) {
+        setPullDistance(0);
+        return;
+      }
+      if ((main?.scrollTop ?? 0) > 0) {
+        resetPullGesture();
+        return;
+      }
+      if (!pullTrackingRef.current) {
+        if (Math.abs(deltaX) > deltaY) {
+          resetPullGesture();
+          return;
+        }
+        if (deltaY < PULL_REFRESH_START_PX) return;
+        pullTrackingRef.current = true;
+      }
 
-    if ((mainScrollRef.current?.scrollTop ?? 0) > 0) {
-      resetPullGesture();
-      return;
-    }
+      const resistedDistance = Math.min(PULL_REFRESH_MAX_PX, Math.sqrt(deltaY) * 8.5);
+      setPullDistance(resistedDistance);
+      preventDefault();
+    },
+    [resetPullGesture, setPullDistance],
+  );
 
-    const resistedDistance = Math.min(PULL_REFRESH_MAX_PX, deltaY * 0.55);
-    setPullDistance(resistedDistance);
-    if (resistedDistance > 8 && event.cancelable) event.preventDefault();
-  };
-
-  const handleMainTouchEnd = () => {
+  const endPull = useCallback(() => {
     const shouldRefresh = pullDistanceRef.current >= PULL_REFRESH_THRESHOLD_PX;
     pullStartYRef.current = null;
+    pullStartXRef.current = null;
+    pullTrackingRef.current = false;
     if (shouldRefresh) {
       void refreshDashboard();
       return;
     }
     setPullDistance(0);
-  };
+  }, [refreshDashboard, setPullDistance]);
+
+  useEffect(() => {
+    const main = mainScrollRef.current;
+    if (!main) return;
+
+    const handleTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      beginPull(touch.clientX, touch.clientY, event.touches.length);
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      movePull(touch.clientX, touch.clientY, () => {
+        if (event.cancelable) event.preventDefault();
+      });
+    };
+
+    main.addEventListener("touchstart", handleTouchStart, { passive: true });
+    main.addEventListener("touchmove", handleTouchMove, { passive: false });
+    main.addEventListener("touchend", endPull, { passive: true });
+    main.addEventListener("touchcancel", resetPullGesture, { passive: true });
+    return () => {
+      main.removeEventListener("touchstart", handleTouchStart);
+      main.removeEventListener("touchmove", handleTouchMove);
+      main.removeEventListener("touchend", endPull);
+      main.removeEventListener("touchcancel", resetPullGesture);
+    };
+  }, [beginPull, endPull, movePull, resetPullGesture]);
 
   const pullVisible = pullDistance > 0 || pullRefreshing;
   const pullReady = pullDistance >= PULL_REFRESH_THRESHOLD_PX;
@@ -150,7 +211,7 @@ export function AppShell() {
     <div className="flex h-[100dvh] min-h-[100svh] overflow-hidden">
       {isDesktop ? (
         <aside
-          className={`${collapsed ? "w-12" : "w-52"} border-r border-border bg-bg shrink-0 transition-all duration-150 flex flex-col`}
+          className={`${collapsed ? "w-12" : "w-52"} app-sidebar border-r border-border bg-bg shrink-0 transition-all duration-150 flex flex-col`}
         >
           <div
             className={`flex items-center h-14 border-b border-border ${collapsed ? "justify-center" : "px-3"}`}
@@ -177,7 +238,7 @@ export function AppShell() {
         </aside>
       ) : (
         <>
-          <aside className="w-12 border-r border-border bg-bg shrink-0 flex flex-col pt-[var(--app-safe-top)] pl-[var(--app-safe-left)]">
+          <aside className="app-sidebar w-12 border-r border-border bg-bg shrink-0 flex flex-col pl-[var(--app-safe-left)]">
             <div className="flex items-center justify-center h-14 border-b border-border">
               <Link to="/" aria-label="Go to main page" className="hover:opacity-80 transition-opacity">
                 <Logo size={20} />
@@ -197,7 +258,7 @@ export function AppShell() {
                 onClick={closeDrawer}
                 aria-hidden="true"
               />
-              <aside className="relative z-10 w-64 bg-bg border-r border-border flex flex-col pt-[var(--app-safe-top)] pl-[var(--app-safe-left)]">
+              <aside className="app-sidebar relative z-10 w-64 bg-bg border-r border-border flex flex-col pl-[var(--app-safe-left)]">
                 <div className="flex items-center h-14 border-b border-border px-3">
                   <Link
                     to="/"
@@ -244,11 +305,11 @@ export function AppShell() {
         <div className="relative min-h-0 flex-1">
           <div
             className={cn(
-              "pointer-events-none absolute left-0 right-0 top-0 z-30 flex justify-center transition-opacity duration-150",
+              "pointer-events-none absolute left-0 right-0 top-0 z-30 flex justify-center transition-[opacity,transform] duration-150",
               pullVisible ? "opacity-100" : "opacity-0",
             )}
             style={{
-              transform: `translateY(${Math.min(pullDistance, PULL_REFRESH_THRESHOLD_PX) - 44}px)`,
+              transform: `translate3d(0, ${Math.min(pullDistance, PULL_REFRESH_THRESHOLD_PX) - 44}px, 0)`,
             }}
             aria-live="polite"
           >
@@ -272,11 +333,11 @@ export function AppShell() {
           <main
             ref={mainScrollRef}
             data-testid="app-main-scroll"
-            onTouchStart={handleMainTouchStart}
-            onTouchMove={handleMainTouchMove}
-            onTouchEnd={handleMainTouchEnd}
-            onTouchCancel={resetPullGesture}
             className="app-main-scroll h-full overflow-y-auto p-3 pr-[max(0.75rem,var(--app-safe-right))] pb-[max(0.75rem,var(--app-safe-bottom))]"
+            style={{
+              transform: `translate3d(0, ${pullRefreshing ? 18 : Math.min(pullDistance * 0.24, 22)}px, 0)`,
+              transition: pullDistance > 0 || pullRefreshing ? "none" : "transform 160ms ease-out",
+            }}
           >
             <Outlet context={{ botId, bot }} />
           </main>

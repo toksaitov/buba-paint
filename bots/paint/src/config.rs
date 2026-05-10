@@ -423,6 +423,7 @@ pub struct Config {
     pub feed_event_writer_batch_size: usize,
     pub feed_event_writer_flush_ms: u64,
     pub feed_event_writer_max_lag_ms: u64,
+    pub live_runtime_max_db_bytes: u64,
     pub live_feed_batch_max_messages: usize,
     pub live_decision_queue_capacity: usize,
     pub live_decision_output_queue_capacity: usize,
@@ -891,6 +892,7 @@ impl Config {
             feed_event_writer_batch_size: env_u64("FEED_EVENT_WRITER_BATCH_SIZE", 500) as usize,
             feed_event_writer_flush_ms: env_u64("FEED_EVENT_WRITER_FLUSH_MS", 100),
             feed_event_writer_max_lag_ms: env_u64("FEED_EVENT_WRITER_MAX_LAG_MS", 2_000),
+            live_runtime_max_db_bytes: env_u64("LIVE_RUNTIME_MAX_DB_BYTES", 50_000_000_000),
             live_feed_batch_max_messages: env_u64("LIVE_FEED_BATCH_MAX_MESSAGES", 64) as usize,
             live_decision_queue_capacity: env_u64("LIVE_DECISION_QUEUE_CAPACITY", 128) as usize,
             live_decision_output_queue_capacity: env_u64(
@@ -1058,6 +1060,7 @@ impl Default for Config {
             feed_event_writer_batch_size: 500,
             feed_event_writer_flush_ms: 100,
             feed_event_writer_max_lag_ms: 2_000,
+            live_runtime_max_db_bytes: 50_000_000_000,
             live_feed_batch_max_messages: 64,
             live_decision_queue_capacity: 128,
             live_decision_output_queue_capacity: 1_024,

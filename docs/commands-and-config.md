@@ -108,6 +108,11 @@ cargo run -p buba-paint --release -- validate-replay-data \
   --start 2026-02-20T03:13 \
   --end 2026-02-28T00:00
 
+cargo run -p buba-paint --release -- validate-backtest-input \
+  --data data/market-data.db \
+  --start 2026-02-20T03:13 \
+  --end 2026-02-28T00:00
+
 cargo run -p buba-paint --release -- validate-live-fidelity \
   --db-path /path/to/live-run/paint.db \
   --start 2026-05-01T00:00:00Z \
@@ -124,7 +129,7 @@ cargo run -p buba-paint --release -- sweep \
 
 `--sweep PARAM=start:end:step` generates a range. `--sweep PARAM=a,b,c` enumerates values. `--set PARAM=value` fixes a parameter without sweeping. Boolean values accept `true/false`, `1/0`, `yes/no`, and `on/off`; operator docs should prefer `true/false`.
 
-Sweeps refuse inputs that are not `sweep_grade`. If an interval contains funded `live_trading` evidence, sweeps also require `research_grade_live` from `validate-live-fidelity`. Backtests still run on descriptive archives, but they warn when the interval lacks replay-grade decision inputs.
+`validate-replay-data` proves raw public feed completeness. `validate-backtest-input` proves the current backtester can load the interval, derive missing market open/close prices, find settled outcomes, and run a bounded replay dry run. Sweeps refuse inputs unless both gates pass. If an interval contains funded `live_trading` evidence, sweeps also require `research_grade_live` from `validate-live-fidelity`. Backtests still run on descriptive archives, but they warn when the interval lacks replay-grade decision inputs.
 
 ## Settlement and Historical Data
 
@@ -165,7 +170,7 @@ Important groups:
 - Feed freshness: `MAX_SIGNAL_FEED_AGE_MS`, `MAX_QUOTE_AGE_MS`, `WEBSOCKET_CONNECT_TIMEOUT_MS`, `BINANCE_NO_MESSAGE_RECONNECT_MS`, `CLOB_NO_MESSAGE_RECONNECT_MS`.
 - Pending settlement: `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION`, `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION`, `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION`, `BACKTEST_SETTLEMENT_MODE`.
 - Live caps: `LIVE_SESSION_CASH_CAP_USD`, `LIVE_MAX_SINGLE_ORDER_USD`, `LIVE_MAX_OPEN_NOTIONAL_USD`, `LIVE_MAX_DAILY_LOSS_USD`, `LIVE_MAX_SESSION_DRAWDOWN_USD`, `LIVE_MIN_REQUIRED_CASH_USD`.
-- Worker budgets: `FEED_EVENT_WRITER_QUEUE_CAPACITY`, `FEED_EVENT_WRITER_BATCH_SIZE`, `FEED_EVENT_WRITER_FLUSH_MS`, `FEED_EVENT_WRITER_MAX_LAG_MS`, `LIVE_FEED_BATCH_MAX_MESSAGES`, `LIVE_DECISION_QUEUE_CAPACITY`, `LIVE_DECISION_OUTPUT_QUEUE_CAPACITY`, `LIVE_RUNTIME_PERSISTENCE_QUEUE_CAPACITY`, `LIVE_SUBMISSION_QUEUE_CAPACITY`, `MAX_LIVE_DECISION_AGE_MS`, `WORKER_SHUTDOWN_TIMEOUT_MS`.
+- Worker and storage budgets: `FEED_EVENT_WRITER_QUEUE_CAPACITY`, `FEED_EVENT_WRITER_BATCH_SIZE`, `FEED_EVENT_WRITER_FLUSH_MS`, `FEED_EVENT_WRITER_MAX_LAG_MS`, `LIVE_RUNTIME_MAX_DB_BYTES`, `LIVE_FEED_BATCH_MAX_MESSAGES`, `LIVE_DECISION_QUEUE_CAPACITY`, `LIVE_DECISION_OUTPUT_QUEUE_CAPACITY`, `LIVE_RUNTIME_PERSISTENCE_QUEUE_CAPACITY`, `LIVE_SUBMISSION_QUEUE_CAPACITY`, `MAX_LIVE_DECISION_AGE_MS`, `WORKER_SHUTDOWN_TIMEOUT_MS`.
 - Strategy toggles: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, `CALM_PERSISTENCE_ENABLED`.
 - Sidecar: `LIVE_SIDECAR_URL`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_PROXY_WALLET`, `POLYMARKET_FUNDER`, `POLYMARKET_RELAYER_HOST`, `POLYMARKET_RELAYER_API_KEY`, `POLYMARKET_RELAYER_API_KEY_ADDRESS`, `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, `POLYMARKET_BUILDER_PASSPHRASE`.
 

@@ -225,6 +225,27 @@ fn cli_validate_replay_data_command_parses() {
     }
 }
 
+/// Verifies that cli validate backtest input command parses.
+#[test]
+fn cli_validate_backtest_input_command_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "validate-backtest-input",
+        "--data",
+        "data.db",
+        "--start",
+        "2026-02-20",
+        "--end",
+        "2026-02-28",
+    ]);
+    match cli.command {
+        Commands::ValidateBacktestInput { data, .. } => {
+            assert_eq!(data, "data.db");
+        }
+        _ => panic!("expected ValidateBacktestInput command"),
+    }
+}
+
 /// Verifies that cli live command parses.
 #[test]
 fn cli_live_command_parses() {

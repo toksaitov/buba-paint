@@ -1,6 +1,6 @@
 # Replay-Grade Readonly Soak: Colleague 001
 
-Independent no-order `live_readonly` soak attempt against `buba-paint-fin` per [PROMPT.md](../../../PROMPT.md). Scope: paper trading plus authenticated CLOB v2 readonly account/order reads. No `live_trading`, no arming, no orders, no cancels, no redemptions.
+Independent no-order `live_readonly` soak attempt against `buba-paint-fin` per the former root `PROMPT.md` handoff. Scope: paper trading plus authenticated CLOB v2 readonly account/order reads. No `live_trading`, no arming, no orders, no cancels, no redemptions.
 
 ## Status
 

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { TradeRow } from "../../lib/types";
 import { cn, formatDateTime, formatSignedUsd, formatUsd, pnlColor } from "../../lib/utils";
 import { TableToolbar } from "../ui/dashboard-primitives";
@@ -9,6 +9,41 @@ interface TradeTableProps {
   total: number;
   perPage: number;
   onPageChange: (page: number) => void;
+}
+
+interface TradeFilterPreferences {
+  strategy: string;
+  side: string;
+  status: string;
+  market: string;
+}
+
+const TRADE_FILTERS_STORAGE_KEY = "buba.trades.filters.v1";
+const DEFAULT_TRADE_FILTERS: TradeFilterPreferences = {
+  strategy: "all",
+  side: "all",
+  status: "all",
+  market: "",
+};
+
+function isTradeSide(value: unknown): value is TradeFilterPreferences["side"] {
+  return value === "all" || value === "UP" || value === "DOWN";
+}
+
+function readTradeFilterPreferences(): TradeFilterPreferences {
+  try {
+    const raw = localStorage.getItem(TRADE_FILTERS_STORAGE_KEY);
+    if (!raw) return DEFAULT_TRADE_FILTERS;
+    const parsed = JSON.parse(raw) as Partial<TradeFilterPreferences>;
+    return {
+      strategy: typeof parsed.strategy === "string" ? parsed.strategy : DEFAULT_TRADE_FILTERS.strategy,
+      side: isTradeSide(parsed.side) ? parsed.side : DEFAULT_TRADE_FILTERS.side,
+      status: typeof parsed.status === "string" ? parsed.status : DEFAULT_TRADE_FILTERS.status,
+      market: typeof parsed.market === "string" ? parsed.market : DEFAULT_TRADE_FILTERS.market,
+    };
+  } catch {
+    return DEFAULT_TRADE_FILTERS;
+  }
 }
 
 function sideTone(side: string) {
@@ -68,10 +103,8 @@ export function TradeTable({
   onPageChange,
 }: TradeTableProps) {
   const totalPages = Math.max(1, Math.ceil(total / perPage));
-  const [strategy, setStrategy] = useState("all");
-  const [side, setSide] = useState("all");
-  const [status, setStatus] = useState("all");
-  const [market, setMarket] = useState("");
+  const [filters, setFilters] = useState(readTradeFilterPreferences);
+  const { strategy, side, status, market } = filters;
   const strategies = useMemo(
     () => Array.from(new Set(trades.map((trade) => trade.strategy))).sort(),
     [trades],
@@ -96,6 +129,26 @@ export function TradeTable({
   const allFilteredSameStatus =
     filtered.length > 0 && new Set(filtered.map((trade) => trade.status)).size === 1;
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(TRADE_FILTERS_STORAGE_KEY, JSON.stringify(filters));
+    } catch {
+    }
+  }, [filters]);
+
+  useEffect(() => {
+    setFilters((current) => {
+      const strategyStillValid = current.strategy === "all" || strategies.includes(current.strategy);
+      const statusStillValid = current.status === "all" || statuses.includes(current.status);
+      if (strategyStillValid && statusStillValid) return current;
+      return {
+        ...current,
+        strategy: strategyStillValid ? current.strategy : "all",
+        status: statusStillValid ? current.status : "all",
+      };
+    });
+  }, [statuses, strategies]);
+
   return (
     <div className="border border-border bg-bg">
       <TableToolbar
@@ -111,7 +164,7 @@ export function TradeTable({
             <select
               aria-label="Strategy"
               value={strategy}
-              onChange={(event) => setStrategy(event.target.value)}
+              onChange={(event) => setFilters((current) => ({ ...current, strategy: event.target.value }))}
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All strategies</option>
@@ -124,7 +177,7 @@ export function TradeTable({
             <select
               aria-label="Side"
               value={side}
-              onChange={(event) => setSide(event.target.value)}
+              onChange={(event) => setFilters((current) => ({ ...current, side: event.target.value }))}
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All sides</option>
@@ -134,7 +187,7 @@ export function TradeTable({
             <select
               aria-label="Status"
               value={status}
-              onChange={(event) => setStatus(event.target.value)}
+              onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All statuses</option>
@@ -146,7 +199,7 @@ export function TradeTable({
             </select>
             <input
               value={market}
-              onChange={(event) => setMarket(event.target.value)}
+              onChange={(event) => setFilters((current) => ({ ...current, market: event.target.value }))}
               placeholder="Market"
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             />

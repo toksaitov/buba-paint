@@ -631,6 +631,38 @@ fn load_ticks_static_method() {
     assert_eq!(ticks[1].source, "chainlink");
 }
 
+/// Verifies that first tick timestamp uses feed events when present.
+#[test]
+fn first_tick_timestamp_uses_feed_events() {
+    let conn = setup_test_db();
+    insert_feed_event(
+        &conn,
+        1_500,
+        Some(1_500_000),
+        "binance",
+        "aggTrade",
+        Some(42_000.0),
+        None,
+        None,
+        "raw_event",
+    );
+    insert_feed_event(
+        &conn,
+        1_200,
+        Some(1_200_000),
+        "chainlink",
+        "chainlink_price",
+        Some(42_001.0),
+        None,
+        None,
+        "raw_event",
+    );
+
+    let timestamp = TickReplay::first_tick_timestamp(&conn, 1_000, 2_000).unwrap();
+
+    assert_eq!(timestamp, Some(1_200));
+}
+
 /// Verifies that unknown source silently ignored.
 #[test]
 fn unknown_source_silently_ignored() {

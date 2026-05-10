@@ -1,8 +1,9 @@
 /// Pre-loads market windows from the data DB and advances through them.
 ///
-/// Direct port of the `TypeScript` `WindowManager`.  Markets are loaded from the
-/// `markets` table (which in the merged data DB includes `open_price`,
-/// `close_price`, and `outcome` columns) and exposed as `MarketSettlement`s.
+/// Direct port of the `TypeScript` `WindowManager`. Markets are loaded from the
+/// `markets` table and exposed as `MarketSettlement`s. Live-runtime DBs may not
+/// have derived `open_price` or `close_price` columns, so replay fills missing
+/// prices from native Binance feed rows before the windows are used.
 /// The `advance()` method is called on every tick to detect when the current
 /// window opens or closes.
 use std::str::FromStr;
@@ -113,6 +114,11 @@ impl WindowManager {
         self.windows.len()
     }
 
+    /// Return the loaded market settlements for validation and tests.
+    pub fn settlements(&self) -> &[MarketSettlement] {
+        &self.windows
+    }
+
     /// Advance to the given timestamp.  Returns events indicating whether a
     /// market window opened or closed (or both) at this point.
     pub fn advance(&mut self, timestamp: u64) -> WindowEvents {
@@ -191,11 +197,13 @@ fn load_settlements(
     let sql = format!(
         "SELECT market_id, question, up_token_id, down_token_id, \
                 condition_id, slug, start_time, end_time, \
-                open_price, close_price, outcome, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} \
+                {}, {}, outcome, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} \
          FROM markets \
          WHERE end_time >= ?1 AND start_time <= ?2 \
            AND outcome IS NOT NULL \
          ORDER BY start_time",
+        optional_market_column(conn, "open_price"),
+        optional_market_column(conn, "close_price"),
         optional_market_column(conn, "resolution_source"),
         optional_market_column(conn, "fee_profile"),
         optional_market_column(conn, "order_min_size"),
@@ -222,12 +230,12 @@ fn load_settlements(
     for row in rows {
         windows.push(row.context("reading market row")?);
     }
-    apply_replay_open_prices(conn, &mut windows)?;
+    apply_replay_prices(conn, &mut windows)?;
     Ok(windows)
 }
 
-/// Prefer run-native Binance open prices when replaying pulled run data.
-fn apply_replay_open_prices(
+/// Prefer run-native Binance prices when replaying pulled run data.
+fn apply_replay_prices(
     conn: &rusqlite::Connection,
     windows: &mut [MarketSettlement],
 ) -> anyhow::Result<()> {
@@ -236,6 +244,12 @@ fn apply_replay_open_prices(
             replay_native_open_price(conn, window.start_time, window.end_time)?
         {
             window.open_price = open_price;
+        }
+        if window.close_price <= 0.0
+            && let Some(close_price) =
+                replay_native_close_price(conn, window.start_time, window.end_time)?
+        {
+            window.close_price = close_price;
         }
     }
     Ok(())
@@ -251,6 +265,18 @@ fn replay_native_open_price(
         return Ok(Some(price));
     }
     earliest_feed_event_binance_price(conn, start_time, end_time)
+}
+
+/// Return the last native Binance price inside one market window.
+fn replay_native_close_price(
+    conn: &rusqlite::Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<Option<f64>> {
+    if let Some(price) = latest_tick_data_binance_price(conn, start_time, end_time)? {
+        return Ok(Some(price));
+    }
+    latest_feed_event_binance_price(conn, start_time, end_time)
 }
 
 /// Return the first sampled Binance tick price inside one market window.
@@ -278,6 +304,31 @@ fn earliest_tick_data_binance_price(
         .optional()?)
 }
 
+/// Return the last sampled Binance tick price inside one market window.
+fn latest_tick_data_binance_price(
+    conn: &rusqlite::Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<Option<f64>> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT price
+         FROM tick_data
+         WHERE source = 'binance'
+           AND timestamp >= ?1
+           AND timestamp < ?2
+           AND price IS NOT NULL
+         ORDER BY timestamp DESC, id DESC
+         LIMIT 1",
+    ) else {
+        return Ok(None);
+    };
+    let start_ms = timestamp_param(start_time, "start_time")?;
+    let end_ms = timestamp_param(end_time, "end_time")?;
+    Ok(stmt
+        .query_row(params![start_ms, end_ms], |row| row.get(0))
+        .optional()?)
+}
+
 /// Return the first raw Binance trade price inside one market window.
 fn earliest_feed_event_binance_price(
     conn: &rusqlite::Connection,
@@ -293,6 +344,32 @@ fn earliest_feed_event_binance_price(
            AND received_at_ms < ?2
            AND price IS NOT NULL
          ORDER BY received_at_ms ASC, COALESCE(received_at_us, received_at_ms * 1000) ASC, id ASC
+         LIMIT 1",
+    ) else {
+        return Ok(None);
+    };
+    let start_ms = timestamp_param(start_time, "start_time")?;
+    let end_ms = timestamp_param(end_time, "end_time")?;
+    Ok(stmt
+        .query_row(params![start_ms, end_ms], |row| row.get(0))
+        .optional()?)
+}
+
+/// Return the last raw Binance trade price inside one market window.
+fn latest_feed_event_binance_price(
+    conn: &rusqlite::Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<Option<f64>> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT price
+         FROM feed_events
+         WHERE source = 'binance'
+           AND event_type = 'aggTrade'
+           AND received_at_ms >= ?1
+           AND received_at_ms < ?2
+           AND price IS NOT NULL
+         ORDER BY received_at_ms DESC, COALESCE(received_at_us, received_at_ms * 1000) DESC, id DESC
          LIMIT 1",
     ) else {
         return Ok(None);

@@ -175,11 +175,15 @@ cargo run -p buba-paint --release -- validate-replay-data \
   --data <readonly-soak-db> \
   --start <soak-start-iso-time> \
   --end <soak-end-iso-time>
+cargo run -p buba-paint --release -- validate-backtest-input \
+  --data <readonly-soak-db> \
+  --start <soak-start-iso-time> \
+  --end <soak-end-iso-time>
 ssh buba-paint 'ps -eo pid=,args= | awk "/buba-paint live|buba-agent|buba-dashboard|polymarket-sidecar/ && !/awk/ {print}"'
 find . -maxdepth 1 \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \) -print
 ```
 
-The soak is not accepted unless there is no order placement, sidecar health is sane, host geoblock passes, current BTC market metadata is captured, `validate-replay-data` reports `sweep_grade`, `PRAGMA quick_check` returns `ok`, only intended processes are running, dashboard Execution agrees with CLI preflight, and no scratch DB/WAL/SHM files appear in the repo root. If authenticated CLOB bootstrap is blocked by Cloudflare or missing L2 credentials, stop the phase and fix host/account authentication before rerunning the soak.
+The soak is not accepted unless there is no order placement, sidecar health is sane, host geoblock passes, current BTC market metadata is captured, `validate-replay-data` reports `sweep_grade`, `validate-backtest-input` reports `backtest_ready`, `PRAGMA quick_check` returns `ok`, only intended processes are running, dashboard Execution agrees with CLI preflight, and no scratch DB/WAL/SHM files appear in the repo root. If authenticated CLOB bootstrap is blocked by Cloudflare or missing L2 credentials, stop the phase and fix host/account authentication before rerunning the soak.
 
 ## Cleanup Policy
 

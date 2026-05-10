@@ -107,7 +107,7 @@ Keep these artifacts:
 
 Do not bloat SQLite with full raw private websocket traffic unless a short forensic session explicitly requires it.
 
-Replay quality must be verified from observed data, not from configuration. A run configured with `FEED_EVENT_STORAGE_PROFILE=replay_grade` is only research-grade after `validate-replay-data` reports `sweep_grade` for the captured interval. If closeout labels the run descriptive-only, use it for operational diagnosis and postmortem only, not parameter selection.
+Replay quality must be verified from observed data, not from configuration. A run configured with `FEED_EVENT_STORAGE_PROFILE=replay_grade` has raw public replay inputs only after `validate-replay-data` reports `sweep_grade` for the captured interval. It is not sweep-ready until `validate-backtest-input` also reports `backtest_ready`. If closeout labels the run descriptive-only, use it for operational diagnosis and postmortem only, not parameter selection.
 
 ## UI safety rules
 
@@ -143,7 +143,7 @@ Before the live venue runtime is considered ready:
 - sidecar lint, tests, and build pass
 - sidecar supervision artifact and stable env or log layout are in place on the deployment plan
 - `ops/` service templates have been reviewed for sidecar, bot, agent, and dashboard
-- replay-data quality is checked before any parameter sweep with `validate-replay-data`
+- replay-data quality and backtest loadability are checked before any parameter sweep with `validate-replay-data` and `validate-backtest-input`
 - docs are updated and internally consistent
 - comments and rustdoc are current
 - agent and dashboard live surfaces are verified against real readonly session data

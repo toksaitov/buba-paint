@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, vi } from "vitest";
 import { TradeTable } from "../trade-table";
 import type { TradeRow } from "../../../lib/types";
 
@@ -20,6 +21,10 @@ function makeTrade(overrides: Partial<TradeRow> = {}): TradeRow {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  localStorage.clear();
+});
 
 test("renders trade rows", () => {
   const trades = [makeTrade(), makeTrade({ id: 2, strategy: "spread-capture" })];
@@ -86,3 +91,36 @@ test("onPageChange called correctly", () => {
   expect(onPageChange).toHaveBeenCalledWith(2);
 });
 
+test("remembers trade filters after remount", async () => {
+  const user = userEvent.setup();
+  const trades = [
+    makeTrade(),
+    makeTrade({
+      id: 2,
+      strategy: "spread-capture",
+      side: "DOWN",
+      market_id: "mkt-2",
+      status: "open",
+    }),
+  ];
+  const firstRender = render(
+    <TradeTable trades={trades} page={1} total={2} perPage={50} onPageChange={vi.fn()} />,
+  );
+
+  await user.selectOptions(screen.getByLabelText("Strategy"), "spread-capture");
+  await user.selectOptions(screen.getByLabelText("Side"), "DOWN");
+  await user.selectOptions(screen.getByLabelText("Status"), "open");
+  await user.type(screen.getByPlaceholderText("Market"), "mkt-2");
+  firstRender.unmount();
+
+  render(
+    <TradeTable trades={trades} page={1} total={2} perPage={50} onPageChange={vi.fn()} />,
+  );
+
+  expect(screen.getByLabelText("Strategy")).toHaveValue("spread-capture");
+  expect(screen.getByLabelText("Side")).toHaveValue("DOWN");
+  expect(screen.getByLabelText("Status")).toHaveValue("open");
+  expect(screen.getByPlaceholderText("Market")).toHaveValue("mkt-2");
+  expect(screen.getByText("1 of 2 trades")).toBeInTheDocument();
+  expect(screen.getAllByText("spread-capture").length).toBeGreaterThanOrEqual(1);
+});

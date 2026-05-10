@@ -237,6 +237,41 @@ impl TickReplay {
         Ok(ticks)
     }
 
+    /// Return the first replay tick timestamp inside a database interval.
+    pub fn first_tick_timestamp(
+        conn: &rusqlite::Connection,
+        start_time: u64,
+        end_time: u64,
+    ) -> anyhow::Result<Option<u64>> {
+        let start_ms = timestamp_param(start_time, "start_time")?;
+        let end_ms = timestamp_param(end_time, "end_time")?;
+        if conn.prepare("SELECT id FROM feed_events LIMIT 0").is_ok() {
+            let feed_timestamp: Option<i64> = conn
+                .query_row(
+                    "SELECT MIN(received_at_ms)
+                     FROM feed_events
+                     WHERE received_at_ms >= ?1 AND received_at_ms <= ?2",
+                    params![start_ms, end_ms],
+                    |row| row.get(0),
+                )
+                .context("finding first feed_event timestamp")?;
+            if let Some(timestamp) = feed_timestamp {
+                return Ok(Some(timestamp as u64));
+            }
+        }
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT MIN(timestamp)
+             FROM tick_data
+             WHERE timestamp >= ?1 AND timestamp <= ?2",
+        ) else {
+            return Ok(None);
+        };
+        let tick_timestamp: Option<i64> = stmt
+            .query_row(params![start_ms, end_ms], |row| row.get(0))
+            .context("finding first tick_data timestamp")?;
+        Ok(tick_timestamp.map(|timestamp| timestamp as u64))
+    }
+
     /// Total number of raw ticks loaded.
     pub fn total_ticks(&self) -> usize {
         self.ticks.len()

@@ -156,8 +156,8 @@ impl FeedEventStorageState {
 
     /// Return one compact metadata event.
     pub(crate) fn prepare_clob_meta(&mut self, mut event: FeedEvent) -> Option<FeedEvent> {
-        if self.profile == FeedEventStorageProfile::Compact
-            && event.event_type == "last_trade_price"
+        if event.event_type == "last_trade_price"
+            && self.profile != FeedEventStorageProfile::FullDebug
         {
             return None;
         }
@@ -443,5 +443,27 @@ mod tests {
         let mut reconnect = sample_event("clob_up", "book");
         reconnect.connection_id = Some("conn-2".to_string());
         assert!(state.prepare_clob_book_snapshot(reconnect).is_some());
+    }
+
+    /// Verify that replay-grade mode skips CLOB last-trade telemetry.
+    #[test]
+    fn replay_grade_skips_clob_last_trade_price_meta_rows() {
+        let mut state = FeedEventStorageState::new(FeedEventStorageProfile::ReplayGrade);
+        assert!(
+            state
+                .prepare_clob_meta(sample_event("clob", "last_trade_price"))
+                .is_none()
+        );
+    }
+
+    /// Verify that full-debug mode preserves CLOB last-trade telemetry.
+    #[test]
+    fn full_debug_preserves_clob_last_trade_price_meta_rows() {
+        let mut state = FeedEventStorageState::new(FeedEventStorageProfile::FullDebug);
+        assert!(
+            state
+                .prepare_clob_meta(sample_event("clob", "last_trade_price"))
+                .is_some()
+        );
     }
 }

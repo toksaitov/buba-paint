@@ -2873,6 +2873,9 @@ async fn run_live_runtime(
                             .join(", ");
                         let writer_snapshot = feed_writer.snapshot();
                         let now = clock.now();
+                        let db_bytes = file_size_bytes(db_path);
+                        let wal_bytes = file_size_bytes(&format!("{db_path}-wal"));
+                        let total_db_bytes = db_bytes.saturating_add(wal_bytes);
                         let capture_health = runtime_capture_health(
                             &writer_snapshot,
                             &row_summary,
@@ -2888,6 +2891,10 @@ async fn run_live_runtime(
                             terminal_write_errors = writer_snapshot.terminal_write_errors,
                             max_batch_write_ms = writer_snapshot.max_write_ms,
                             last_persisted_at_ms = writer_snapshot.last_persisted_at_ms,
+                            db_bytes,
+                            wal_bytes,
+                            total_db_bytes,
+                            max_db_bytes = config.live_runtime_max_db_bytes,
                             rows = row_summary,
                             replay_runtime_capture_health = %capture_health,
                             decision_dirty_events = pending_decision.dirty_events,
@@ -2895,6 +2902,19 @@ async fn run_live_runtime(
                             decision_flushed_evaluations = pending_decision.flushed_evaluations,
                             "live storage writer rollup"
                         );
+                        if config.live_runtime_max_db_bytes > 0
+                            && total_db_bytes > config.live_runtime_max_db_bytes
+                        {
+                            warn!(
+                                total_db_bytes,
+                                max_db_bytes = config.live_runtime_max_db_bytes,
+                                "runtime database size exceeded configured guard"
+                            );
+                            mark_live_submission_blocked(
+                                live_trading_monitor.as_mut(),
+                                "runtime database size exceeded configured guard",
+                            );
+                        }
                         if !persistence_writer.try_enqueue(LivePersistenceEvent::RunMetadata(
                             runtime_capture_metadata_rows(
                                 config.feed_event_storage_profile,
@@ -5234,6 +5254,11 @@ fn runtime_capture_health(
     } else {
         "empty"
     }
+}
+
+/// Return one file size or zero when the file does not exist.
+fn file_size_bytes(path: &str) -> u64 {
+    std::fs::metadata(path).map_or(0, |metadata| metadata.len())
 }
 
 /// Return live arming issues from cheap runtime capture metadata only.

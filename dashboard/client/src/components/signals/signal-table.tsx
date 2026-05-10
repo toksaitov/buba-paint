@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SignalGroupRow, SignalRow } from "../../lib/types";
 import { TableToolbar } from "../ui/dashboard-primitives";
 import { empty } from "../../lib/copy";
@@ -16,6 +16,37 @@ function parseMomentum(metadata: string | null) {
 
 function directionTone(direction: string) {
   return direction === "UP" ? "text-accent-green border-accent-green" : "text-accent-red border-accent-red";
+}
+
+interface SignalGroupFilterPreferences {
+  strategy: string;
+  direction: string;
+}
+
+const SIGNAL_GROUP_FILTERS_STORAGE_KEY = "buba.signals.groupFilters.v1";
+const DEFAULT_SIGNAL_GROUP_FILTERS: SignalGroupFilterPreferences = {
+  strategy: "all",
+  direction: "all",
+};
+
+function isSignalDirection(value: unknown): value is SignalGroupFilterPreferences["direction"] {
+  return value === "all" || value === "UP" || value === "DOWN";
+}
+
+function readSignalGroupFilterPreferences(): SignalGroupFilterPreferences {
+  try {
+    const raw = localStorage.getItem(SIGNAL_GROUP_FILTERS_STORAGE_KEY);
+    if (!raw) return DEFAULT_SIGNAL_GROUP_FILTERS;
+    const parsed = JSON.parse(raw) as Partial<SignalGroupFilterPreferences>;
+    return {
+      strategy: typeof parsed.strategy === "string" ? parsed.strategy : DEFAULT_SIGNAL_GROUP_FILTERS.strategy,
+      direction: isSignalDirection(parsed.direction)
+        ? parsed.direction
+        : DEFAULT_SIGNAL_GROUP_FILTERS.direction,
+    };
+  } catch {
+    return DEFAULT_SIGNAL_GROUP_FILTERS;
+  }
 }
 
 function MobileSignalCard({ signal }: { signal: SignalRow }) {
@@ -171,8 +202,8 @@ function MobileSignalGroupCard({ group }: { group: SignalGroupRow }) {
 }
 
 export function SignalGroupTable({ groups }: { groups: SignalGroupRow[] }) {
-  const [strategy, setStrategy] = useState("all");
-  const [direction, setDirection] = useState("all");
+  const [filters, setFilters] = useState(readSignalGroupFilterPreferences);
+  const { strategy, direction } = filters;
   const strategies = useMemo(
     () => Array.from(new Set(groups.map((group) => group.strategy))).sort(),
     [groups],
@@ -186,6 +217,20 @@ export function SignalGroupTable({ groups }: { groups: SignalGroupRow[] }) {
       }),
     [direction, groups, strategy],
   );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIGNAL_GROUP_FILTERS_STORAGE_KEY, JSON.stringify(filters));
+    } catch {
+    }
+  }, [filters]);
+
+  useEffect(() => {
+    setFilters((current) => {
+      if (current.strategy === "all" || strategies.includes(current.strategy)) return current;
+      return { ...current, strategy: "all" };
+    });
+  }, [strategies]);
 
   return (
     <div className="border border-border bg-bg">
@@ -202,7 +247,7 @@ export function SignalGroupTable({ groups }: { groups: SignalGroupRow[] }) {
             <select
               aria-label="Strategy"
               value={strategy}
-              onChange={(event) => setStrategy(event.target.value)}
+              onChange={(event) => setFilters((current) => ({ ...current, strategy: event.target.value }))}
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All strategies</option>
@@ -215,7 +260,7 @@ export function SignalGroupTable({ groups }: { groups: SignalGroupRow[] }) {
             <select
               aria-label="Direction"
               value={direction}
-              onChange={(event) => setDirection(event.target.value)}
+              onChange={(event) => setFilters((current) => ({ ...current, direction: event.target.value }))}
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All directions</option>

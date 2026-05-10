@@ -60,6 +60,15 @@ pub enum Commands {
         #[arg(long)]
         end: String,
     },
+    /// Validate whether a database interval can actually be replayed by backtests
+    ValidateBacktestInput {
+        #[arg(long)]
+        data: String,
+        #[arg(long)]
+        start: String,
+        #[arg(long)]
+        end: String,
+    },
     /// Validate whether a live-trading interval is research-grade for sweeps
     ValidateLiveFidelity {
         #[arg(long)]
@@ -258,6 +267,22 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 bail!(
                     "{}",
                     crate::backtest::replay_quality::blocking_error(&quality)
+                );
+            }
+        }
+        Commands::ValidateBacktestInput { data, start, end } => {
+            let start_time = parse_time(&start)?;
+            let end_time = parse_time(&end)?;
+            let report =
+                crate::backtest::backtest_input::analyze_path(&data, start_time, end_time)?;
+            println!(
+                "{}",
+                crate::backtest::backtest_input::format_report(&report)
+            );
+            if !report.is_backtest_ready() {
+                bail!(
+                    "{}",
+                    crate::backtest::backtest_input::blocking_error_for_backtest(&report)
                 );
             }
         }

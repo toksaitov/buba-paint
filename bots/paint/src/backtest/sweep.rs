@@ -28,9 +28,15 @@ pub fn run_sweep(
 ) -> anyhow::Result<()> {
     let t0 = Instant::now();
 
-    let quality =
-        crate::backtest::replay_quality::validate_sweep_input(data_path, start_time, end_time)?;
-    println!("Replay quality: {}\n", quality.class.as_str());
+    let readiness =
+        crate::backtest::backtest_input::validate_input(data_path, start_time, end_time)?;
+    println!(
+        "Backtest input: {} | replay_quality={} | windows={} | dry_run_ticks={}\n",
+        readiness.class.as_str(),
+        readiness.replay_quality.class.as_str(),
+        readiness.settled_windows,
+        readiness.dry_run_ticks,
+    );
     let live_fidelity =
         crate::db::live_fidelity::validate_live_sweep_input(data_path, start_time, end_time)?;
     println!("Live fidelity: {}\n", live_fidelity.class.as_str());
