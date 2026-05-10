@@ -69,6 +69,17 @@ pub enum Commands {
         #[arg(long)]
         end: String,
     },
+    /// Build an indexed derived DB for large backtests and sweeps
+    PrepareBacktestInput {
+        #[arg(long)]
+        data: String,
+        #[arg(long)]
+        start: String,
+        #[arg(long)]
+        end: String,
+        #[arg(long)]
+        output: String,
+    },
     /// Validate whether a live-trading interval is research-grade for sweeps
     ValidateLiveFidelity {
         #[arg(long)]
@@ -285,6 +296,35 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     crate::backtest::backtest_input::blocking_error_for_backtest(&report)
                 );
             }
+        }
+        Commands::PrepareBacktestInput {
+            data,
+            start,
+            end,
+            output,
+        } => {
+            let start_time = parse_time(&start)?;
+            let end_time = parse_time(&end)?;
+            let report = crate::db::backtest_prepare::prepare_backtest_input(
+                &crate::db::backtest_prepare::PrepareBacktestInputOptions {
+                    data_path: data,
+                    output_path: output,
+                    start_time,
+                    end_time,
+                },
+            )?;
+            println!("prepared_backtest=ready");
+            println!("output={}", report.output_path);
+            println!("manifest={}", report.manifest_path);
+            println!("source_bytes={}", report.source_bytes);
+            println!("output_bytes={}", report.output_bytes);
+            println!("generic_feed_rows={}", report.generic_feed_rows);
+            println!("compact_clob_rows={}", report.compact_clob_rows);
+            println!("backtest_input={}", report.readiness.class.as_str());
+            println!(
+                "replay_quality={}",
+                report.readiness.replay_quality.class.as_str()
+            );
         }
         Commands::ValidateLiveFidelity {
             db_path,

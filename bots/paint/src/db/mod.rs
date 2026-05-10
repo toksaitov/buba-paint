@@ -1,3 +1,4 @@
+pub mod backtest_prepare;
 pub mod build_data;
 pub mod database;
 pub mod live_fidelity;

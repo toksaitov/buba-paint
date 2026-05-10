@@ -16,6 +16,7 @@ pub(crate) struct FeedEventWriterConfig {
     pub queue_capacity: usize,
     pub batch_size: usize,
     pub flush_interval_ms: u64,
+    pub compact_clob_replay: bool,
 }
 
 /// Snapshot of writer counters for logs and runtime health.
@@ -68,13 +69,21 @@ impl FeedEventWriter {
         let capacity = config.queue_capacity.max(1);
         let batch_size = config.batch_size.max(1);
         let flush_interval = Duration::from_millis(config.flush_interval_ms.max(1));
+        let compact_clob_replay = config.compact_clob_replay;
         let (tx, rx) = sync_channel(capacity);
         let metrics = Arc::new(FeedEventWriterMetrics::default());
         let worker_metrics = Arc::clone(&metrics);
         let join = thread::Builder::new()
             .name("buba-feed-writer".to_string())
             .spawn(move || {
-                run_feed_writer(db_path, rx, worker_metrics, batch_size, flush_interval);
+                run_feed_writer(
+                    db_path,
+                    rx,
+                    worker_metrics,
+                    batch_size,
+                    flush_interval,
+                    compact_clob_replay,
+                );
             })
             .context("spawning feed writer")?;
         Ok(Self {
@@ -186,6 +195,7 @@ fn run_feed_writer(
     metrics: Arc<FeedEventWriterMetrics>,
     batch_size: usize,
     flush_interval: Duration,
+    compact_clob_replay: bool,
 ) {
     let db = match Database::open_runtime(&db_path) {
         Ok(db) => db,
@@ -199,22 +209,24 @@ fn run_feed_writer(
         match rx.recv_timeout(flush_interval) {
             Ok(FeedEventWriterMessage::Event(event)) => {
                 batch.push(*event);
-                if batch.len() >= batch_size && !flush_batch(&db, &metrics, &mut batch) {
+                if batch.len() >= batch_size
+                    && !flush_batch(&db, &metrics, &mut batch, compact_clob_replay)
+                {
                     break;
                 }
             }
             Ok(FeedEventWriterMessage::Shutdown) => {
-                flush_batch(&db, &metrics, &mut batch);
+                flush_batch(&db, &metrics, &mut batch, compact_clob_replay);
                 info!("feed writer stopped");
                 break;
             }
             Err(RecvTimeoutError::Timeout) => {
-                if !flush_batch(&db, &metrics, &mut batch) {
+                if !flush_batch(&db, &metrics, &mut batch, compact_clob_replay) {
                     break;
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
-                flush_batch(&db, &metrics, &mut batch);
+                flush_batch(&db, &metrics, &mut batch, compact_clob_replay);
                 break;
             }
         }
@@ -227,12 +239,13 @@ fn flush_batch(
     db: &Database,
     metrics: &FeedEventWriterMetrics,
     batch: &mut Vec<FeedEvent>,
+    compact_clob_replay: bool,
 ) -> bool {
     if batch.is_empty() {
         return true;
     }
     let started = Instant::now();
-    match db.log_feed_events_batch(batch) {
+    match db.log_feed_events_batch_with_compact_clob(batch, compact_clob_replay) {
         Ok(count) => {
             let elapsed_ms = started.elapsed().as_millis() as u64;
             metrics.persisted.fetch_add(count, Ordering::Relaxed);

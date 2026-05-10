@@ -128,21 +128,21 @@ pub fn analyze_connection(
                 "Chainlink price rows",
                 "source = 'chainlink' AND event_type = 'chainlink_price' AND price IS NOT NULL",
             )?,
-            requirement(
+            clob_top_of_book_requirement(
                 conn,
                 start_time,
                 end_time,
                 "clob_up_top_of_book",
                 "CLOB UP top-of-book rows with best bid and ask",
-                "source = 'clob_up' AND best_bid IS NOT NULL AND best_ask IS NOT NULL",
+                "clob_up",
             )?,
-            requirement(
+            clob_top_of_book_requirement(
                 conn,
                 start_time,
                 end_time,
                 "clob_down_top_of_book",
                 "CLOB DOWN top-of-book rows with best bid and ask",
-                "source = 'clob_down' AND best_bid IS NOT NULL AND best_ask IS NOT NULL",
+                "clob_down",
             )?,
         ]
     } else {
@@ -267,6 +267,52 @@ fn requirement(
         key,
         description,
         rows,
+        required: true,
+    })
+}
+
+/// Build one CLOB top-of-book requirement across legacy and compact storage.
+fn clob_top_of_book_requirement(
+    conn: &Connection,
+    start_time: u64,
+    end_time: u64,
+    key: &'static str,
+    description: &'static str,
+    source: &str,
+) -> anyhow::Result<ReplayQualityRequirement> {
+    let legacy_rows = requirement(
+        conn,
+        start_time,
+        end_time,
+        key,
+        description,
+        &format!("source = '{source}' AND best_bid IS NOT NULL AND best_ask IS NOT NULL"),
+    )?
+    .rows;
+    let compact_rows = if table_exists(conn, "clob_replay_events")? {
+        conn.query_row(
+            "SELECT COUNT(*)
+             FROM clob_replay_events
+             WHERE received_at_ms >= ?1
+               AND received_at_ms <= ?2
+               AND source = ?3
+               AND best_bid IS NOT NULL
+               AND best_ask IS NOT NULL",
+            params![
+                sqlite_timestamp(start_time, "start_time")?,
+                sqlite_timestamp(end_time, "end_time")?,
+                source
+            ],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("checking compact replay-quality requirement: {key}"))?
+    } else {
+        0
+    };
+    Ok(ReplayQualityRequirement {
+        key,
+        description,
+        rows: legacy_rows + compact_rows,
         required: true,
     })
 }

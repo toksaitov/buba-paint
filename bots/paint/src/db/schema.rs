@@ -207,10 +207,28 @@ fn ensure_additive_tables(conn: &rusqlite::Connection) {
             fidelity        TEXT NOT NULL DEFAULT 'raw_event'
                 CHECK(fidelity IN ('raw_event','legacy_snapshot'))
         );
-        CREATE INDEX IF NOT EXISTS idx_feed_events_received ON feed_events(received_at_ms);
-        CREATE INDEX IF NOT EXISTS idx_feed_events_received_us ON feed_events(received_at_us);
-        CREATE INDEX IF NOT EXISTS idx_feed_events_source_ts ON feed_events(source, received_at_ms);
-        CREATE INDEX IF NOT EXISTS idx_feed_events_market_ts ON feed_events(market_id, received_at_ms);
+        CREATE TABLE IF NOT EXISTS clob_replay_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            received_at_ms  INTEGER NOT NULL,
+            event_at_ms     INTEGER NOT NULL,
+            received_at_us  INTEGER,
+            event_at_us     INTEGER,
+            side            TEXT NOT NULL CHECK(side IN ('up','down')),
+            source          TEXT NOT NULL CHECK(source IN ('clob_up','clob_down')),
+            event_type      TEXT NOT NULL,
+            source_topic    TEXT,
+            connection_id   TEXT,
+            sequence_key    TEXT,
+            market_id       TEXT,
+            asset_id        TEXT,
+            best_bid        REAL NOT NULL,
+            best_ask        REAL NOT NULL,
+            bid_size        REAL NOT NULL,
+            ask_size        REAL NOT NULL,
+            microprice      REAL,
+            fidelity        TEXT NOT NULL DEFAULT 'raw_event'
+                CHECK(fidelity IN ('raw_event','legacy_snapshot'))
+        );
         CREATE TABLE IF NOT EXISTS run_metadata (
             key             TEXT PRIMARY KEY,
             value           TEXT NOT NULL,
@@ -454,6 +472,45 @@ fn ensure_signal_metric_columns(conn: &rusqlite::Connection) {
         "effective_arrival_delay_ms",
         "INTEGER",
     );
+}
+
+/// Create heavy replay indexes used by offline validation and sweeps.
+pub fn create_replay_indexes(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_feed_events_received ON feed_events(received_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_feed_events_received_us ON feed_events(received_at_us);
+        CREATE INDEX IF NOT EXISTS idx_feed_events_source_ts ON feed_events(source, received_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_feed_events_market_ts ON feed_events(market_id, received_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_clob_replay_received ON clob_replay_events(received_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_clob_replay_received_us ON clob_replay_events(received_at_us);
+        CREATE INDEX IF NOT EXISTS idx_clob_replay_source_ts ON clob_replay_events(source, received_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_clob_replay_market_ts ON clob_replay_events(market_id, received_at_ms);",
+    )
+}
+
+/// Return whether all offline replay indexes are present.
+pub fn has_replay_indexes(conn: &rusqlite::Connection) -> rusqlite::Result<bool> {
+    let required = [
+        "idx_feed_events_received",
+        "idx_feed_events_received_us",
+        "idx_feed_events_source_ts",
+        "idx_feed_events_market_ts",
+        "idx_clob_replay_received",
+        "idx_clob_replay_received_us",
+        "idx_clob_replay_source_ts",
+        "idx_clob_replay_market_ts",
+    ];
+    for index in required {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            [index],
+            |row| row.get(0),
+        )?;
+        if count == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Add a column to a table if it does not already exist.

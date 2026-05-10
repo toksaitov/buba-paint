@@ -2148,6 +2148,8 @@ async fn run_live_runtime(
             queue_capacity: config.feed_event_writer_queue_capacity,
             batch_size: config.feed_event_writer_batch_size,
             flush_interval_ms: config.feed_event_writer_flush_ms,
+            compact_clob_replay: config.feed_event_storage_profile
+                == FeedEventStorageProfile::ReplayGrade,
         },
     )?;
     let mut persistence_writer = LivePersistenceWriter::start(

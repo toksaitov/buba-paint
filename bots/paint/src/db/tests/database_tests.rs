@@ -143,6 +143,28 @@ fn sample_feed_event() -> FeedEvent {
     }
 }
 
+/// Sample compact CLOB top-of-book feed event.
+fn sample_clob_feed_event() -> FeedEvent {
+    FeedEvent {
+        source: "clob_up".into(),
+        event_type: "price_change".into(),
+        source_topic: Some("market".into()),
+        source_symbol: None,
+        connection_id: Some("clob-1".into()),
+        sequence_key: Some("seq-1".into()),
+        asset_id: Some("tok-up".into()),
+        price: None,
+        trade_size: None,
+        signed_quantity: None,
+        best_bid: Some(0.48),
+        best_ask: Some(0.52),
+        bid_size: Some(10.0),
+        ask_size: Some(20.0),
+        microprice: Some(0.49333333333333335),
+        ..sample_feed_event()
+    }
+}
+
 /// Sample rejection-summary row.
 fn sample_rejection_summary() -> StrategyRejectionSummaryRecord {
     StrategyRejectionSummaryRecord {
@@ -380,6 +402,50 @@ fn log_feed_event_stores_compact_columns() {
         .unwrap();
     assert!((trade_size - 0.25).abs() < f64::EPSILON);
     assert!((signed_quantity + 0.25).abs() < f64::EPSILON);
+}
+
+/// Verifies that replay-grade batch logging routes CLOB rows to compact storage.
+#[test]
+fn log_feed_events_batch_routes_clob_rows_to_compact_storage() {
+    let (db, _tmp) = temp_db();
+    db.log_feed_events_batch_with_compact_clob(&[sample_clob_feed_event()], true)
+        .unwrap();
+
+    let feed_count: u64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM feed_events", [], |row| row.get(0))
+        .unwrap();
+    let compact_count: u64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM clob_replay_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert_eq!(feed_count, 0);
+    assert_eq!(compact_count, 1);
+}
+
+/// Verifies that full-debug style batch logging keeps CLOB rows generic.
+#[test]
+fn log_feed_events_batch_without_compact_routing_keeps_clob_rows_generic() {
+    let (db, _tmp) = temp_db();
+    db.log_feed_events_batch_with_compact_clob(&[sample_clob_feed_event()], false)
+        .unwrap();
+
+    let feed_count: u64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM feed_events", [], |row| row.get(0))
+        .unwrap();
+    let compact_count: u64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM clob_replay_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert_eq!(feed_count, 1);
+    assert_eq!(compact_count, 0);
 }
 
 /// Verifies that storage footprint reports grouped feed-event counts.

@@ -131,6 +131,30 @@ const CREATE_SCHEMA: &str = "
         FOREIGN KEY (run_id) REFERENCES runs(id)
     );
 
+    CREATE TABLE clob_replay_events (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        received_at_ms  INTEGER NOT NULL,
+        event_at_ms     INTEGER NOT NULL,
+        received_at_us  INTEGER,
+        event_at_us     INTEGER,
+        side            TEXT NOT NULL,
+        source          TEXT NOT NULL,
+        event_type      TEXT NOT NULL,
+        source_topic    TEXT,
+        connection_id   TEXT,
+        sequence_key    TEXT,
+        market_id       TEXT,
+        asset_id        TEXT,
+        best_bid        REAL NOT NULL,
+        best_ask        REAL NOT NULL,
+        bid_size        REAL NOT NULL,
+        ask_size        REAL NOT NULL,
+        microprice      REAL,
+        fidelity        TEXT NOT NULL,
+        run_id          INTEGER NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES runs(id)
+    );
+
     CREATE TABLE signals (
         id                    INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id                INTEGER NOT NULL,
@@ -248,10 +272,14 @@ const CREATE_INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS idx_markets_end ON markets(end_time);
     CREATE INDEX IF NOT EXISTS idx_markets_outcome ON markets(outcome);
     CREATE INDEX IF NOT EXISTS idx_markets_run ON markets(run_id);
-    CREATE INDEX IF NOT EXISTS idx_feed_events_ts ON feed_events(received_at_ms);
-    CREATE INDEX IF NOT EXISTS idx_feed_events_ts_us ON feed_events(received_at_us);
+    CREATE INDEX IF NOT EXISTS idx_feed_events_received ON feed_events(received_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_feed_events_received_us ON feed_events(received_at_us);
     CREATE INDEX IF NOT EXISTS idx_feed_events_source_ts ON feed_events(source, received_at_ms);
     CREATE INDEX IF NOT EXISTS idx_feed_events_market_ts ON feed_events(market_id, received_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_clob_replay_received ON clob_replay_events(received_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_clob_replay_received_us ON clob_replay_events(received_at_us);
+    CREATE INDEX IF NOT EXISTS idx_clob_replay_source_ts ON clob_replay_events(source, received_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_clob_replay_market_ts ON clob_replay_events(market_id, received_at_ms);
     CREATE INDEX IF NOT EXISTS idx_signals_run ON signals(run_id, signal_id);
     CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(timestamp);
     CREATE INDEX IF NOT EXISTS idx_signals_market ON signals(market_id, timestamp);
@@ -792,6 +820,26 @@ fn import_run(conn: &Connection, runs_dir: &str, run: &RunInfo) -> anyhow::Resul
                     'legacy_snapshot',
                     {run_id}
                  FROM src.tick_data"
+            ),
+            [],
+        )?;
+    }
+    let has_clob_replay_events = conn
+        .prepare("SELECT id FROM src.clob_replay_events LIMIT 0")
+        .is_ok();
+    if has_clob_replay_events {
+        log("  Copying compact CLOB replay events...");
+        conn.execute(
+            &format!(
+                "INSERT INTO clob_replay_events (
+                    received_at_ms, event_at_ms, received_at_us, event_at_us, side, source,
+                    event_type, source_topic, connection_id, sequence_key, market_id, asset_id,
+                    best_bid, best_ask, bid_size, ask_size, microprice, fidelity, run_id
+                 )
+                 SELECT received_at_ms, event_at_ms, received_at_us, event_at_us, side, source,
+                    event_type, source_topic, connection_id, sequence_key, market_id, asset_id,
+                    best_bid, best_ask, bid_size, ask_size, microprice, fidelity, {run_id}
+                 FROM src.clob_replay_events"
             ),
             [],
         )?;

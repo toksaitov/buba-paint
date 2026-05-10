@@ -88,6 +88,16 @@ fn optional_feed_event_column(conn: &rusqlite::Connection, column: &str) -> Stri
     }
 }
 
+/// Return whether a table exists in the current connection.
+fn has_table(conn: &rusqlite::Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .is_ok_and(|count| count > 0)
+}
+
 /// Replays ticks from a shared in-memory tick buffer.
 pub struct TickReplay {
     ticks: SharedTicks,
@@ -127,29 +137,31 @@ impl TickReplay {
     ) -> anyhow::Result<Vec<RawTick>> {
         let start_ms = timestamp_param(start_time, "start_time")?;
         let end_ms = timestamp_param(end_time, "end_time")?;
-        if conn.prepare("SELECT id FROM feed_events LIMIT 0").is_ok() {
-            let feed_event_count: i64 = conn.query_row(
+        let has_feed_events = conn.prepare("SELECT id FROM feed_events LIMIT 0").is_ok();
+        let has_compact_clob = has_table(conn, "clob_replay_events");
+        if has_feed_events || has_compact_clob {
+            let feed_event_count: i64 = if has_feed_events {
+                conn.query_row(
                 "SELECT COUNT(*) FROM feed_events WHERE received_at_ms >= ?1 AND received_at_ms <= ?2",
                 params![start_ms, end_ms],
                 |row| row.get(0),
-            )?;
-            if feed_event_count > 0 {
+                )?
+            } else {
+                0
+            };
+            let compact_clob_count: i64 = if has_compact_clob {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM clob_replay_events WHERE received_at_ms >= ?1 AND received_at_ms <= ?2",
+                    params![start_ms, end_ms],
+                    |row| row.get(0),
+                )?
+            } else {
+                0
+            };
+            if feed_event_count + compact_clob_count > 0 {
+                let query = replay_query(conn, has_feed_events, has_compact_clob);
                 let mut stmt = conn
-                    .prepare(&format!(
-                        "SELECT received_at_ms, source, event_type, market_id, asset_id, price,
-                            best_bid, best_ask, bid_size, ask_size, fidelity, received_at_us,
-                            {}, {}, {}, {}, {}, {}, {}
-                     FROM feed_events
-                     WHERE received_at_ms >= ?1 AND received_at_ms <= ?2
-                     ORDER BY COALESCE(received_at_us, received_at_ms * 1000), id",
-                        optional_feed_event_column(conn, "sequence_key"),
-                        optional_feed_event_column(conn, "trade_size"),
-                        optional_feed_event_column(conn, "signed_quantity"),
-                        optional_feed_event_column(conn, "depth_bid_notional"),
-                        optional_feed_event_column(conn, "depth_ask_notional"),
-                        optional_feed_event_column(conn, "depth_imbalance"),
-                        optional_feed_event_column(conn, "microprice"),
-                    ))
+                    .prepare(&query)
                     .context("preparing feed_events query")?;
 
                 let rows = stmt
@@ -245,8 +257,9 @@ impl TickReplay {
     ) -> anyhow::Result<Option<u64>> {
         let start_ms = timestamp_param(start_time, "start_time")?;
         let end_ms = timestamp_param(end_time, "end_time")?;
+        let mut first_feed_timestamp: Option<i64> = None;
         if conn.prepare("SELECT id FROM feed_events LIMIT 0").is_ok() {
-            let feed_timestamp: Option<i64> = conn
+            first_feed_timestamp = conn
                 .query_row(
                     "SELECT MIN(received_at_ms)
                      FROM feed_events
@@ -255,9 +268,25 @@ impl TickReplay {
                     |row| row.get(0),
                 )
                 .context("finding first feed_event timestamp")?;
-            if let Some(timestamp) = feed_timestamp {
-                return Ok(Some(timestamp as u64));
-            }
+        }
+        let mut first_clob_timestamp: Option<i64> = None;
+        if has_table(conn, "clob_replay_events") {
+            first_clob_timestamp = conn
+                .query_row(
+                    "SELECT MIN(received_at_ms)
+                     FROM clob_replay_events
+                     WHERE received_at_ms >= ?1 AND received_at_ms <= ?2",
+                    params![start_ms, end_ms],
+                    |row| row.get(0),
+                )
+                .context("finding first clob_replay_event timestamp")?;
+        }
+        if first_feed_timestamp.is_some() || first_clob_timestamp.is_some() {
+            return Ok(first_feed_timestamp
+                .into_iter()
+                .chain(first_clob_timestamp)
+                .min()
+                .map(|timestamp| timestamp as u64));
         }
         let Ok(mut stmt) = conn.prepare(
             "SELECT MIN(timestamp)
@@ -354,6 +383,52 @@ impl TickReplay {
 
         Some(group)
     }
+}
+
+/// Build the replay query for generic and compact feed-event storage.
+fn replay_query(
+    conn: &rusqlite::Connection,
+    has_feed_events: bool,
+    has_compact_clob: bool,
+) -> String {
+    let mut branches = Vec::new();
+    if has_feed_events {
+        branches.push(format!(
+            "SELECT received_at_ms, source, event_type, market_id, asset_id, price,
+                    best_bid, best_ask, bid_size, ask_size, fidelity, received_at_us,
+                    {}, {}, {}, {}, {}, {}, {}, id AS row_id, 0 AS storage_order
+             FROM feed_events
+             WHERE received_at_ms >= ?1 AND received_at_ms <= ?2",
+            optional_feed_event_column(conn, "sequence_key"),
+            optional_feed_event_column(conn, "trade_size"),
+            optional_feed_event_column(conn, "signed_quantity"),
+            optional_feed_event_column(conn, "depth_bid_notional"),
+            optional_feed_event_column(conn, "depth_ask_notional"),
+            optional_feed_event_column(conn, "depth_imbalance"),
+            optional_feed_event_column(conn, "microprice"),
+        ));
+    }
+    if has_compact_clob {
+        branches.push(
+            "SELECT received_at_ms, source, event_type, market_id, asset_id, NULL AS price,
+                    best_bid, best_ask, bid_size, ask_size, fidelity, received_at_us,
+                    sequence_key, NULL AS trade_size, NULL AS signed_quantity,
+                    NULL AS depth_bid_notional, NULL AS depth_ask_notional,
+                    NULL AS depth_imbalance, microprice, id AS row_id, 1 AS storage_order
+             FROM clob_replay_events
+             WHERE received_at_ms >= ?1 AND received_at_ms <= ?2"
+                .to_string(),
+        );
+    }
+    format!(
+        "SELECT received_at_ms, source, event_type, market_id, asset_id, price,
+                best_bid, best_ask, bid_size, ask_size, fidelity, received_at_us,
+                sequence_key, trade_size, signed_quantity, depth_bid_notional,
+                depth_ask_notional, depth_imbalance, microprice
+         FROM ({})
+         ORDER BY COALESCE(received_at_us, received_at_ms * 1000), storage_order, row_id",
+        branches.join(" UNION ALL ")
+    )
 }
 
 /// Convert a replay timestamp into the signed `SQLite` representation.

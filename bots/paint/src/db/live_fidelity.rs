@@ -583,31 +583,66 @@ fn count_orders_without_book_explainability(
     start_time: u64,
     end_time: u64,
 ) -> anyhow::Result<i64> {
-    if !table_exists(conn, "live_orders")? || !table_exists(conn, "feed_events")? {
+    if !table_exists(conn, "live_orders")? {
         return Ok(0);
     }
-    conn.query_row(
-        "SELECT COUNT(*)
-         FROM live_orders o
-         WHERE o.updated_at_ms >= ?1
-           AND o.updated_at_ms <= ?2
-           AND NOT EXISTS (
+    let mut evidence_clauses = Vec::new();
+    if table_exists(conn, "feed_events")? {
+        evidence_clauses.push(
+            "EXISTS (
+               SELECT 1
+               FROM feed_events f
+               WHERE f.received_at_ms >= ?1
+                 AND f.received_at_ms <= o.created_at_ms
+                 AND f.market_id = o.market_id
+                 AND f.source IN ('clob_up', 'clob_down')
+                 AND f.best_ask IS NOT NULL
+                 AND f.ask_size IS NOT NULL
+                 AND (o.token_id IS NULL OR f.asset_id = o.token_id)
+                 AND (o.limit_price IS NULL OR f.best_ask <= o.limit_price)
+                 AND (
+                   o.order_type = 'FAK'
+                   OR o.requested_size IS NULL
+                   OR f.ask_size >= o.requested_size
+                 )
+             )",
+        );
+    }
+    if table_exists(conn, "clob_replay_events")? {
+        evidence_clauses.push(
+            "EXISTS (
              SELECT 1
-             FROM feed_events f
-             WHERE f.received_at_ms >= ?1
-               AND f.received_at_ms <= o.created_at_ms
-               AND f.market_id = o.market_id
-               AND f.source IN ('clob_up', 'clob_down')
-               AND f.best_ask IS NOT NULL
-               AND f.ask_size IS NOT NULL
-               AND (o.token_id IS NULL OR f.asset_id = o.token_id)
-               AND (o.limit_price IS NULL OR f.best_ask <= o.limit_price)
+             FROM clob_replay_events c
+             WHERE c.received_at_ms >= ?1
+               AND c.received_at_ms <= o.created_at_ms
+               AND c.market_id = o.market_id
+               AND c.best_ask IS NOT NULL
+               AND c.ask_size IS NOT NULL
+               AND (o.token_id IS NULL OR c.asset_id = o.token_id)
+               AND (o.limit_price IS NULL OR c.best_ask <= o.limit_price)
                AND (
                  o.order_type = 'FAK'
                  OR o.requested_size IS NULL
-                 OR f.ask_size >= o.requested_size
+                 OR c.ask_size >= o.requested_size
                )
            )",
+        );
+    }
+    let evidence_filter = if evidence_clauses.is_empty() {
+        "0".to_string()
+    } else {
+        evidence_clauses.join(" OR ")
+    };
+    conn.query_row(
+        &format!(
+            "SELECT COUNT(*)
+         FROM live_orders o
+         WHERE o.updated_at_ms >= ?1
+           AND o.updated_at_ms <= ?2
+           AND NOT (
+             {evidence_filter}
+           )"
+        ),
         params![
             sqlite_timestamp(start_time, "start_time")?,
             sqlite_timestamp(end_time, "end_time")?

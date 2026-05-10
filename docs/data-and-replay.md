@@ -29,7 +29,7 @@ Replay-grade capture persists typed decision inputs needed for future sweeps:
 
 `compact` is descriptive-only because it suppresses Binance book-ticker persistence. `full_debug` preserves payloads for short diagnostics and should not be a week-long run default.
 
-Replay-grade storage intentionally keeps CLOB UP and DOWN top-of-book rows as separate side rows because the current replay schema applies one side at a time. It drops CLOB `last_trade_price` telemetry outside `full_debug` because strategy replay consumes top-of-book, Binance, Chainlink, depth, market metadata, and decision evidence instead.
+Replay-grade storage writes high-rate CLOB top-of-book mutations into compact typed `clob_replay_events` rows instead of the generic `feed_events` shape. It still preserves every decision-critical top-of-book mutation after exact dedupe, including size-only changes, because sizes affect liquidity, microprice, quote churn, fillability, and future replay. Generic `feed_events` remains the source for Binance, Chainlink, metadata, historical compatibility, and `full_debug` payload storage. CLOB `last_trade_price` telemetry is dropped outside `full_debug` because strategy replay consumes top-of-book, Binance, Chainlink, depth, market metadata, and decision evidence instead.
 
 ## Replay Quality Gate
 
@@ -54,6 +54,22 @@ cargo run -p buba-paint --release -- validate-backtest-input \
 `backtest_ready` means replay quality passed, windows were loadable, settled outcomes were available, missing open/close prices could be derived from raw Binance trades, and a bounded dry-run replay produced ticks. `buba-paint sweep` refuses inputs unless both public replay quality and backtest readiness pass. Backtests remain runnable on lower-fidelity archives, but those results must be labeled honestly.
 
 Old runs that lack Binance book-ticker rows are descriptive evidence only. Runs that pass `validate-replay-data` but fail `validate-backtest-input` are also blocked for sweeps until the tooling/schema issue is fixed. They can support postmortems, drawdown analysis, and operational diagnostics, but not trusted parameter selection.
+
+## Prepared Backtest Inputs
+
+Runtime DBs are append-optimized. New live/runtime DBs intentionally do not maintain high-volume secondary replay indexes on `feed_events` or `clob_replay_events`, because those indexes are useful for offline sweeps and expensive during capture.
+
+Before a large sweep, create a derived prepared DB:
+
+```bash
+cargo run -p buba-paint --release -- prepare-backtest-input \
+  --data <runtime-db> \
+  --start <time> \
+  --end <time> \
+  --output /tmp/prepared-backtest.db
+```
+
+`prepare-backtest-input` opens the source read-only, copies the selected interval into a derived DB, converts legacy generic CLOB top-of-book rows into compact typed CLOB rows, creates offline replay indexes, runs `validate-replay-data` and `validate-backtest-input`, and writes a manifest beside the output DB. `prepared_backtest` means the input is optimized for large replay and sweep workloads. It is stronger than `backtest_ready` for performance, but it is not a trading-runtime state.
 
 Live runtime metadata separates configured capture capability, recent capture health, and offline validation. `configured_replay_quality_class` records whether the selected storage profile can become replay-grade. The running bot records `runtime_observed_replay_quality_class`, recent missing classes, queue depth, writer lag, and drop/error state from incremental counters. The full `replay_quality_class` key is reserved for offline `validate-replay-data` or closeout output and must not be written by the trading loop.
 
@@ -85,6 +101,7 @@ Important run DB tables:
 
 - `run_metadata`: feed storage profile, configured capture capability, cheap runtime capture health, incremental feed-class counters, and offline validation results when `validate-replay-data`, `validate-live-fidelity`, or closeout are explicitly run. Runtime keys use `runtime_*` names; offline validation owns `replay_quality_class`. The live bot must not run full replay validators or whole-table feed scans while trading.
 - `feed_events`: canonical replay source when available.
+- `clob_replay_events`: compact typed CLOB UP/DOWN top-of-book replay rows for replay-grade runtime DBs and prepared backtest DBs.
 - `tick_data`: optional 1-second sampled telemetry for dashboards and coarse inspection. It is disabled by default for replay-grade long-running modes and should not be treated as the research source.
 - `markets`: one row per 5-minute window with token IDs, status, resolution, fee profile, min size, tick size, rewards, and accepting-orders metadata. Historical and live-runtime DBs may not contain derived `open_price` and `close_price` columns; the backtester derives missing values from raw Binance `aggTrade` feed events when available.
 - `signals`: strategy detection events.
@@ -100,7 +117,7 @@ See `bots/paint/src/db/schema.rs` for full DDL. Schema evolution is additive thr
 
 ## Backtesting Model
 
-When `feed_events` exist, the backtester replays raw events at recorded timestamps. If microsecond receive fields exist, replay orders by `received_at_us`; otherwise it falls back to millisecond ordering. Missing market open prices are derived from the first Binance `aggTrade` inside each market window. Missing close prices are derived from the last Binance `aggTrade` before the window close when needed for reporting. Settled outcomes still come from `markets.outcome`; missing outcomes fail validation instead of being guessed.
+When `feed_events` or `clob_replay_events` exist, the backtester replays raw typed events at recorded timestamps. If microsecond receive fields exist, replay orders by `received_at_us`; otherwise it falls back to millisecond ordering. Missing market open prices are derived from the first Binance `aggTrade` inside each market window. Missing close prices are derived from the last Binance `aggTrade` before the window close when needed for reporting. Settled outcomes still come from `markets.outcome`; missing outcomes fail validation instead of being guessed.
 
 When `feed_events` are absent, the backtester synthesizes `legacy_snapshot` replay from `tick_data`. This path is lower fidelity and should not be described as true latency reconstruction.
 

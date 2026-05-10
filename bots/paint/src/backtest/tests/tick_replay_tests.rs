@@ -69,6 +69,43 @@ fn insert_feed_event(
     .unwrap();
 }
 
+/// Helper: insert one compact CLOB replay row.
+#[allow(clippy::too_many_arguments)]
+fn insert_compact_clob_event(
+    conn: &rusqlite::Connection,
+    received_at_ms: i64,
+    received_at_us: Option<i64>,
+    source: &str,
+    event_type: &str,
+    bid: f64,
+    ask: f64,
+    bid_size: f64,
+    ask_size: f64,
+) {
+    let side = if source == "clob_up" { "up" } else { "down" };
+    conn.execute(
+        "INSERT INTO clob_replay_events (
+            received_at_ms, event_at_ms, received_at_us, event_at_us, side, source,
+            event_type, market_id, asset_id, best_bid, best_ask, bid_size, ask_size,
+            microprice, fidelity
+         ) VALUES (?1, ?1, ?2, ?2, ?3, ?4, ?5, 'm1', 'asset-1',
+                   ?6, ?7, ?8, ?9, ?10, 'raw_event')",
+        params![
+            received_at_ms,
+            received_at_us,
+            side,
+            source,
+            event_type,
+            bid,
+            ask,
+            bid_size,
+            ask_size,
+            ((ask * bid_size) + (bid * ask_size)) / (bid_size + ask_size)
+        ],
+    )
+    .unwrap();
+}
+
 /// Helper: build a raw tick for in-memory tests.
 fn tick(ts: u64, source: &str, price: Option<f64>) -> RawTick {
     RawTick {
@@ -504,6 +541,72 @@ fn from_db_feed_events_preserve_raw_feature_fields() {
     assert_eq!(sample.depth_ask_notional, Some(120000.0));
     assert_eq!(sample.depth_imbalance, Some(-0.0909));
     assert_eq!(sample.microprice, Some(42000.1));
+}
+
+/// Verifies that compact CLOB rows replay as normal top-of-book samples.
+#[test]
+fn from_db_compact_clob_rows_replay_top_of_book() {
+    let conn = setup_test_db();
+    insert_compact_clob_event(
+        &conn,
+        1000,
+        Some(1_000_100),
+        "clob_up",
+        "price_change",
+        0.48,
+        0.52,
+        10.0,
+        20.0,
+    );
+
+    let mut replay = TickReplay::from_db(&conn, 0, 2000).unwrap();
+    assert_eq!(replay.total_ticks(), 1);
+    let group = replay.next_group().unwrap();
+    let sample = group.clob_up.unwrap();
+
+    assert_eq!(sample.event_type, "price_change");
+    assert_eq!(sample.bid, Some(0.48));
+    assert_eq!(sample.ask, Some(0.52));
+    assert_eq!(sample.bid_size, Some(10.0));
+    assert_eq!(sample.ask_size, Some(20.0));
+    assert!(sample.microprice.is_some());
+}
+
+/// Verifies that generic and compact rows share one timestamp ordering.
+#[test]
+fn from_db_orders_generic_and_compact_rows_by_receive_time() {
+    let conn = setup_test_db();
+    insert_compact_clob_event(
+        &conn,
+        1000,
+        Some(1_000_200),
+        "clob_up",
+        "price_change",
+        0.48,
+        0.52,
+        10.0,
+        20.0,
+    );
+    insert_feed_event(
+        &conn,
+        1000,
+        Some(1_000_100),
+        "binance",
+        "aggTrade",
+        Some(42_000.0),
+        None,
+        None,
+        "raw_event",
+    );
+
+    let mut replay = TickReplay::from_db(&conn, 0, 2000).unwrap();
+    let first = replay.next_group().unwrap();
+    let second = replay.next_group().unwrap();
+
+    assert!(first.binance.is_some());
+    assert!(first.clob_up.is_none());
+    assert!(second.binance.is_none());
+    assert!(second.clob_up.is_some());
 }
 
 /// Verifies that from db splits beyond 10ms.

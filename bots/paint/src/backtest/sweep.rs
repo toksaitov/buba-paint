@@ -47,6 +47,11 @@ pub fn run_sweep(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .with_context(|| format!("opening data DB: {data_path}"))?;
+    if !crate::db::schema::has_replay_indexes(&conn)? {
+        eprintln!(
+            "warning: input DB is backtest-ready but not prepared for large sweeps; run `buba-paint prepare-backtest-input` for offline replay indexes"
+        );
+    }
     let cached_ticks = TickReplay::load_ticks(&conn, start_time, end_time)?;
     drop(conn);
     println!("Loaded {} ticks.\n", cached_ticks.len());

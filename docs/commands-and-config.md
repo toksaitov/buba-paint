@@ -113,6 +113,12 @@ cargo run -p buba-paint --release -- validate-backtest-input \
   --start 2026-02-20T03:13 \
   --end 2026-02-28T00:00
 
+cargo run -p buba-paint --release -- prepare-backtest-input \
+  --data /path/to/runtime/paint.db \
+  --start 2026-05-09T00:00:00Z \
+  --end 2026-05-10T00:00:00Z \
+  --output /tmp/prepared-backtest.db
+
 cargo run -p buba-paint --release -- validate-live-fidelity \
   --db-path /path/to/live-run/paint.db \
   --start 2026-05-01T00:00:00Z \
@@ -129,7 +135,7 @@ cargo run -p buba-paint --release -- sweep \
 
 `--sweep PARAM=start:end:step` generates a range. `--sweep PARAM=a,b,c` enumerates values. `--set PARAM=value` fixes a parameter without sweeping. Boolean values accept `true/false`, `1/0`, `yes/no`, and `on/off`; operator docs should prefer `true/false`.
 
-`validate-replay-data` proves raw public feed completeness. `validate-backtest-input` proves the current backtester can load the interval, derive missing market open/close prices, find settled outcomes, and run a bounded replay dry run. Sweeps refuse inputs unless both gates pass. If an interval contains funded `live_trading` evidence, sweeps also require `research_grade_live` from `validate-live-fidelity`. Backtests still run on descriptive archives, but they warn when the interval lacks replay-grade decision inputs.
+`validate-replay-data` proves raw public feed completeness. `validate-backtest-input` proves the current backtester can load the interval, derive missing market open/close prices, find settled outcomes, and run a bounded replay dry run. `prepare-backtest-input` creates an offline derived DB with compact CLOB replay rows and sweep indexes; use it for large sweeps instead of hitting an append-optimized runtime DB directly. Sweeps refuse inputs unless both correctness gates pass and warn when the input is backtest-ready but not prepared/indexed. If an interval contains funded `live_trading` evidence, sweeps also require `research_grade_live` from `validate-live-fidelity`. Backtests still run on descriptive archives, but they warn when the interval lacks replay-grade decision inputs.
 
 ## Settlement and Historical Data
 

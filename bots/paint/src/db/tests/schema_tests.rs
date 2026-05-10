@@ -31,3 +31,39 @@ fn migrations_are_idempotent() {
 fn migration_count() {
     assert_eq!(MIGRATIONS.len(), 15);
 }
+
+/// Verifies that runtime migrations create compact CLOB replay storage.
+#[test]
+fn migrations_create_compact_clob_replay_table() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    run_migrations(&conn).unwrap();
+
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='clob_replay_events'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(count, 1);
+}
+
+/// Verifies that runtime migrations do not create sweep-only feed indexes.
+#[test]
+fn runtime_migrations_skip_replay_indexes() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    run_migrations(&conn).unwrap();
+
+    assert!(!has_replay_indexes(&conn).unwrap());
+}
+
+/// Verifies that offline replay preparation creates sweep indexes.
+#[test]
+fn create_replay_indexes_adds_offline_indexes() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    run_migrations(&conn).unwrap();
+    create_replay_indexes(&conn).unwrap();
+
+    assert!(has_replay_indexes(&conn).unwrap());
+}

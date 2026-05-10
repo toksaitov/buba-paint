@@ -157,12 +157,45 @@ fn insert_sweep_grade_feed_events(conn: &Connection) {
     );
 }
 
+/// Insert one compact CLOB top-of-book row.
+fn insert_compact_clob_event(conn: &Connection, source: &str) {
+    let side = if source == "clob_up" { "up" } else { "down" };
+    conn.execute(
+        "INSERT INTO clob_replay_events (
+            received_at_ms, event_at_ms, side, source, event_type, market_id, asset_id,
+            best_bid, best_ask, bid_size, ask_size, fidelity
+         ) VALUES (1000, 1000, ?1, ?2, 'price_change', 'm1', 'asset-1',
+                   0.45, 0.55, 20.0, 30.0, 'raw_event')",
+        params![side, source],
+    )
+    .unwrap();
+}
+
 /// Verify that complete raw feed classes classify as sweep-grade.
 #[test]
 fn complete_feed_classes_are_sweep_grade() {
     let conn = setup_db();
     insert_sweep_grade_feed_events(&conn);
     let report = analyze_connection(&conn, 0, 2_000).unwrap();
+    assert_eq!(report.class, ReplayQualityClass::SweepGrade);
+    assert!(report.missing_required().is_empty());
+}
+
+/// Verify that compact CLOB top-of-book rows satisfy replay quality.
+#[test]
+fn compact_clob_rows_satisfy_top_of_book_requirements() {
+    let conn = setup_db();
+    insert_sweep_grade_feed_events(&conn);
+    conn.execute(
+        "DELETE FROM feed_events WHERE source IN ('clob_up', 'clob_down')",
+        [],
+    )
+    .unwrap();
+    insert_compact_clob_event(&conn, "clob_up");
+    insert_compact_clob_event(&conn, "clob_down");
+
+    let report = analyze_connection(&conn, 0, 2_000).unwrap();
+
     assert_eq!(report.class, ReplayQualityClass::SweepGrade);
     assert!(report.missing_required().is_empty());
 }

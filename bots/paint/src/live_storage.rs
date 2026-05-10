@@ -427,6 +427,21 @@ mod tests {
         assert!(state.prepare_clob_top_of_book(fourth).is_some());
     }
 
+    /// Verify that size-only CLOB top-of-book changes are preserved.
+    #[test]
+    fn compact_clob_top_of_book_preserves_size_only_changes() {
+        let mut state = FeedEventStorageState::new(FeedEventStorageProfile::ReplayGrade);
+        assert!(
+            state
+                .prepare_clob_top_of_book(sample_event("clob_up", "price_change"))
+                .is_some()
+        );
+        let mut size_change = sample_event("clob_up", "price_change");
+        size_change.bid_size = Some(125.0);
+
+        assert!(state.prepare_clob_top_of_book(size_change).is_some());
+    }
+
     /// Verify that compact `CLOB` book snapshots persist once per connection.
     #[test]
     fn compact_clob_book_snapshot_persists_once_per_connection() {

@@ -95,6 +95,24 @@ pub struct LiveDecisionEvidence<'a> {
     pub rejection_reason: Option<&'a str>,
 }
 
+/// Return whether one feed event should use compact `CLOB` replay storage.
+fn is_clob_top_of_book_event(event: &FeedEvent) -> bool {
+    matches!(event.source.as_str(), "clob_up" | "clob_down")
+        && matches!(
+            event.event_type.as_str(),
+            "book" | "price_change" | "best_bid_ask"
+        )
+        && event.best_bid.is_some()
+        && event.best_ask.is_some()
+        && event.bid_size.is_some()
+        && event.ask_size.is_some()
+}
+
+/// Return the compact side label for one `CLOB` source.
+fn clob_side(source: &str) -> &'static str {
+    if source == "clob_up" { "up" } else { "down" }
+}
+
 /// Mutable lifecycle fields for one live redemption row.
 #[derive(Debug, Clone, Copy)]
 pub struct LiveRedemptionStatusUpdate<'a> {
@@ -219,8 +237,17 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Logs a batch of feed events inside one transaction.
+    /// Logs a batch of generic feed events inside one transaction.
     pub fn log_feed_events_batch(&self, events: &[FeedEvent]) -> anyhow::Result<u64> {
+        self.log_feed_events_batch_with_compact_clob(events, false)
+    }
+
+    /// Logs a batch of feed events with optional compact `CLOB` replay routing.
+    pub fn log_feed_events_batch_with_compact_clob(
+        &self,
+        events: &[FeedEvent],
+        compact_clob_replay: bool,
+    ) -> anyhow::Result<u64> {
         if events.is_empty() {
             return Ok(0);
         }
@@ -240,35 +267,69 @@ impl Database {
                     ?20, ?21, ?22, ?23, ?24, ?25, ?26
                  )",
             )?;
+            let mut clob_stmt = tx.prepare_cached(
+                "INSERT INTO clob_replay_events (
+                    received_at_ms, event_at_ms, received_at_us, event_at_us, side, source,
+                    event_type, source_topic, connection_id, sequence_key, market_id, asset_id,
+                    best_bid, best_ask, bid_size, ask_size, microprice, fidelity
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6,
+                    ?7, ?8, ?9, ?10, ?11, ?12,
+                    ?13, ?14, ?15, ?16, ?17, ?18
+                 )",
+            )?;
             for event in events {
-                stmt.execute(params![
-                    event.received_at_ms,
-                    event.event_at_ms,
-                    event.received_at_us,
-                    event.event_at_us,
-                    event.source,
-                    event.event_type,
-                    event.source_topic,
-                    event.source_symbol,
-                    event.connection_id,
-                    event.sequence_key,
-                    event.market_id,
-                    event.asset_id,
-                    event.price,
-                    event.trade_size,
-                    event.signed_quantity,
-                    event.best_bid,
-                    event.best_ask,
-                    event.bid_size,
-                    event.ask_size,
-                    event.depth_bid_notional,
-                    event.depth_ask_notional,
-                    event.depth_imbalance,
-                    event.microprice,
-                    event.payload_json,
-                    event.details_json,
-                    event.fidelity.to_string(),
-                ])?;
+                if compact_clob_replay && is_clob_top_of_book_event(event) {
+                    clob_stmt.execute(params![
+                        event.received_at_ms,
+                        event.event_at_ms,
+                        event.received_at_us,
+                        event.event_at_us,
+                        clob_side(&event.source),
+                        event.source,
+                        event.event_type,
+                        event.source_topic,
+                        event.connection_id,
+                        event.sequence_key,
+                        event.market_id,
+                        event.asset_id,
+                        event.best_bid,
+                        event.best_ask,
+                        event.bid_size,
+                        event.ask_size,
+                        event.microprice,
+                        event.fidelity.to_string(),
+                    ])?;
+                } else {
+                    stmt.execute(params![
+                        event.received_at_ms,
+                        event.event_at_ms,
+                        event.received_at_us,
+                        event.event_at_us,
+                        event.source,
+                        event.event_type,
+                        event.source_topic,
+                        event.source_symbol,
+                        event.connection_id,
+                        event.sequence_key,
+                        event.market_id,
+                        event.asset_id,
+                        event.price,
+                        event.trade_size,
+                        event.signed_quantity,
+                        event.best_bid,
+                        event.best_ask,
+                        event.bid_size,
+                        event.ask_size,
+                        event.depth_bid_notional,
+                        event.depth_ask_notional,
+                        event.depth_imbalance,
+                        event.microprice,
+                        event.payload_json,
+                        event.details_json,
+                        event.fidelity.to_string(),
+                    ])?;
+                }
             }
         }
         tx.commit()?;

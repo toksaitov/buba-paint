@@ -232,7 +232,7 @@ async fn wait_for_persisted_clob_snapshot_with_sizes(db_path: &str) {
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
         let conn = rusqlite::Connection::open(db_path).unwrap();
-        let count: i64 = conn
+        let legacy_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*)
                  FROM feed_events
@@ -243,7 +243,18 @@ async fn wait_for_persisted_clob_snapshot_with_sizes(db_path: &str) {
                 |r| r.get(0),
             )
             .unwrap();
-        if count > 0 {
+        let compact_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM clob_replay_events
+                 WHERE event_type = 'book'
+                   AND source IN ('clob_up', 'clob_down')
+                   AND ask_size > 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if legacy_count + compact_count > 0 {
             return;
         }
         if Instant::now() >= deadline {
@@ -1399,7 +1410,7 @@ async fn live_bot_best_bid_ask_without_sizes_still_opens_trade() {
         "Expected at least one filled signal metric, got {filled_count}"
     );
 
-    let persisted_best_bid_ask_with_size: i64 = conn
+    let legacy_best_bid_ask_with_size: i64 = conn
         .query_row(
             "SELECT COUNT(*)
              FROM feed_events
@@ -1410,9 +1421,21 @@ async fn live_bot_best_bid_ask_without_sizes_still_opens_trade() {
             |r| r.get(0),
         )
         .unwrap();
+    let compact_best_bid_ask_with_size: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM clob_replay_events
+             WHERE event_type = 'best_bid_ask'
+               AND source IN ('clob_up', 'clob_down')
+               AND ask_size > 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert!(
-        persisted_best_bid_ask_with_size > 0,
-        "Expected persisted best_bid_ask rows to preserve positive ask_size, got {persisted_best_bid_ask_with_size}"
+        legacy_best_bid_ask_with_size + compact_best_bid_ask_with_size > 0,
+        "Expected persisted best_bid_ask rows to preserve positive ask_size, got {}",
+        legacy_best_bid_ask_with_size + compact_best_bid_ask_with_size
     );
 }
 

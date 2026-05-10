@@ -246,6 +246,30 @@ fn cli_validate_backtest_input_command_parses() {
     }
 }
 
+/// Verifies that cli prepare backtest input command parses.
+#[test]
+fn cli_prepare_backtest_input_command_parses() {
+    let cli = Cli::parse_from([
+        "buba-paint",
+        "prepare-backtest-input",
+        "--data",
+        "data.db",
+        "--start",
+        "2026-02-20",
+        "--end",
+        "2026-02-28",
+        "--output",
+        "prepared.db",
+    ]);
+    match cli.command {
+        Commands::PrepareBacktestInput { data, output, .. } => {
+            assert_eq!(data, "data.db");
+            assert_eq!(output, "prepared.db");
+        }
+        _ => panic!("expected PrepareBacktestInput command"),
+    }
+}
+
 /// Verifies that cli live command parses.
 #[test]
 fn cli_live_command_parses() {

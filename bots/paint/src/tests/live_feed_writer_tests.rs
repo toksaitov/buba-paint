@@ -57,6 +57,7 @@ fn writer_persists_queued_rows() {
             queue_capacity: 16,
             batch_size: 2,
             flush_interval_ms: 10,
+            compact_clob_replay: false,
         },
     )
     .unwrap();
@@ -84,6 +85,7 @@ fn writer_reports_disconnected_worker_drop() {
             queue_capacity: 1,
             batch_size: 1,
             flush_interval_ms: 10,
+            compact_clob_replay: false,
         },
     )
     .unwrap();
@@ -108,6 +110,7 @@ fn writer_shutdown_with_full_queue_is_bounded() {
             queue_capacity: 1,
             batch_size: 10_000,
             flush_interval_ms: 60_000,
+            compact_clob_replay: false,
         },
     )
     .unwrap();
