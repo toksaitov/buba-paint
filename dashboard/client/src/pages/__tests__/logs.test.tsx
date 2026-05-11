@@ -148,6 +148,34 @@ test("shows an empty-state message when filters remove every line", async () => 
   expect(screen.getByText("No log lines match the current filters.")).toBeInTheDocument();
 });
 
+test("compact filter button replaces the giant Filters text", async () => {
+  const user = userEvent.setup();
+  mockUseLogs.mockReturnValue({
+    isLoading: false,
+    data: {
+      lines: [
+        "2026-03-20 INFO buba_paint::live: hello",
+        "2026-03-20 WARN buba_paint::clob: feed warning",
+      ],
+    },
+  } as ReturnType<typeof useLogs>);
+
+  render(<LogsPage />);
+
+  expect(screen.queryAllByText(/Filters \(\d+ active\)/)).toHaveLength(0);
+  const filterButton = screen.getByRole("button", { name: /^Filters$/ });
+  expect(filterButton).toHaveAttribute("aria-expanded", "false");
+
+  await user.selectOptions(screen.getByLabelText("Severity"), "warn");
+  expect(
+    screen.getByRole("button", { name: /Filters, 1 active/ }),
+  ).toBeInTheDocument();
+
+  expect(screen.getAllByLabelText("Severity")).toHaveLength(1);
+  await user.click(filterButton);
+  expect(screen.getAllByLabelText("Severity")).toHaveLength(2);
+});
+
 test("remembers log controls after leaving and returning to the page", async () => {
   const user = userEvent.setup();
   mockUseLogs.mockReturnValue({

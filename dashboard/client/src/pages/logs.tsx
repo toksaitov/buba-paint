@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
+import { SlidersHorizontal } from "lucide-react";
 import { Loading } from "../components/common/loading";
 import { StateEmpty, Surface } from "../components/ui/dashboard-primitives";
 import { useLogs } from "../hooks/use-logs";
@@ -319,26 +320,40 @@ export function LogsPage() {
   return (
     <div className="flex h-full flex-col">
       <Surface className="flex flex-1 flex-col overflow-hidden">
-        <div className="grid gap-2 border-b border-border px-3 py-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-          <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(12rem,1.1fr)_minmax(9rem,0.85fr)_minmax(10rem,0.9fr)_minmax(11rem,1fr)]">
+        <div className="grid gap-2 border-b border-border px-3 py-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 md:grid-cols-[minmax(0,1fr)_minmax(7rem,auto)_minmax(8rem,auto)_minmax(10rem,auto)]">
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search log lines"
-              className="w-full border border-border bg-bg px-2 py-1 text-[11px]"
+              className="min-w-0 w-full border border-border bg-bg px-2 py-1 text-[11px]"
             />
             <button
               type="button"
+              aria-label={
+                activeFilterCount > 0
+                  ? `Filters, ${activeFilterCount} active`
+                  : "Filters"
+              }
+              aria-expanded={filtersOpen}
+              title={
+                activeFilterCount > 0
+                  ? `Filters, ${activeFilterCount} active`
+                  : "Filters"
+              }
               onClick={() => setFiltersOpen((open) => !open)}
-              className="border border-border bg-bg px-2 py-1 text-[11px] md:hidden"
+              className="inline-flex shrink-0 items-center gap-1 border border-border bg-bg px-2 py-1 text-[11px] md:hidden"
             >
-              {activeFilterCount > 0 ? `Filters (${activeFilterCount} active)` : "Filters"}
+              <SlidersHorizontal size={12} aria-hidden />
+              {activeFilterCount > 0 && (
+                <span className="tabular-nums">{activeFilterCount}</span>
+              )}
             </button>
             <select
               aria-label="Severity"
               value={severity}
               onChange={(event) => setSeverity(event.target.value as "all" | LogSeverity)}
-              className="hidden border border-border bg-bg px-2 py-1 text-[11px] md:block"
+              className="hidden min-w-0 border border-border bg-bg px-2 py-1 text-[11px] md:block"
             >
               <option value="all">All severities</option>
               <option value="error">Errors</option>
@@ -349,7 +364,7 @@ export function LogsPage() {
               aria-label="Source"
               value={source}
               onChange={(event) => setSource(event.target.value as "all" | LogSource)}
-              className="hidden border border-border bg-bg px-2 py-1 text-[11px] md:block"
+              className="hidden min-w-0 border border-border bg-bg px-2 py-1 text-[11px] md:block"
             >
               {sourceOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -361,7 +376,7 @@ export function LogsPage() {
               aria-label="Event type"
               value={eventType}
               onChange={(event) => setEventType(event.target.value as "all" | LogEventType)}
-              className="hidden border border-border bg-bg px-2 py-1 text-[11px] md:block"
+              className="hidden min-w-0 border border-border bg-bg px-2 py-1 text-[11px] md:block"
             >
               {eventTypeOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -372,8 +387,8 @@ export function LogsPage() {
               ))}
             </select>
           </div>
-          <div className="flex flex-wrap items-center gap-2 md:flex-nowrap md:justify-end">
-            <label className="inline-flex items-center text-[11px]">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
+            <label className="inline-flex shrink-0 items-center text-[11px]">
               <input
                 type="checkbox"
                 checked={follow}
@@ -384,7 +399,7 @@ export function LogsPage() {
                 Follow
               </span>
             </label>
-            <label className="inline-flex items-center text-[11px]">
+            <label className="inline-flex shrink-0 items-center text-[11px]">
               <input
                 type="checkbox"
                 checked={wrap}
@@ -399,7 +414,7 @@ export function LogsPage() {
               aria-label="Line count"
               value={lines}
               onChange={(event) => setLines(Number(event.target.value))}
-              className="border border-border bg-bg px-2 py-1 text-[11px]"
+              className="min-w-[8rem] shrink-0 border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value={100}>100 lines</option>
               <option value={200}>200 lines</option>
@@ -409,7 +424,7 @@ export function LogsPage() {
           </div>
         </div>
         {filtersOpen && (
-          <div className="flex flex-col gap-2 border-b border-border px-3 py-2 md:hidden">
+          <div className="grid gap-2 border-b border-border px-3 py-2 sm:grid-cols-3 md:hidden">
             <select
               aria-label="Severity"
               value={severity}
