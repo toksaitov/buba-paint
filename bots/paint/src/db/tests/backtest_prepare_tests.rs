@@ -1,4 +1,6 @@
 use super::*;
+use crate::db::clob_replay_blocks;
+use crate::types::{FeedEvent, ReplayFidelity};
 use rusqlite::{Connection, params};
 
 /// Create one source DB file with enough rows for backtest preparation.
@@ -197,6 +199,70 @@ fn insert_compact_clob_event(conn: &Connection, timestamp: i64, source: &str) {
     .unwrap();
 }
 
+/// Build one CLOB event for compressed-block preparation tests.
+fn clob_block_event(timestamp: u64, source: &str) -> FeedEvent {
+    FeedEvent {
+        id: None,
+        received_at_ms: timestamp,
+        event_at_ms: timestamp,
+        received_at_us: Some(timestamp.saturating_mul(1_000)),
+        event_at_us: Some(timestamp.saturating_mul(1_000)),
+        source: source.to_string(),
+        event_type: "price_change".to_string(),
+        source_topic: Some(format!("{source}-topic")),
+        source_symbol: None,
+        connection_id: Some("conn-1".to_string()),
+        sequence_key: Some(format!("seq-{timestamp}")),
+        market_id: Some("m1".to_string()),
+        asset_id: Some(if source == "clob_up" {
+            "up-1".to_string()
+        } else {
+            "down-1".to_string()
+        }),
+        price: None,
+        trade_size: None,
+        signed_quantity: None,
+        best_bid: Some(0.48),
+        best_ask: Some(0.52),
+        bid_size: Some(100.0),
+        ask_size: Some(120.0),
+        depth_bid_notional: None,
+        depth_ask_notional: None,
+        depth_imbalance: None,
+        microprice: Some(0.50),
+        payload_json: None,
+        details_json: None,
+        fidelity: ReplayFidelity::RawEvent,
+    }
+}
+
+/// Insert one compressed CLOB replay block.
+fn insert_clob_block(conn: &Connection, events: &[FeedEvent]) {
+    let block = clob_replay_blocks::encode_events(events, 1).unwrap();
+    conn.execute(
+        "INSERT INTO clob_replay_blocks (
+            min_received_at_ms, max_received_at_ms, min_received_at_us, max_received_at_us,
+            row_count, up_rows, down_rows, codec, schema_version, compressed_bytes,
+            uncompressed_bytes, checksum, payload
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'zstd', ?8, ?9, ?10, ?11, ?12)",
+        params![
+            block.min_received_at_ms,
+            block.max_received_at_ms,
+            block.min_received_at_us,
+            block.max_received_at_us,
+            block.row_count,
+            block.up_rows,
+            block.down_rows,
+            block.schema_version,
+            block.compressed_bytes,
+            block.uncompressed_bytes,
+            block.checksum,
+            block.payload,
+        ],
+    )
+    .unwrap();
+}
+
 /// Verifies that preparation converts CLOB rows and creates replay indexes.
 #[test]
 fn prepare_backtest_input_builds_compact_indexed_output() {
@@ -263,4 +329,55 @@ fn prepare_backtest_input_handles_mixed_clob_storage() {
 
     assert!(report.readiness.is_backtest_ready());
     assert_eq!(compact_clob_rows, 4);
+}
+
+/// Verifies that preparation preserves compressed CLOB blocks.
+#[test]
+fn prepare_backtest_input_preserves_clob_replay_blocks() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_path = temp.path().join("source.db");
+    let output_path = temp.path().join("prepared.db");
+    create_source_db(&source_path);
+    let source = Connection::open(&source_path).unwrap();
+    source
+        .execute(
+            "DELETE FROM feed_events WHERE source IN ('clob_up', 'clob_down')",
+            [],
+        )
+        .unwrap();
+    insert_clob_block(
+        &source,
+        &[
+            clob_block_event(1500, "clob_up"),
+            clob_block_event(1600, "clob_down"),
+        ],
+    );
+    drop(source);
+
+    let report = prepare_backtest_input(&PrepareBacktestInputOptions {
+        data_path: source_path.to_string_lossy().to_string(),
+        output_path: output_path.to_string_lossy().to_string(),
+        start_time: 1000,
+        end_time: 2000,
+    })
+    .unwrap();
+
+    let conn = Connection::open(&output_path).unwrap();
+    let row_storage_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM clob_replay_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let block_rows: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(row_count), 0) FROM clob_replay_blocks",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(report.readiness.is_backtest_ready());
+    assert_eq!(report.compact_clob_rows, 2);
+    assert_eq!(row_storage_rows, 0);
+    assert_eq!(block_rows, 2);
 }

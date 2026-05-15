@@ -1,5 +1,7 @@
 use super::*;
+use crate::db::clob_replay_blocks;
 use crate::db::schema::run_migrations;
+use crate::types::{FeedEvent, ReplayFidelity};
 use rusqlite::params;
 use tempfile::NamedTempFile;
 
@@ -171,6 +173,66 @@ fn insert_compact_clob_event(conn: &Connection, source: &str) {
     .unwrap();
 }
 
+/// Build one CLOB top-of-book feed event for block-storage tests.
+fn clob_block_event(source: &str) -> FeedEvent {
+    FeedEvent {
+        id: None,
+        received_at_ms: 1_000,
+        event_at_ms: 1_000,
+        received_at_us: Some(1_000_000),
+        event_at_us: Some(1_000_000),
+        source: source.to_string(),
+        event_type: "price_change".to_string(),
+        source_topic: Some(format!("{source}-topic")),
+        source_symbol: None,
+        connection_id: Some("conn-1".to_string()),
+        sequence_key: Some(format!("{source}-seq")),
+        market_id: Some("m1".to_string()),
+        asset_id: Some(format!("{source}-asset")),
+        price: None,
+        trade_size: None,
+        signed_quantity: None,
+        best_bid: Some(0.45),
+        best_ask: Some(0.55),
+        bid_size: Some(20.0),
+        ask_size: Some(30.0),
+        depth_bid_notional: None,
+        depth_ask_notional: None,
+        depth_imbalance: None,
+        microprice: Some(0.50),
+        payload_json: None,
+        details_json: None,
+        fidelity: ReplayFidelity::RawEvent,
+    }
+}
+
+/// Insert one compressed CLOB block into a quality-test DB.
+fn insert_clob_block(conn: &Connection, events: &[FeedEvent]) {
+    let block = clob_replay_blocks::encode_events(events, 1).unwrap();
+    conn.execute(
+        "INSERT INTO clob_replay_blocks (
+            min_received_at_ms, max_received_at_ms, min_received_at_us, max_received_at_us,
+            row_count, up_rows, down_rows, codec, schema_version, compressed_bytes,
+            uncompressed_bytes, checksum, payload
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'zstd', ?8, ?9, ?10, ?11, ?12)",
+        params![
+            block.min_received_at_ms,
+            block.max_received_at_ms,
+            block.min_received_at_us,
+            block.max_received_at_us,
+            block.row_count,
+            block.up_rows,
+            block.down_rows,
+            block.schema_version,
+            block.compressed_bytes,
+            block.uncompressed_bytes,
+            block.checksum,
+            block.payload,
+        ],
+    )
+    .unwrap();
+}
+
 /// Verify that complete raw feed classes classify as sweep-grade.
 #[test]
 fn complete_feed_classes_are_sweep_grade() {
@@ -197,6 +259,28 @@ fn compact_clob_rows_satisfy_top_of_book_requirements() {
     let report = analyze_connection(&conn, 0, 2_000).unwrap();
 
     assert_eq!(report.class, ReplayQualityClass::SweepGrade);
+    assert!(report.missing_required().is_empty());
+}
+
+/// Verify that compressed CLOB blocks satisfy replay quality.
+#[test]
+fn clob_replay_blocks_satisfy_top_of_book_requirements() {
+    let conn = setup_db();
+    insert_sweep_grade_feed_events(&conn);
+    conn.execute(
+        "DELETE FROM feed_events WHERE source IN ('clob_up', 'clob_down')",
+        [],
+    )
+    .unwrap();
+    insert_clob_block(
+        &conn,
+        &[clob_block_event("clob_up"), clob_block_event("clob_down")],
+    );
+
+    let report = analyze_connection(&conn, 0, 2_000).unwrap();
+
+    assert_eq!(report.class, ReplayQualityClass::SweepGrade);
+    assert_eq!(report.clob_replay_block_rows, 2);
     assert!(report.missing_required().is_empty());
 }
 

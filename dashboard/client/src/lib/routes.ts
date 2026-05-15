@@ -2,10 +2,12 @@ import type { LucideIcon } from "lucide-react";
 import {
   ArrowLeftRight,
   BarChart3,
+  Cpu,
   LayoutDashboard,
   LineChart,
   Radio,
   ScrollText,
+  Settings2,
   ShieldAlert,
 } from "lucide-react";
 
@@ -54,6 +56,26 @@ export const dashboardRoutes: DashboardRouteMeta[] = [
     icon: ScrollText,
   },
   {
+    to: "/parameters",
+    label: "Parameters",
+    section: "Monitor",
+    scope: "operations",
+    showContextStrip: true,
+    contextTitle: "Parameters",
+    contextDescription: "Read-only snapshot of what the bot was launched with. Not editable from here.",
+    icon: Settings2,
+  },
+  {
+    to: "/machine",
+    label: "Machine",
+    section: "Monitor",
+    scope: "operations",
+    showContextStrip: true,
+    contextTitle: "Machine",
+    contextDescription: "Host CPU, memory, swap, disk, and runtime DB. Agent host view.",
+    icon: Cpu,
+  },
+  {
     to: "/equity",
     label: "Trend",
     section: "Analysis",
@@ -100,7 +122,9 @@ export function routeMetaForPath(pathname: string): DashboardRouteMeta {
     return dashboardRoutes[1];
   }
   if (pathname === "/stats") {
-    return dashboardRoutes[6];
+    return (
+      dashboardRoutes.find((r) => r.to === "/strategies") ?? dashboardRoutes[0]
+    );
   }
   return (
     dashboardRoutes.find((route) =>

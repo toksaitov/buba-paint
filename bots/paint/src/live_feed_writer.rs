@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use tracing::{error, info, warn};
 
-use crate::db::database::Database;
+use crate::db::database::{Database, is_clob_top_of_book_event};
 use crate::types::FeedEvent;
 
 /// Configuration for the feed-event writer worker.
@@ -17,6 +17,9 @@ pub(crate) struct FeedEventWriterConfig {
     pub batch_size: usize,
     pub flush_interval_ms: u64,
     pub compact_clob_replay: bool,
+    pub clob_block_max_rows: usize,
+    pub clob_block_max_ms: u64,
+    pub clob_block_zstd_level: i32,
 }
 
 /// Snapshot of writer counters for logs and runtime health.
@@ -48,6 +51,16 @@ enum FeedEventWriterMessage {
     Shutdown,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FeedWriterRuntimeConfig {
+    batch_size: usize,
+    flush_interval: Duration,
+    compact_clob_replay: bool,
+    clob_block_max_rows: usize,
+    clob_block_max_age: Duration,
+    clob_block_zstd_level: i32,
+}
+
 #[derive(Debug, Default)]
 struct FeedEventWriterMetrics {
     enqueued: AtomicU64,
@@ -67,23 +80,21 @@ impl FeedEventWriter {
     /// Spawns one feed-event writer for a database path.
     pub(crate) fn start(db_path: String, config: FeedEventWriterConfig) -> anyhow::Result<Self> {
         let capacity = config.queue_capacity.max(1);
-        let batch_size = config.batch_size.max(1);
-        let flush_interval = Duration::from_millis(config.flush_interval_ms.max(1));
-        let compact_clob_replay = config.compact_clob_replay;
+        let runtime_config = FeedWriterRuntimeConfig {
+            batch_size: config.batch_size.max(1),
+            flush_interval: Duration::from_millis(config.flush_interval_ms.max(1)),
+            compact_clob_replay: config.compact_clob_replay,
+            clob_block_max_rows: config.clob_block_max_rows.max(1),
+            clob_block_max_age: Duration::from_millis(config.clob_block_max_ms.max(1)),
+            clob_block_zstd_level: config.clob_block_zstd_level,
+        };
         let (tx, rx) = sync_channel(capacity);
         let metrics = Arc::new(FeedEventWriterMetrics::default());
         let worker_metrics = Arc::clone(&metrics);
         let join = thread::Builder::new()
             .name("buba-feed-writer".to_string())
             .spawn(move || {
-                run_feed_writer(
-                    db_path,
-                    rx,
-                    worker_metrics,
-                    batch_size,
-                    flush_interval,
-                    compact_clob_replay,
-                );
+                run_feed_writer(db_path, rx, worker_metrics, runtime_config);
             })
             .context("spawning feed writer")?;
         Ok(Self {
@@ -193,9 +204,7 @@ fn run_feed_writer(
     db_path: String,
     rx: Receiver<FeedEventWriterMessage>,
     metrics: Arc<FeedEventWriterMetrics>,
-    batch_size: usize,
-    flush_interval: Duration,
-    compact_clob_replay: bool,
+    config: FeedWriterRuntimeConfig,
 ) {
     let db = match Database::open_runtime(&db_path) {
         Ok(db) => db,
@@ -204,29 +213,74 @@ fn run_feed_writer(
             return;
         }
     };
-    let mut batch = Vec::with_capacity(batch_size);
+    let mut generic_batch = Vec::with_capacity(config.batch_size);
+    let mut clob_batch = Vec::with_capacity(config.clob_block_max_rows);
+    let mut clob_batch_started_at: Option<Instant> = None;
     loop {
-        match rx.recv_timeout(flush_interval) {
+        match rx.recv_timeout(config.flush_interval) {
             Ok(FeedEventWriterMessage::Event(event)) => {
-                batch.push(*event);
-                if batch.len() >= batch_size
-                    && !flush_batch(&db, &metrics, &mut batch, compact_clob_replay)
+                push_event(
+                    *event,
+                    config.compact_clob_replay,
+                    &mut generic_batch,
+                    &mut clob_batch,
+                    &mut clob_batch_started_at,
+                );
+                let generic_full = generic_batch.len() >= config.batch_size;
+                let clob_due = clob_batch.len() >= config.clob_block_max_rows
+                    || clob_block_due(clob_batch_started_at, config.clob_block_max_age);
+                if generic_full && !flush_generic_batch(&db, &metrics, &mut generic_batch) {
+                    break;
+                }
+                if clob_due
+                    && !flush_clob_block(
+                        &db,
+                        &metrics,
+                        &mut clob_batch,
+                        &mut clob_batch_started_at,
+                        config.clob_block_zstd_level,
+                    )
                 {
                     break;
                 }
             }
             Ok(FeedEventWriterMessage::Shutdown) => {
-                flush_batch(&db, &metrics, &mut batch, compact_clob_replay);
+                flush_generic_batch(&db, &metrics, &mut generic_batch);
+                flush_clob_block(
+                    &db,
+                    &metrics,
+                    &mut clob_batch,
+                    &mut clob_batch_started_at,
+                    config.clob_block_zstd_level,
+                );
                 info!("feed writer stopped");
                 break;
             }
             Err(RecvTimeoutError::Timeout) => {
-                if !flush_batch(&db, &metrics, &mut batch, compact_clob_replay) {
+                if !flush_generic_batch(&db, &metrics, &mut generic_batch) {
+                    break;
+                }
+                if clob_block_due(clob_batch_started_at, config.clob_block_max_age)
+                    && !flush_clob_block(
+                        &db,
+                        &metrics,
+                        &mut clob_batch,
+                        &mut clob_batch_started_at,
+                        config.clob_block_zstd_level,
+                    )
+                {
                     break;
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
-                flush_batch(&db, &metrics, &mut batch, compact_clob_replay);
+                flush_generic_batch(&db, &metrics, &mut generic_batch);
+                flush_clob_block(
+                    &db,
+                    &metrics,
+                    &mut clob_batch,
+                    &mut clob_batch_started_at,
+                    config.clob_block_zstd_level,
+                );
                 break;
             }
         }
@@ -234,18 +288,40 @@ fn run_feed_writer(
     db.close();
 }
 
-/// Flushes the current batch and records writer metrics.
-fn flush_batch(
+/// Route one event into the generic row batch or CLOB block batch.
+fn push_event(
+    event: FeedEvent,
+    compact_clob_replay: bool,
+    generic_batch: &mut Vec<FeedEvent>,
+    clob_batch: &mut Vec<FeedEvent>,
+    clob_batch_started_at: &mut Option<Instant>,
+) {
+    if compact_clob_replay && is_clob_top_of_book_event(&event) {
+        if clob_batch_started_at.is_none() {
+            *clob_batch_started_at = Some(Instant::now());
+        }
+        clob_batch.push(event);
+    } else {
+        generic_batch.push(event);
+    }
+}
+
+/// Return whether the current CLOB block has exceeded its max age.
+fn clob_block_due(started_at: Option<Instant>, max_age: Duration) -> bool {
+    started_at.is_some_and(|started_at| started_at.elapsed() >= max_age)
+}
+
+/// Flushes generic feed rows and records writer metrics.
+fn flush_generic_batch(
     db: &Database,
     metrics: &FeedEventWriterMetrics,
     batch: &mut Vec<FeedEvent>,
-    compact_clob_replay: bool,
 ) -> bool {
     if batch.is_empty() {
         return true;
     }
     let started = Instant::now();
-    match db.log_feed_events_batch_with_compact_clob(batch, compact_clob_replay) {
+    match db.log_feed_events_and_clob_block(batch, &[], 0) {
         Ok(count) => {
             let elapsed_ms = started.elapsed().as_millis() as u64;
             metrics.persisted.fetch_add(count, Ordering::Relaxed);
@@ -275,6 +351,56 @@ fn flush_batch(
                 error!(%error, dropped = batch.len(), "feed writer failed to persist batch");
             }
             batch.clear();
+            !terminal
+        }
+    }
+}
+
+/// Flushes one compressed CLOB replay block and records writer metrics.
+fn flush_clob_block(
+    db: &Database,
+    metrics: &FeedEventWriterMetrics,
+    batch: &mut Vec<FeedEvent>,
+    batch_started_at: &mut Option<Instant>,
+    zstd_level: i32,
+) -> bool {
+    if batch.is_empty() {
+        *batch_started_at = None;
+        return true;
+    }
+    let started = Instant::now();
+    match db.log_feed_events_and_clob_block(&[], batch, zstd_level) {
+        Ok(count) => {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            metrics.persisted.fetch_add(count, Ordering::Relaxed);
+            metrics.batches.fetch_add(1, Ordering::Relaxed);
+            metrics
+                .total_write_ms
+                .fetch_add(elapsed_ms, Ordering::Relaxed);
+            update_max(&metrics.max_write_ms, elapsed_ms);
+            metrics
+                .last_persisted_at_ms
+                .store(now_ms(), Ordering::Relaxed);
+            batch.clear();
+            *batch_started_at = None;
+            true
+        }
+        Err(error) => {
+            let terminal = terminal_sqlite_write_error(&error);
+            metrics.write_errors.fetch_add(1, Ordering::Relaxed);
+            metrics
+                .dropped
+                .fetch_add(batch.len() as u64, Ordering::Relaxed);
+            if terminal {
+                metrics
+                    .terminal_write_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                error!(%error, dropped = batch.len(), "feed writer terminal CLOB block failure");
+            } else {
+                error!(%error, dropped = batch.len(), "feed writer failed to persist CLOB block");
+            }
+            batch.clear();
+            *batch_started_at = None;
             !terminal
         }
     }

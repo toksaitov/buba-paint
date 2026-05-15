@@ -136,6 +136,26 @@ pub async fn bot_trading_summary(
     Ok(Json(data))
 }
 
+/// `GET /api/bots/:id/config`
+pub async fn bot_runtime_config(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let data = proxy::proxy_get(agent, "/api/runtime/config", None).await?;
+    Ok(Json(data))
+}
+
+/// `GET /api/bots/:id/machine`
+pub async fn bot_machine(
+    State(state): State<AppState>,
+    Path(bot_id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let agent = find_agent(&state, &bot_id)?;
+    let data = proxy::proxy_get(agent, "/api/machine", None).await?;
+    Ok(Json(data))
+}
+
 /// `GET /api/bots/:id/live/status`
 pub async fn bot_live_status(
     State(state): State<AppState>,

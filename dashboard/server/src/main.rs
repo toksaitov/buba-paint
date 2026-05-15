@@ -86,6 +86,8 @@ async fn main() -> anyhow::Result<()> {
             "/api/bots/{id}/trading/summary",
             get(bots::bot_trading_summary),
         )
+        .route("/api/bots/{id}/config", get(bots::bot_runtime_config))
+        .route("/api/bots/{id}/machine", get(bots::bot_machine))
         .route("/api/bots/{id}/live/status", get(bots::bot_live_status))
         .route("/api/bots/{id}/live/sessions", get(bots::bot_live_sessions))
         .route("/api/bots/{id}/live/orders", get(bots::bot_live_orders))

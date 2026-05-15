@@ -10,6 +10,8 @@ import { SignalsPage } from "./pages/signals";
 import { LogsPage } from "./pages/logs";
 import { StatsPage } from "./pages/stats";
 import { ExecutionPage } from "./pages/execution";
+import { ConfigPage } from "./pages/config";
+import { MachinePage } from "./pages/machine";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,6 +40,9 @@ export default function App() {
             <Route path="/trades" element={<TradesPage />} />
             <Route path="/signals" element={<SignalsPage />} />
             <Route path="/logs" element={<LogsPage />} />
+            <Route path="/parameters" element={<ConfigPage />} />
+            <Route path="/config" element={<Navigate to="/parameters" replace />} />
+            <Route path="/machine" element={<MachinePage />} />
             <Route path="/strategies" element={<StatsPage />} />
             <Route path="/stats" element={<Navigate to="/strategies" replace />} />
             <Route path="/execution" element={<ExecutionPage />} />

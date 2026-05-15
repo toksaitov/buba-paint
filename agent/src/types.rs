@@ -431,3 +431,46 @@ pub struct TradingSummary {
     pub capabilities: TradingCapabilities,
     pub alerts: Vec<TradingAlert>,
 }
+
+/// One `run_metadata` row returned from the bot DB.
+#[derive(Debug, Clone)]
+pub struct RunMetadataRow {
+    pub value: String,
+    pub recorded_at_ms: i64,
+}
+
+/// Sanitized runtime-config snapshot plus observed runtime context.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeConfigResponse {
+    pub snapshot: Option<serde_json::Value>,
+    pub snapshot_recorded_at_ms: Option<i64>,
+    pub uptime_secs: Option<u64>,
+}
+
+/// Bot runtime DB / WAL / SHM file sizes, stat'd per-request by the handler.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeDbFiles {
+    pub db_path: String,
+    pub db_bytes: Option<u64>,
+    pub wal_bytes: Option<u64>,
+    pub shm_bytes: Option<u64>,
+}
+
+/// Sampler health metadata returned alongside the machine snapshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct SamplerHealth {
+    pub sample_interval_ms: u32,
+    pub samples_collected: u64,
+    pub last_error: Option<String>,
+}
+
+/// Top-level response shape for `GET /api/machine`.
+#[derive(Debug, Clone, Serialize)]
+pub struct MachineResponse {
+    pub host: crate::machine::HostIdentity,
+    pub agent_started_at_ms: i64,
+    pub current: Option<crate::machine::MachineSample>,
+    pub history: Vec<crate::machine::MachineSample>,
+    pub runtime_db: RuntimeDbFiles,
+    pub sampler: SamplerHealth,
+}

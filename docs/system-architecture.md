@@ -75,7 +75,11 @@ The dashboard is split into Monitor and Analysis:
 - Overview: operator triage page with performance summary, current market, open trades, execution snapshot, and recent outcomes.
 - Execution: process, mode, account readiness, reconciliation, live detail surfaces, and admin live-control queueing.
 - Logs: operator event stream with search and filters.
+- Parameters: read-only snapshot of what the bot was launched with, persisted at startup under `run_metadata.runtime_config_snapshot`. Constructed via the `RuntimeConfigSnapshot` Rust struct that exposes only chosen fields. Agent endpoint: `GET /api/runtime/config`. Dashboard proxy: `GET /api/bots/:id/config`. Computed `uptime_secs` is derived on read from `snapshot.process_start_time_ms`. Frontend route: `/parameters`.
+- Machine: read-only host metrics (CPU, memory, swap, disk) plus runtime DB / WAL / SHM file sizes, served from an in-memory 5-minute ring buffer sampled every 5 s by the agent via the `sysinfo` crate. The sampler runs on a dedicated `std::thread` and does not touch SQLite. Runtime DB sizes are stat'd per-request via `std::fs::metadata`. Cross-platform: load average is `null` on Windows, iowait is not surfaced. Inside Docker the view is agent-container-scoped. Agent endpoint: `GET /api/machine`. Dashboard proxy: `GET /api/bots/:id/machine`. Frontend route: `/machine`.
 - Equity, Trades, Signals, Strategies: shadow-performance analysis pages.
+
+The dashboard uses two charting libraries on purpose. `lightweight-charts` (WebGL, trading-optimized) powers the Equity / Trend page and the Overview MiniChart. `recharts` (declarative, SVG) powers everything else, starting with the Machine page (multi-series CPU lines, memory / swap timeline, disk timeline, runtime DB timeline, donut gauges). New non-trading charts default to Recharts.
 
 `/execution` is canonical. `/trading`, `/live`, and `/stats` remain compatibility redirects.
 

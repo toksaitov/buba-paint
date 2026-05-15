@@ -24,6 +24,7 @@ pub mod market_discovery;
 pub mod portfolio;
 pub mod position_manager;
 mod rejection_diagnostics;
+pub mod runtime_config_snapshot;
 pub mod signal_features;
 pub mod strategies;
 mod strategy_cycle;

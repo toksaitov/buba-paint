@@ -13,6 +13,8 @@ import type {
   LiveRedemptionsResponse,
   LiveSessionsResponse,
   LogsResponse,
+  MachineResponse,
+  RuntimeConfigResponse,
   SignalGroupsResponse,
   SignalsResponse,
   StatsResponse,
@@ -138,6 +140,16 @@ export async function getStats(botId: string): Promise<StatsResponse> {
 
 export async function getTradingSummary(botId: string): Promise<TradingSummary> {
   return get(`/api/bots/${botId}/trading/summary`);
+}
+
+export async function getRuntimeConfig(
+  botId: string,
+): Promise<RuntimeConfigResponse> {
+  return get(`/api/bots/${botId}/config`);
+}
+
+export async function getMachine(botId: string): Promise<MachineResponse> {
+  return get(`/api/bots/${botId}/machine`);
 }
 
 export async function getLogs(

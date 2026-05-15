@@ -2040,6 +2040,11 @@ async fn run_live_runtime(
         "empty",
         "runtime_start",
     )?;
+    crate::runtime_config_snapshot::persist_runtime_config_snapshot(
+        &db,
+        &config,
+        runtime_started_at_ms,
+    )?;
     info!(
         balance = runtime_balance,
         db = %db_path,
@@ -2150,6 +2155,9 @@ async fn run_live_runtime(
             flush_interval_ms: config.feed_event_writer_flush_ms,
             compact_clob_replay: config.feed_event_storage_profile
                 == FeedEventStorageProfile::ReplayGrade,
+            clob_block_max_rows: config.clob_replay_block_max_rows,
+            clob_block_max_ms: config.clob_replay_block_max_ms,
+            clob_block_zstd_level: config.clob_replay_block_zstd_level,
         },
     )?;
     let mut persistence_writer = LivePersistenceWriter::start(
@@ -4408,7 +4416,7 @@ fn live_gate_issues(
 }
 
 /// Return one deterministic live-trading config fingerprint.
-fn live_trading_config_fingerprint(config: &Config) -> String {
+pub(crate) fn live_trading_config_fingerprint(config: &Config) -> String {
     json!({
         "execution_mode": config.execution_mode.as_str(),
         "live_sidecar_url": config.live_sidecar_url,

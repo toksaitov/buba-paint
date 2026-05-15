@@ -12,8 +12,27 @@ use tower::ServiceExt as _;
 use crate::api::{self, AppState};
 use crate::auth::{SharedSecret, require_secret};
 use crate::db_reader::DbReader;
+use crate::machine::{HostIdentity, MachineSampler, MachineSamplerState};
 use crate::process_manager::NoopProcessManager;
 use crate::types::{LiveStatusResponse, WsMessage};
+
+/// Builds a sealed sampler with empty state for tests that don't exercise the
+/// machine endpoint directly.
+fn test_machine_sampler() -> Arc<MachineSampler> {
+    MachineSampler::with_seeded_state(
+        HostIdentity {
+            hostname: "test-host".into(),
+            os_name: "test-os".into(),
+            os_version: "1.0".into(),
+            kernel_version: "5.0".into(),
+            cpu_count: 1,
+            total_ram_bytes: 1024,
+        },
+        MachineSamplerState::new(),
+        0,
+        std::path::PathBuf::from("/tmp/test.db"),
+    )
+}
 
 /// Create a fixture DB identical to the one in `db_reader_tests`.
 fn fixture_db() -> Connection {
@@ -47,6 +66,10 @@ fn fixture_db() -> Connection {
          INSERT INTO live_fills (session_id, intent_id, live_order_id, venue_trade_id, filled_at_ms, price, size, fee_amount, fee_rate, liquidity_side, tx_hash, status, details_json) VALUES (1, 11, 1, 'trade-1', 4300, 0.51, 5.0, 0.04, 0.072, 'taker', '0xfill', 'confirmed', '{}');
          INSERT INTO live_redemptions (session_id, market_id, detected_redeemable_at_ms, submitted_at_ms, confirmed_at_ms, cash_credit_observed_at_ms, status, redeemable_value, tx_hash, details_json) VALUES (1, 'mkt-1', 4400, 4500, NULL, NULL, 'submitted', 3.5, '0xredeem', '{}');
          INSERT INTO live_reconciliation_events (session_id, timestamp_ms, severity, event_type, local_value, remote_value, details_json) VALUES (1, 4600, 'critical', 'cash_drift', 96.0, 94.0, '{}');",
+    ).unwrap();
+
+    conn.execute_batch(
+        "CREATE TABLE run_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL, recorded_at_ms INTEGER NOT NULL);"
     ).unwrap();
 
     conn
@@ -105,7 +128,13 @@ fn control_test_app(db_path: &str) -> Router {
     let bot: Arc<dyn crate::process_manager::ProcessManager> =
         Arc::new(NoopProcessManager::new(None));
     let (ws_tx, _) = broadcast::channel::<WsMessage>(16);
-    let state = AppState { db, bot, ws_tx };
+    let machine = test_machine_sampler();
+    let state = AppState {
+        db,
+        bot,
+        ws_tx,
+        machine,
+    };
 
     Router::new()
         .route("/api/live/control-audit", get(api::get_live_control_audit))
@@ -126,11 +155,19 @@ fn test_app_with_bot(conn: Connection, log_path: Option<&str>) -> Router {
     let bot: Arc<dyn crate::process_manager::ProcessManager> =
         Arc::new(NoopProcessManager::new(log_path.map(String::from)));
     let (ws_tx, _) = broadcast::channel::<WsMessage>(16);
-    let state = AppState { db, bot, ws_tx };
+    let machine = test_machine_sampler();
+    let state = AppState {
+        db,
+        bot,
+        ws_tx,
+        machine,
+    };
 
     Router::new()
         .route("/health", get(api::health))
         .route("/api/status", get(api::get_status))
+        .route("/api/runtime/config", get(api::get_runtime_config))
+        .route("/api/machine", get(api::get_machine))
         .route("/api/trades", get(api::get_trades))
         .route("/api/balance", get(api::get_balance))
         .route("/api/equity/series", get(api::get_equity_series))
@@ -1034,4 +1071,216 @@ fn trading_risk_summary_parses_non_risk_halt_details() {
 
     assert_eq!(summary.halt_reason.as_deref(), Some("geoblock failed"));
     assert_eq!(summary.halt_at_ms, Some(4_000));
+}
+
+/// Endpoint returns 200 with null snapshot when run_metadata has no snapshot row.
+#[tokio::test]
+async fn runtime_config_returns_null_when_no_snapshot_row() {
+    let conn = fixture_db();
+    let app = test_app(conn);
+    let response = app
+        .oneshot(authed_get("/api/runtime/config"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(body["snapshot"].is_null());
+    assert!(body["snapshot_recorded_at_ms"].is_null());
+    assert!(body["uptime_secs"].is_null());
+}
+
+/// Endpoint returns 200 with parsed snapshot and computed uptime when the row exists.
+#[tokio::test]
+async fn runtime_config_returns_parsed_snapshot_and_uptime() {
+    let conn = fixture_db();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let started_ms = now_ms.saturating_sub(120_000);
+    let snapshot = serde_json::json!({
+        "execution_mode": "live_readonly",
+        "process_start_time_ms": started_ms,
+        "config_fingerprint": "fingerprint-1",
+    });
+    conn.execute(
+        "INSERT INTO run_metadata (key, value, recorded_at_ms) VALUES ('runtime_config_snapshot', ?1, ?2)",
+        rusqlite::params![snapshot.to_string(), started_ms as i64],
+    )
+    .unwrap();
+    let app = test_app(conn);
+    let response = app
+        .oneshot(authed_get("/api/runtime/config"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body["snapshot"]["execution_mode"].as_str(),
+        Some("live_readonly")
+    );
+    assert_eq!(
+        body["snapshot"]["config_fingerprint"].as_str(),
+        Some("fingerprint-1")
+    );
+    assert_eq!(
+        body["snapshot_recorded_at_ms"].as_i64(),
+        Some(started_ms as i64)
+    );
+    let uptime = body["uptime_secs"].as_u64().unwrap();
+    assert!(
+        uptime >= 100 && uptime < 200,
+        "uptime {uptime} should be ~120s"
+    );
+}
+
+/// Endpoint rejects unauthenticated requests via the global require_secret middleware.
+#[tokio::test]
+async fn runtime_config_rejects_unauthenticated_request() {
+    let conn = fixture_db();
+    let app = test_app(conn);
+    let request = Request::get("/api/runtime/config")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Builds a sample with the given sampled_at_ms and other deterministic fields.
+fn machine_sample_at(sampled_at_ms: i64) -> crate::machine::MachineSample {
+    crate::machine::MachineSample {
+        sampled_at_ms,
+        cpu_percent: 12.5,
+        per_core_cpu: vec![10.0, 15.0],
+        load_one: Some(0.5),
+        load_five: Some(0.4),
+        load_fifteen: Some(0.3),
+        mem_used_bytes: 2_048,
+        mem_total_bytes: 8_192,
+        mem_available_bytes: 6_144,
+        swap_used_bytes: 0,
+        swap_total_bytes: 1_024,
+        disk_used_bytes: 5_000,
+        disk_total_bytes: 50_000,
+        disk_mount: "/".into(),
+    }
+}
+
+/// Builds a router that mounts only `/api/machine` against a seeded sampler.
+fn machine_test_app_with_sampler(sampler: Arc<MachineSampler>) -> Router {
+    let db = Arc::new(DbReader::from_connection(fixture_db()));
+    let bot: Arc<dyn crate::process_manager::ProcessManager> =
+        Arc::new(NoopProcessManager::new(None));
+    let (ws_tx, _) = broadcast::channel::<WsMessage>(16);
+    let state = AppState {
+        db,
+        bot,
+        ws_tx,
+        machine: sampler,
+    };
+    Router::new()
+        .route("/api/machine", get(api::get_machine))
+        .layer(middleware::from_fn(require_secret))
+        .layer(Extension(SharedSecret("test-secret".to_string())))
+        .with_state(state)
+}
+
+/// Endpoint returns the seeded host identity, current sample, and ring.
+#[tokio::test]
+async fn machine_endpoint_returns_seeded_snapshot() {
+    let mut state = MachineSamplerState::new();
+    state.push(machine_sample_at(1_000));
+    state.push(machine_sample_at(2_000));
+    let sampler = MachineSampler::with_seeded_state(
+        HostIdentity {
+            hostname: "fixture-host".into(),
+            os_name: "fixture-os".into(),
+            os_version: "1.0".into(),
+            kernel_version: "5.0".into(),
+            cpu_count: 2,
+            total_ram_bytes: 8_192,
+        },
+        state,
+        1_500_000_000_000,
+        std::path::PathBuf::from("/tmp/buba-machine-fixture.db"),
+    );
+    let app = machine_test_app_with_sampler(sampler);
+    let response = app.oneshot(authed_get("/api/machine")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["host"]["hostname"].as_str(), Some("fixture-host"));
+    assert_eq!(body["host"]["cpu_count"].as_u64(), Some(2));
+    assert_eq!(
+        body["agent_started_at_ms"].as_i64(),
+        Some(1_500_000_000_000)
+    );
+    assert_eq!(body["current"]["sampled_at_ms"].as_i64(), Some(2_000));
+    assert_eq!(body["history"].as_array().unwrap().len(), 2);
+    assert_eq!(body["sampler"]["sample_interval_ms"].as_u64(), Some(5_000));
+    assert_eq!(body["sampler"]["samples_collected"].as_u64(), Some(2));
+    assert!(body["sampler"]["last_error"].is_null());
+    assert_eq!(
+        body["runtime_db"]["db_path"].as_str(),
+        Some("/tmp/buba-machine-fixture.db")
+    );
+}
+
+/// Endpoint returns null current and empty history before the first sample.
+#[tokio::test]
+async fn machine_endpoint_returns_empty_history_when_sampler_idle() {
+    let sampler = MachineSampler::with_seeded_state(
+        HostIdentity {
+            hostname: "idle-host".into(),
+            os_name: "idle-os".into(),
+            os_version: "1.0".into(),
+            kernel_version: "5.0".into(),
+            cpu_count: 1,
+            total_ram_bytes: 1_024,
+        },
+        MachineSamplerState::new(),
+        0,
+        std::path::PathBuf::from("/tmp/buba-machine-idle.db"),
+    );
+    let app = machine_test_app_with_sampler(sampler);
+    let response = app.oneshot(authed_get("/api/machine")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(body["current"].is_null());
+    assert_eq!(body["history"].as_array().unwrap().len(), 0);
+    assert_eq!(body["sampler"]["samples_collected"].as_u64(), Some(0));
+    assert!(body["runtime_db"]["db_bytes"].is_null());
+}
+
+/// Endpoint rejects unauthenticated requests via the global require_secret middleware.
+#[tokio::test]
+async fn machine_endpoint_rejects_unauthenticated_request() {
+    let sampler = MachineSampler::with_seeded_state(
+        HostIdentity {
+            hostname: "host".into(),
+            os_name: "os".into(),
+            os_version: "1.0".into(),
+            kernel_version: "5.0".into(),
+            cpu_count: 1,
+            total_ram_bytes: 1_024,
+        },
+        MachineSamplerState::new(),
+        0,
+        std::path::PathBuf::from("/tmp/buba-machine-auth.db"),
+    );
+    let app = machine_test_app_with_sampler(sampler);
+    let request = Request::get("/api/machine").body(Body::empty()).unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

@@ -426,6 +426,37 @@ fn log_feed_events_batch_routes_clob_rows_to_compact_storage() {
     assert_eq!(compact_count, 1);
 }
 
+/// Verifies that block logging routes replay-grade CLOB rows to compressed blocks.
+#[test]
+fn log_feed_events_and_clob_block_routes_clob_rows_to_block_storage() {
+    let (db, _tmp) = temp_db();
+    db.log_feed_events_and_clob_block(&[], &[sample_clob_feed_event()], 1)
+        .unwrap();
+
+    let feed_count: u64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM feed_events", [], |row| row.get(0))
+        .unwrap();
+    let compact_count: u64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM clob_replay_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let block_rows: u64 = db
+        .conn()
+        .query_row(
+            "SELECT COALESCE(SUM(row_count), 0) FROM clob_replay_blocks",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(feed_count, 0);
+    assert_eq!(compact_count, 0);
+    assert_eq!(block_rows, 1);
+}
+
 /// Verifies that full-debug style batch logging keeps CLOB rows generic.
 #[test]
 fn log_feed_events_batch_without_compact_routing_keeps_clob_rows_generic() {

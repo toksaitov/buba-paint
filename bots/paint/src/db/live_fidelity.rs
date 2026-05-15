@@ -3,6 +3,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use serde::Serialize;
 
 use crate::backtest::replay_quality::{self, ReplayQualityReport};
+use crate::db::clob_replay_blocks;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -586,70 +587,173 @@ fn count_orders_without_book_explainability(
     if !table_exists(conn, "live_orders")? {
         return Ok(0);
     }
-    let mut evidence_clauses = Vec::new();
+    let start_ms = sqlite_timestamp(start_time, "start_time")?;
+    let end_ms = sqlite_timestamp(end_time, "end_time")?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT created_at_ms, market_id, token_id, limit_price, order_type, requested_size
+             FROM live_orders
+             WHERE updated_at_ms >= ?1 AND updated_at_ms <= ?2",
+        )
+        .context("preparing live-order explainability query")?;
+    let rows = stmt
+        .query_map(params![start_ms, end_ms], |row| {
+            Ok(BookExplainabilityOrder {
+                created_at_ms: row.get(0)?,
+                market_id: row.get(1)?,
+                token_id: row.get(2)?,
+                limit_price: row.get(3)?,
+                order_type: row.get(4)?,
+                requested_size: row.get(5)?,
+            })
+        })
+        .context("executing live-order explainability query")?;
+    let mut missing = 0_i64;
+    for row in rows {
+        let order = row.context("reading live-order explainability row")?;
+        if !has_row_book_evidence(conn, start_ms, &order)?
+            && !has_block_book_evidence(conn, start_ms, &order)?
+        {
+            missing = missing.saturating_add(1);
+        }
+    }
+    Ok(missing)
+}
+
+#[derive(Debug)]
+struct BookExplainabilityOrder {
+    created_at_ms: i64,
+    market_id: Option<String>,
+    token_id: Option<String>,
+    limit_price: Option<f64>,
+    order_type: String,
+    requested_size: Option<f64>,
+}
+
+/// Return whether legacy row storage explains one live order.
+fn has_row_book_evidence(
+    conn: &Connection,
+    start_ms: i64,
+    order: &BookExplainabilityOrder,
+) -> anyhow::Result<bool> {
+    if !table_exists(conn, "feed_events")? && !table_exists(conn, "clob_replay_events")? {
+        return Ok(false);
+    }
+    let mut found = false;
     if table_exists(conn, "feed_events")? {
-        evidence_clauses.push(
-            "EXISTS (
-               SELECT 1
-               FROM feed_events f
-               WHERE f.received_at_ms >= ?1
-                 AND f.received_at_ms <= o.created_at_ms
-                 AND f.market_id = o.market_id
-                 AND f.source IN ('clob_up', 'clob_down')
-                 AND f.best_ask IS NOT NULL
-                 AND f.ask_size IS NOT NULL
-                 AND (o.token_id IS NULL OR f.asset_id = o.token_id)
-                 AND (o.limit_price IS NULL OR f.best_ask <= o.limit_price)
-                 AND (
-                   o.order_type = 'FAK'
-                   OR o.requested_size IS NULL
-                   OR f.ask_size >= o.requested_size
-                 )
-             )",
-        );
+        found |= row_storage_book_evidence(conn, "feed_events", start_ms, order)?;
     }
     if table_exists(conn, "clob_replay_events")? {
-        evidence_clauses.push(
-            "EXISTS (
-             SELECT 1
-             FROM clob_replay_events c
-             WHERE c.received_at_ms >= ?1
-               AND c.received_at_ms <= o.created_at_ms
-               AND c.market_id = o.market_id
-               AND c.best_ask IS NOT NULL
-               AND c.ask_size IS NOT NULL
-               AND (o.token_id IS NULL OR c.asset_id = o.token_id)
-               AND (o.limit_price IS NULL OR c.best_ask <= o.limit_price)
-               AND (
-                 o.order_type = 'FAK'
-                 OR o.requested_size IS NULL
-                 OR c.ask_size >= o.requested_size
-               )
-           )",
-        );
+        found |= row_storage_book_evidence(conn, "clob_replay_events", start_ms, order)?;
     }
-    let evidence_filter = if evidence_clauses.is_empty() {
-        "0".to_string()
-    } else {
-        evidence_clauses.join(" OR ")
+    Ok(found)
+}
+
+/// Return whether one row-storage table explains one live order.
+fn row_storage_book_evidence(
+    conn: &Connection,
+    table: &str,
+    start_ms: i64,
+    order: &BookExplainabilityOrder,
+) -> anyhow::Result<bool> {
+    let rows: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*)
+                 FROM {table}
+                 WHERE received_at_ms >= ?1
+                   AND received_at_ms <= ?2
+                   AND market_id = ?3
+                   AND source IN ('clob_up', 'clob_down')
+                   AND best_ask IS NOT NULL
+                   AND ask_size IS NOT NULL
+                   AND (?4 IS NULL OR asset_id = ?4)
+                   AND (?5 IS NULL OR best_ask <= ?5)
+                   AND (
+                     ?6 = 'FAK'
+                     OR ?7 IS NULL
+                     OR ask_size >= ?7
+                   )"
+            ),
+            params![
+                start_ms,
+                order.created_at_ms,
+                order.market_id.as_deref(),
+                order.token_id.as_deref(),
+                order.limit_price,
+                order.order_type.as_str(),
+                order.requested_size,
+            ],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("checking {table} book explainability"))?;
+    Ok(rows > 0)
+}
+
+/// Return whether compressed block storage explains one live order.
+fn has_block_book_evidence(
+    conn: &Connection,
+    start_ms: i64,
+    order: &BookExplainabilityOrder,
+) -> anyhow::Result<bool> {
+    if !table_exists(conn, "clob_replay_blocks")? {
+        return Ok(false);
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT checksum, payload
+             FROM clob_replay_blocks
+             WHERE max_received_at_ms >= ?1 AND min_received_at_ms <= ?2",
+        )
+        .context("preparing CLOB block explainability query")?;
+    let rows = stmt
+        .query_map(params![start_ms, order.created_at_ms], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .context("executing CLOB block explainability query")?;
+    for row in rows {
+        let (checksum, payload) = row.context("reading CLOB block explainability row")?;
+        let events = clob_replay_blocks::decode_payload(&payload, &checksum)
+            .context("decoding CLOB block explainability row")?;
+        if events
+            .into_iter()
+            .any(|event| block_event_matches_order(start_ms, order, &event))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Return whether one decoded block event explains one order.
+fn block_event_matches_order(
+    start_ms: i64,
+    order: &BookExplainabilityOrder,
+    event: &clob_replay_blocks::DecodedClobReplayEvent,
+) -> bool {
+    let Ok(received_at_ms) = i64::try_from(event.received_at_ms) else {
+        return false;
     };
-    conn.query_row(
-        &format!(
-            "SELECT COUNT(*)
-         FROM live_orders o
-         WHERE o.updated_at_ms >= ?1
-           AND o.updated_at_ms <= ?2
-           AND NOT (
-             {evidence_filter}
-           )"
-        ),
-        params![
-            sqlite_timestamp(start_time, "start_time")?,
-            sqlite_timestamp(end_time, "end_time")?
-        ],
-        |row| row.get(0),
-    )
-    .context("counting orders without book explainability")
+    if received_at_ms < start_ms || received_at_ms > order.created_at_ms {
+        return false;
+    }
+    if order.market_id.as_deref() != event.market_id.as_deref() {
+        return false;
+    }
+    if let Some(token_id) = order.token_id.as_deref()
+        && Some(token_id) != event.asset_id.as_deref()
+    {
+        return false;
+    }
+    if let Some(limit_price) = order.limit_price
+        && event.best_ask > limit_price
+    {
+        return false;
+    }
+    order.order_type == "FAK"
+        || order
+            .requested_size
+            .is_none_or(|requested_size| event.ask_size >= requested_size)
 }
 
 /// Count filled orders that lack confirmed trade recovery.

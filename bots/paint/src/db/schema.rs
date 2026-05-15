@@ -229,6 +229,22 @@ fn ensure_additive_tables(conn: &rusqlite::Connection) {
             fidelity        TEXT NOT NULL DEFAULT 'raw_event'
                 CHECK(fidelity IN ('raw_event','legacy_snapshot'))
         );
+        CREATE TABLE IF NOT EXISTS clob_replay_blocks (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            min_received_at_ms  INTEGER NOT NULL,
+            max_received_at_ms  INTEGER NOT NULL,
+            min_received_at_us  INTEGER,
+            max_received_at_us  INTEGER,
+            row_count           INTEGER NOT NULL,
+            up_rows             INTEGER NOT NULL,
+            down_rows           INTEGER NOT NULL,
+            codec               TEXT NOT NULL,
+            schema_version      INTEGER NOT NULL,
+            compressed_bytes    INTEGER NOT NULL,
+            uncompressed_bytes  INTEGER NOT NULL,
+            checksum            TEXT NOT NULL,
+            payload             BLOB NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS run_metadata (
             key             TEXT PRIMARY KEY,
             value           TEXT NOT NULL,
@@ -484,7 +500,8 @@ pub fn create_replay_indexes(conn: &rusqlite::Connection) -> rusqlite::Result<()
         CREATE INDEX IF NOT EXISTS idx_clob_replay_received ON clob_replay_events(received_at_ms);
         CREATE INDEX IF NOT EXISTS idx_clob_replay_received_us ON clob_replay_events(received_at_us);
         CREATE INDEX IF NOT EXISTS idx_clob_replay_source_ts ON clob_replay_events(source, received_at_ms);
-        CREATE INDEX IF NOT EXISTS idx_clob_replay_market_ts ON clob_replay_events(market_id, received_at_ms);",
+        CREATE INDEX IF NOT EXISTS idx_clob_replay_market_ts ON clob_replay_events(market_id, received_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_clob_replay_blocks_received ON clob_replay_blocks(min_received_at_ms, max_received_at_ms);",
     )
 }
 
@@ -499,6 +516,7 @@ pub fn has_replay_indexes(conn: &rusqlite::Connection) -> rusqlite::Result<bool>
         "idx_clob_replay_received_us",
         "idx_clob_replay_source_ts",
         "idx_clob_replay_market_ts",
+        "idx_clob_replay_blocks_received",
     ];
     for index in required {
         let count: i64 = conn.query_row(

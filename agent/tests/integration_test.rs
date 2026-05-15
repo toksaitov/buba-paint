@@ -47,10 +47,24 @@ async fn spawn_agent(db_path: &str) -> String {
         Arc::new(NoopProcessManager::new(None));
     let (ws_tx, _) = broadcast::channel::<WsMessage>(16);
 
+    let machine = buba_agent::machine::MachineSampler::with_seeded_state(
+        buba_agent::machine::HostIdentity {
+            hostname: "integration-host".into(),
+            os_name: "integration-os".into(),
+            os_version: "1.0".into(),
+            kernel_version: "5.0".into(),
+            cpu_count: 1,
+            total_ram_bytes: 1_024,
+        },
+        buba_agent::machine::MachineSamplerState::new(),
+        0,
+        std::path::PathBuf::from(db_path),
+    );
     let state = AppState {
         db,
         bot,
         ws_tx: ws_tx.clone(),
+        machine,
     };
 
     let app = Router::new()

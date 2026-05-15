@@ -11,8 +11,8 @@ use crate::types::{
     LiveControlAuditResponse, LiveControlAuditRow, LiveControlCommandResponse, LiveFillRow,
     LiveFillsResponse, LiveOrderRow, LiveOrdersResponse, LiveReconciliationResponse,
     LiveReconciliationRow, LiveRedemptionRow, LiveRedemptionsResponse, LiveSessionRow,
-    LiveSessionsResponse, LiveStatusResponse, SignalGroupRow, SignalGroupsResponse, SignalRow,
-    SignalsResponse, StatsResponse, StrategyStats, TradeRow, TradesResponse, WindowInfo,
+    LiveSessionsResponse, LiveStatusResponse, RunMetadataRow, SignalGroupRow, SignalGroupsResponse,
+    SignalRow, SignalsResponse, StatsResponse, StrategyStats, TradeRow, TradesResponse, WindowInfo,
 };
 
 struct SignalGroupAccumulator {
@@ -1059,6 +1059,26 @@ impl DbReader {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(LiveControlAuditResponse { entries })
+    }
+
+    /// Return the sanitized runtime-config snapshot row written by the bot at startup.
+    pub async fn get_runtime_config_snapshot(&self) -> Result<Option<RunMetadataRow>, AgentError> {
+        let conn = self.conn.lock().await;
+        if !has_table(&conn, "run_metadata") {
+            return Ok(None);
+        }
+        conn.query_row(
+            "SELECT value, recorded_at_ms FROM run_metadata WHERE key = 'runtime_config_snapshot' LIMIT 1",
+            [],
+            |row| {
+                Ok(RunMetadataRow {
+                    value: row.get(0)?,
+                    recorded_at_ms: row.get(1)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(AgentError::from)
     }
 
     /// Get the latest trade ID (for WS polling).

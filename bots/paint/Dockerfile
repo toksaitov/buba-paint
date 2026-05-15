@@ -1,6 +1,8 @@
 FROM rust:1.94-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+ARG BUBA_GIT_SHA=unknown
+ENV BUBA_GIT_SHA=$BUBA_GIT_SHA
 COPY Cargo.toml Cargo.lock ./
 COPY bots/paint/ bots/paint/
 # Create stub workspace members so cargo doesn't fail

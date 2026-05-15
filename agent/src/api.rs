@@ -6,10 +6,12 @@ use tokio::sync::broadcast;
 
 use crate::db_reader::DbReader;
 use crate::error::AgentError;
+use crate::machine::{MachineSampler, SAMPLE_INTERVAL_MS, stat_runtime_db_files};
 use crate::process_manager::ProcessManager;
 use crate::types::{
-    RealAccountSummary, ShadowSummary, TradingAlert, TradingCapabilities, TradingControlCapability,
-    TradingHealth, TradingRiskSummary, TradingSummary, WsMessage,
+    MachineResponse, RealAccountSummary, RuntimeConfigResponse, SamplerHealth, ShadowSummary,
+    TradingAlert, TradingCapabilities, TradingControlCapability, TradingHealth, TradingRiskSummary,
+    TradingSummary, WsMessage,
 };
 use crate::ws;
 
@@ -19,6 +21,7 @@ pub struct AppState {
     pub db: Arc<DbReader>,
     pub bot: Arc<dyn ProcessManager>,
     pub ws_tx: broadcast::Sender<WsMessage>,
+    pub machine: Arc<MachineSampler>,
 }
 
 /// Returns a simple liveness payload for probes and smoke tests.
@@ -31,6 +34,55 @@ pub async fn health() -> Json<serde_json::Value> {
 pub async fn get_status(State(state): State<AppState>) -> Result<impl IntoResponse, AgentError> {
     let status = state.db.get_status().await?;
     Ok(Json(status))
+}
+
+/// Returns the sanitized runtime configuration snapshot and observed runtime context.
+pub async fn get_runtime_config(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AgentError> {
+    let Some(row) = state.db.get_runtime_config_snapshot().await? else {
+        return Ok(Json(RuntimeConfigResponse {
+            snapshot: None,
+            snapshot_recorded_at_ms: None,
+            uptime_secs: None,
+        }));
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(&row.value).unwrap_or(serde_json::Value::Null);
+    let uptime_secs = parsed
+        .get("process_start_time_ms")
+        .and_then(serde_json::Value::as_u64)
+        .map(|start| {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map_or(start, |duration| duration.as_millis() as u64);
+            now_ms.saturating_sub(start) / 1000
+        });
+    Ok(Json(RuntimeConfigResponse {
+        snapshot: Some(parsed),
+        snapshot_recorded_at_ms: Some(row.recorded_at_ms),
+        uptime_secs,
+    }))
+}
+
+/// Returns the cross-platform host snapshot, 5-minute ring, and DB file sizes.
+#[allow(clippy::unused_async)]
+pub async fn get_machine(State(state): State<AppState>) -> Result<impl IntoResponse, AgentError> {
+    let snapshot = state.machine.snapshot();
+    let runtime_db = stat_runtime_db_files(state.machine.runtime_db_path());
+    Ok(Json(MachineResponse {
+        host: state.machine.host().clone(),
+        agent_started_at_ms: state.machine.started_at_ms(),
+        current: snapshot.current,
+        history: snapshot.history,
+        runtime_db,
+        sampler: SamplerHealth {
+            sample_interval_ms: SAMPLE_INTERVAL_MS as u32,
+            samples_collected: snapshot.samples_collected,
+            last_error: snapshot.last_error,
+        },
+    }))
 }
 
 #[derive(Debug, serde::Deserialize)]

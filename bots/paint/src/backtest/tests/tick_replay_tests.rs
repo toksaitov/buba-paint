@@ -1,6 +1,7 @@
 use super::*;
+use crate::db::clob_replay_blocks;
 use crate::db::schema::run_migrations;
-use crate::types::ReplayFidelity;
+use crate::types::{FeedEvent, ReplayFidelity};
 
 /// Helper: create an in-memory DB with the full schema.
 fn setup_test_db() -> rusqlite::Connection {
@@ -104,6 +105,66 @@ fn insert_compact_clob_event(
         ],
     )
     .unwrap();
+}
+
+/// Helper: insert one compressed CLOB replay block.
+fn insert_clob_block(conn: &rusqlite::Connection, events: &[FeedEvent]) {
+    let block = clob_replay_blocks::encode_events(events, 1).unwrap();
+    conn.execute(
+        "INSERT INTO clob_replay_blocks (
+            min_received_at_ms, max_received_at_ms, min_received_at_us, max_received_at_us,
+            row_count, up_rows, down_rows, codec, schema_version, compressed_bytes,
+            uncompressed_bytes, checksum, payload
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'zstd', ?8, ?9, ?10, ?11, ?12)",
+        params![
+            block.min_received_at_ms,
+            block.max_received_at_ms,
+            block.min_received_at_us,
+            block.max_received_at_us,
+            block.row_count,
+            block.up_rows,
+            block.down_rows,
+            block.schema_version,
+            block.compressed_bytes,
+            block.uncompressed_bytes,
+            block.checksum,
+            block.payload,
+        ],
+    )
+    .unwrap();
+}
+
+/// Helper: build one CLOB event for compressed replay tests.
+fn clob_block_event(timestamp: u64, source: &str, bid_size: f64) -> FeedEvent {
+    FeedEvent {
+        id: None,
+        received_at_ms: timestamp,
+        event_at_ms: timestamp,
+        received_at_us: Some(timestamp.saturating_mul(1_000).saturating_add(5)),
+        event_at_us: Some(timestamp.saturating_mul(1_000).saturating_add(5)),
+        source: source.to_string(),
+        event_type: "price_change".to_string(),
+        source_topic: Some(format!("{source}-topic")),
+        source_symbol: None,
+        connection_id: Some("conn-1".to_string()),
+        sequence_key: Some(format!("seq-{timestamp}")),
+        market_id: Some("m1".to_string()),
+        asset_id: Some(format!("{source}-asset")),
+        price: None,
+        trade_size: None,
+        signed_quantity: None,
+        best_bid: Some(0.48),
+        best_ask: Some(0.52),
+        bid_size: Some(bid_size),
+        ask_size: Some(120.0),
+        depth_bid_notional: None,
+        depth_ask_notional: None,
+        depth_imbalance: None,
+        microprice: Some(0.50),
+        payload_json: None,
+        details_json: None,
+        fidelity: ReplayFidelity::RawEvent,
+    }
 }
 
 /// Helper: build a raw tick for in-memory tests.
@@ -764,6 +825,49 @@ fn first_tick_timestamp_uses_feed_events() {
     let timestamp = TickReplay::first_tick_timestamp(&conn, 1_000, 2_000).unwrap();
 
     assert_eq!(timestamp, Some(1_200));
+}
+
+/// Verifies that compressed CLOB blocks load as replay ticks.
+#[test]
+fn load_ticks_reads_clob_replay_blocks() {
+    let conn = setup_test_db();
+    insert_feed_event(
+        &conn,
+        1_000,
+        Some(1_000_000),
+        "binance",
+        "aggTrade",
+        Some(42_000.0),
+        None,
+        None,
+        "raw_event",
+    );
+    insert_clob_block(
+        &conn,
+        &[
+            clob_block_event(1_001, "clob_up", 100.0),
+            clob_block_event(1_002, "clob_down", 80.0),
+        ],
+    );
+
+    let ticks = TickReplay::load_ticks(&conn, 900, 1_100).unwrap();
+
+    assert_eq!(ticks.len(), 3);
+    assert_eq!(ticks[1].source, "clob_up");
+    assert_eq!(ticks[1].bid_size, Some(100.0));
+    assert_eq!(ticks[2].source, "clob_down");
+    assert_eq!(ticks[2].ask, Some(0.52));
+}
+
+/// Verifies that first tick lookup considers compressed CLOB blocks.
+#[test]
+fn first_tick_timestamp_uses_clob_replay_blocks() {
+    let conn = setup_test_db();
+    insert_clob_block(&conn, &[clob_block_event(1_250, "clob_up", 100.0)]);
+
+    let timestamp = TickReplay::first_tick_timestamp(&conn, 1_000, 2_000).unwrap();
+
+    assert_eq!(timestamp, Some(1_250));
 }
 
 /// Verifies that unknown source silently ignored.

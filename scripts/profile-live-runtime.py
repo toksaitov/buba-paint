@@ -175,12 +175,31 @@ def sqlite_counts(db_path: Path) -> dict[str, Any]:
     if not db_path.exists():
         return {"exists": False}
     with sqlite3.connect(db_path) as conn:
+        table_names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+        def count_table(name: str) -> int | None:
+            """Return one table count when the table exists in this DB shape."""
+            if name not in table_names:
+                return None
+            return conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+
         return {
             "exists": True,
             "quick_check": conn.execute("PRAGMA quick_check").fetchone()[0],
-            "feed_events": conn.execute("SELECT COUNT(*) FROM feed_events").fetchone()[0],
-            "signals": conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0],
-            "trades": conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0],
+            "feed_events": count_table("feed_events"),
+            "clob_replay_blocks": count_table("clob_replay_blocks"),
+            "clob_replay_events": count_table("clob_replay_events"),
+            "signals": count_table("signals"),
+            "simulated_trades": count_table("simulated_trades"),
+            "trade_results": count_table("trade_results"),
+            "live_order_intents": count_table("live_order_intents"),
+            "live_orders": count_table("live_orders"),
+            "live_redemptions": count_table("live_redemptions"),
         }
 
 

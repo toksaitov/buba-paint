@@ -194,3 +194,13 @@ Database files should stay on disk where useful, but not in Git or LFS history.
 ## Cross Compilation
 
 Development is on macOS aarch64. The production host is Linux aarch64. Prefer building Rust release binaries on the server from a clean staged release unless a dedicated cross-compile workflow is being tested.
+
+## Reproducible Build Metadata
+
+The bot's startup `RuntimeConfigSnapshot` includes a `git_sha` field read at compile time from `BUBA_GIT_SHA` via `option_env!`. The Dockerfile accepts `--build-arg BUBA_GIT_SHA=<sha>` to wire this through. When you want the dashboard `Config` page to show the deployed SHA instead of `unknown`, pass the build arg explicitly:
+
+```bash
+sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.live-readonly.yml -f docker-compose.prod.yml build --build-arg BUBA_GIT_SHA=$(git rev-parse --short HEAD) paint
+```
+
+Setting the build arg is optional; without it, `git_sha` is `unknown` and the rest of the snapshot is unchanged.

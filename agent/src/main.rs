@@ -11,6 +11,7 @@ use tower_http::cors::CorsLayer;
 use buba_agent::api::{self, AppState};
 use buba_agent::auth::{require_secret, required_shared_secret};
 use buba_agent::db_reader::DbReader;
+use buba_agent::machine::MachineSampler;
 use buba_agent::process_manager::{ChildProcessManager, NoopProcessManager, ProcessConfig};
 use buba_agent::ws as agent_ws;
 
@@ -92,11 +93,20 @@ async fn main() -> anyhow::Result<()> {
 
     agent_ws::spawn_poller(Arc::clone(&db), cli.poll_interval, ws_tx.clone());
 
-    let state = AppState { db, bot, ws_tx };
+    let machine = MachineSampler::start(std::path::PathBuf::from(&cli.db_path));
+
+    let state = AppState {
+        db,
+        bot,
+        ws_tx,
+        machine,
+    };
 
     let app = Router::new()
         .route("/health", get(api::health))
         .route("/api/status", get(api::get_status))
+        .route("/api/runtime/config", get(api::get_runtime_config))
+        .route("/api/machine", get(api::get_machine))
         .route("/api/trades", get(api::get_trades))
         .route("/api/balance", get(api::get_balance))
         .route("/api/equity/series", get(api::get_equity_series))

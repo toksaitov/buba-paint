@@ -567,7 +567,7 @@ fn update_session_status(
 }
 
 /// Build one deterministic config fingerprint for readonly sessions.
-fn readonly_config_fingerprint(config: &Config) -> String {
+pub(crate) fn readonly_config_fingerprint(config: &Config) -> String {
     json!({
         "execution_mode": config.execution_mode.as_str(),
         "live_sidecar_url": config.live_sidecar_url,

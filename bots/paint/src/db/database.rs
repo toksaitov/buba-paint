@@ -6,6 +6,7 @@ use anyhow::{Context, bail};
 use rusqlite::params;
 
 use super::schema;
+use crate::db::clob_replay_blocks::{self, EncodedClobReplayBlock};
 use crate::types::{
     ControlAuditEntry, FeedEvent, FeedHealthEvent, LiveAccountSnapshot, LiveControlCommand,
     LiveControlState, LiveFill, LiveOrder, LiveOrderIntent, LiveReconciliationEvent,
@@ -96,21 +97,43 @@ pub struct LiveDecisionEvidence<'a> {
 }
 
 /// Return whether one feed event should use compact `CLOB` replay storage.
-fn is_clob_top_of_book_event(event: &FeedEvent) -> bool {
-    matches!(event.source.as_str(), "clob_up" | "clob_down")
-        && matches!(
-            event.event_type.as_str(),
-            "book" | "price_change" | "best_bid_ask"
-        )
-        && event.best_bid.is_some()
-        && event.best_ask.is_some()
-        && event.bid_size.is_some()
-        && event.ask_size.is_some()
+pub(crate) fn is_clob_top_of_book_event(event: &FeedEvent) -> bool {
+    clob_replay_blocks::is_blockable_clob_event(event)
 }
 
 /// Return the compact side label for one `CLOB` source.
 fn clob_side(source: &str) -> &'static str {
     if source == "clob_up" { "up" } else { "down" }
+}
+
+/// Insert one compressed CLOB replay block.
+fn insert_clob_replay_block(
+    tx: &rusqlite::Transaction<'_>,
+    block: &EncodedClobReplayBlock,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "INSERT INTO clob_replay_blocks (
+            min_received_at_ms, max_received_at_ms, min_received_at_us, max_received_at_us,
+            row_count, up_rows, down_rows, codec, schema_version, compressed_bytes,
+            uncompressed_bytes, checksum, payload
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'zstd', ?8, ?9, ?10, ?11, ?12)",
+        params![
+            block.min_received_at_ms,
+            block.max_received_at_ms,
+            block.min_received_at_us,
+            block.max_received_at_us,
+            block.row_count,
+            block.up_rows,
+            block.down_rows,
+            block.schema_version,
+            block.compressed_bytes,
+            block.uncompressed_bytes,
+            block.checksum,
+            &block.payload,
+        ],
+    )
+    .context("inserting CLOB replay block")?;
+    Ok(())
 }
 
 /// Mutable lifecycle fields for one live redemption row.
@@ -334,6 +357,75 @@ impl Database {
         }
         tx.commit()?;
         Ok(events.len() as u64)
+    }
+
+    /// Logs generic feed rows and one optional compressed `CLOB` replay block.
+    pub fn log_feed_events_and_clob_block(
+        &self,
+        generic_events: &[FeedEvent],
+        clob_events: &[FeedEvent],
+        zstd_level: i32,
+    ) -> anyhow::Result<u64> {
+        if generic_events.is_empty() && clob_events.is_empty() {
+            return Ok(0);
+        }
+        let encoded_block = if clob_events.is_empty() {
+            None
+        } else {
+            Some(clob_replay_blocks::encode_events(clob_events, zstd_level)?)
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO feed_events (
+                    received_at_ms, event_at_ms, received_at_us, event_at_us, source, event_type,
+                    source_topic, source_symbol, connection_id, sequence_key, market_id, asset_id,
+                    price, trade_size, signed_quantity, best_bid, best_ask, bid_size, ask_size,
+                    depth_bid_notional, depth_ask_notional, depth_imbalance, microprice,
+                    payload_json, details_json, fidelity
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6,
+                    ?7, ?8, ?9, ?10, ?11, ?12,
+                    ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                    ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                 )",
+            )?;
+            for event in generic_events {
+                stmt.execute(params![
+                    event.received_at_ms,
+                    event.event_at_ms,
+                    event.received_at_us,
+                    event.event_at_us,
+                    event.source,
+                    event.event_type,
+                    event.source_topic,
+                    event.source_symbol,
+                    event.connection_id,
+                    event.sequence_key,
+                    event.market_id,
+                    event.asset_id,
+                    event.price,
+                    event.trade_size,
+                    event.signed_quantity,
+                    event.best_bid,
+                    event.best_ask,
+                    event.bid_size,
+                    event.ask_size,
+                    event.depth_bid_notional,
+                    event.depth_ask_notional,
+                    event.depth_imbalance,
+                    event.microprice,
+                    event.payload_json,
+                    event.details_json,
+                    event.fidelity.to_string(),
+                ])?;
+            }
+            if let Some(block) = &encoded_block {
+                insert_clob_replay_block(&tx, block)?;
+            }
+        }
+        tx.commit()?;
+        Ok(generic_events.len() as u64 + clob_events.len() as u64)
     }
 
     /// Upsert market.

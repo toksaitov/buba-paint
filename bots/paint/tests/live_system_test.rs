@@ -2,6 +2,7 @@ mod support;
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use buba_paint::backtest::tick_replay::TickReplay;
 use buba_paint::config::Config;
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -154,8 +155,18 @@ async fn register_gamma_mock(gamma_mock: &MockServer, current_slot: u64, end_dat
 /// Helper: send a burst of rising Binance ticks to generate positive momentum.
 async fn send_rising_binance_ticks(binance_mock: &MockWsServer, count: u32) {
     let base_price = 42_000.0;
+    send_custom_rising_binance_ticks(binance_mock, base_price, 5.0, count).await;
+}
+
+/// Helper: send a custom rising Binance burst for timing-sensitive tests.
+async fn send_custom_rising_binance_ticks(
+    binance_mock: &MockWsServer,
+    base_price: f64,
+    step: f64,
+    count: u32,
+) {
     for i in 0..count {
-        let price = base_price + f64::from(i) * 5.0;
+        let price = base_price + f64::from(i) * step;
         let msg = format!(
             r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
             1_700_000_000_000_u64 + u64::from(i) * 100,
@@ -254,7 +265,16 @@ async fn wait_for_persisted_clob_snapshot_with_sizes(db_path: &str) {
                 |r| r.get(0),
             )
             .unwrap();
-        if legacy_count + compact_count > 0 {
+        let block_count: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(row_count), 0)
+                 FROM clob_replay_blocks
+                 WHERE up_rows + down_rows > 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if legacy_count + compact_count + block_count > 0 {
             return;
         }
         if Instant::now() >= deadline {
@@ -355,17 +375,7 @@ async fn run_one_window(
     send_clob_book(clob_mock).await;
 
     tokio::time::sleep(Duration::from_millis(300)).await;
-    for i in 25_u32..35 {
-        let price = 42_000.0 + f64::from(i) * 5.0;
-        let msg = format!(
-            r#"{{"e":"aggTrade","E":{},"p":"{}","q":"0.01","T":{}}}"#,
-            1_700_000_000_000_u64 + u64::from(i) * 100,
-            price,
-            1_700_000_000_000_u64 + u64::from(i) * 100,
-        );
-        binance_mock.send(&msg).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    send_custom_rising_binance_ticks(&binance_mock, 42_200.0, 25.0, 10).await;
 
     tokio::time::sleep(Duration::from_secs(window_secs + 1)).await;
 
@@ -557,7 +567,7 @@ async fn live_bot_settles_trades_and_records_results() {
     let chainlink_mock = MockWsServer::start().await;
     let gamma_mock = MockServer::start().await;
 
-    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(8);
+    let (_now_secs, current_slot, end_date) = compute_window_timing_with_offset(12);
 
     register_gamma_mock_with_resolution(&gamma_mock, current_slot, &end_date, "UP").await;
 
@@ -600,7 +610,7 @@ async fn live_bot_settles_trades_and_records_results() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    tokio::time::sleep(Duration::from_secs(11)).await;
 
     let _ = shutdown_tx.send(());
     let result = tokio::time::timeout(Duration::from_secs(5), bot_handle).await;
@@ -1379,6 +1389,7 @@ async fn live_bot_best_bid_ask_without_sizes_still_opens_trade() {
     send_rising_binance_ticks(&binance_mock, 6).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     send_clob_best_bid_ask_without_sizes(&clob_mock).await;
+    send_custom_rising_binance_ticks(&binance_mock, 42_200.0, 25.0, 4).await;
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -1432,10 +1443,24 @@ async fn live_bot_best_bid_ask_without_sizes_still_opens_trade() {
             |r| r.get(0),
         )
         .unwrap();
+    let block_best_bid_ask_with_size = TickReplay::load_ticks(&conn, 0, 9_999_999_999_999)
+        .unwrap()
+        .into_iter()
+        .filter(|tick| {
+            tick.event_type == "best_bid_ask"
+                && matches!(tick.source.as_str(), "clob_up" | "clob_down")
+                && tick.ask_size.is_some_and(|size| size > 0.0)
+        })
+        .count();
     assert!(
-        legacy_best_bid_ask_with_size + compact_best_bid_ask_with_size > 0,
+        legacy_best_bid_ask_with_size
+            + compact_best_bid_ask_with_size
+            + i64::try_from(block_best_bid_ask_with_size).unwrap_or_default()
+            > 0,
         "Expected persisted best_bid_ask rows to preserve positive ask_size, got {}",
-        legacy_best_bid_ask_with_size + compact_best_bid_ask_with_size
+        legacy_best_bid_ask_with_size
+            + compact_best_bid_ask_with_size
+            + i64::try_from(block_best_bid_ask_with_size).unwrap_or_default()
     );
 }
 

@@ -60,6 +60,8 @@ fn test_app_with_agent(agent_url: &str) -> (Router, Arc<DashboardDb>) {
             "/api/bots/{id}/trading/summary",
             get(bots::bot_trading_summary),
         )
+        .route("/api/bots/{id}/config", get(bots::bot_runtime_config))
+        .route("/api/bots/{id}/machine", get(bots::bot_machine))
         .route("/api/bots/{id}/live/status", get(bots::bot_live_status))
         .route("/api/bots/{id}/live/sessions", get(bots::bot_live_sessions))
         .route("/api/bots/{id}/live/orders", get(bots::bot_live_orders))
@@ -229,6 +231,106 @@ async fn bot_status_unknown_id_returns_404() {
 
     let resp = app
         .oneshot(auth_get("/api/bots/unknown/status", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// Verifies that runtime config proxies to the agent.
+#[tokio::test]
+async fn bot_runtime_config_proxies_to_agent() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/runtime/config"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "snapshot": {
+                "execution_mode": "live_readonly",
+                "process_start_time_ms": 1_700_000_000_000_u64,
+                "config_fingerprint": "fingerprint-1",
+            },
+            "snapshot_recorded_at_ms": 1_700_000_000_000_u64,
+            "uptime_secs": 120,
+        })))
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get("/api/bots/paint/config", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = json_body(resp).await;
+    assert_eq!(body["snapshot"]["execution_mode"], "live_readonly");
+    assert_eq!(body["snapshot"]["config_fingerprint"], "fingerprint-1");
+    assert_eq!(body["uptime_secs"], 120);
+}
+
+/// Verifies that runtime config returns 404 for an unknown bot id.
+#[tokio::test]
+async fn bot_runtime_config_unknown_id_returns_404() {
+    let server = MockServer::start().await;
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get("/api/bots/unknown/config", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// Verifies that the machine endpoint proxies to the agent unchanged.
+#[tokio::test]
+async fn bot_machine_proxies_to_agent() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/machine"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "host": {
+                "hostname": "proxy-host",
+                "os_name": "linux",
+                "os_version": "6.1",
+                "kernel_version": "6.1.0",
+                "cpu_count": 4,
+                "total_ram_bytes": 8_589_934_592u64,
+            },
+            "agent_started_at_ms": 1_700_000_000_000u64,
+            "current": null,
+            "history": [],
+            "runtime_db": { "db_path": "/runtime/paint.db", "db_bytes": null, "wal_bytes": null, "shm_bytes": null },
+            "sampler": { "sample_interval_ms": 5000, "samples_collected": 0, "last_error": null },
+        })))
+        .mount(&server)
+        .await;
+
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get("/api/bots/paint/machine", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = json_body(resp).await;
+    assert_eq!(body["host"]["hostname"], "proxy-host");
+    assert_eq!(body["host"]["cpu_count"], 4);
+    assert_eq!(body["sampler"]["sample_interval_ms"], 5000);
+}
+
+/// Verifies that the machine endpoint returns 404 for an unknown bot id.
+#[tokio::test]
+async fn bot_machine_unknown_id_returns_404() {
+    let server = MockServer::start().await;
+    let (app, db) = test_app_with_agent(&server.uri());
+    let token = admin_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get("/api/bots/unknown/machine", &token))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);

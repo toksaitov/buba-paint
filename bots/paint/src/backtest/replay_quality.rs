@@ -44,6 +44,7 @@ pub struct ReplayQualityReport {
     pub start_time: u64,
     pub end_time: u64,
     pub feed_event_rows: i64,
+    pub clob_replay_block_rows: i64,
     pub legacy_tick_rows: i64,
     pub requirements: Vec<ReplayQualityRequirement>,
 }
@@ -92,9 +93,10 @@ pub fn analyze_connection(
 ) -> anyhow::Result<ReplayQualityReport> {
     let feed_event_rows =
         count_rows_in_range(conn, "feed_events", "received_at_ms", start_time, end_time)?;
+    let clob_replay_block_rows = count_clob_block_rows(conn, start_time, end_time)?;
     let legacy_tick_rows =
         count_rows_in_range(conn, "tick_data", "timestamp", start_time, end_time)?;
-    let requirements = if feed_event_rows > 0 {
+    let requirements = if feed_event_rows > 0 || clob_replay_block_rows > 0 {
         vec![
             requirement(
                 conn,
@@ -148,12 +150,17 @@ pub fn analyze_connection(
     } else {
         Vec::new()
     };
-    let class = classify(feed_event_rows, legacy_tick_rows, &requirements);
+    let class = classify(
+        feed_event_rows + clob_replay_block_rows,
+        legacy_tick_rows,
+        &requirements,
+    );
     Ok(ReplayQualityReport {
         class,
         start_time,
         end_time,
         feed_event_rows,
+        clob_replay_block_rows,
         legacy_tick_rows,
         requirements,
     })
@@ -191,6 +198,7 @@ pub fn format_report(report: &ReplayQualityReport) -> String {
         format!("start_time={}", report.start_time),
         format!("end_time={}", report.end_time),
         format!("feed_event_rows={}", report.feed_event_rows),
+        format!("clob_replay_block_rows={}", report.clob_replay_block_rows),
         format!("legacy_tick_rows={}", report.legacy_tick_rows),
     ];
     for requirement in &report.requirements {
@@ -244,6 +252,24 @@ fn count_rows_in_range(
     );
     conn.query_row(&sql, params![start_time, end_time], |row| row.get(0))
         .with_context(|| format!("counting {table} rows"))
+}
+
+/// Count decoded CLOB replay rows in overlapping compressed blocks.
+fn count_clob_block_rows(conn: &Connection, start_time: u64, end_time: u64) -> anyhow::Result<i64> {
+    if !table_exists(conn, "clob_replay_blocks")? {
+        return Ok(0);
+    }
+    conn.query_row(
+        "SELECT COALESCE(SUM(row_count), 0)
+         FROM clob_replay_blocks
+         WHERE max_received_at_ms >= ?1 AND min_received_at_ms <= ?2",
+        params![
+            sqlite_timestamp(start_time, "start_time")?,
+            sqlite_timestamp(end_time, "end_time")?
+        ],
+        |row| row.get(0),
+    )
+    .context("counting CLOB replay block rows")
 }
 
 /// Build one required replay-quality row from a SQL predicate.
@@ -309,23 +335,55 @@ fn clob_top_of_book_requirement(
     } else {
         0
     };
+    let block_rows = clob_block_side_rows(conn, start_time, end_time, source)?;
     Ok(ReplayQualityRequirement {
         key,
         description,
-        rows: legacy_rows + compact_rows,
+        rows: legacy_rows + compact_rows + block_rows,
         required: true,
     })
 }
 
+/// Count one side's top-of-book rows inside compressed CLOB blocks.
+fn clob_block_side_rows(
+    conn: &Connection,
+    start_time: u64,
+    end_time: u64,
+    source: &str,
+) -> anyhow::Result<i64> {
+    if !table_exists(conn, "clob_replay_blocks")? {
+        return Ok(0);
+    }
+    let column = match source {
+        "clob_up" => "up_rows",
+        "clob_down" => "down_rows",
+        other => bail!("unsupported CLOB replay source: {other}"),
+    };
+    let sql = format!(
+        "SELECT COALESCE(SUM({column}), 0)
+         FROM clob_replay_blocks
+         WHERE max_received_at_ms >= ?1 AND min_received_at_ms <= ?2"
+    );
+    conn.query_row(
+        &sql,
+        params![
+            sqlite_timestamp(start_time, "start_time")?,
+            sqlite_timestamp(end_time, "end_time")?
+        ],
+        |row| row.get(0),
+    )
+    .with_context(|| format!("checking CLOB block replay-quality requirement for {source}"))
+}
+
 /// Classify one replay interval from row counts and requirements.
 fn classify(
-    feed_event_rows: i64,
+    replay_rows: i64,
     legacy_tick_rows: i64,
     requirements: &[ReplayQualityRequirement],
 ) -> ReplayQualityClass {
-    if feed_event_rows > 0 && requirements.iter().all(ReplayQualityRequirement::present) {
+    if replay_rows > 0 && requirements.iter().all(ReplayQualityRequirement::present) {
         ReplayQualityClass::SweepGrade
-    } else if feed_event_rows > 0 {
+    } else if replay_rows > 0 {
         ReplayQualityClass::DescriptiveOnly
     } else if legacy_tick_rows > 0 {
         ReplayQualityClass::LegacySnapshot

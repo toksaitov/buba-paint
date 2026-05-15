@@ -379,3 +379,161 @@ export interface TradingSummary {
   capabilities: TradingCapabilities;
   alerts: TradingAlert[];
 }
+
+export interface RuntimeConfigLatencyArb {
+  enabled: boolean;
+  momentum_threshold: number;
+  min_ask: number;
+  max_ask: number;
+  cooldown_ms: number;
+  adaptive_window_ms: number;
+  max_position_fraction: number | null;
+}
+
+export interface RuntimeConfigSpreadCapture {
+  enabled: boolean;
+  threshold: number;
+  min_ask: number;
+  max_leg_skew_ms: number;
+  max_quote_churn_per_s: number;
+  max_position_fraction: number | null;
+}
+
+export interface RuntimeConfigCalmPersistence {
+  enabled: boolean;
+  min_window_time_ms: number;
+  max_window_time_ms: number;
+  max_ask: number;
+  min_abs_distance_bps: number;
+  distance_vol_ratio_threshold: number;
+  max_realized_vol_15s_bps: number;
+  max_open_crosses_30s: number;
+  max_quote_churn_per_s: number;
+  min_alignment_fraction: number;
+  max_fair_bias: number;
+  min_expected_edge: number;
+  max_position_fraction: number | null;
+}
+
+export interface RuntimeConfigRisk {
+  starting_balance: number;
+  max_position_fraction: number;
+  min_bet_usd: number;
+  max_drawdown_pct: number;
+  live_session_cash_cap_usd: number;
+  live_max_single_order_usd: number;
+  live_max_open_notional_usd: number;
+  live_max_daily_loss_usd: number;
+  live_max_session_drawdown_usd: number;
+  live_min_required_cash_usd: number;
+}
+
+export interface RuntimeConfigPendingSettlement {
+  family_reserve_fraction: number;
+  global_reserve_fraction: number;
+  counts_as_open_position: boolean;
+}
+
+export interface RuntimeConfigFees {
+  taker_fee_rate: number;
+  taker_fee_exponent: number;
+  sim_order_latency_ms: number;
+}
+
+export interface RuntimeConfigFeedFreshness {
+  max_book_staleness_ms: number;
+  max_signal_feed_age_ms: number;
+  max_quote_age_ms: number;
+  clob_no_message_reconnect_ms: number;
+  binance_no_message_reconnect_ms: number;
+}
+
+export interface RuntimeConfigWorkerBudgets {
+  feed_event_writer_queue_capacity: number;
+  feed_event_writer_batch_size: number;
+  feed_event_writer_flush_ms: number;
+  feed_event_writer_max_lag_ms: number;
+  clob_replay_block_max_rows: number;
+  clob_replay_block_max_ms: number;
+  clob_replay_block_zstd_level: number;
+  live_decision_queue_capacity: number;
+  live_decision_output_queue_capacity: number;
+  live_runtime_persistence_queue_capacity: number;
+  live_submission_queue_capacity: number;
+  max_live_decision_age_ms: number;
+  worker_shutdown_timeout_ms: number;
+}
+
+export interface RuntimeConfigSnapshot {
+  execution_mode: string;
+  runtime_name: string | null;
+  process_start_time_ms: number;
+  db_path_label: string;
+  config_fingerprint: string;
+  git_sha: string;
+  package_version: string;
+  feed_event_storage_profile: string;
+  live_runtime_max_db_bytes: number;
+  latency_arb: RuntimeConfigLatencyArb;
+  spread_capture: RuntimeConfigSpreadCapture;
+  calm_persistence: RuntimeConfigCalmPersistence;
+  risk: RuntimeConfigRisk;
+  pending_settlement: RuntimeConfigPendingSettlement;
+  fees: RuntimeConfigFees;
+  feed_freshness: RuntimeConfigFeedFreshness;
+  worker_budgets: RuntimeConfigWorkerBudgets;
+}
+
+export interface RuntimeConfigResponse {
+  snapshot: RuntimeConfigSnapshot | null;
+  snapshot_recorded_at_ms: number | null;
+  uptime_secs: number | null;
+}
+
+export interface MachineHostIdentity {
+  hostname: string;
+  os_name: string;
+  os_version: string;
+  kernel_version: string;
+  cpu_count: number;
+  total_ram_bytes: number;
+}
+
+export interface MachineSample {
+  sampled_at_ms: number;
+  cpu_percent: number;
+  per_core_cpu: number[];
+  load_one: number | null;
+  load_five: number | null;
+  load_fifteen: number | null;
+  mem_used_bytes: number;
+  mem_total_bytes: number;
+  mem_available_bytes: number;
+  swap_used_bytes: number;
+  swap_total_bytes: number;
+  disk_used_bytes: number;
+  disk_total_bytes: number;
+  disk_mount: string;
+}
+
+export interface MachineRuntimeDbFiles {
+  db_path: string;
+  db_bytes: number | null;
+  wal_bytes: number | null;
+  shm_bytes: number | null;
+}
+
+export interface MachineSamplerHealth {
+  sample_interval_ms: number;
+  samples_collected: number;
+  last_error: string | null;
+}
+
+export interface MachineResponse {
+  host: MachineHostIdentity;
+  agent_started_at_ms: number;
+  current: MachineSample | null;
+  history: MachineSample[];
+  runtime_db: MachineRuntimeDbFiles;
+  sampler: MachineSamplerHealth;
+}

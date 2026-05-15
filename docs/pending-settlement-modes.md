@@ -88,7 +88,7 @@ Use `risky` for the selected run-012 latency-only canary baseline:
 
 ## Exact-Run Parity Workflow
 
-For an exact pulled live run such as [runs/010/run-018-live.db](/Users/toksaitov/Desktop/buba-paint/runs/010/run-018-live.db), the preferred replay mode is:
+For an exact pulled live run such as `runs/010/run-018-live.db`, the preferred replay mode is:
 
 ```bash
 BACKTEST_SETTLEMENT_MODE=observed_market_resolution \

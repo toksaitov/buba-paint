@@ -49,6 +49,7 @@ pub fn prepare_backtest_input(
     copy_generic_feed_events(&output, options.start_time, options.end_time)?;
     copy_legacy_clob_rows_as_compact(&output, options.start_time, options.end_time)?;
     copy_compact_clob_rows(&output, options.start_time, options.end_time)?;
+    copy_clob_replay_blocks(&output, options.start_time, options.end_time)?;
     copy_table_intersection(&output, "run_metadata", None)?;
     copy_small_live_tables(&output)?;
     crate::db::schema::create_replay_indexes(&output)?;
@@ -226,6 +227,43 @@ fn copy_compact_clob_rows(conn: &Connection, start_time: u64, end_time: u64) -> 
     Ok(())
 }
 
+/// Copy compressed CLOB replay blocks without expanding them.
+fn copy_clob_replay_blocks(
+    conn: &Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<()> {
+    if !source_table_exists(conn, "clob_replay_blocks")? {
+        return Ok(());
+    }
+    let columns = common_columns(conn, "clob_replay_blocks")?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let columns_without_id = columns
+        .into_iter()
+        .filter(|column| column != "id")
+        .collect::<Vec<_>>();
+    if columns_without_id.is_empty() {
+        return Ok(());
+    }
+    let column_list = columns_without_id.join(", ");
+    conn.execute(
+        &format!(
+            "INSERT INTO clob_replay_blocks ({column_list})
+             SELECT {column_list}
+             FROM src.clob_replay_blocks
+             WHERE max_received_at_ms >= ?1 AND min_received_at_ms <= ?2"
+        ),
+        params![
+            sqlite_timestamp(start_time, "start_time")?,
+            sqlite_timestamp(end_time, "end_time")?
+        ],
+    )
+    .context("copying CLOB replay blocks")?;
+    Ok(())
+}
+
 /// Return a source column expression or a fallback literal.
 fn source_column_expr(
     conn: &Connection,
@@ -325,11 +363,19 @@ fn prepared_counts(output_path: &str) -> anyhow::Result<(i64, i64)> {
     let conn = Connection::open_with_flags(output_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let generic_feed_rows =
         conn.query_row("SELECT COUNT(*) FROM feed_events", [], |row| row.get(0))?;
-    let compact_clob_rows =
+    let compact_clob_event_rows: i64 =
         conn.query_row("SELECT COUNT(*) FROM clob_replay_events", [], |row| {
             row.get(0)
         })?;
-    Ok((generic_feed_rows, compact_clob_rows))
+    let compact_clob_block_rows: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(row_count), 0) FROM clob_replay_blocks",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok((
+        generic_feed_rows,
+        compact_clob_event_rows + compact_clob_block_rows,
+    ))
 }
 
 /// Write one JSON manifest beside the prepared database.

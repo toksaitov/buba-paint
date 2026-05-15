@@ -159,6 +159,10 @@ pub fn format_report(report: &BacktestInputReport) -> String {
         format!("replay_quality={}", report.replay_quality.class.as_str()),
         format!("feed_event_rows={}", report.replay_quality.feed_event_rows),
         format!(
+            "clob_replay_block_rows={}",
+            report.replay_quality.clob_replay_block_rows
+        ),
+        format!(
             "legacy_tick_rows={}",
             report.replay_quality.legacy_tick_rows
         ),

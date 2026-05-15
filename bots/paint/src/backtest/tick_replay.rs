@@ -9,6 +9,7 @@ use rusqlite::params;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crate::db::clob_replay_blocks;
 use crate::types::ReplayFidelity;
 
 /// A single raw row from `tick_data`.
@@ -33,6 +34,15 @@ pub struct RawTick {
     pub depth_imbalance: Option<f64>,
     pub microprice: Option<f64>,
     pub fidelity: ReplayFidelity,
+}
+
+/// One replay row plus deterministic ordering metadata.
+#[derive(Debug, Clone)]
+struct ReplayRow {
+    sort_us: u64,
+    storage_order: u8,
+    row_id: u64,
+    tick: RawTick,
 }
 
 /// One source's snapshot at a given timestamp.
@@ -139,7 +149,8 @@ impl TickReplay {
         let end_ms = timestamp_param(end_time, "end_time")?;
         let has_feed_events = conn.prepare("SELECT id FROM feed_events LIMIT 0").is_ok();
         let has_compact_clob = has_table(conn, "clob_replay_events");
-        if has_feed_events || has_compact_clob {
+        let has_clob_blocks = has_table(conn, "clob_replay_blocks");
+        if has_feed_events || has_compact_clob || has_clob_blocks {
             let feed_event_count: i64 = if has_feed_events {
                 conn.query_row(
                 "SELECT COUNT(*) FROM feed_events WHERE received_at_ms >= ?1 AND received_at_ms <= ?2",
@@ -158,52 +169,41 @@ impl TickReplay {
             } else {
                 0
             };
-            if feed_event_count + compact_clob_count > 0 {
+            let clob_block_count: i64 = if has_clob_blocks {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(row_count), 0)
+                     FROM clob_replay_blocks
+                     WHERE max_received_at_ms >= ?1 AND min_received_at_ms <= ?2",
+                    params![start_ms, end_ms],
+                    |row| row.get(0),
+                )?
+            } else {
+                0
+            };
+            if feed_event_count + compact_clob_count + clob_block_count > 0 {
+                let mut ticks = Vec::with_capacity(
+                    usize::try_from(
+                        feed_event_count
+                            .saturating_add(compact_clob_count)
+                            .saturating_add(clob_block_count),
+                    )
+                    .unwrap_or_default(),
+                );
                 let query = replay_query(conn, has_feed_events, has_compact_clob);
-                let mut stmt = conn
-                    .prepare(&query)
-                    .context("preparing feed_events query")?;
-
-                let rows = stmt
-                    .query_map(params![start_ms, end_ms], |row| {
-                        let ts_i64: i64 = row.get(0)?;
-                        let fidelity_str: String = row.get(10)?;
-                        let fidelity = ReplayFidelity::from_str(&fidelity_str).map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                10,
-                                rusqlite::types::Type::Text,
-                                Box::from(e),
-                            )
-                        })?;
-                        Ok(RawTick {
-                            timestamp: ts_i64 as u64,
-                            timestamp_us: row.get(11)?,
-                            source: row.get(1)?,
-                            event_type: row.get(2)?,
-                            sequence_key: row.get(12)?,
-                            market_id: row.get(3)?,
-                            asset_id: row.get(4)?,
-                            price: row.get(5)?,
-                            trade_size: row.get(13)?,
-                            signed_quantity: row.get(14)?,
-                            bid: row.get(6)?,
-                            ask: row.get(7)?,
-                            bid_size: row.get(8)?,
-                            ask_size: row.get(9)?,
-                            depth_bid_notional: row.get(15)?,
-                            depth_ask_notional: row.get(16)?,
-                            depth_imbalance: row.get(17)?,
-                            microprice: row.get(18)?,
-                            fidelity,
-                        })
-                    })
-                    .context("executing feed_events query")?;
-
-                let mut ticks = Vec::new();
-                for row in rows {
-                    ticks.push(row.context("reading feed_event row")?);
+                if !query.is_empty() {
+                    let mut stmt = conn
+                        .prepare(&query)
+                        .context("preparing feed_events query")?;
+                    let rows = stmt
+                        .query_map(params![start_ms, end_ms], decode_replay_row)
+                        .context("executing feed_events query")?;
+                    for row in rows {
+                        ticks.push(row.context("reading feed_event row")?);
+                    }
                 }
-                return Ok(ticks);
+                load_clob_block_rows(conn, start_ms, end_ms, &mut ticks)?;
+                ticks.sort_by_key(|row| (row.sort_us, row.storage_order, row.row_id));
+                return Ok(ticks.into_iter().map(|row| row.tick).collect());
             }
         }
 
@@ -281,10 +281,15 @@ impl TickReplay {
                 )
                 .context("finding first clob_replay_event timestamp")?;
         }
-        if first_feed_timestamp.is_some() || first_clob_timestamp.is_some() {
+        let first_clob_block_timestamp = first_clob_block_timestamp(conn, start_ms, end_ms)?;
+        if first_feed_timestamp.is_some()
+            || first_clob_timestamp.is_some()
+            || first_clob_block_timestamp.is_some()
+        {
             return Ok(first_feed_timestamp
                 .into_iter()
                 .chain(first_clob_timestamp)
+                .chain(first_clob_block_timestamp)
                 .min()
                 .map(|timestamp| timestamp as u64));
         }
@@ -385,6 +390,155 @@ impl TickReplay {
     }
 }
 
+/// Decode one replay SQL row into a sorted replay row.
+fn decode_replay_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReplayRow> {
+    let ts_i64: i64 = row.get(0)?;
+    let timestamp = ts_i64 as u64;
+    let timestamp_us: Option<u64> = row.get(11)?;
+    let fidelity_str: String = row.get(10)?;
+    let fidelity = ReplayFidelity::from_str(&fidelity_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::from(e))
+    })?;
+    let storage_order: i64 = row.get(20)?;
+    let row_id: i64 = row.get(19)?;
+    Ok(ReplayRow {
+        sort_us: timestamp_us.unwrap_or_else(|| timestamp.saturating_mul(1_000)),
+        storage_order: u8::try_from(storage_order).unwrap_or(u8::MAX),
+        row_id: u64::try_from(row_id).unwrap_or_default(),
+        tick: RawTick {
+            timestamp,
+            timestamp_us,
+            source: row.get(1)?,
+            event_type: row.get(2)?,
+            sequence_key: row.get(12)?,
+            market_id: row.get(3)?,
+            asset_id: row.get(4)?,
+            price: row.get(5)?,
+            trade_size: row.get(13)?,
+            signed_quantity: row.get(14)?,
+            bid: row.get(6)?,
+            ask: row.get(7)?,
+            bid_size: row.get(8)?,
+            ask_size: row.get(9)?,
+            depth_bid_notional: row.get(15)?,
+            depth_ask_notional: row.get(16)?,
+            depth_imbalance: row.get(17)?,
+            microprice: row.get(18)?,
+            fidelity,
+        },
+    })
+}
+
+/// Load compressed CLOB blocks into sorted replay rows.
+fn load_clob_block_rows(
+    conn: &rusqlite::Connection,
+    start_ms: i64,
+    end_ms: i64,
+    ticks: &mut Vec<ReplayRow>,
+) -> anyhow::Result<()> {
+    if !has_table(conn, "clob_replay_blocks") {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, checksum, payload
+             FROM clob_replay_blocks
+             WHERE max_received_at_ms >= ?1 AND min_received_at_ms <= ?2
+             ORDER BY min_received_at_ms, id",
+        )
+        .context("preparing CLOB replay block query")?;
+    let rows = stmt
+        .query_map(params![start_ms, end_ms], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })
+        .context("executing CLOB replay block query")?;
+    for row in rows {
+        let (block_id, checksum, payload) = row.context("reading CLOB replay block row")?;
+        let decoded = clob_replay_blocks::decode_payload(&payload, &checksum)
+            .context("decoding CLOB replay block")?;
+        for (index, event) in decoded.into_iter().enumerate() {
+            let received_at_ms =
+                i64::try_from(event.received_at_ms).context("CLOB block timestamp overflow")?;
+            if received_at_ms < start_ms || received_at_ms > end_ms {
+                continue;
+            }
+            let timestamp = event.received_at_ms;
+            let timestamp_us = event.received_at_us;
+            let block_id = u64::try_from(block_id).unwrap_or_default();
+            let index = u64::try_from(index).unwrap_or_default();
+            ticks.push(ReplayRow {
+                sort_us: timestamp_us.unwrap_or_else(|| timestamp.saturating_mul(1_000)),
+                storage_order: 2,
+                row_id: block_id.saturating_mul(10_000_000).saturating_add(index),
+                tick: RawTick {
+                    timestamp,
+                    timestamp_us,
+                    source: event.source,
+                    event_type: event.event_type,
+                    sequence_key: event.sequence_key,
+                    market_id: event.market_id,
+                    asset_id: event.asset_id,
+                    price: None,
+                    trade_size: None,
+                    signed_quantity: None,
+                    bid: Some(event.best_bid),
+                    ask: Some(event.best_ask),
+                    bid_size: Some(event.bid_size),
+                    ask_size: Some(event.ask_size),
+                    depth_bid_notional: None,
+                    depth_ask_notional: None,
+                    depth_imbalance: None,
+                    microprice: event.microprice,
+                    fidelity: event.fidelity,
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Return the first CLOB block event timestamp in one interval.
+fn first_clob_block_timestamp(
+    conn: &rusqlite::Connection,
+    start_ms: i64,
+    end_ms: i64,
+) -> anyhow::Result<Option<i64>> {
+    if !has_table(conn, "clob_replay_blocks") {
+        return Ok(None);
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT checksum, payload
+             FROM clob_replay_blocks
+             WHERE max_received_at_ms >= ?1 AND min_received_at_ms <= ?2
+             ORDER BY min_received_at_ms, id",
+        )
+        .context("preparing first CLOB replay block timestamp query")?;
+    let rows = stmt
+        .query_map(params![start_ms, end_ms], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .context("executing first CLOB replay block timestamp query")?;
+    let mut first = None;
+    for row in rows {
+        let (checksum, payload) = row.context("reading first CLOB replay block row")?;
+        let decoded = clob_replay_blocks::decode_payload(&payload, &checksum)
+            .context("decoding first CLOB replay block")?;
+        for event in decoded {
+            let timestamp =
+                i64::try_from(event.received_at_ms).context("CLOB block timestamp overflow")?;
+            if timestamp >= start_ms && timestamp <= end_ms {
+                first = Some(first.map_or(timestamp, |current: i64| current.min(timestamp)));
+            }
+        }
+    }
+    Ok(first)
+}
+
 /// Build the replay query for generic and compact feed-event storage.
 fn replay_query(
     conn: &rusqlite::Connection,
@@ -420,11 +574,14 @@ fn replay_query(
                 .to_string(),
         );
     }
+    if branches.is_empty() {
+        return String::new();
+    }
     format!(
         "SELECT received_at_ms, source, event_type, market_id, asset_id, price,
                 best_bid, best_ask, bid_size, ask_size, fidelity, received_at_us,
                 sequence_key, trade_size, signed_quantity, depth_bid_notional,
-                depth_ask_notional, depth_imbalance, microprice
+                depth_ask_notional, depth_imbalance, microprice, row_id, storage_order
          FROM ({})
          ORDER BY COALESCE(received_at_us, received_at_ms * 1000), storage_order, row_id",
         branches.join(" UNION ALL ")

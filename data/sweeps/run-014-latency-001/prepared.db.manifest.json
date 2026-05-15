@@ -1,0 +1,15 @@
+{
+  "backtest_input": "backtest_ready",
+  "compact_clob_rows": 52863533,
+  "dry_run_ticks": 86333,
+  "end_time": 1778587200000,
+  "generic_feed_rows": 6903926,
+  "output": "data/sweeps/run-014-latency-001/prepared.db",
+  "output_bytes": 18108522496,
+  "prepared_at_ms": 1778595131917,
+  "replay_quality": "sweep_grade",
+  "settled_windows": 223,
+  "source": "runs/014/server-20260511-171249/paint.db",
+  "source_bytes": 13327040512,
+  "start_time": 1778520300000
+}

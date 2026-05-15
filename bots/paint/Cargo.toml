@@ -36,6 +36,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures-util = "0.3"
 url = "2"
+zstd = "0.13"
+crc32fast = "1"
 
 [dev-dependencies]
 proptest = "1"

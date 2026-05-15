@@ -7,6 +7,8 @@ describe("dashboardRoutes", () => {
       "Overview",
       "Execution",
       "Logs",
+      "Parameters",
+      "Machine",
       "Trend",
       "Trades",
       "Signals",
@@ -15,12 +17,12 @@ describe("dashboardRoutes", () => {
     expect(dashboardRoutes[1]?.section).toBe("Monitor");
   });
 
-  test("keeps the global intro bar only on overview, execution, and logs", () => {
+  test("keeps the global intro bar only on overview, execution, logs, parameters, and machine", () => {
     expect(
       dashboardRoutes
         .filter((route) => route.showContextStrip)
         .map((route) => route.label),
-    ).toEqual(["Overview", "Execution", "Logs"]);
+    ).toEqual(["Overview", "Execution", "Logs", "Parameters", "Machine"]);
   });
 });
 

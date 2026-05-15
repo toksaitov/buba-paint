@@ -40,13 +40,14 @@ fn migrations_create_compact_clob_replay_table() {
 
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='clob_replay_events'",
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+             ('clob_replay_events', 'clob_replay_blocks')",
             [],
             |row| row.get(0),
         )
         .unwrap();
 
-    assert_eq!(count, 1);
+    assert_eq!(count, 2);
 }
 
 /// Verifies that runtime migrations do not create sweep-only feed indexes.
