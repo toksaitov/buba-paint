@@ -42,9 +42,17 @@ STALE_REFERENCES = {
 }
 
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+HYPHEN_BULLET_RE = re.compile(r"^(?:\s*>+\s*)*\s*-\s+\S")
 
 ACTIVE_PLAN_NAMES = {"todo.md", "next.md", "blocked.md"}
 ACTIVE_PLAN_PATTERNS = (re.compile(r".*plan.*\.md$"), re.compile(r".*next-pass.*\.md$"))
+STALE_PLANNING_REFERENCES = {
+    "LIVE_TRADING_PLAN.md": "The closed root live plan was deleted; route readers to stable docs.",
+    "PROMPT.md": "Root prompts are not stable guidance; route durable facts to docs.",
+    "Immediate Next Plan-Mode Slice": "Stable docs must not preserve old planning headers.",
+    "active live-money implementation plan": "Stable docs must not imply a current active live-money plan.",
+    "current active plan": "Stable docs must not route readers to closed root plans.",
+}
 
 
 def should_skip(path: Path) -> bool:
@@ -76,7 +84,9 @@ def audit_readme_case(errors: list[str]) -> None:
 
 def audit_forbidden_root_files(errors: list[str]) -> None:
     """Reject known scratch files from the repo root."""
-    for name in ["PLAN.md"]:
+    stale_live_plan = "LIVE_TRADING_" + "PLAN.md"
+    stale_prompt = "PROMPT" + ".md"
+    for name in ["PLAN.md", stale_prompt, stale_live_plan]:
         if (ROOT / name).exists():
             errors.append(f"{name} should not exist at repository root")
 
@@ -137,6 +147,23 @@ def audit_markdown_links(errors: list[str]) -> None:
             )
 
 
+def audit_markdown_bullet_markers(errors: list[str]) -> None:
+    """Reject hyphen unordered-list markers in Markdown prose."""
+    for path in repo_files():
+        if path.suffix.lower() != ".md":
+            continue
+        in_fence = False
+        for line_no, line in enumerate(path.read_text(errors="ignore").splitlines(), start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if HYPHEN_BULLET_RE.match(line):
+                errors.append(f"{display(path)}:{line_no} use '*' for unordered Markdown lists")
+
+
 def audit_data_docs(errors: list[str]) -> None:
     """Require local context docs for every data subdirectory."""
     data_root = ROOT / "data"
@@ -169,6 +196,20 @@ def looks_text(path: Path) -> bool:
     } or path.name in {"Makefile", ".env.example", ".gitignore", ".gitattributes", ".dockerignore"}
 
 
+def is_provenance_path(path: Path) -> bool:
+    """Return true for historical evidence where old file mentions are provenance."""
+    try:
+        path.relative_to(ROOT / "data" / "experiments")
+        return True
+    except ValueError:
+        pass
+    try:
+        path.relative_to(ROOT / "data" / "sweeps")
+        return True
+    except ValueError:
+        return False
+
+
 def audit_stale_references(errors: list[str]) -> None:
     """Reject references to removed files and obsolete layout names."""
     for path in repo_files():
@@ -176,6 +217,11 @@ def audit_stale_references(errors: list[str]) -> None:
             continue
         text = path.read_text(errors="ignore")
         for needle, reason in STALE_REFERENCES.items():
+            if needle in text:
+                errors.append(f"{display(path)} references {needle}: {reason}")
+        if is_provenance_path(path):
+            continue
+        for needle, reason in STALE_PLANNING_REFERENCES.items():
             if needle in text:
                 errors.append(f"{display(path)} references {needle}: {reason}")
 
@@ -198,6 +244,7 @@ def main() -> int:
     audit_forbidden_root_files(errors)
     audit_active_docs_plans(errors)
     audit_markdown_links(errors)
+    audit_markdown_bullet_markers(errors)
     audit_data_docs(errors)
     audit_stale_references(errors)
     audit_data_wal_shm(errors)

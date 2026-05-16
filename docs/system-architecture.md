@@ -1,110 +1,143 @@
 # System Architecture
 
-This document describes the durable shape of the workspace. It should describe existing system structure, not active implementation plans.
+This chapter explains how the system is put together. It is written for readers who need to understand the current repository without reading implementation-history notes.
 
-## Services
+## Overview
 
-The workspace has five major components:
+Buba is a single-bot trading system where the Rust bot owns decisions and the run DB, a TypeScript sidecar owns private venue calls, an agent exposes bounded read APIs, and a dashboard gives humans an authenticated operator surface.
 
-- `bots/paint`: the BTC Up/Down trading bot. It runs paper trading, live-readonly shadow trading, backtests, replay-data validation, parameter sweeps, settlement verification, and derived-data build tools.
-- `agent`: a monitoring service that reads a bot SQLite database in read-only WAL mode and exposes REST plus WebSocket APIs.
-- `dashboard/server`: the authenticated dashboard backend. It manages users, JWT sessions, static frontend serving, and proxying to one or more agents.
-- `dashboard/client`: the React dashboard. It exposes Overview, Execution, Logs, Equity, Trades, Signals, and Strategies.
-- `polymarket-sidecar`: the TypeScript authenticated Polymarket boundary. It owns proxy-wallet auth, readonly account/preflight checks, user-stream health, FOK/FAK order submission, cancellation, and redemption routing.
+## Service Boundaries
 
-The bot writes SQLite. The agent reads the bot DB. The dashboard server proxies authenticated frontend requests to agents. The dashboard client consumes REST data and WebSocket cache invalidations. The sidecar is local-only and private to the bot runtime.
+`bots/paint` is the trading and research core. It discovers BTC 5-minute markets, subscribes to public feeds, maintains the in-memory decision state, evaluates strategy candidates, simulates paper execution, writes SQLite run data, and provides backtest, sweep, validation, and closeout CLIs.
+
+`polymarket-sidecar` is the private venue boundary. It isolates Polymarket credentials and authenticated calls from the bot. Its public local routes are `GET /health`, `GET /account`, `GET /activity`, `POST /preflight`, `POST /orders`, `POST /cancel`, `POST /cancel-all`, and `POST /redeem-all`.
+
+`agent` is a monitor and control adapter. It reads the bot DB, tails bounded logs, samples machine state, exposes REST and WebSocket APIs, and forwards bot control requests through the bot DB. It does not decide trades.
+
+`dashboard/server` authenticates dashboard users, serves the built frontend, and proxies configured agent APIs.
+
+`dashboard/client` is the operator UI. Its Monitor pages are Overview, Execution, Logs, Parameters, and Machine. Its Analysis pages are Trend, Trades, Signals, and Strategies. Compatibility redirects map `/live` and `/trading` to Execution, `/config` to Parameters, and `/stats` to Strategies.
+
+## Runtime Flow
+
+Paper and readonly runs follow the same core loop:
+
+1. The bot discovers active BTC 5-minute markets through Gamma/market metadata.
+2. Binance, CLOB, and Chainlink feed events update in-memory state.
+3. Replay-grade feed evidence is queued to bounded persistence workers.
+4. The decision worker evaluates the latest coalesced state.
+5. Paper execution simulates order arrival, fill, miss, and settlement behavior.
+6. The bot persists signals, decision evidence, rejection summaries, trades, balances, markets, feed health, and runtime metadata.
+7. The agent reads the run DB and runtime files.
+8. The dashboard renders operator and analysis views.
+
+`live_readonly` adds authenticated sidecar account, preflight, market metadata, user activity, and reconciliation reads. It still runs shadow paper trading and does not place venue orders.
+
+`live_trading` exists locally as a disarmed runtime. If armed in a local verification environment, live order submission goes through a submission worker that persists critical decision evidence and order intent before any sidecar venue call. Unknown order outcomes, capture failures, stale account truth, user-stream failure, or reconciliation-critical state block new risk.
 
 ## Execution Modes
 
-The bot has three explicit execution modes:
+`paper` is the normal simulated research mode.
 
-- `paper`: shared strategy runtime with simulated execution.
-- `live_readonly`: authenticated account and venue monitoring plus the shared shadow paper runtime. It does not place orders.
-- `live_trading`: local disarmed real-order runtime. It can start, persist live ledger state, and accept audited CLI or admin dashboard control commands, but it is not deployed or armed yet.
+`live_readonly` is the normal production-like remote mode. It authenticates against the sidecar, monitors account and venue state, captures replay-grade public feeds, and runs shadow paper strategies. It does not arm or write venue state.
 
-The sidecar has real venue-boundary endpoints for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, `/redeem-all`, and `/activity`. The bot-side live runtime starts disarmed and accepts live-control commands through the local CLI or admin dashboard. Dashboard commands are queued through the agent and bot ledger; they do not bypass the bot by calling the sidecar directly.
+`live_trading` starts disarmed and requires audited local or admin dashboard live-control commands. It has ledger tables, risk halt state, reconciliation, and sidecar write support, but remote real-money arming is deferred.
 
-## Strategy Runtime
+Process state and trading state are separate. A running process is not an armed process.
 
-The paint bot evaluates three strategy families:
+## Hot Path
 
-- `latency-arb`: buys the predicted side when Binance moves first and the Polymarket ask is still acceptable.
-- `spread-capture`: buys both UP and DOWN when the two asks are cheap enough after fees. The legs are independent, so residual one-leg exposure is possible.
-- `calm-persistence`: buys the currently winning side in quiet late-window regimes.
+The hot path owns:
 
-The portfolio router chooses one family per evaluation snapshot:
+* current public feed state
+* current market and window state
+* signal-feature state
+* strategy state
+* bankroll and exposure state
+* submission eligibility
 
-- `dislocation` maps to latency-arb.
-- `structural_pair` maps to spread-capture.
-- `calm` maps to calm-persistence.
+The hot path may enqueue bounded work. It must not run SQLite scans, SQLite integrity checks, replay validators, dashboard aggregation, sidecar calls, account refresh, control polling, settlement fetches, or direct venue submission.
 
-Per-strategy sleeves and trend tracking prevent one family from consuming another family by shared bankroll or shared suppression state.
+Workers handle:
 
-## Public Feeds
+* replay-grade feed persistence
+* CLOB replay block compression
+* compact decision evidence
+* paper analytics persistence
+* live order intent durability and sidecar submission
+* account, preflight, and activity refresh
+* live-control polling
+* settlement and resolution checks
+* runtime capture-health metadata
 
-The bot consumes three public market feeds:
+If workers lag, queues fill, persistence fails, or remote truth becomes unknown, `live_trading` blocks new submissions. Dashboard freshness may degrade before bot latency degrades.
 
-- Binance combined streams: `aggTrade`, `bookTicker`, and `depth@100ms`, with microsecond timestamps when available.
-- Polymarket CLOB market WebSocket: order book snapshots, best-bid-ask updates, and price changes for UP and DOWN tokens.
-- Polymarket RTDS Chainlink WebSocket: BTC/USD oracle context used for settlement and monitoring.
+## Feed Model
 
-All feed connection attempts are bounded. Binance and CLOB have no-message watchdog reconnects. These transport safeguards reduce stale-data downtime, but they must not loosen stale-data gates or permit trading blind.
+The bot consumes these public inputs:
 
-## Core Bot Modules
+* Binance `aggTrade`
+* Binance `bookTicker`
+* Binance depth stream
+* Polymarket CLOB market WebSocket data for UP and DOWN tokens
+* Polymarket RTDS Chainlink BTC/USD context
+* Gamma and CLOB market metadata
 
-Important paint modules:
+Feed reconnect knobs reduce downtime. They must not weaken stale-data gates or permit blind trading. CLOB messages may lack useful source timestamps, so the bot preserves raw source timestamps when available and uses local receive time for freshness decisions.
 
-- `live.rs`: shared runtime for `paper`, `live_readonly`, and disarmed `live_trading`.
-- `live_readonly.rs`: readonly preflight, live sessions, account snapshots, reconciliation, and operator rollups.
-- `config.rs`: env and sweep configuration, execution mode, live budget caps, and reserve knobs.
-- `strategy_cycle.rs`: shared evaluation, routing, trend suppression, spread affordability, signal persistence, and order submission into the execution engine.
-- `executor.rs`: shared paper execution model with simulated arrival latency, partial fills, misses, and execution metrics.
-- `signal_features.rs`: shared signal-feature engine used by live paper and backtests.
-- `market_discovery.rs`: Gamma slug discovery, active window activation, metadata capture, and settlement fetches.
-- `bankroll.rs`: per-strategy half-Kelly sizing, sleeves, caps, drawdown pause, and pending-settlement reserve accounting.
-- `position_manager.rs`: trade lifecycle, duplicate guards, and authoritative settlement.
-- `fees.rs`: dynamic taker fee modeling and historical fee resolution.
-- `live_sidecar.rs`: typed Rust client for the local sidecar.
+## Dashboard Model
 
-Backtesting lives under `bots/paint/src/backtest/`. Database ownership lives under `bots/paint/src/db/`.
+The dashboard is deliberately split between monitoring and analysis.
 
-## Dashboard IA
+Monitor pages:
 
-The dashboard is split into Monitor and Analysis:
+* Overview: triage, simulated performance, current market, open trades, and recent outcomes.
+* Execution: process mode, execution readiness, account state, reconciliation, control audit, and gated future controls.
+* Logs: bounded log tail with search, severity/source/event filters, follow, wrap, and line-count preferences.
+* Parameters: read-only sanitized runtime config snapshot from `run_metadata.runtime_config_snapshot`.
+* Machine: CPU, memory, swap, disk, and runtime DB/WAL/SHM file-size monitoring from the agent sampler.
 
-- Overview: operator triage page with performance summary, current market, open trades, execution snapshot, and recent outcomes.
-- Execution: process, mode, account readiness, reconciliation, live detail surfaces, and admin live-control queueing.
-- Logs: operator event stream with search and filters.
-- Parameters: read-only snapshot of what the bot was launched with, persisted at startup under `run_metadata.runtime_config_snapshot`. Constructed via the `RuntimeConfigSnapshot` Rust struct that exposes only chosen fields. Agent endpoint: `GET /api/runtime/config`. Dashboard proxy: `GET /api/bots/:id/config`. Computed `uptime_secs` is derived on read from `snapshot.process_start_time_ms`. Frontend route: `/parameters`.
-- Machine: read-only host metrics (CPU, memory, swap, disk) plus runtime DB / WAL / SHM file sizes, served from an in-memory 5-minute ring buffer sampled every 5 s by the agent via the `sysinfo` crate. The sampler runs on a dedicated `std::thread` and does not touch SQLite. Runtime DB sizes are stat'd per-request via `std::fs::metadata`. Cross-platform: load average is `null` on Windows, iowait is not surfaced. Inside Docker the view is agent-container-scoped. Agent endpoint: `GET /api/machine`. Dashboard proxy: `GET /api/bots/:id/machine`. Frontend route: `/machine`.
-- Equity, Trades, Signals, Strategies: shadow-performance analysis pages.
+Analysis pages:
 
-The dashboard uses two charting libraries on purpose. `lightweight-charts` (WebGL, trading-optimized) powers the Equity / Trend page and the Overview MiniChart. `recharts` (declarative, SVG) powers everything else, starting with the Machine page (multi-series CPU lines, memory / swap timeline, disk timeline, runtime DB timeline, donut gauges). New non-trading charts default to Recharts.
+* Trend: shadow equity curve.
+* Trades: simulated trade and settlement review.
+* Signals: signal metrics, grouped bursts, and rejection investigation.
+* Strategies: strategy-family contribution and risk context.
 
-`/execution` is canonical. `/trading`, `/live`, and `/stats` remain compatibility redirects.
+The dashboard does not call the sidecar or venue directly. Live-control mutations route through dashboard server, agent, control ledger, and the running bot.
 
-## Frontend Structure
+## Failure Boundaries
 
-The dashboard client uses React, Vite, TanStack React Query, Zustand, and lightweight-charts. It is installable as a PWA and supports responsive desktop and mobile layouts.
+The system intentionally fails closed:
 
-Key frontend areas:
+* A failed sidecar account/preflight/activity state degrades readiness and blocks live risk.
+* Matching-engine restart responses become venue-degraded state, not successful submissions.
+* Unknown submission outcomes remain `unknown_order` until reconciled.
+* Terminal live halt state cannot be cleared by a normal disarm.
+* A halted DB must not be re-armed.
+* Runtime validators and whole-run scans stay offline and must not run inside the trading loop.
 
-- `pages/`: route pages.
-- `hooks/`: API and cache hooks.
-- `lib/routes.ts`: canonical route metadata and redirects.
-- `lib/trading-summary.ts`: presentation helpers for process, runtime, trading, health, capabilities, and alert labels.
-- `components/layout/`: shell, header, navigation, and logo.
-- `components/ui/dashboard-primitives.tsx`: shared dashboard UI primitives.
+## Code Map
 
-## Data Flow
+Paint bot:
 
-The normal flow is:
+* `live.rs`: shared runtime, readonly sessions, live-control application, and disarmed live-trading state.
+* `live_decision.rs`: pure decision evidence and in-memory live decision handling.
+* `live_feed_writer.rs`: bounded feed-event persistence worker.
+* `live_storage.rs`: replay-grade compaction rules.
+* `config.rs`: execution mode, storage profile, strategy knobs, live caps, queue budgets, and sidecar timeouts.
+* `strategies/`: latency-arb, spread-capture, and calm-persistence logic.
+* `signal_features.rs`: feature engine shared by runtime and replay.
+* `backtest/`: replay, feed state, window manager, runner, and sweep logic.
+* `db/`: schema, migrations, block storage, validators, and derived-data tools.
 
-1. The bot discovers a 5-minute market and subscribes to public feeds.
-2. The shared strategy cycle evaluates features and routes one strategy family per snapshot.
-3. Paper execution queues a simulated taker-style order with configured arrival latency.
-4. The bot records signals, signal metrics, trades, outcomes, balance changes, feed health, and rejection summaries.
-5. The agent reads SQLite and serves dashboard APIs.
-6. The dashboard visualizes operator state and analysis.
+Other services:
 
-In `live_readonly`, the bot also records live sessions, account snapshots, and reconciliation state from the sidecar while continuing the shadow paper track. In local `live_trading` verification, the bot starts disarmed, applies audited CLI or dashboard `live-control` commands, persists live intents before sidecar submission, records venue responses and fills, and blocks on unknown order or account state.
+* `agent/src/main.rs`: agent routes.
+* `dashboard/server/src/main.rs`: dashboard server routes.
+* `dashboard/client/src/lib/routes.ts`: dashboard page metadata.
+* `dashboard/client/src/lib/api.ts`: frontend API client.
+* `polymarket-sidecar/src/server.ts`: sidecar HTTP routes.
+* `polymarket-sidecar/src/config.ts`: sidecar environment model.
+
+Use [commands-and-config.md](./commands-and-config.md), [data-and-replay.md](./data-and-replay.md), and [deployment-and-ops.md](./deployment-and-ops.md) for operational details.

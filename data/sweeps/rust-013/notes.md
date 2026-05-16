@@ -22,10 +22,10 @@
 
 The important result is that `rust-013` is functionally identical to `rust-012`.
 
-- Changed rows versus `rust-012`: `0 / 750`
-- Maximum difference in `pnl_net`, `max_dd`, `win_rate`, or `trades`: `0`
-- Positive rows: `497 / 750`
-- Mean `pnl_net`: `$2,990.68`
+* Changed rows versus `rust-012`: `0 / 750`
+* Maximum difference in `pnl_net`, `max_dd`, `win_rate`, or `trades`: `0`
+* Positive rows: `497 / 750`
+* Mean `pnl_net`: `$2,990.68`
 
 This is the right outcome for a release-readiness rerun. The historical rebuild, local smoke, and remote smoke did not change the backtest frontier.
 
@@ -45,19 +45,19 @@ These remain too aggressive for the next paper-live test. The raw-return leaders
 
 The release candidate still points to the same safer row as `rust-012`.
 
-- Safest strong row: mom=`0.0008`, ask=`0.65`, frac=`0.05`, spread=`0.970` -> `$25,335`, `74.2%` WR, `454` trades, `19.2%` DD, `43.6%` fill rate, `55` legging events
-- Close strict-DD alternative: mom=`0.0008`, ask=`0.65`, frac=`0.05`, spread=`0.965` -> `$24,230`, `73.8%` WR, `443` trades, `19.2%` DD
-- More aggressive balanced row: mom=`0.0008`, ask=`0.60`, frac=`0.05`, spread=`0.970` -> `$28,043`, `73.3%` WR, `412` trades, `20.7%` DD
-- Lowest-drawdown useful row: mom=`0.0008`, ask=`0.65`, frac=`0.03`, spread=`0.970` -> `$11,719`, `78.4%` WR, `412` trades, `11.8%` DD
+* Safest strong row: mom=`0.0008`, ask=`0.65`, frac=`0.05`, spread=`0.970` -> `$25,335`, `74.2%` WR, `454` trades, `19.2%` DD, `43.6%` fill rate, `55` legging events
+* Close strict-DD alternative: mom=`0.0008`, ask=`0.65`, frac=`0.05`, spread=`0.965` -> `$24,230`, `73.8%` WR, `443` trades, `19.2%` DD
+* More aggressive balanced row: mom=`0.0008`, ask=`0.60`, frac=`0.05`, spread=`0.970` -> `$28,043`, `73.3%` WR, `412` trades, `20.7%` DD
+* Lowest-drawdown useful row: mom=`0.0008`, ask=`0.65`, frac=`0.03`, spread=`0.970` -> `$11,719`, `78.4%` WR, `412` trades, `11.8%` DD
 
 ## Comparison to rust-012
 
 `rust-013` is a reproducibility confirmation, not a new regime shift.
 
-- Same top raw-PnL row
-- Same balanced frontier
-- Same strict-DD leader
-- Same fill, legging, and trade counts on every parameter row
+* Same top raw-PnL row
+* Same balanced frontier
+* Same strict-DD leader
+* Same fill, legging, and trade counts on every parameter row
 
 Only elapsed runtime changed. The strategy metrics did not.
 
@@ -65,8 +65,8 @@ Only elapsed runtime changed. The strategy metrics did not.
 
 This historical dataset is still legacy-only.
 
-- `raw_event_batches=0` on every row
-- `legacy_snapshot_batches=3,002,577` on every row
+* `raw_event_batches=0` on every row
+* `legacy_snapshot_batches=3,002,577` on every row
 
 So `rust-013` does not yet answer whether the future raw-event live-paper history will materially change the frontier. It only confirms that the current release tree is stable on the rebuilt historical universe.
 
@@ -74,17 +74,17 @@ So `rust-013` does not yet answer whether the future raw-event live-paper histor
 
 For the next paper-live collection run, the recommended release candidate remains:
 
-- `LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008`
-- `LATENCY_ARB_MAX_ASK=0.65`
-- `MAX_POSITION_FRACTION=0.05`
-- `SPREAD_CAPTURE_THRESHOLD=0.970`
-- `TAKER_FEE_RATE=0.072`
-- `TAKER_FEE_EXPONENT=1`
-- `SIM_ORDER_LATENCY_MS=250`
+* `LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008`
+* `LATENCY_ARB_MAX_ASK=0.65`
+* `MAX_POSITION_FRACTION=0.05`
+* `SPREAD_CAPTURE_THRESHOLD=0.970`
+* `TAKER_FEE_RATE=0.072`
+* `TAKER_FEE_EXPONENT=1`
+* `SIM_ORDER_LATENCY_MS=250`
 
 Reasoning:
 
-- It is still the best strong row under `20%` max drawdown.
-- It preserves healthy trade count and fill rate.
-- It avoids the overexposed `frac=0.10` and `frac=0.125` frontier.
-- `rust-013` confirms that this recommendation still holds after the release-readiness rebuild and runtime smoke tests.
+* It is still the best strong row under `20%` max drawdown.
+* It preserves healthy trade count and fill rate.
+* It avoids the overexposed `frac=0.10` and `frac=0.125` frontier.
+* `rust-013` confirms that this recommendation still holds after the release-readiness rebuild and runtime smoke tests.

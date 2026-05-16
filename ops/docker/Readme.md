@@ -4,11 +4,11 @@ Docker Compose with Caddy is the preferred single-host deployment model.
 
 ## Requirements
 
-- DNS: `buba.toksaitov.com` points at the `buba-paint` host.
-- Firewall: inbound TCP `80` and `443` are open for Caddy and Let's Encrypt.
-- SSH: `ssh buba-paint` works from the operator machine.
-- Local secrets: `.secrets/buba-paint-live-sidecar.env` exists and is not committed.
-- Host capacity: small AWS hosts need swap for image builds. The deploy runner creates a 4 GiB swap file by default when no swap is active.
+* DNS: `buba.toksaitov.com` points at the `buba-paint` host.
+* Firewall: inbound TCP `80` and `443` are open for Caddy and Let's Encrypt.
+* SSH: `ssh buba-paint` works from the operator machine.
+* Local secrets: `.secrets/buba-paint-live-sidecar.env` exists and is not committed.
+* Host capacity: small AWS hosts need swap for image builds. The deploy runner creates a 4 GiB swap file by default when no swap is active.
 
 ## One-Command Deploy
 
@@ -74,8 +74,8 @@ The dashboard password is generated per deployment and stored only on the host a
 
 ## Acceptance
 
-- `http://buba.toksaitov.com` redirects to HTTPS.
-- `https://buba.toksaitov.com/health` returns `{"ok":true}` with a valid certificate.
-- `docker compose ps` shows Caddy, sidecar, bot, agent, and dashboard healthy or running.
-- Runtime `paint.db` passes SQLite `PRAGMA quick_check`.
-- `live_readonly` logs show no live order, cancel, redemption, or arming actions.
+* `http://buba.toksaitov.com` redirects to HTTPS.
+* `https://buba.toksaitov.com/health` returns `{"ok":true}` with a valid certificate.
+* `docker compose ps` shows Caddy, sidecar, bot, agent, and dashboard healthy or running.
+* Runtime `paint.db` passes SQLite `PRAGMA quick_check`.
+* `live_readonly` logs show no live order, cancel, redemption, or arming actions.

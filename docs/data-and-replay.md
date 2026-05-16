@@ -1,39 +1,79 @@
-# Data and Replay
+# Data And Replay
 
-This document describes durable data, replay-grade capture, and backtesting constraints.
+This chapter explains what the system records, what can be trusted for research, and how runtime SQLite data becomes a sweep input.
 
-## Data Ownership
+## Purpose
 
-`runs/` contains primary run data from live paper and readonly sessions. Treat these DBs, logs, and analysis artifacts as irreplaceable. Do not edit files under `runs/` manually. The only supported in-place mutation is the additive `upgrade-history` workflow for historical run DBs.
+Buba is not useful if it only shows a chart after the fact. The run DB must preserve enough decision inputs to explain why a strategy accepted or rejected a trade, replay the same market state later, and compare parameter sets without inventing data that the bot never saw.
 
-`data/` contains derived data: sweeps, experiments, backfill cache, merged DBs, and reports. These are reproducible from `runs/` in principle, but many are still valuable and should not be deleted casually.
+At the same time, the bot cannot sacrifice trading latency to do offline analysis. Runtime capture is append-oriented and bounded. Heavy validation, indexing, integrity checks, and parameter sweeps happen offline.
 
-Database files must not be committed to Git or Git LFS history. Keep scratch DBs under `/tmp` or an explicit ignored data path.
+## Data Classes
 
-## Replay-Grade Capture
+Use these terms precisely:
 
-New research runs should use:
+* `replay_grade`: a configured storage profile that can capture the public decision inputs needed for close replay.
+* `sweep_grade`: an observed interval that actually contains the required public feed classes.
+* `backtest_ready`: an interval the current backtester can load, dry-run, and explain from the DB.
+* `prepared_backtest`: a derived DB copied from a runtime DB, validated, and indexed for large sweeps.
+* `research_grade_live`: a funded live interval with complete private decision, order, account, reconciliation, and control evidence.
 
-```bash
-FEED_EVENT_STORAGE_PROFILE=replay_grade
-```
+`sweep_grade` is not enough for sweeps. Sweeps require `backtest_ready`. Funded live intervals also require `research_grade_live`.
 
-Replay-grade capture persists typed decision inputs needed for future sweeps:
+## Runtime Storage Profiles
 
-- Binance `aggTrade` with price, size, signed quantity, event time, and receive time.
-- Binance `bookTicker` with best bid, best ask, bid size, ask size, event time, and receive time.
-- Binance `depth` with depth features.
-- Chainlink price context.
-- CLOB UP and DOWN top-of-book state with price, size, source timestamp where available, and local receive timestamp.
-- Market metadata at discovery and activation.
+`FEED_EVENT_STORAGE_PROFILE=replay_grade` is the research default. It captures:
 
-`compact` is descriptive-only because it suppresses Binance book-ticker persistence. `full_debug` preserves payloads for short diagnostics and should not be a week-long run default.
+* Binance `aggTrade` price, size, signed quantity, event time, and receive time.
+* Binance `bookTicker` best bid/ask and size.
+* Binance depth features.
+* Chainlink BTC/USD context.
+* CLOB UP and DOWN top-of-book mutations with price, size, receive time, source identity, and market/token identity.
+* Market metadata and fee/tick/min-size context.
 
-Replay-grade storage writes high-rate CLOB top-of-book mutations into versioned zstd-compressed `clob_replay_blocks` instead of the generic `feed_events` shape. It still preserves every decision-critical top-of-book mutation after exact dedupe, including size-only changes, because sizes affect liquidity, microprice, quote churn, fillability, and future replay. Generic `feed_events` remains the source for Binance, Chainlink, metadata, historical compatibility, and `full_debug` payload storage. Historical and prepared DBs with `clob_replay_events` remain readable. CLOB `last_trade_price` telemetry is dropped outside `full_debug` because strategy replay consumes top-of-book, Binance, Chainlink, depth, market metadata, and decision evidence instead.
+`compact` is descriptive-only. It suppresses inputs needed for close replay and must not be described as sweep-ready.
 
-## Replay Quality Gate
+`full_debug` preserves bulkier raw payloads for short investigations. It should not be the default for long runs.
 
-Run this to prove raw public feed completeness:
+## SQLite Layout
+
+The operational database is SQLite. It is run-local, easy to copy, and reliable when used as an append-oriented capture store with bounded workers.
+
+Important tables:
+
+* `markets`: 5-minute window metadata, token IDs, status, outcome, fees, min size, tick size, and accepting-order metadata.
+* `feed_events`: generic replay rows for Binance, Chainlink, metadata, and historical compatibility.
+* `clob_replay_events`: legacy compact row storage for CLOB top-of-book data.
+* `clob_replay_blocks`: default storage for new replay-grade CLOB top-of-book data. Blocks are versioned zstd-compressed payloads with min/max receive times, row counts, compressed/uncompressed byte counts, checksum, and typed event payload.
+* `signals`: detected strategy signals.
+* `signal_metrics`: feature snapshots, decision status, timing, rejection reason, and decision evidence.
+* `strategy_rejection_summaries`: aggregated no-trade diagnostics.
+* `simulated_trades`, `trade_results`, and `balance_log`: paper execution and equity history.
+* live tables: sessions, account snapshots, order intents, venue orders, fills, redemptions, reconciliation events, control state, and control commands.
+* `run_metadata`: runtime config snapshot, cheap runtime capture health, and offline validation results.
+
+Full DDL lives in `bots/paint/src/db/schema.rs`.
+
+## CLOB Replay Blocks
+
+CLOB top-of-book updates dominate DB size in long readonly runs. New replay-grade DBs store CLOB top-of-book events in `clob_replay_blocks` instead of millions of wide text-heavy generic rows.
+
+The block payload keeps the replay-critical fields:
+
+* receive and event timestamps, including microsecond fields when available
+* side and event type
+* market and token identity
+* source topic, connection, and sequence identity where available
+* best bid, best ask, bid size, ask size, and microprice
+* replay fidelity label
+
+Size-only top-of-book mutations are retained. They affect liquidity, microprice, quote churn, fillability, and future strategy research.
+
+Replay readers merge all supported shapes: `feed_events`, legacy `clob_replay_events`, and `clob_replay_blocks`. Existing historical DBs remain readable.
+
+## Validation Sequence
+
+Raw public replay completeness:
 
 ```bash
 cargo run -p buba-paint --release -- validate-replay-data \
@@ -42,7 +82,7 @@ cargo run -p buba-paint --release -- validate-replay-data \
   --end <time>
 ```
 
-`sweep_grade` means the interval contains the raw public decision inputs required for close replay. It does not, by itself, prove that the current backtester can load the DB shape, derive window prices, or replay the interval. Before any parameter sweep, run the backtest-input gate too:
+Backtest tool compatibility:
 
 ```bash
 cargo run -p buba-paint --release -- validate-backtest-input \
@@ -51,15 +91,7 @@ cargo run -p buba-paint --release -- validate-backtest-input \
   --end <time>
 ```
 
-`backtest_ready` means replay quality passed, windows were loadable, settled outcomes were available, missing open/close prices could be derived from raw Binance trades, and a bounded dry-run replay produced ticks. `buba-paint sweep` refuses inputs unless both public replay quality and backtest readiness pass. Backtests remain runnable on lower-fidelity archives, but those results must be labeled honestly.
-
-Old runs that lack Binance book-ticker rows are descriptive evidence only. Runs that pass `validate-replay-data` but fail `validate-backtest-input` are also blocked for sweeps until the tooling/schema issue is fixed. They can support postmortems, drawdown analysis, and operational diagnostics, but not trusted parameter selection.
-
-## Prepared Backtest Inputs
-
-Runtime DBs are append-optimized. New live/runtime DBs intentionally do not maintain high-volume secondary replay indexes on `feed_events`, `clob_replay_events`, or `clob_replay_blocks`, because those indexes are useful for offline sweeps and expensive during capture.
-
-Before a large sweep, create a derived prepared DB:
+Prepared sweep input:
 
 ```bash
 cargo run -p buba-paint --release -- prepare-backtest-input \
@@ -69,15 +101,7 @@ cargo run -p buba-paint --release -- prepare-backtest-input \
   --output /tmp/prepared-backtest.db
 ```
 
-`prepare-backtest-input` opens the source read-only, copies the selected interval into a derived DB, converts legacy generic CLOB top-of-book rows into compact typed CLOB rows, preserves compressed CLOB blocks without expanding them, creates offline replay indexes, runs `validate-replay-data` and `validate-backtest-input`, and writes a manifest beside the output DB. `prepared_backtest` means the input is optimized for large replay and sweep workloads. It is stronger than `backtest_ready` for performance, but it is not a trading-runtime state.
-
-Live runtime metadata separates configured capture capability, recent capture health, and offline validation. `configured_replay_quality_class` records whether the selected storage profile can become replay-grade. The running bot records `runtime_observed_replay_quality_class`, recent missing classes, queue depth, writer lag, and drop/error state from incremental counters. The full `replay_quality_class` key is reserved for offline `validate-replay-data` or closeout output and must not be written by the trading loop.
-
-Funded live orders have a stricter evidence rule than paper decisions: the compact decision evidence row and the live order intent must be persisted atomically by the submission worker before any sidecar venue call. Async evidence queues are still used for paper, readonly, and lower-priority operator analytics, but a funded live order must never reach the venue with only queued, non-durable decision evidence.
-
-## Live Fidelity Gate
-
-Funded live runs need a stricter private gate above public replay quality. `validate-replay-data` proves the public market inputs exist. `validate-live-fidelity` proves the DB can also explain live decision evidence, order intent, legality, marketability, venue lifecycle, fills, cancels, unknowns, account transitions, reconciliation, and operator controls.
+Funded live evidence:
 
 ```bash
 cargo run -p buba-paint --release -- validate-live-fidelity \
@@ -87,77 +111,79 @@ cargo run -p buba-paint --release -- validate-live-fidelity \
   --output /tmp/live-fidelity.json
 ```
 
+`prepare-backtest-input` opens the source DB read-only, copies the selected interval, preserves CLOB blocks, creates offline replay indexes, runs replay and backtest-input validation, and writes a manifest. Large sweeps should use the prepared DB rather than the append-optimized runtime DB.
+
+## Runtime Metadata
+
+Runtime metadata must not pretend that a run is research-grade before validation. The bot may record:
+
+* configured storage profile
+* configured capture capability
+* recent observed feed classes
+* recent missing classes
+* writer lag
+* queue depth
+* drop/error state
+* runtime config snapshot
+
+Offline validators own durable classification fields such as `replay_quality_class`, `backtest_ready`, and `live_fidelity_class`.
+
+## Backtest Semantics
+
+The backtester replays typed feed events at recorded receive time. When microsecond receive timestamps exist, they determine ordering. Otherwise millisecond ordering is used.
+
+Live-runtime DBs may not store derived `open_price` and `close_price` columns. The backtester derives missing open price from the first Binance `aggTrade` inside a market window and missing close price from the last Binance `aggTrade` before close when needed for reporting. Settled outcomes still come from `markets.outcome`; missing outcomes fail validation instead of being guessed.
+
+When replay-grade rows are absent, the backtester can fall back to legacy `tick_data` snapshots. That path is lower fidelity and must not be used as evidence for latency-sensitive parameter selection.
+
+## Live Fidelity
+
+Public feed replay is insufficient for funded live research. A funded interval must also explain:
+
+* strategy feature snapshot
+* market/window/open state
+* fee, tick, min-size, token, and collateral metadata
+* side, order type, requested price, requested size, and requested dollar amount
+* client order ID
+* submit, acknowledge, update, fill, cancel, and unknown timing
+* venue status and raw-safe response fragments
+* account snapshots
+* reconciliation events
+* control audit
+
 The classes are:
 
-- `research_grade_live`: public replay is `sweep_grade` and private live lifecycle evidence is complete.
-- `descriptive_only_live`: funded live evidence exists, but lifecycle, account, reconciliation, or order explainability is incomplete.
-- `no_live_trading`: no funded live-trading evidence exists in the interval.
+* `research_grade_live`: public and private evidence are complete.
+* `descriptive_only_live`: live evidence exists but cannot fully explain the interval.
+* `no_live_trading`: the interval contains no funded live-trading evidence.
 
-Sweeps over paper or `live_readonly` intervals use the public replay gate only. Sweeps over intervals containing `live_trading` sessions, live order intents, or live venue orders require `research_grade_live`. A funded run that is only `descriptive_only_live` may still support postmortems and risk review, but it must not be used for parameter selection.
+`research_grade_live` still is not a perfect exchange simulator. Queue position, hidden liquidity, matching-engine internals, network path differences, and relayer timing are not fully reconstructable.
 
-## Database Tables
+## Limits
 
-Important run DB tables:
+Do not trust:
 
-- `run_metadata`: feed storage profile, configured capture capability, cheap runtime capture health, incremental feed-class counters, and offline validation results when `validate-replay-data`, `validate-live-fidelity`, or closeout are explicitly run. Runtime keys use `runtime_*` names; offline validation owns `replay_quality_class`. The live bot must not run full replay validators or whole-table feed scans while trading.
-- `feed_events`: canonical replay source when available.
-- `clob_replay_events`: legacy compact typed CLOB UP/DOWN top-of-book replay rows for historical runtime DBs and prepared backtest DBs.
-- `clob_replay_blocks`: default CLOB UP/DOWN top-of-book replay storage for new replay-grade runtime DBs. Blocks use versioned zstd-compressed payloads with typed timestamps, market/token identity, source metadata dictionaries, best bid/ask, bid/ask size, microprice, and checksums.
-- `tick_data`: optional 1-second sampled telemetry for dashboards and coarse inspection. It is disabled by default for replay-grade long-running modes and should not be treated as the research source.
-- `markets`: one row per 5-minute window with token IDs, status, resolution, fee profile, min size, tick size, rewards, and accepting-orders metadata. Historical and live-runtime DBs may not contain derived `open_price` and `close_price` columns; the backtester derives missing values from raw Binance `aggTrade` feed events when available.
-- `signals`: strategy detection events.
-- `signal_metrics`: signal feature snapshots, queue decisions, execution timing, fill/miss state, and rejection reasons.
-- `strategy_rejection_summaries`: aggregated no-signal diagnostics.
-- `feed_health_events`: connect, disconnect, stale, reconnect, and resubscribe telemetry.
-- `simulated_trades`: opened paper positions.
-- `trade_results`: authoritative settlement and PnL.
-- `balance_log`: balance events and equity curve.
-- live tables: live sessions, account snapshots, venue orders, fills, redemptions, reconciliation events, and control audit actions.
+* configured replay profile as proof of observed capture quality
+* `tick_data` as latency-replay evidence
+* old runs without Binance book state for parameter selection
+* funded live runs without live-fidelity validation for sweeps
+* dashboard charts as a substitute for validators
+* runtime DBs as optimized sweep inputs before preparation
 
-See `bots/paint/src/db/schema.rs` for full DDL. Schema evolution is additive through `add_column_if_missing`.
-
-## Backtesting Model
-
-When `feed_events`, `clob_replay_events`, or `clob_replay_blocks` exist, the backtester replays raw typed events at recorded timestamps. If microsecond receive fields exist, replay orders by `received_at_us`; otherwise it falls back to millisecond ordering. Missing market open prices are derived from the first Binance `aggTrade` inside each market window. Missing close prices are derived from the last Binance `aggTrade` before the window close when needed for reporting. Settled outcomes still come from `markets.outcome`; missing outcomes fail validation instead of being guessed.
-
-When `feed_events` are absent, the backtester synthesizes `legacy_snapshot` replay from `tick_data`. This path is lower fidelity and should not be described as true latency reconstruction.
-
-Backtests use the shared strategy code, shared strategy cycle, shared fee model, and shared paper execution engine. The simulator models order-arrival latency, partial fills, no-fills, min-size checks, tick-size checks, liquidity constraints, and spread legging risk. It cannot reconstruct queue position or sub-second book changes that were never recorded.
-
-## Settlement and Reserve Timing
-
-Paper settlement is applied only on authoritative Polymarket outcomes. The bot may record provisional estimates for observability, but bankroll, Kelly state, trend tracking, and circuit breakers update only after authoritative settlement.
-
-For exact pulled-run calibration:
-
-```bash
-BACKTEST_SETTLEMENT_MODE=observed_market_resolution
-```
-
-This keeps trades in pending settlement until the observed authoritative resolution timestamp from the live run. Conservative pending-settlement reserve mode is the current baseline. See [pending-settlement-modes.md](./pending-settlement-modes.md).
-
-## Useful SQL
+## Useful Queries
 
 ```sql
-SELECT 'feed_events' t, COUNT(*) FROM feed_events
-UNION SELECT 'signals', COUNT(*) FROM signals
-UNION SELECT 'signal_metrics', COUNT(*) FROM signal_metrics
-UNION SELECT 'rejections', COUNT(*) FROM strategy_rejection_summaries
-UNION SELECT 'trades', COUNT(*) FROM simulated_trades
-UNION SELECT 'results', COUNT(*) FROM trade_results
-UNION SELECT 'balance', COUNT(*) FROM balance_log;
+SELECT 'feed_events' table_name, COUNT(*) FROM feed_events
+UNION ALL SELECT 'clob_replay_blocks', COALESCE(SUM(row_count), 0) FROM clob_replay_blocks
+UNION ALL SELECT 'signals', COUNT(*) FROM signals
+UNION ALL SELECT 'rejections', COUNT(*) FROM strategy_rejection_summaries
+UNION ALL SELECT 'trades', COUNT(*) FROM simulated_trades
+UNION ALL SELECT 'results', COUNT(*) FROM trade_results;
 
 SELECT timestamp_ms, market_id, strategy, reason, count, details_json
 FROM strategy_rejection_summaries
 ORDER BY timestamp_ms DESC
 LIMIT 20;
-
-SELECT t.strategy, COUNT(*) trades,
-  SUM(CASE WHEN r.pnl_0pct > 0 THEN 1 ELSE 0 END) wins,
-  ROUND(SUM(r.pnl_0pct), 2) total_pnl
-FROM trade_results r
-JOIN simulated_trades t ON r.trade_id = t.id
-GROUP BY t.strategy;
 
 SELECT signal_id, decision_status, rejection_reason,
        order_submitted_at_ms, expected_arrival_at_ms,
@@ -167,6 +193,4 @@ ORDER BY signal_id DESC
 LIMIT 20;
 ```
 
-## Run History
-
-Historical run quality notes live in [runs.md](./runs.md). Run-specific postmortems and experiments belong under `data/experiments/...`, not in `docs/`.
+Historical run quality notes live in [runs.md](./runs.md). Run-specific investigations belong under `data/experiments/...`.

@@ -1,144 +1,143 @@
 # Polymarket Live Constraints
 
-This document captures the venue facts that matter for the first real-money pilot. Update it whenever Polymarket changes account rules, fees, market metadata, or live trading restrictions.
+This chapter records venue facts that affect the sidecar and any future funded trading plan. These facts are unstable by nature. Re-check official Polymarket docs before changing venue code or arming real money.
 
-## Account model
+Official docs referenced by this chapter:
 
-For email, Google, or Magic Link Polymarket accounts:
+* [Authentication](https://docs.polymarket.com/api-reference/authentication)
+* [CLOB V2 migration](https://docs.polymarket.com/v2-migration)
+* [pUSD](https://docs.polymarket.com/concepts/pusd)
+* [Create order](https://docs.polymarket.com/trading/orders/create)
+* [Matching-engine restarts](https://docs.polymarket.com/trading/matching-engine)
+* [User channel](https://docs.polymarket.com/market-data/websocket/user-channel)
 
-- account type is `POLY_PROXY`
-- signature type is `1`
-- API trading requires exporting the private key from Polymarket
-- the proxy wallet shown by Polymarket is the effective funder wallet
-- if `POLYMARKET_FUNDER` is omitted locally, the sidecar should default it to the proxy wallet
+## Authentication Model
 
-For this account type, the relayer and gasless path is the supported operational model for approvals and redemption.
+The official CLOB API uses L1 authentication to create or derive API credentials and L2 authentication headers for authenticated CLOB requests. The TypeScript sidecar uses `@polymarket/clob-client-v2` and `createOrDeriveApiKey()` for this bootstrap.
 
-## SDK support
+Current repo defaults target the existing proxy-wallet flow:
 
-Official client coverage is uneven:
+* `POLYMARKET_SIGNATURE_TYPE=1`
+* `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET`
+* sidecar config comes from `.secrets/buba-paint-live-sidecar.env` locally and remote `~/buba-paint-live/config/sidecar.env`
 
-- CLOB client support exists in Rust, TypeScript, and Python
-- relayer SDK support exists in TypeScript and Python
+Official docs now distinguish existing proxy/safe users from newer deposit-wallet API users. New API users may need the deposit-wallet signature/funder model. The current repo default remains proxy-wallet because that is the configured account model; any deposit-wallet migration requires a fresh sidecar/account revalidation before funded trading.
 
-Because of that split, the repo uses a TypeScript sidecar for the full authenticated venue boundary instead of trying to mix Rust CLOB calls with ad hoc redemption code. The active sidecar CLOB dependency is `@polymarket/clob-client-v2@1.0.3`. Legacy V1 CLOB and order-utils packages are not part of the readonly CLOB boundary.
+Never expose CLOB API credentials or private keys in the browser. The dashboard must not connect to the Polymarket user channel directly.
 
-Gasless CTF redemption uses `@polymarket/builder-relayer-client@0.0.9` with `@polymarket/builder-signing-sdk@1.0.0`. The current sidecar fails closed unless builder relayer credentials are configured; plain relayer API key fields are tracked as config but are not treated as sufficient for redemption with the installed TypeScript SDK.
+## CLOB V2
 
-## CLOB V2 and collateral
+CLOB V2 is the production contract model used by the sidecar. V2 removed several V1 order assumptions:
 
-Polymarket CLOB V2 is the production venue contract. V1-signed orders are not accepted. The sidecar must use the V2 client shape, `createOrDeriveApiKey`, V2 signature types, and the current proxy-wallet funder model.
+* no bot-managed nonce in the signed order model
+* no signed `feeRateBps` in new live order logic
+* fees are venue metadata and settlement behavior, not a static field embedded by the bot
+* order uniqueness and metadata follow the V2 SDK model
 
-Trading collateral is pUSD. The code still stores account values as USD-denominated numbers with 6-decimal collateral units, but docs and UI should not imply USDC.e is the current trading collateral.
+The sidecar package currently uses:
 
-Implications:
+* `@polymarket/clob-client-v2`
+* `@polymarket/builder-relayer-client`
+* `@polymarket/builder-signing-sdk`
 
-- no signed `feeRateBps` field in new live order logic
-- no bot-managed order nonce in new live order logic
-- no V1 taker-field signing assumptions
-- FOK/FAK market orders are the only supported write-boundary order types in the current sidecar
-- BUY market order amount is specified in dollars through `amount_usd`; SELL market order amount is specified in shares through `size`
-- GTC/GTD, post-only, unticked prices, below-min-size orders, missing CLOB metadata, unknown collateral, and insufficient account state must fail closed before submission
-- account diagnostics should identify the collateral model as pUSD
-- balance and allowance checks must use the current CLOB collateral contract path exposed by the V2 client
+Do not reintroduce legacy V1 CLOB or order-utils assumptions.
 
-## Geoblock and hosting
+## pUSD Collateral
 
-Geoblock checks must be performed from the actual host that will run the bot.
+Polymarket docs describe pUSD as the collateral token used for trading. It is an ERC-20 on Polygon with 6 decimals and USDC backing enforced onchain.
 
-Current official guidance:
+Repo implications:
 
-- `GB` is blocked
-- `IE` is not listed as blocked
-- `eu-west-1` is the recommended nearby non-georestricted region
+* account diagnostics should say pUSD or collateral, not imply USDC.e is still the trading collateral
+* account math stays USD-denominated with 6-decimal collateral units where needed
+* redemption proceeds are not spendable until account state confirms cash credit
+* Bridge withdrawal automation is out of scope unless a future plan adds it
 
-The host must pass the official geoblock endpoint at startup and again before any future live arming step.
+## Order Semantics
 
-The `2026-05-01` no-order host check returned `blocked=false` from the geoblock endpoint, but Gamma BTC 5-minute event discovery returned HTTP `403` with body `error code: 1010` from the same host. Treat host-safe market discovery as unresolved until a later check proves Gamma or an approved fallback works from the deployment environment.
+The current sidecar write boundary supports immediate market-style orders only:
 
-## Matching-engine restart window
+* FOK: fill entirely immediately or cancel
+* FAK: fill available liquidity immediately and cancel the rest
 
-Polymarket documents a weekly matching-engine restart on Tuesday at `7:00 AM ET`. During that window, trading endpoints can return HTTP `425`.
+Official order docs define BUY market order amount as dollars and SELL market order amount as shares. The bot/sidecar request model therefore uses `amount_usd` for BUY market orders and `size` for SELL share amount.
 
-Implication:
+Current sidecar policy rejects:
 
-- live order submission must treat `425` as a temporary venue restart, not as a fatal bug
-- the bot should pause submission, continue monitoring, and retry only after venue health returns
+* GTC and GTD resting orders
+* post-only orders
+* missing market metadata
+* unticked prices
+* below-min-size orders
+* stale auth or account state
+* unknown collateral state
+* insufficient balance/allowance state
 
-## User WebSocket
+Timeout after submit or unknown venue outcome is dangerous state, not success.
 
-Authenticated user WebSocket usage is server-side only. It must not be handled by the browser dashboard.
+## Matching-Engine Restarts
 
-The sidecar is the correct place for:
+Polymarket documents HTTP `425` for order-related endpoints during matching-engine restart windows. Treat this as temporary venue restart/degradation. Do not treat it as a successful submission or as a normal permanent rejection.
 
-- order lifecycle events
-- trade/fill events
-- future reconciliation triggers
+Runtime implications:
 
-## Current 5-minute BTC market behavior
+* no new live risk while venue restart state is unresolved
+* sidecar and bot logs should preserve the failure classification
+* retries must be bounded and backoff-aware
+* an armed bot must not remain degraded indefinitely
 
-Recent live inspection of BTC 5-minute markets showed:
+## User Channel
 
-- `orderMinSize = 5`
-- `orderPriceMinTickSize = 0.01`
-- `feesEnabled = true`
-- `feeSchedule = { exponent: 1, rate: 0.072, takerOnly: true, rebateRate: 0.2 }`
-- `rewardsMinSize = 50`
-- `rewardsMaxSpread = 4.5`
-- `clearBookOnStart = false`
-- markets can be visible and `acceptingOrders=true` well before the actual 5-minute window begins
+The authenticated user channel emits private order and trade lifecycle events filtered by API key. It is server-side only and must not be used from dashboard client code.
 
-Implications:
+The sidecar is the right boundary for:
 
-- do not assume the order book clears on start
-- do not assume discovery only matters immediately before the slot
-- live budgeting must respect venue min size and tick size before arming
-- before arming real money, revalidate these values from the deployment host because local Gamma requests may be geoblocked
+* user-stream connectivity
+* order placement, update, and cancellation events
+* trade/fill lifecycle events
+* sanitized activity recovery
+* reconciliation triggers
 
-## Fee ambiguity
+Live-fidelity validation depends on this private lifecycle evidence plus account snapshots and local decision evidence.
 
-Current venue observations are internally inconsistent:
+## Market Metadata
 
-- market objects report `feeSchedule.rate = 0.072`
-- `GET /fee-rate?token_id=...` returned `{"base_fee":1000}` for the same BTC 5-minute tokens
+Before any funded trading, the deployment host must verify current BTC 5-minute market metadata:
 
-Implication:
+* token IDs
+* tick size
+* min size
+* accepting-order status
+* neg-risk fields
+* fee metadata
+* collateral/account readiness
 
-- fees must be modeled as runtime venue truth plus reconciliation
-- the bot should store market fee metadata from the V2 CLOB surface and any explicit fee-rate endpoint responses at intent time
-- paper and backtest parity should use the same fee-resolution path, not hardcoded historical constants only
+Gamma discovery can identify BTC 5-minute windows, but CLOB market metadata is the authoritative trading-constraint surface when available. Local assumptions lose to production-safe readonly checks.
 
-## Redemption and cash availability
+## Geoblock And Host Reality
 
-Winning positions do not instantly become spendable cash:
+Geoblock checks must run from the actual deployment host. A local laptop pass does not prove the AWS host is allowed, and an AWS pass does not prove a different region or provider is allowed.
 
-- markets first resolve
-- positions become redeemable
-- redemption must be submitted
-- only after redemption settles and the remote balance reflects it can cash be treated as available
+Future funded plans must record:
 
-Official help still documents delayed or failed claims caused by:
+* host geoblock result
+* sidecar health
+* account/preflight state
+* market metadata evidence
+* user-stream/activity state
+* replay-grade capture health
 
-- clock mismatch
-- unsupported-region access
-- congestion and relay delays
+If Gamma, CLOB, account, or user activity endpoints are blocked from the host, stop and resolve that before considering funded trading.
 
-Implications:
+## Future Funded Posture
 
-- live mode needs a clock-drift preflight
-- cash budgeting in v1 should use only observed `cash_available`
-- expected redemption proceeds must stay non-spendable until the account state confirms credit
-- Bridge withdrawal automation is out of the first live-money implementation unless it receives a separate implementation and test plan
+Any future first canary should be narrow:
 
-## First pilot operating rules
+* latency-arb only
+* bankroll around `$100`
+* calm and spread disabled
+* FOK/FAK only
+* strict single-order, open-notional, daily-loss, and session-drawdown caps
+* terminal halt on auth, geoblock, capture, account, user-stream, reconciliation, or unknown-order failure
 
-The first real-money pilot should assume:
-
-- bankroll target `75-100 USD`
-- legal cash may be slightly below `100`
-- `latency-arb` only
-- taker-only flow
-- strict per-order and open-notional caps
-- automatic disarm on auth, geoblock, reconciliation, or venue-health failure
-
-The code should stay architecture-ready for calm and spread later, but the operating policy should remain narrow until real-money data proves otherwise.
+This document is not an arming checklist. Use it as venue context for a fresh funded plan.

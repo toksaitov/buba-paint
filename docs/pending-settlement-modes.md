@@ -1,99 +1,94 @@
 # Pending-Settlement Reserve Modes
 
-This page documents the reserve model that now sits between strategy selection and final settlement. It exists because exact-run parity and live capital usage both depend on it, and the three env knobs are too easy to forget when they are only mentioned inline.
+This chapter documents how the bot reserves capital after a market has closed but before authoritative Polymarket settlement is known.
 
-## Why This Exists
+## Purpose
 
-When a market closes, directional trading risk is over, but authoritative Polymarket settlement can arrive minutes or hours later. Before the reserve rework, the bot kept treating those unresolved trades like active market risk:
+Market risk ends at window close. Settlement accounting can arrive later. The reserve model separates those two states so the bot can avoid treating closed unresolved trades as fully active positions forever.
 
-- the strategy-family sleeve stayed occupied
-- the global reserve stayed locked
-- the trade still counted toward open-position limits
+The model distinguishes:
 
-That behavior was safe, but it penalized the live bot for Gamma settlement lag. On the pulled `run-018`, every latency-arb `strategy_sleeve_exhausted` rejection happened while the blocking latency trade was already past market end.
+* `active_market`: the market is still open.
+* `pending_settlement`: the market is closed, but Gamma has not resolved it yet.
 
-The reserve model now distinguishes two unresolved phases:
-
-- `active_market`: the market is still live
-- `pending_settlement`: the market is closed, but Gamma has not resolved it yet
+This matters for exact-run replay, live capital accounting, and strategy sleeve pressure.
 
 ## Public Knobs
 
-The public env interface is still the same:
+The public env interface is:
 
-- `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION`
-- `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION`
-- `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION`
-- `BACKTEST_SETTLEMENT_MODE`
+* `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION`
+* `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION`
+* `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION`
+* `BACKTEST_SETTLEMENT_MODE`
 
 `BACKTEST_SETTLEMENT_MODE` controls when replay settles trades:
 
-- `immediate`: settle at market close. This is still the general fallback for broad historical backtests.
-- `observed_market_resolution`: for exact pulled runs, keep trades in pending settlement until the observed authoritative resolution timestamp from the live run.
+* `immediate`: settle at market close. Use this as the broad historical fallback.
+* `observed_market_resolution`: keep trades pending until the observed authoritative resolution timestamp from the pulled run.
 
-The three reserve knobs control what happens while a trade is in `pending_settlement`.
+The reserve triple controls how much capital and position pressure remain while a trade is in `pending_settlement`.
 
 ## Named Modes
 
-The code now classifies the reserve triple into one named mode for logs and docs:
+The code classifies the reserve triple into one named mode for logs and diagnostics.
 
-- `compatibility`: `1.0 / 1.0 / true`
-- `conservative`: `0.0 / 1.0 / false`
-- `risky`: `0.0 / 0.25 / false`
-- `custom`: anything else
+* `compatibility`: `1.0 / 1.0 / true`
+* `conservative`: `0.0 / 1.0 / false`
+* `risky`: `0.0 / 0.25 / false`
+* `custom`: any other valid combination
 
-Meaning:
+Meanings:
 
-- family fraction: how much of the strategy sleeve remains occupied after market close
-- global fraction: how much of the global reserve remains locked after market close
-- counts as open position: whether pending-settlement trades still consume open-position slots
+* family fraction: how much strategy-family sleeve remains occupied after market close
+* global fraction: how much account-level reserve remains locked after market close
+* counts as open position: whether pending-settlement trades still consume open-position slots
 
-## Real Default
+## Current Default
 
-The real default is now the `risky` run-012 profile, not `compatibility` or `conservative`.
+The current default is the run-012-style `risky` profile:
 
-That means:
+```bash
+PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0
+PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=0.25
+PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false
+```
 
-- `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0`
-- `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=0.25`
-- `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false`
+This means:
 
-In practice:
+* the strategy-family sleeve is released at market close
+* 25% of the global reserve remains locked until authoritative settlement
+* pending-settlement trades do not count as open positions
 
-- the family sleeve is released at market close
-- 25% of the account-level reserve stays locked until authoritative settlement
-- pending-settlement trades stop counting toward open-position caps
+This profile is used by the current Docker `live_readonly` configuration and is the documented future latency-only pilot baseline. It is more aggressive than the conservative profile and must not be treated as permission to trade real money.
 
-This is the selected live-readonly and first-canary baseline because it matches the run-012 latency sleeve we decided to carry forward. It is intentionally more aggressive than the conservative reserve profile.
+## Mode Selection
 
-## When To Use Each Mode
+Use `compatibility` for legacy comparison:
 
-Use `compatibility` only for legacy comparison:
+* reproducing old behavior
+* diagnosing replay divergence
+* proving whether a reserve change altered historical behavior
 
-- reproducing old behavior
-- diagnosing why an old replay diverged from a new replay
-- checking whether a code change accidentally changed semantics
+Use `conservative` for safety comparison:
 
-Use `conservative` for safety comparison runs:
+* measuring the effect of keeping the global reserve fully locked
+* checking whether reduced reserve pressure creates unacceptable exposure
 
-- safer than the selected canary profile
-- useful for comparing whether the 25% global reserve haircut is adding unacceptable exposure
-- not the current deployment default
+Use the default `risky` profile for current readonly deployment and run-012-style latency-only replay:
 
-Use `risky` for the selected run-012 latency-only canary baseline:
+* family sleeve releases at close
+* global reserve keeps a 25% haircut until settlement
+* open-position slots are released after close
 
-- family sleeve still releases at close
-- global reserve lock is reduced while waiting for settlement
-- matches the old run knobs the current Docker deployment is expected to use
+## Exact-Run Replay
 
-## Exact-Run Parity Workflow
-
-For an exact pulled live run such as `runs/010/run-018-live.db`, the preferred replay mode is:
+For exact pulled-run calibration, prefer observed resolution timing:
 
 ```bash
 BACKTEST_SETTLEMENT_MODE=observed_market_resolution \
 cargo run -p buba-paint --release -- backtest \
-  --data /tmp/run-018-replay-data.db \
+  --data /tmp/run-replay-data.db \
   --start 2026-04-04T20:15 \
   --end 2026-04-08T17:25 \
   --balance 100 \
@@ -102,11 +97,9 @@ cargo run -p buba-paint --release -- backtest \
   --set CALM_PERSISTENCE_ENABLED=false
 ```
 
-Because the selected canary profile is now the default, those three reserve knobs do not need to be repeated unless you are intentionally overriding them.
+The default reserve profile already supplies the current reserve triple. Override it only when intentionally comparing modes.
 
-Boolean env vars and boolean `--set` overrides accept `true/false`, `1/0`, `yes/no`, and `on/off`, but operator examples should prefer `true/false`.
-
-Use `compatibility` only if you are proving a regression:
+Compatibility replay example:
 
 ```bash
 BACKTEST_SETTLEMENT_MODE=observed_market_resolution \
@@ -116,19 +109,11 @@ PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=true \
 cargo run -p buba-paint --release -- backtest ...
 ```
 
-The current default reserve profile is:
+Boolean env vars and boolean `--set` overrides accept `true/false`, `1/0`, `yes/no`, and `on/off`. Operator docs should prefer `true/false`.
 
-```bash
-BACKTEST_SETTLEMENT_MODE=observed_market_resolution \
-PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION=0.0 \
-PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=0.25 \
-PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false \
-cargo run -p buba-paint --release -- backtest ...
-```
+## Historical Run-018 Note
 
-## Historical Run-018 Candidate Block
-
-After the exact `run-018` parity work and the parity-aware sweep, this candidate block was useful historical evidence:
+Run 018 parity work produced a historical candidate block:
 
 ```bash
 LATENCY_ARB_MOMENTUM_THRESHOLD=0.0008
@@ -140,26 +125,21 @@ PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=1.0
 PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION=false
 ```
 
-That was the balanced row from the parity-aware `run-018` frontier:
-
-- better than the currently deployed row on exact-run replay
-- below the `20%` drawdown line on that run
-- preferred over the more aggressive `0.10` latency sleeve row unless a later exact-run rerun moves the frontier
-
-Do not treat this as a current live-money promotion by itself. The current deployment profile is the run-012 latency-only row with a `0.125` latency sleeve and the `0.25` global pending-settlement reserve.
+That block remains provenance. It is not the current deployment profile and is not a live-money promotion. Current remote deployment uses the run-012-style latency-only row with `LATENCY_ARB_MAX_POSITION_FRACTION=0.125` and `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION=0.25`.
 
 ## Operational Notes
 
-- Reserve fractions must be within `[0.0, 1.0]`. Invalid values now fail fast at startup and before backtests or sweeps.
-- Live startup rebuilds unresolved reserve state from the DB, so a partial restart does not forget locked capital.
-- The live bot logs the resolved pending-settlement mode and reserve fractions at startup.
-- Backtests and sweeps inherit env-backed reserve and settlement settings through `Config::from_env()`.
+* reserve fractions must be within `[0.0, 1.0]`
+* invalid values fail fast at startup and before backtests or sweeps
+* live startup rebuilds unresolved reserve state from the DB
+* the live bot logs the resolved pending-settlement mode and reserve fractions at startup
+* backtests and sweeps inherit env-backed reserve and settlement settings through `Config::from_env()`
 
 ## Related Files
 
-- [bots/paint/src/config.rs](/Users/toksaitov/Desktop/buba-paint/bots/paint/src/config.rs)
-- [bots/paint/src/bankroll.rs](/Users/toksaitov/Desktop/buba-paint/bots/paint/src/bankroll.rs)
-- [bots/paint/src/live.rs](/Users/toksaitov/Desktop/buba-paint/bots/paint/src/live.rs)
-- [bots/paint/src/backtest/runner.rs](/Users/toksaitov/Desktop/buba-paint/bots/paint/src/backtest/runner.rs)
-- [data/experiments/run-018-parity-002/notes.md](/Users/toksaitov/Desktop/buba-paint/data/experiments/run-018-parity-002/notes.md)
-- [data/sweeps/run-018-003/notes.md](/Users/toksaitov/Desktop/buba-paint/data/sweeps/run-018-003/notes.md)
+* [../bots/paint/src/config.rs](../bots/paint/src/config.rs)
+* [../bots/paint/src/bankroll.rs](../bots/paint/src/bankroll.rs)
+* [../bots/paint/src/live.rs](../bots/paint/src/live.rs)
+* [../bots/paint/src/backtest/runner.rs](../bots/paint/src/backtest/runner.rs)
+* [../data/experiments/run-018-parity-002/notes.md](../data/experiments/run-018-parity-002/notes.md)
+* [../data/sweeps/run-018-003/notes.md](../data/sweeps/run-018-003/notes.md)

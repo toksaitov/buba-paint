@@ -7,16 +7,16 @@ Status: valid results, but peak DD pause (v0.5 feature) severely limits performa
 
 Identical to sweep 001 (post-refactoring validation run).
 
-- Data: `data/market-data.db` (runs 004-007)
-- Time range: 2026-02-20T03:13 -> 2026-02-28T00:00 (188.8h)
-- Balance: $200
-- Swept:
-  - `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.001 -> 0.003, step 0.0002 (11 values)
-  - `LATENCY_ARB_MAX_ASK`: 0.45, 0.50, 0.55, 0.60, 0.65 (5 values)
-  - `MAX_POSITION_FRACTION`: 0.05, 0.075, 0.10, 0.125, 0.15 (5 values)
-- Fixed: `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
-- Total: 275 combinations
-- Runtime: ~39 min (2,368s)
+* Data: `data/market-data.db` (runs 004-007)
+* Time range: 2026-02-20T03:13 -> 2026-02-28T00:00 (188.8h)
+* Balance: $200
+* Swept:
+  * `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.001 -> 0.003, step 0.0002 (11 values)
+  * `LATENCY_ARB_MAX_ASK`: 0.45, 0.50, 0.55, 0.60, 0.65 (5 values)
+  * `MAX_POSITION_FRACTION`: 0.05, 0.075, 0.10, 0.125, 0.15 (5 values)
+* Fixed: `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
+* Total: 275 combinations
+* Runtime: ~39 min (2,368s)
 
 ## Command
 

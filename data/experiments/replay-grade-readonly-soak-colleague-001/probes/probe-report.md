@@ -1,6 +1,6 @@
 # Independent CLOB v2 Auth Probe Report
 
-Per the former root `PROMPT.md` "Independent Auth Probe Requirement", the probe runs outside the sidecar code, depends only on `@ethersproject/wallet`, `node:https`, and `node:crypto`, and exercises the full auth surface needed for a no-order `live_readonly` soak.
+Per the former root handoff's "Independent Auth Probe Requirement", the probe runs outside the sidecar code, depends only on `@ethersproject/wallet`, `node:https`, and `node:crypto`, and exercises the full auth surface needed for a no-order `live_readonly` soak.
 
 Probe script: [polymarket-sidecar/scripts/clob-auth-probe.mjs](../../../../polymarket-sidecar/scripts/clob-auth-probe.mjs).
 
@@ -8,13 +8,13 @@ Probe script: [polymarket-sidecar/scripts/clob-auth-probe.mjs](../../../../polym
 
 The probe validates each of these in one pass:
 
-- L1 EIP-712 typed-data signing matches the SDK: domain `{name: "ClobAuthDomain", version: "1", chainId: 137}`, type `ClobAuth(address, timestamp, nonce, message)`, message `This message attests that I control the given wallet`. The probe signs with the proxy-wallet signer key and submits `POLY_ADDRESS = signer`, not the proxy address. This matches the v2 SDK and the May-2 Phase 9 finding.
-- L2 HMAC-SHA256 signing: key is `base64_decode(secret)`; message is `${ts}${method}${requestPath}${body}`; signature is base64-then-URL-safe (`+` to `-`, `/` to `_`). Headers `POLY_API_KEY`, `POLY_PASSPHRASE`, `POLY_TIMESTAMP`, `POLY_SIGNATURE`, `POLY_ADDRESS` are sent; `POLY_NONCE` is not used on L2 reads.
-- `GET /time` to confirm reachability and clock alignment.
-- `GET /balance-allowance?signature_type=N` for `signature_type` 1 (POLY_PROXY) and 2 (POLY_GNOSIS_SAFE).
-- `GET /data/orders` (current open-order endpoint on CLOB v2; `getOpenOrders` in the SDK).
-- `POST /auth/derive-api-key` over a small nonce scan, plus `POST /auth/api-key` when run with `--force-create`.
-- A stability loop of N authenticated balance + open-order reads.
+* L1 EIP-712 typed-data signing matches the SDK: domain `{name: "ClobAuthDomain", version: "1", chainId: 137}`, type `ClobAuth(address, timestamp, nonce, message)`, message `This message attests that I control the given wallet`. The probe signs with the proxy-wallet signer key and submits `POLY_ADDRESS = signer`, not the proxy address. This matches the v2 SDK and the May-2 Phase 9 finding.
+* L2 HMAC-SHA256 signing: key is `base64_decode(secret)`; message is `${ts}${method}${requestPath}${body}`; signature is base64-then-URL-safe (`+` to `-`, `/` to `_`). Headers `POLY_API_KEY`, `POLY_PASSPHRASE`, `POLY_TIMESTAMP`, `POLY_SIGNATURE`, `POLY_ADDRESS` are sent; `POLY_NONCE` is not used on L2 reads.
+* `GET /time` to confirm reachability and clock alignment.
+* `GET /balance-allowance?signature_type=N` for `signature_type` 1 (POLY_PROXY) and 2 (POLY_GNOSIS_SAFE).
+* `GET /data/orders` (current open-order endpoint on CLOB v2; `getOpenOrders` in the SDK).
+* `POST /auth/derive-api-key` over a small nonce scan, plus `POST /auth/api-key` when run with `--force-create`.
+* A stability loop of N authenticated balance + open-order reads.
 
 All HTTP calls go through raw `node:https` to avoid axios + Cloudflare interactions that previously bit the SDK path. Outputs are explicitly redacted: signatures, secrets, passphrases, private keys, and the public addresses are replaced with placeholder strings before the JSON is written.
 

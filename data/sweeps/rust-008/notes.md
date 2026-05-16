@@ -11,22 +11,22 @@ This is the first sweep that produces results comparable to what real money woul
 
 ## Parameters
 
-- Data: `data/market-data.db` (runs 004-008)
-- Time range: 2026-02-15 to 2026-03-27 (~928h, ~39 days)
-- Ticks: 11,074,264
-- Balance: $200
-- Swept:
-  - `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.0008, 0.0010, 0.0012, 0.0014, 0.0016, 0.0018 (6 values)
-  - `LATENCY_ARB_MAX_ASK`: 0.50, 0.55, 0.60, 0.65, 0.70 (5 values)
-  - `MAX_POSITION_FRACTION`: 0.03, 0.05, 0.075, 0.10, 0.125 (5 values)
-- Fixed:
-  - `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
-  - `PEAK_DD_PAUSE_PCT=1.0` (disables peak drawdown pause)
-  - `MAX_POSITION_USD=500.0` (hard cap, default)
-  - `TAKER_FEE_RATE=0.25` (Polymarket crypto, default)
-  - `TAKER_FEE_EXPONENT=2` (Polymarket crypto, default)
-- Total: 150 combinations
-- Runtime: 180s (~3 min)
+* Data: `data/market-data.db` (runs 004-008)
+* Time range: 2026-02-15 to 2026-03-27 (~928h, ~39 days)
+* Ticks: 11,074,264
+* Balance: $200
+* Swept:
+  * `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.0008, 0.0010, 0.0012, 0.0014, 0.0016, 0.0018 (6 values)
+  * `LATENCY_ARB_MAX_ASK`: 0.50, 0.55, 0.60, 0.65, 0.70 (5 values)
+  * `MAX_POSITION_FRACTION`: 0.03, 0.05, 0.075, 0.10, 0.125 (5 values)
+* Fixed:
+  * `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
+  * `PEAK_DD_PAUSE_PCT=1.0` (disables peak drawdown pause)
+  * `MAX_POSITION_USD=500.0` (hard cap, default)
+  * `TAKER_FEE_RATE=0.25` (Polymarket crypto, default)
+  * `TAKER_FEE_EXPONENT=2` (Polymarket crypto, default)
+* Total: 150 combinations
+* Runtime: 180s (~3 min)
 
 ## Command
 
@@ -58,8 +58,8 @@ cargo run -p buba-paint --release -- sweep \
 
 For run 008's live parameters (mom=0.0012, ask=0.60, frac=0.05):
 
-- rust-007: $316M PnL, 1305 trades, 30.5% DD
-- rust-008: $54k PnL, 1060 trades, 29.7% DD
+* rust-007: $316M PnL, 1305 trades, 30.5% DD
+* rust-008: $54k PnL, 1060 trades, 29.7% DD
 
 The $316M was pure fiction. $54k is what the strategy could realistically produce with real money over 40 days, given order book constraints and Polymarket's fee structure.
 

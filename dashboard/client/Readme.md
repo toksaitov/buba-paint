@@ -17,14 +17,14 @@ In production, the dashboard server serves the built frontend as static files. I
 
 ## Stack
 
-- React 19 + TypeScript 5.9 + Vite 8: fast builds, HMR, ESM
-- TanStack React Query 5: server state management with automatic polling, caching, and cache invalidation on WebSocket messages
-- Zustand 5: lightweight client state for auth and mobile nav drawer
-- Tailwind CSS v4: utility-first styling with custom color tokens via CSS variables (`--bg`, `--text`, `--border`, `--surface`, `--muted`, `--accent-red`, `--accent-green`)
-- lightweight-charts 5: fast equity curve rendering (mini + full-page)
-- React Router v7: nested routes with `Outlet` context for bot selection
-- lucide-react: icon library
-- ansi-to-react: ANSI color parsing for bot log rendering
+* React 19 + TypeScript 5.9 + Vite 8: fast builds, HMR, ESM
+* TanStack React Query 5: server state management with automatic polling, caching, and cache invalidation on WebSocket messages
+* Zustand 5: lightweight client state for auth and mobile nav drawer
+* Tailwind CSS v4: utility-first styling with custom color tokens via CSS variables (`--bg`, `--text`, `--border`, `--surface`, `--muted`, `--accent-red`, `--accent-green`)
+* lightweight-charts 5: fast equity curve rendering (mini + full-page)
+* React Router v7: nested routes with `Outlet` context for bot selection
+* lucide-react: icon library
+* ansi-to-react: ANSI color parsing for bot log rendering
 
 ## Dark Mode
 
@@ -48,14 +48,16 @@ Icon assets are intentionally split by platform. Browser tabs prefer `favicon.sv
 
 ## Pages
 
-- Login: username/password form, authenticates via `POST /api/auth/login`, stores JWT in Zustand/localStorage, redirects to dashboard.
-- Overview: operator triage page with the shadow KPI strip, equity curve, current market, open trades, execution/account snapshot, recent outcomes, and alerts when present.
-- Execution: mode-aware execution surface. Paper mode shows simulated execution and omits Polymarket `n/a` walls. Live-readonly mode shows venue/account readiness, account truth, reconciliation, venue activity, and gated future controls.
-- Logs: raw bot log viewer with ANSI color support, search, severity/source/event-type filters, event-type counts, follow toggle, line count, and wrap toggle. Polls every 5 seconds.
-- Equity: full shadow equity curve using chart-safe series data. Timestamp `0` is kept as baseline context and never plotted as a `1970` point.
-- Trades: filtered shadow trade table on desktop and compact card list on mobile. Filters cover strategy, side, status, and market.
-- Signals: grouped signal bursts by default, with raw signal rows available as a secondary view.
-- Strategies: ranked strategy contribution and risk context. The route is `/strategies`; `/stats` redirects for compatibility.
+* Login: username/password form, authenticates via `POST /api/auth/login`, stores JWT in Zustand/localStorage, redirects to dashboard.
+* Overview: operator triage page with the shadow KPI strip, equity curve, current market, open trades, execution/account snapshot, recent outcomes, and alerts when present.
+* Execution: mode-aware execution surface. Paper mode shows simulated execution and omits Polymarket `n/a` walls. Live-readonly mode shows venue/account readiness, account truth, reconciliation, venue activity, and gated future controls.
+* Logs: raw bot log viewer with ANSI color support, search, severity/source/event-type filters, event-type counts, follow toggle, line count, and wrap toggle. Polls every 5 seconds.
+* Parameters: read-only sanitized runtime config snapshot from `run_metadata.runtime_config_snapshot`. The route is `/parameters`; `/config` redirects for compatibility.
+* Machine: CPU, memory, swap, disk, and runtime DB/WAL/SHM file-size monitoring from the agent sampler.
+* Trend: full shadow equity curve using chart-safe series data. Timestamp `0` is kept as baseline context and never plotted as a `1970` point. The implementation file remains `equity.tsx`.
+* Trades: filtered shadow trade table on desktop and compact card list on mobile. Filters cover strategy, side, status, and market.
+* Signals: grouped signal bursts by default, with raw signal rows available as a secondary view.
+* Strategies: ranked strategy contribution and risk context. The route is `/strategies`; `/stats` redirects for compatibility.
 
 ## Architecture
 
@@ -78,13 +80,13 @@ Notifications (`lib/notifications.ts`): opt-in browser notifications for trade e
 Framework: vitest + @testing-library/react + jsdom.
 
 Key patterns:
-- `vi.mock("../../lib/api")` + `vi.mocked()` for API module mocking
-- `renderWithProviders(ui)` wraps in QueryClientProvider + MemoryRouter with a fresh QueryClient (retry: false, staleTime: 0)
-- `useAuthStore.getState()` / `useAuthStore.setState()` for Zustand store testing
-- `MockWebSocket` class with `simulateOpen()`, `simulateMessage()`, `simulateClose()`, `simulateError()` for WebSocket tests
-- `vi.useFakeTimers()` + `vi.advanceTimersByTime()` for reconnection logic
-- `vi.mock("react-router-dom")` with `useNavigate` mock for navigation tests
-- `window.matchMedia` mock in test setup defaults to desktop viewport
+* `vi.mock("../../lib/api")` + `vi.mocked()` for API module mocking
+* `renderWithProviders(ui)` wraps in QueryClientProvider + MemoryRouter with a fresh QueryClient (retry: false, staleTime: 0)
+* `useAuthStore.getState()` / `useAuthStore.setState()` for Zustand store testing
+* `MockWebSocket` class with `simulateOpen()`, `simulateMessage()`, `simulateClose()`, `simulateError()` for WebSocket tests
+* `vi.useFakeTimers()` + `vi.advanceTimersByTime()` for reconnection logic
+* `vi.mock("react-router-dom")` with `useNavigate` mock for navigation tests
+* `window.matchMedia` mock in test setup defaults to desktop viewport
 
 Setup: `src/test/setup.ts` (localStorage polyfill, matchMedia mock, `@testing-library/jest-dom/vitest` matchers).
 
@@ -129,7 +131,9 @@ src/
     login.tsx                      # login form
     dashboard.tsx                  # overview: operator triage
     execution.tsx                  # execution state, readiness, and gated controls
-    equity.tsx                     # chart-safe full equity curve
+    config.tsx                     # visible Parameters page
+    machine.tsx                    # host/container machine health page
+    equity.tsx                     # visible Trend page, chart-safe equity curve
     trades.tsx                     # filtered trade table/cards
     signals.tsx                    # grouped signals with raw view
     logs.tsx                       # ANSI-colored log viewer

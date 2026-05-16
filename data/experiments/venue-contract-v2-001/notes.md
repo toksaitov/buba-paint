@@ -6,10 +6,10 @@ This was a no-order, non-deploying public endpoint check. It did not use account
 
 ## Result
 
-- Polymarket geoblock endpoint returned `200` with `blocked=false` and country `IE`.
-- Gamma BTC 5-minute event discovery returned `403` with body `error code: 1010` for the current and next slot.
-- CLOB V2 `/clob-markets/{conditionId}` metadata could not be checked because Gamma did not return condition IDs.
-- Authenticated CLOB V2 account, preflight, and user-stream checks were not run because the updated V2 sidecar was not deployed to the host in this phase.
+* Polymarket geoblock endpoint returned `200` with `blocked=false` and country `IE`.
+* Gamma BTC 5-minute event discovery returned `403` with body `error code: 1010` for the current and next slot.
+* CLOB V2 `/clob-markets/{conditionId}` metadata could not be checked because Gamma did not return condition IDs.
+* Authenticated CLOB V2 account, preflight, and user-stream checks were not run because the updated V2 sidecar was not deployed to the host in this phase.
 
 ## Interpretation
 

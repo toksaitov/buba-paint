@@ -2,7 +2,7 @@
 
 `calm-001` exists to answer the first question only:
 
-- does the late-window sign-persistence idea produce any standalone candidate flow at all?
+* does the late-window sign-persistence idea produce any standalone candidate flow at all?
 
 At this stage, latency-arb and spread were disabled on purpose. The point was attribution purity, not portfolio quality.
 
@@ -38,11 +38,11 @@ At this stage, latency-arb and spread were disabled on purpose. The point was at
 
 The first pass was too strict.
 
-- rows: `243`
-- max signals: `0`
-- max calm candidates: `0`
-- calm regime detections were not zero:
-  - `calm_regime_count` ranged from `263,441` to `591,240`
+* rows: `243`
+* max signals: `0`
+* max calm candidates: `0`
+* calm regime detections were not zero:
+  * `calm_regime_count` ranged from `263,441` to `591,240`
 
 So this was not a plumbing or router failure. The calm regime was being detected. The strategy simply never found a candidate that survived the initial filters.
 
@@ -52,20 +52,20 @@ So this was not a plumbing or router failure. The calm regime was being detected
 
 The strongest signal here is not “the idea is dead.” It is:
 
-- the default calm feature stack was too strict all at once
-- especially the combination of distance, volatility normalization, and alignment
-- the strategy needed a looser diagnostic pass before a real refinement sweep
+* the default calm feature stack was too strict all at once
+* especially the combination of distance, volatility normalization, and alignment
+* the strategy needed a looser diagnostic pass before a real refinement sweep
 
 That diagnostic check was run outside this numbered sweep series and confirmed the plumbing:
 
-- with heavily relaxed gates, the calm strategy did trade
-- but the relaxed version was unprofitable and high-DD
+* with heavily relaxed gates, the calm strategy did trade
+* but the relaxed version was unprofitable and high-DD
 
 That is exactly the result you want from a first research pass:
 
-- no false confidence
-- no hidden engine bug
-- a clear direction for the next attempt
+* no false confidence
+* no hidden engine bug
+* a clear direction for the next attempt
 
 ## Decision
 

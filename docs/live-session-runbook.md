@@ -1,152 +1,149 @@
 # Live Session Runbook
 
-This runbook describes the intended operator workflow for the first real-money proxy-wallet pilot. It also describes the current local limits so nobody confuses readonly venue monitoring with production live trading.
+This runbook describes the intended workflow for a future funded Polymarket pilot. It is not an instruction to arm real money. Current remote operation remains Docker/Caddy `live_readonly`.
 
-## Current repository state
+## Current Status
 
-What is ready locally:
+The repository supports three modes: `paper`, `live_readonly`, and disarmed `live_trading`. The deployed path should use `live_readonly` unless a fresh funded-run plan explicitly changes it.
 
-- explicit execution modes: `paper`, `live_readonly`, `live_trading`
-- live preflight CLI
-- sidecar package and typed authenticated-venue boundary
-- real `live_readonly` runtime inside `buba-paint live`
-- live session and reconciliation tables
-- agent and dashboard live-readiness surfaces
-- replay-grade public feed capture for research runs
-- compact live account telemetry schema
-- shadow paper analysis pages during readonly sessions
-- sidecar readiness and crash diagnostics on `/health`
-- sidecar FOK/FAK order, cancel, cancel-all, and pUSD CTF redemption boundary
-- sidecar sanitized activity recovery on `/activity`
-- local disarmed `live_trading` runtime and audited `live-control` command queue for mocked verification
-- admin dashboard Execution controls that queue audited bot-applied control commands
-- live risk monitoring for daily loss, session drawdown, percentage drawdown, terminal degradation, unknown orders, and critical reconciliation
-- `live-closeout` evidence export with required postmortem stub
+Current safe uses:
 
-What is still intentionally gated:
+* paper research and dashboard work
+* authenticated readonly venue/account monitoring
+* replay-grade public feed capture
+* shadow paper strategy evaluation during readonly sessions
+* local or mocked verification of live-control, ledger, halt, closeout, and sidecar write boundaries
 
-- `EXECUTION_MODE=live_trading` is not deployed or operator-approved for real money
-- dashboard controls are local-verification only and must not be used to arm real money yet
-- host rollout, funded canary checks, and final live-money verification are unfinished
-- readonly monitoring uses live account reads, user-stream health, and sanitized activity recovery, but the funded operating procedure is not complete yet
+Current non-goals:
 
-Do not deploy real-money trading from this state. Use it to finish implementation and validate readiness safely.
+* no deployed `live_trading`
+* no real-money arming
+* no venue order placement, cancellation, or redemption from the remote runtime
+* no current funded canary
 
-## Preflight checklist
+## Future Funded Prerequisites
 
-Before any future live-money session:
+Before any funded session is planned, verify the deployment host and account from the actual runtime environment.
 
-1. confirm host geoblock status from the actual deployment host
-2. confirm `POLY_PROXY` credentials are present:
-   - exported Polymarket private key
-   - proxy wallet address
-   - builder relayer credentials required for redemption
-   - optional funder override only if it must differ from the proxy wallet
-3. confirm local clock drift is below the configured threshold
-4. confirm venue min order size, tick size, and fee metadata for the active market set
-5. confirm configured cash caps permit at least one legal order
-6. confirm live mode is latency-arb only for the first pilot
-7. confirm dashboard Execution page and agent live endpoints show healthy readiness state
-8. confirm the sidecar is supervised and auto-restart capable on the host
+Required checks:
 
-## Recommended first pilot envelope
+* host geoblock result from the real deployment host
+* sidecar `/health`, `/account`, `/activity`, and `/preflight`
+* proxy-wallet or deposit-wallet account model, signature type, funder, and pUSD collateral state
+* CLOB market metadata: token IDs, tick size, min size, accepting-order state, fee metadata, and neg-risk fields
+* user-stream health and authenticated activity recovery
+* replay capture health for Binance, Chainlink, and CLOB UP/DOWN top-of-book evidence
+* dashboard Execution state, Parameters snapshot, and Machine page health
+* DB quick check and offline replay/backtest gates after a readonly soak
 
-The first real-money canary should stay narrow:
+If any host, venue, account, data, or reconciliation fact is unknown, the funded plan stops until that fact is resolved.
 
-- bankroll target: `75-100 USD`
-- `latency-arb` only
-- very small per-order cap
-- tight open-notional cap
-- aggressive session loss and drawdown limits
-- short session, typically `2-3` days, with manual stop allowed earlier once enough data is collected
+## Future Pilot Envelope
 
-The budgeting rule should be conservative:
+Any future first funded pilot should stay narrow.
 
-- `tradable_cash = min(actual_cash_available, LIVE_SESSION_CASH_CAP_USD)`
+* bankroll around `$100`
+* latency-arb only
+* calm-persistence disabled
+* spread-capture disabled
+* FOK/FAK only
+* small single-order cap
+* tight open-notional, daily-loss, and session-drawdown caps
+* terminal halt on unknown order state, critical reconciliation, or persistent venue/account/user-stream degradation
 
-## Session lifecycle
+The spending rule is:
 
-Intended operator lifecycle once live trading is actually enabled:
+```text
+tradable_cash = min(actual_cash_available, LIVE_SESSION_CASH_CAP_USD)
+```
 
-1. start in `live_readonly`
-2. pass preflight
-3. inspect budget preview, strategy set, geoblock, auth, account state, and user-stream health
-4. arm live trading explicitly from the approved control surface after audited preflight
-5. monitor open orders, fills, reconciliation warnings, and redeemable inventory
-6. if drawdown or divergence persists too long, disarm and stop after flat
-7. redeem winning resolved positions
-8. if a terminal halt occurs, queue only cleanup controls that are safe (`cancel-all` and `redeem-all`) and do not re-arm
-9. run `live-closeout`, complete the postmortem, and start any future funded attempt with a new run DB
-10. feed the collected live data back into paper and backtest parity improvements
+Pending settlement is not spendable cash.
 
-## Terminal halt and cooldown
+## Session Lifecycle
 
-Terminal halt is a session boundary, not a pause button. The current policy is postmortem-only cooldown: no fixed wall-clock timer, but no new funded session until the closeout package and written postmortem exist.
+Intended sequence for a future funded session:
+
+1. deploy a reviewed release in `live_readonly`
+2. run readonly preflight and confirm host/account/market/user-stream state
+3. confirm the Parameters page matches the approved runtime profile
+4. confirm replay capture is healthy and recent
+5. start a fresh `live_trading` run DB only after an approved funded plan
+6. arm explicitly through the audited control surface
+7. monitor account state, venue state, user-stream state, fills, reconciliation, and risk caps
+8. disarm or stop-after-flat when evidence quality or risk state degrades
+9. allow only safe cleanup controls after a terminal halt
+10. run `live-closeout` and complete the postmortem before any later funded run
+
+A halted or `unknown_order` DB must not be re-armed. The next funded attempt uses a new run DB.
+
+## Terminal Halt And Closeout
+
+Terminal halt is a session boundary. It is not a paused state.
 
 Terminal triggers include:
 
-- session drawdown above `LIVE_MAX_SESSION_DRAWDOWN_USD`
-- UTC-day loss above `LIVE_MAX_DAILY_LOSS_USD`
-- existing percentage drawdown cap
-- geoblock or auth failure while armed
-- replay-grade storage-quality failure while armed
-- critical reconciliation or unresolved unknown order state
-- account refresh, user-stream, or venue restart degradation lasting more than 2 minutes while armed
+* `LIVE_MAX_SESSION_DRAWDOWN_USD`
+* `LIVE_MAX_DAILY_LOSS_USD`
+* `MAX_DRAWDOWN_PCT`
+* auth or geoblock failure while armed
+* replay capture failure while armed
+* storage failure while armed
+* unresolved unknown order state
+* critical reconciliation
+* account, user-stream, or venue degradation lasting beyond the configured terminal threshold
 
-A halted DB must not be re-armed. Restarting `EXECUTION_MODE=live_trading` against a DB that contains `halted` or `unknown_order` live state fails fast. The next funded attempt uses a new run DB after analysis.
+After a terminal halt:
 
-## Data to retain after each session
+* do not arm the same DB
+* queue only cleanup controls that the ledger/account state says are safe
+* export closeout evidence with `live-closeout`
+* write the postmortem before any later funded plan
 
-Keep these artifacts:
+The closeout package should include the SQLite quick-check result, replay-quality report, live-fidelity report, live ledger exports, account snapshots, reconciliation events, control audit, logs, and a postmortem stub.
 
-- local SQLite DB with replay-grade public feed capture and compact live telemetry
-- bot log
-- agent/dashboard logs if relevant
-- official Polymarket accounting and activity exports
-- any rotated forensic private-payload files if that mode was enabled intentionally
+## Data Retention
 
-Do not bloat SQLite with full raw private websocket traffic unless a short forensic session explicitly requires it.
+Keep:
 
-Replay quality must be verified from observed data, not from configuration. A run configured with `FEED_EVENT_STORAGE_PROFILE=replay_grade` has raw public replay inputs only after `validate-replay-data` reports `sweep_grade` for the captured interval. It is not sweep-ready until `validate-backtest-input` also reports `backtest_ready`. If closeout labels the run descriptive-only, use it for operational diagnosis and postmortem only, not parameter selection.
+* run SQLite DB
+* bot log
+* sidecar, agent, and dashboard logs when relevant
+* closeout manifest and summary
+* official Polymarket accounting or activity exports used for reconciliation
+* readonly or funded evidence bundles under `data/experiments/...`
 
-## UI safety rules
+Do not use a configured storage profile as proof of data quality. `FEED_EVENT_STORAGE_PROFILE=replay_grade` is only a capability. The captured interval must still pass `validate-replay-data`, and sweep inputs must also pass `validate-backtest-input`. Funded intervals also need `validate-live-fidelity`.
 
-The dedicated Execution page should enforce:
+## UI Safety
 
-- process control separated from trading control
-- typed confirmation before arming
-- full config fingerprint displayed before arming
-- mobile restricted to observe and disarm only
-- immediate disarm availability
-- clear `cancel all`, `redeem all`, and `stop after flat` actions
-- admin-only mutation controls that queue commands through the bot ledger, never directly through the sidecar
+The dashboard Execution page is an operator surface, not a venue client.
 
-Any of these should block or disarm trading automatically:
+Required UI behavior:
 
-- geoblock failure
-- auth failure
-- user-stream outage
-- reconciliation red state
-- configured risk cap trip
-- user-stream/account/venue degradation that persists beyond the terminal threshold
-- unknown order outcome
+* process state is separate from trading state
+* running never means armed
+* controls queue commands through the bot ledger
+* dashboard never calls the sidecar or venue directly
+* arming requires explicit confirmation and current readiness gates
+* halted state dominates the page
+* cleanup actions are visible only when capability data says they are safe
 
-When halted, the UI should make the halt state dominant, hide arm/restart paths, show the risk facts, and allow only cleanup controls that are safe from the current ledger/account state.
+Mobile may be used for observation and emergency-safe controls only when the approved funded plan allows it. It should not become the primary arming surface.
 
-## Release checklist before enabling real money
+## Release Checklist
 
-Before the live venue runtime is considered ready:
+Before writing any funded plan, verify:
 
-- Rust workspace builds cleanly
-- Rust tests pass
-- dashboard client tests and build pass
-- sidecar lint, tests, and build pass
-- sidecar supervision artifact and stable env or log layout are in place on the deployment plan
-- `ops/` service templates have been reviewed for sidecar, bot, agent, and dashboard
-- replay-data quality and backtest loadability are checked before any parameter sweep with `validate-replay-data` and `validate-backtest-input`
-- docs are updated and internally consistent
-- comments and rustdoc are current
-- agent and dashboard live surfaces are verified against real readonly session data
-- live-readonly soak completes without storage blow-up
+* Rust workspace tests and release build
+* sidecar lint, tests, and build
+* dashboard tests and build
+* hot-path audit
+* docs and comment audits
+* local Docker smoke
+* host no-order readonly soak
+* `validate-replay-data`
+* `validate-backtest-input`
+* dashboard Execution, Parameters, Logs, and Machine pages
+* explicit operator approval for the funded envelope
 
-Only after that should a real deployment plan be written.
+Only after those checks should a new real-money plan be written.

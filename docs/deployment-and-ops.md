@@ -1,160 +1,167 @@
-# Deployment and Operations
+# Deployment And Operations
 
-This document describes durable local and remote operations guidance.
+This chapter describes how Buba is run locally and remotely. The preferred remote process model is Docker Compose with Caddy TLS. Legacy systemd/manual flows are reference-only unless a fresh plan explicitly chooses them.
 
-## Local Runtime
+## Operating Posture
 
-Use `/tmp` for local DBs and logs when testing manually:
+The normal remote mode is `live_readonly`: authenticated account and venue monitoring, replay-grade public feed capture, shadow paper trading, agent, and dashboard. It does not arm real money, place orders, cancel orders, or redeem positions.
+
+Real-money trading is deferred. Do not infer permission to trade from credentials, sidecar write endpoints, or dashboard controls.
+
+## Remote Layout
+
+The production-like host is reached as `ssh buba-paint`.
+
+Docker service shape:
+
+* `paint`: Rust bot, run DB, feed capture, shadow paper runtime.
+* `sidecar`: TypeScript Polymarket CLOB V2/authenticated venue boundary.
+* `agent`: monitor-only DB/log/machine API.
+* `dashboard`: authenticated dashboard backend and static frontend.
+* `caddy`: public TLS edge.
+
+Caddy publishes only `80` and `443` and reverse-proxies the dashboard. All app services stay on the private Compose network.
+
+Host layout:
+
+* releases: `~/buba-paint-live/releases/<timestamp>`
+* active release symlink: `~/buba-paint-live/current`
+* runtime state: `~/buba-paint-live/runtime/<runtime-name>`
+* stable config: `~/buba-paint-live/config`
+* Caddy state: `~/buba-paint-live/caddy/data` and `~/buba-paint-live/caddy/config`
+
+## Deployment Commands
+
+Preview:
 
 ```bash
-cargo run -p buba-paint --release -- init-db --db-path /tmp/paint.db --balance 100
-cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 100
+make docker-deploy-dry-run
 ```
 
-Docker Compose starts a local paper stack:
+Deploy default remote `live_readonly`:
+
+```bash
+make docker-deploy
+```
+
+The Makefile calls:
+
+```bash
+python3 scripts/deploy-docker.py --host buba-paint --domain buba.toksaitov.com --mode live-readonly --install-docker
+```
+
+The deploy runner stages a fresh release, verifies DNS points at the SSH host, installs Docker when requested, creates swap on small hosts when needed, uploads the sidecar env file as remote `sidecar.env`, generates dashboard/agent secrets, starts Compose, and writes a non-secret evidence bundle.
+
+Requirements:
+
+* `buba.toksaitov.com` resolves to the `buba-paint` host.
+* inbound TCP `80` and `443` are open.
+* `.secrets/buba-paint-live-sidecar.env` exists locally and remains uncommitted.
+* the operator understands whether old runtime data should be preserved or deleted.
+
+## Local Stacks
+
+Local paper stack:
 
 ```bash
 mkdir -p .docker/runtime
 docker compose -f docker-compose.yml -f docker-compose.paper.yml -f docker-compose.local.yml up -d --build
 ```
 
-The local paper stack does not start the Polymarket sidecar or an authenticated `live_readonly` venue monitor.
-
-## Remote Layout
-
-The production host is `buba-paint`. Do not edit code ad hoc on the server.
-
-Remote layout:
-
-- releases: `~/buba-paint-live/releases/<timestamp>`
-- active release symlink: `~/buba-paint-live/current`
-- runtime state: `~/buba-paint-live/runtime/run-0NN`
-- disposable backups: `~/buba-paint-live/runtime/backups`
-- archived old runs: `~/buba-paint-live/runtime/archive`
-- sidecar env: `~/buba-paint-live/config/sidecar.env`
-- sidecar log: `~/buba-paint-live/logs/sidecar.log`
-
-## Process Model
-
-Preferred remote process shape is Docker Compose with Caddy as the only public edge:
-
-- Caddy publishes ports `80` and `443`, provisions certificates, and reverse-proxies the dashboard.
-- dashboard, agent, bot, and sidecar stay on a private Docker network.
-- The bot is the latency-sensitive process. Agent, dashboard, and Caddy are observer/control services and must degrade before bot decision latency degrades.
-- Runtime healthchecks must stay cheap. SQLite `quick_check`, replay validators, and whole-run data scans belong in closeout or explicit diagnostics, not container liveness checks.
-- runtime DBs and logs are host bind mounts under `~/buba-paint-live/runtime/<runtime-name>`.
-- Caddy state is persisted under `~/buba-paint-live/caddy`.
-
-Local Docker smoke tests use `docker-compose.smoke.yml` with a Docker-native runtime volume. That is intentional: macOS Docker Desktop bind-mounted SQLite WAL paths are not accepted as HFT/replay smoke evidence. Production Linux runtime bind mounts remain the preferred operational layout unless a Linux soak reproduces SQLite I/O errors.
-
-Systemd templates under [ops/](../ops/) are retained as legacy/reference artifacts. Use Docker Compose for new deployments unless a phase plan explicitly says otherwise.
-
-## Docker/Caddy Staging Flow
-
-The repeatable Docker deployment command is:
+Short local no-Caddy readonly smoke:
 
 ```bash
-make docker-deploy
+make live-docker-smoke
 ```
 
-The default target is equivalent to:
+The smoke runner uses Docker-native runtime storage by default. That avoids macOS Docker Desktop bind-mounted SQLite WAL behavior, which is not accepted as HFT/replay evidence.
+
+Manual local bot run:
 
 ```bash
-python3 scripts/deploy-docker.py \
-  --host buba-paint \
-  --domain buba.toksaitov.com \
-  --mode live-readonly \
-  --install-docker
+cargo run -p buba-paint --release -- init-db --db-path /tmp/paint.db --balance 100
+cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 100
 ```
 
-Use `make docker-deploy-dry-run` before mutating the host. The runner stages a fresh release, generates dashboard/agent secrets, uploads `.secrets/buba-paint-live-sidecar.env` to the host as `sidecar.env`, starts Compose, and writes a non-secret evidence bundle under `data/experiments/docker-deploy-*`.
+Use `/tmp` for manual scratch DBs and logs.
 
-The production stack uses:
+## Safe Dashboard And Agent Iteration
 
-- `docker-compose.yml` for shared internal services.
-- `docker-compose.live-readonly.yml` for authenticated readonly monitoring.
-- `docker-compose.paper.yml` for paper-only runs.
-- `docker-compose.prod.yml` for Caddy TLS and host bind mounts.
+UI or agent work should not disturb a running bot unless the change requires it. For dashboard-only or agent-only work, stage the changed release, rebuild the changed service, and restart it with `--no-deps`.
 
-`buba.toksaitov.com` must resolve to the same host reached by `ssh buba-paint`, and the cloud firewall must allow inbound TCP `80` and `443` for Caddy certificate provisioning. The deploy runner checks DNS before staging because Caddy cannot complete ACME validation when the A record points at an old instance. On small hosts the runner also enables a 4 GiB swap file by default when no swap is active, which keeps Docker image builds from being killed by memory pressure.
-
-## Legacy Staging Flow
-
-1. Finish code, docs, and tests locally.
-2. Run local gates: `make lint`, `make test-all`, `make coverage-gate`, `cargo build --release`.
-3. Build the frontend locally: `cd dashboard/client && npm run build`.
-4. Stage source to a fresh remote release directory with `rsync`.
-5. Exclude `.git`, `target`, `data`, `runs`, `dashboard/client/node_modules`, and old frontend build output.
-6. Copy the locally built `dashboard/client/dist` into the fresh release directory.
-7. Build Rust binaries on the server from the fresh release directory.
-
-The server has historically had an older Node toolchain. Treat the local frontend build as the deployable static artifact unless the server toolchain is deliberately upgraded.
-
-Use this legacy flow only when Docker is explicitly out of scope.
-
-## Fresh Run
-
-Use a fresh run for strategy changes, parameter changes, or any experiment where continuity would poison comparability.
-
-1. Stop the Docker Compose project or legacy sidecar, bot, agent, and dashboard.
-2. Verify no stale processes remain.
-3. Archive or discard the old runtime according to the experiment plan.
-4. Create a fresh runtime directory and DB/log paths.
-5. Point `current` to the new release.
-6. Start the Docker stack or sidecar, bot, agent, and dashboard in the documented order.
-
-## Partial Update
-
-Use a partial update only for fixes where the current run should continue on the same DB and log, such as dashboard fixes, agent fixes, logging changes, diagnostics, or feed transport hardening that does not alter strategy semantics.
-
-1. Back up the current run DB and log into `runtime/backups`.
-2. Stop the Docker stack or sidecar, bot, agent, and dashboard.
-3. Verify no stale process from the old release remains.
-4. Point `current` to the new release.
-5. Restart the Docker stack, or restart the supervised sidecar first in the legacy process model.
-6. Restart bot, agent, and dashboard over the same runtime dir, DB, and log if not using Compose.
-7. Verify the bot recovered the active window correctly.
-
-Process check:
+Check bot start time before and after:
 
 ```bash
-ssh buba-paint 'cd ~/buba-paint-live/current && sudo docker compose ps'
+ssh buba-paint 'sudo docker inspect -f "{{.State.StartedAt}}" buba-paint-paint-1'
 ```
 
-## Minimum Remote Acceptance
+Dashboard-only restart:
 
-After any deploy or restart:
+```bash
+ssh buba-paint '
+set -euo pipefail
+cd ~/buba-paint-live/current
+sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.live-readonly.yml -f docker-compose.prod.yml build dashboard
+sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.live-readonly.yml -f docker-compose.prod.yml up -d --no-deps dashboard
+'
+```
 
-- `readlink -f ~/buba-paint-live/current` matches the intended release.
-- `curl -I http://buba.toksaitov.com` redirects to HTTPS.
-- `curl https://buba.toksaitov.com/health` is healthy with a valid certificate.
-- internal sidecar, agent, and dashboard health checks pass through `docker compose exec`.
-- bot logs show bounded feed-writer queue depth and no runtime replay validator scans.
-- `sqlite3 ... "pragma quick_check;"` returns `ok` only when running closeout or explicit diagnostics, not as a service healthcheck.
-- `docker compose ps` shows only the intended project services.
-- bot logs show sane startup and expected strategy rollups.
+Agent-only restart:
 
-Before any future live-money arming, also verify host geoblock, current BTC market metadata, CLOB V2 fee/tick/min-size metadata, pUSD account diagnostics, sidecar preflight, dashboard Execution state, and current official Polymarket docs. Save the no-order readonly verification report under `data/experiments/venue-contract-v2-001/` or the current phase-specific experiment directory.
+```bash
+ssh buba-paint '
+set -euo pipefail
+cd ~/buba-paint-live/current
+sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.live-readonly.yml -f docker-compose.prod.yml build agent
+sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.live-readonly.yml -f docker-compose.prod.yml up -d --no-deps agent
+'
+```
 
-## Replay-Grade Readonly Soak
+Do not run full `docker compose down` for dashboard-only polish.
 
-Before the first funded canary, run a no-order readonly soak on the `buba-paint` host from a reviewed release. This is not part of the local Phase 6 implementation pass; it is a later host verification gate.
+## Acceptance Checks
 
-Before starting the host soak, complete the local gate pack and keep its manifest:
+After deploy or restart:
+
+```bash
+ssh buba-paint 'cd ~/buba-paint-live/current && sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.live-readonly.yml -f docker-compose.prod.yml ps'
+curl -I http://buba.toksaitov.com
+curl -fsS https://buba.toksaitov.com/health
+```
+
+Check:
+
+* `current` points at the intended release.
+* Caddy redirects HTTP to HTTPS and serves a valid certificate.
+* sidecar, bot, agent, dashboard, and Caddy are running or healthy as expected.
+* bot logs show `EXECUTION_MODE=live_readonly`, `FEED_EVENT_STORAGE_PROFILE=replay_grade`, latency enabled, calm/spread disabled.
+* bot logs show no runtime replay-validator scans.
+* DB integrity is checked only during explicit diagnostics or closeout, not healthchecks.
+* live order intent, venue order, cancel, redemption, and arming tables remain empty in readonly runs.
+
+## No-Order Readonly Soak
+
+Before any future funded work, run a no-order host soak from a reviewed release.
+
+Local gate:
 
 ```bash
 make live-readiness-local
 ```
 
-The repeatable host runner is:
+Host runner:
 
 ```bash
 make live-readiness-host-soak
 ```
 
-Use `LIVE_HOST_SOAK_ARGS="--dry-run"` to inspect the plan without SSH mutations. The runner fails closed if host `live-preflight` returns `ok=false`.
+Dry-run the host plan:
 
-Use a fresh runtime directory and keep copied-back reports under `data/experiments/replay-grade-readonly-soak-001/`. The soak must use:
+```bash
+make live-readiness-host-soak LIVE_HOST_SOAK_ARGS="--dry-run"
+```
+
+The soak must use:
 
 ```bash
 EXECUTION_MODE=live_readonly
@@ -164,43 +171,21 @@ SPREAD_CAPTURE_ENABLED=false
 CALM_PERSISTENCE_ENABLED=false
 ```
 
-Minimum no-order host checks:
+It is accepted only when sidecar health is sane, host geoblock passes, account/preflight/activity checks are understood, replay validation reports `sweep_grade`, backtest-input validation reports `backtest_ready`, DB quick check passes after shutdown, no unintended live rows exist, and no stale process from an unintended release remains.
 
-```bash
-curl -fsS http://127.0.0.1:3210/health
-cargo run -p buba-paint --release -- live-preflight
-sqlite3 <readonly-soak-db> 'PRAGMA quick_check;'
-sqlite3 <readonly-soak-db> "SELECT key, value FROM run_metadata ORDER BY key;"
-cargo run -p buba-paint --release -- validate-replay-data \
-  --data <readonly-soak-db> \
-  --start <soak-start-iso-time> \
-  --end <soak-end-iso-time>
-cargo run -p buba-paint --release -- validate-backtest-input \
-  --data <readonly-soak-db> \
-  --start <soak-start-iso-time> \
-  --end <soak-end-iso-time>
-ssh buba-paint 'ps -eo pid=,args= | awk "/buba-paint live|buba-agent|buba-dashboard|polymarket-sidecar/ && !/awk/ {print}"'
-find . -maxdepth 1 \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \) -print
-```
+## Cleanup
 
-The soak is not accepted unless there is no order placement, sidecar health is sane, host geoblock passes, current BTC market metadata is captured, `validate-replay-data` reports `sweep_grade`, `validate-backtest-input` reports `backtest_ready`, `PRAGMA quick_check` returns `ok`, only intended processes are running, dashboard Execution agrees with CLI preflight, and no scratch DB/WAL/SHM files appear in the repo root. If authenticated CLOB bootstrap is blocked by Cloudflare or missing L2 credentials, stop the phase and fix host/account authentication before rerunning the soak.
+Remote cleanup should be deliberate:
 
-## Cleanup Policy
+* stop the intended Compose project
+* preserve `~/buba-paint-live/config`
+* preserve `~/buba-paint-live/caddy` unless certificate state is intentionally reset
+* delete only selected old runtime and release directories
+* prune Docker build cache when disk pressure requires it
+* copy back DB/log evidence before deleting a run that matters
 
-If remote disk gets tight, prune old releases, archived remote runs, and disposable remote backups. Do not delete local `runs/` or local `data/` as part of server cleanup.
+Do not delete local `runs/` or valuable `data/` artifacts as part of remote server cleanup.
 
-Database files should stay on disk where useful, but not in Git or LFS history.
+## Legacy Systemd
 
-## Cross Compilation
-
-Development is on macOS aarch64. The production host is Linux aarch64. Prefer building Rust release binaries on the server from a clean staged release unless a dedicated cross-compile workflow is being tested.
-
-## Reproducible Build Metadata
-
-The bot's startup `RuntimeConfigSnapshot` includes a `git_sha` field read at compile time from `BUBA_GIT_SHA` via `option_env!`. The Dockerfile accepts `--build-arg BUBA_GIT_SHA=<sha>` to wire this through. When you want the dashboard `Config` page to show the deployed SHA instead of `unknown`, pass the build arg explicitly:
-
-```bash
-sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.live-readonly.yml -f docker-compose.prod.yml build --build-arg BUBA_GIT_SHA=$(git rev-parse --short HEAD) paint
-```
-
-Setting the build arg is optional; without it, `git_sha` is `unknown` and the rest of the snapshot is unchanged.
+Systemd templates under [ops/](../ops/) are retained as reference material. They are not the preferred process model for new readonly or future live-readiness runs. Use Docker/Caddy unless a new operator-approved plan chooses otherwise.

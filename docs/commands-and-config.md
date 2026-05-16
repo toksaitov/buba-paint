@@ -171,18 +171,18 @@ Use [.env.example](../.env.example) as the canonical template.
 
 Important groups:
 
-- Execution mode: `EXECUTION_MODE=paper|live_readonly|live_trading`.
-- Storage profile: `FEED_EVENT_STORAGE_PROFILE=replay_grade|compact|full_debug`.
-- Feed freshness: `MAX_SIGNAL_FEED_AGE_MS`, `MAX_QUOTE_AGE_MS`, `WEBSOCKET_CONNECT_TIMEOUT_MS`, `BINANCE_NO_MESSAGE_RECONNECT_MS`, `CLOB_NO_MESSAGE_RECONNECT_MS`.
-- Pending settlement: `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION`, `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION`, `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION`, `BACKTEST_SETTLEMENT_MODE`.
-- Live caps: `LIVE_SESSION_CASH_CAP_USD`, `LIVE_MAX_SINGLE_ORDER_USD`, `LIVE_MAX_OPEN_NOTIONAL_USD`, `LIVE_MAX_DAILY_LOSS_USD`, `LIVE_MAX_SESSION_DRAWDOWN_USD`, `LIVE_MIN_REQUIRED_CASH_USD`.
-- Worker and storage budgets: `FEED_EVENT_WRITER_QUEUE_CAPACITY`, `FEED_EVENT_WRITER_BATCH_SIZE`, `FEED_EVENT_WRITER_FLUSH_MS`, `FEED_EVENT_WRITER_MAX_LAG_MS`, `CLOB_REPLAY_BLOCK_MAX_ROWS`, `CLOB_REPLAY_BLOCK_MAX_MS`, `CLOB_REPLAY_BLOCK_ZSTD_LEVEL`, `LIVE_RUNTIME_MAX_DB_BYTES`, `LIVE_FEED_BATCH_MAX_MESSAGES`, `LIVE_DECISION_QUEUE_CAPACITY`, `LIVE_DECISION_OUTPUT_QUEUE_CAPACITY`, `LIVE_RUNTIME_PERSISTENCE_QUEUE_CAPACITY`, `LIVE_SUBMISSION_QUEUE_CAPACITY`, `MAX_LIVE_DECISION_AGE_MS`, `WORKER_SHUTDOWN_TIMEOUT_MS`.
-- Strategy toggles: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, `CALM_PERSISTENCE_ENABLED`.
-- Sidecar: `LIVE_SIDECAR_URL`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_PROXY_WALLET`, `POLYMARKET_FUNDER`, `POLYMARKET_RELAYER_HOST`, `POLYMARKET_RELAYER_API_KEY`, `POLYMARKET_RELAYER_API_KEY_ADDRESS`, `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, `POLYMARKET_BUILDER_PASSPHRASE`.
+* Execution mode: `EXECUTION_MODE=paper|live_readonly|live_trading`.
+* Storage profile: `FEED_EVENT_STORAGE_PROFILE=replay_grade|compact|full_debug`.
+* Feed freshness: `MAX_SIGNAL_FEED_AGE_MS`, `MAX_QUOTE_AGE_MS`, `WEBSOCKET_CONNECT_TIMEOUT_MS`, `BINANCE_NO_MESSAGE_RECONNECT_MS`, `CLOB_NO_MESSAGE_RECONNECT_MS`.
+* Pending settlement: `PENDING_SETTLEMENT_FAMILY_RESERVE_FRACTION`, `PENDING_SETTLEMENT_GLOBAL_RESERVE_FRACTION`, `PENDING_SETTLEMENT_COUNTS_AS_OPEN_POSITION`, `BACKTEST_SETTLEMENT_MODE`.
+* Live caps: `LIVE_SESSION_CASH_CAP_USD`, `LIVE_MAX_SINGLE_ORDER_USD`, `LIVE_MAX_OPEN_NOTIONAL_USD`, `LIVE_MAX_DAILY_LOSS_USD`, `LIVE_MAX_SESSION_DRAWDOWN_USD`, `LIVE_MIN_REQUIRED_CASH_USD`.
+* Worker and storage budgets: `FEED_EVENT_WRITER_QUEUE_CAPACITY`, `FEED_EVENT_WRITER_BATCH_SIZE`, `FEED_EVENT_WRITER_FLUSH_MS`, `FEED_EVENT_WRITER_MAX_LAG_MS`, `CLOB_REPLAY_BLOCK_MAX_ROWS`, `CLOB_REPLAY_BLOCK_MAX_MS`, `CLOB_REPLAY_BLOCK_ZSTD_LEVEL`, `LIVE_RUNTIME_MAX_DB_BYTES`, `LIVE_FEED_BATCH_MAX_MESSAGES`, `LIVE_DECISION_QUEUE_CAPACITY`, `LIVE_DECISION_OUTPUT_QUEUE_CAPACITY`, `LIVE_RUNTIME_PERSISTENCE_QUEUE_CAPACITY`, `LIVE_SUBMISSION_QUEUE_CAPACITY`, `MAX_LIVE_DECISION_AGE_MS`, `WORKER_SHUTDOWN_TIMEOUT_MS`.
+* Strategy toggles: `LATENCY_ARB_ENABLED`, `SPREAD_CAPTURE_ENABLED`, `CALM_PERSISTENCE_ENABLED`.
+* Sidecar: `LIVE_SIDECAR_URL`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_PROXY_WALLET`, `POLYMARKET_FUNDER`, `POLYMARKET_RELAYER_HOST`, `POLYMARKET_RELAYER_API_KEY`, `POLYMARKET_RELAYER_API_KEY_ADDRESS`, `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_SECRET`, `POLYMARKET_BUILDER_PASSPHRASE`.
 
 The sidecar CLOB boundary uses `@polymarket/clob-client-v2@1.0.3`, pUSD collateral diagnostics, and proxy-wallet signature type `1` for the first account model. `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted. Optional CLOB L2 credentials may be configured with `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, and `POLYMARKET_API_PASSPHRASE`; otherwise the sidecar derives or creates them through authenticated CLOB L1 bootstrap. Gasless redemption uses `@polymarket/builder-relayer-client@0.0.9` with `@polymarket/builder-signing-sdk@1.0.0` and stays fail-closed unless the configured credentials are complete.
 
-`live_trading` starts disarmed and is local-verification only until deployment and final canary phases are complete. Do not treat the presence of live caps, sidecar credentials, callable sidecar write endpoints, or queued `live-control` commands as permission to deploy real money.
+`live_trading` starts disarmed and is local-verification only. Do not treat the presence of live caps, sidecar credentials, callable sidecar write endpoints, or queued `live-control` commands as permission to deploy real money. Future funded trading requires a fresh operator-approved plan.
 
 The dashboard `Parameters` page (route `/parameters`, agent endpoint `GET /api/runtime/config`, dashboard proxy `GET /api/bots/:id/config`) renders the sanitized snapshot the bot writes once at startup under `run_metadata.runtime_config_snapshot`. It is read-only; values cannot be edited from here. Use it to confirm what knobs the deployed runtime is actually using without SSH. The snapshot covers execution mode, storage profile, strategy toggles and per-strategy parameters, risk and live-cap knobs, pending-settlement reserves, fee assumptions, feed freshness gates, and worker budgets. Secrets are never serialized.
 
@@ -222,9 +222,9 @@ The closeout summary and manifest include observed replay-quality class, live-fi
 
 Live-money risk defaults are:
 
-- `LIVE_MAX_DAILY_LOSS_USD=15`
-- `LIVE_MAX_SESSION_DRAWDOWN_USD=20`
-- existing `MAX_DRAWDOWN_PCT`
+* `LIVE_MAX_DAILY_LOSS_USD=15`
+* `LIVE_MAX_SESSION_DRAWDOWN_USD=20`
+* existing `MAX_DRAWDOWN_PCT`
 
 An armed live session treats unresolved unknown order state, critical reconciliation, auth/geoblock/storage failure, or persistent account/user-stream/venue degradation as terminal blockers. `cancel-all` and `redeem-all` may still be queued for cleanup when their capability data says they are safe.
 
@@ -232,7 +232,7 @@ An armed live session treats unresolved unknown order state, critical reconcilia
 
 The current candidate settings live in [.env.example](../.env.example). Do not promote historical run settings without fresh replay-grade evidence.
 
-For the first funded canary plan, code should support all strategy families, but runtime config should enable latency only:
+For any future first funded canary, code should support all strategy families, but runtime config should enable latency only:
 
 ```bash
 LATENCY_ARB_ENABLED=true
@@ -240,4 +240,4 @@ SPREAD_CAPTURE_ENABLED=false
 CALM_PERSISTENCE_ENABLED=false
 ```
 
-That policy is active implementation planning and is tracked in [LIVE_TRADING_PLAN.md](../LIVE_TRADING_PLAN.md), not as current production behavior.
+That policy is the documented future funded baseline, not current remote behavior. Current remote operation remains `live_readonly` unless a fresh funded-run plan explicitly changes it.

@@ -13,13 +13,13 @@ This eliminates the 5.4% settlement error rate that existed in all previous swee
 
 Same grid as rust-008 and rust-009.
 
-- Data: `data/market-data.db` (runs 004-008, with polymarket_outcome from verify-settlements)
-- Time range: 2026-02-15 to 2026-03-27 (~928h, ~39 days)
-- Ticks: 11,074,264
-- Balance: $200
-- Swept: 6 x 5 x 5 = 150 combinations
-- Fixed: `SPREAD_CAPTURE_THRESHOLD=0.50`, `PEAK_DD_PAUSE_PCT=1.0`
-- Runtime: 176s (~3 min)
+* Data: `data/market-data.db` (runs 004-008, with polymarket_outcome from verify-settlements)
+* Time range: 2026-02-15 to 2026-03-27 (~928h, ~39 days)
+* Ticks: 11,074,264
+* Balance: $200
+* Swept: 6 x 5 x 5 = 150 combinations
+* Fixed: `SPREAD_CAPTURE_THRESHOLD=0.50`, `PEAK_DD_PAUSE_PCT=1.0`
+* Runtime: 176s (~3 min)
 
 ## Command
 
@@ -36,8 +36,8 @@ cargo run -p buba-paint --release -- sweep \
 
 ## Run 008 params (mom=0.0012, ask=0.60, frac=0.05) comparison
 
-- rust-009 (Chainlink): $54,145 PnL, 64.2% WR, 1060 trades, 29.7% DD
-- rust-010 (Polymarket): $53,448 PnL, 65.7% WR, 849 trades, 33.2% DD
+* rust-009 (Chainlink): $54,145 PnL, 64.2% WR, 1060 trades, 29.7% DD
+* rust-010 (Polymarket): $53,448 PnL, 65.7% WR, 849 trades, 33.2% DD
 
 PnL dropped slightly ($697 or 1.3%). Win rate increased 1.5 percentage points (fewer trades but higher quality). Trade count dropped from 1060 to 849 (the Polymarket oracle flipped some window outcomes, causing different Kelly sizing cascades). DD increased from 29.7% to 33.2%.
 
@@ -65,10 +65,10 @@ These are the top five rows by PnL under the stated quality filter.
 
 The clearest stable cluster is mom=0.0012 with ask between 0.55 and 0.60.
 
-- `LATENCY_ARB_MOMENTUM_THRESHOLD=0.0012` is the strongest default momentum. All 25 combinations are profitable. It has the highest average PnL in the sweep at $44,751, with 65.1% mean WR and 34.4% mean DD.
-- `LATENCY_ARB_MAX_ASK=0.55` is the strongest default ask. It has the highest average PnL at $33,235. `0.60` is close behind. `0.50` is too restrictive, while `0.70` increases traffic and drawdown faster than it improves returns.
-- `MAX_POSITION_FRACTION=0.05` is the best general sizing choice. It has the highest average PnL at $35,946, and all 30 combinations are profitable. `0.03` is the safest sizing choice, with 24.0% mean DD and 30 of 30 profitable rows.
-- The specific region `mom=0.0012, ask=0.55` is unusually stable across size. Fractions 0.03 through 0.10 all land between $51,890 and $61,723 PnL, with 65.0% to 65.5% WR and 20.3% to 34.2% DD.
+* `LATENCY_ARB_MOMENTUM_THRESHOLD=0.0012` is the strongest default momentum. All 25 combinations are profitable. It has the highest average PnL in the sweep at $44,751, with 65.1% mean WR and 34.4% mean DD.
+* `LATENCY_ARB_MAX_ASK=0.55` is the strongest default ask. It has the highest average PnL at $33,235. `0.60` is close behind. `0.50` is too restrictive, while `0.70` increases traffic and drawdown faster than it improves returns.
+* `MAX_POSITION_FRACTION=0.05` is the best general sizing choice. It has the highest average PnL at $35,946, and all 30 combinations are profitable. `0.03` is the safest sizing choice, with 24.0% mean DD and 30 of 30 profitable rows.
+* The specific region `mom=0.0012, ask=0.55` is unusually stable across size. Fractions 0.03 through 0.10 all land between $51,890 and $61,723 PnL, with 65.0% to 65.5% WR and 20.3% to 34.2% DD.
 
 ## Key findings
 

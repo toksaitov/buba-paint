@@ -1,18 +1,18 @@
 # CLOB v2 Auth Probe Runs
 
-Independent authenticated CLOB v2 reads against `https://clob.polymarket.com` outside the sidecar code, per the former root `PROMPT.md` "Independent Auth Probe Requirement". The probe script lives at [polymarket-sidecar/scripts/clob-auth-probe.mjs](../../../../polymarket-sidecar/scripts/clob-auth-probe.mjs); it depends only on `@ethersproject/wallet`, `node:https`, and `node:crypto`.
+Independent authenticated CLOB v2 reads against `https://clob.polymarket.com` outside the sidecar code, per the former root handoff's "Independent Auth Probe Requirement". The probe script lives at [polymarket-sidecar/scripts/clob-auth-probe.mjs](../../../../polymarket-sidecar/scripts/clob-auth-probe.mjs); it depends only on `@ethersproject/wallet`, `node:https`, and `node:crypto`.
 
 ## Coverage
 
 Each probe run exercises:
 
-- L1 EIP-712 typed-data signing (`ClobAuthDomain` v1, chainId 137, `ClobAuth(address,timestamp,nonce,message)`, message `This message attests that I control the given wallet`).
-- L2 HMAC-SHA256 signing (`base64_decode(secret)` key, message `${ts}${method}${requestPath}${body}`, base64-then-URL-safe).
-- `GET /time`.
-- `GET /balance-allowance` over both signature_type 1 (POLY_PROXY) and signature_type 2 (POLY_GNOSIS_SAFE) variants.
-- `GET /data/orders` (current open-order endpoint on CLOB v2).
-- `POST /auth/derive-api-key` over a small nonce scan and (when `--force-create`) `POST /auth/api-key`.
-- A stability loop of N authenticated balance + open-order reads.
+* L1 EIP-712 typed-data signing (`ClobAuthDomain` v1, chainId 137, `ClobAuth(address,timestamp,nonce,message)`, message `This message attests that I control the given wallet`).
+* L2 HMAC-SHA256 signing (`base64_decode(secret)` key, message `${ts}${method}${requestPath}${body}`, base64-then-URL-safe).
+* `GET /time`.
+* `GET /balance-allowance` over both signature_type 1 (POLY_PROXY) and signature_type 2 (POLY_GNOSIS_SAFE) variants.
+* `GET /data/orders` (current open-order endpoint on CLOB v2).
+* `POST /auth/derive-api-key` over a small nonce scan and (when `--force-create`) `POST /auth/api-key`.
+* A stability loop of N authenticated balance + open-order reads.
 
 Output JSON is redacted: signer/proxy/funder addresses, signatures, secrets, passphrases, and private keys are replaced with explicit placeholder strings before the file is written.
 
@@ -35,9 +35,9 @@ Total successful authenticated CLOB v2 reads since the May-2 blocker resolved: 2
 
 ## Inferences
 
-- The Phase 9 May-2 "401 Unauthorized/Invalid api key" plus `deriveApiKey` empty-recovery plus `createApiKey` Cloudflare-block pattern is no longer reproducible from either macOS or the Ireland host using the same env values.
-- The preconfigured `POLYMARKET_API_KEY` / `_SECRET` / `_PASSPHRASE` are valid CLOB v2 L2 credentials. `chosen_creds_source=preconfigured` in every passing run.
-- `walletAddress = signer` (`POLY_ADDRESS`), not the proxy, matches the May-2 finding and the SDK behavior.
-- Latency is dominated by network distance: macOS ~135 ms p50, Ireland ~30 ms p50.
+* The Phase 9 May-2 "401 Unauthorized/Invalid api key" plus `deriveApiKey` empty-recovery plus `createApiKey` Cloudflare-block pattern is no longer reproducible from either macOS or the Ireland host using the same env values.
+* The preconfigured `POLYMARKET_API_KEY` / `_SECRET` / `_PASSPHRASE` are valid CLOB v2 L2 credentials. `chosen_creds_source=preconfigured` in every passing run.
+* `walletAddress = signer` (`POLY_ADDRESS`), not the proxy, matches the May-2 finding and the SDK behavior.
+* Latency is dominated by network distance: macOS ~135 ms p50, Ireland ~30 ms p50.
 
 The Finland host probe is now in place. The auth path is no longer the soak blocker. Next gate is the deployment dry-run and the 5-minute readonly soak.

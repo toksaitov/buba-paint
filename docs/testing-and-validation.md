@@ -1,8 +1,10 @@
-# Testing and Validation
+# Testing And Validation
 
-This document describes durable validation practices for the workspace.
+This chapter describes how correctness is checked. It covers ordinary tests, low-latency guardrails, replay/backtest gates, docs fact-checking, and future live-readiness evidence.
 
-## Standard Gates
+## Standard Test Lanes
+
+Repository-wide checks:
 
 ```bash
 cargo fmt --all --check
@@ -20,56 +22,60 @@ make coverage
 make coverage-gate
 ```
 
-Sidecar and dashboard commands:
+Sidecar and dashboard:
 
 ```bash
-cd polymarket-sidecar && npm test
-cd polymarket-sidecar && npm run build
-cd polymarket-sidecar && npm run audit:security
-cd dashboard/client && npm test
-cd dashboard/client && npm run test:e2e
-cd dashboard/client && npm run test:coverage
-cd dashboard/client && npm run build
+cd polymarket-sidecar && npm test && npm run build
+cd dashboard/client && npm test && npm run test:e2e && npm run build
 ```
 
-Test inventory changes frequently. Prefer the Makefile and package scripts over hard-coded test counts.
+Use Makefile targets and package scripts as the current command source. Do not copy old command lists from chat history.
 
-## Rust Tests
+## Rust Testing
 
-Rust unit tests usually live under `src/*/tests/` and are included with `#[cfg(test)] #[path = "tests/foo_tests.rs"] mod tests;`. Integration tests live under crate-level `tests/`.
+Rust unit tests live mostly under `src/*/tests/` and are included with module declarations such as `#[cfg(test)] #[path = "tests/foo_tests.rs"] mod tests;`. Integration tests live under crate-level `tests/`.
 
-Coverage emphasis:
+Expected coverage areas:
 
-- paint bot: replay, execution, fees, accounting, migrations, feeds, strategy logic, and live-system behavior.
-- agent: REST handlers, WebSocket polling/broadcast, DB reader compatibility, process manager, auth, and integration round-trips.
-- dashboard server: auth/JWT, bot proxy handlers, WebSocket proxy, config parsing, user management, error mapping, and degraded proxy behavior.
+* strategy decisions and rejection reasons
+* fee and sizing logic
+* market discovery and settlement verification
+* replay quality and tick replay
+* backtest and sweep gates
+* SQLite migrations and storage layout
+* live-readonly and disarmed live-trading runtime state
+* sidecar client contracts
+* hot-path isolation and worker backpressure
 
-TDD is expected. When a test fails, fix the code, not the test, unless the expected value is provably wrong and the change is documented.
+TDD is the default. When a test fails, fix the code unless the expected value is demonstrably wrong.
 
-## Frontend and E2E Tests
+## Frontend And PWA Testing
 
-Dashboard client tests use Vitest, React Testing Library, jsdom, and MSW where useful. Setup lives under `dashboard/client/src/test/`.
+Dashboard tests use Vitest, React Testing Library, jsdom, MSW where useful, and Playwright for browser coverage.
 
-Playwright lives under `dashboard/client/e2e/` and covers desktop and mobile viewport behavior. Mobile coverage is important because the dashboard is used as an operator surface, but mobile must not become the primary arming surface for future real-money controls.
+Mobile/PWA targets:
 
-Dashboard mobile and PWA acceptance targets:
+* iPhone SE-sized viewport
+* notched iPhone
+* Dynamic Island-sized iPhone
+* iPad Mini
+* large iPad
+* Pixel-class Android phone
+* Android tablet-class layout
+* browser mode and installed standalone simulation
+* light, dark, and armed themes
 
-- iPhone SE-sized viewport for narrow-width pressure.
-- Modern notched iPhone and Dynamic Island-sized iPhone for safe-area toolbar behavior.
-- iPad Mini and large iPad for tablet navigation and chart layout.
-- Pixel-class Android phone and Android tablet-class layouts for manifest/install behavior and touch targets.
-- Browser mode and installed standalone mode simulation.
-- Light, dark, and armed themes.
+The PWA must preserve safe-area spacing, keep touch targets reachable, support app-shell loading, avoid caching API/WebSocket responses, and keep notification copy honest. Current notifications are in-page/browser notifications while the dashboard is running. Full background Web Push requires a separate backend and security design.
 
-The dashboard PWA must use opaque Apple touch icons, normal and maskable Android icons, `viewport-fit=cover`, and safe-area-aware shell sizing. In-page notifications are supported only while the dashboard page or installed app is running. Full background Web Push is a separate backend feature, not part of the current frontend notification contract.
+## Sidecar Testing
 
-## Sidecar Tests
+The sidecar test suite covers provider bootstrap, config parsing, server routes, account/preflight health, activity recovery, user-stream handling, order validation, cancellation, redemption behavior, failure classification, and secret redaction.
 
-The TypeScript sidecar tests cover provider behavior, lifecycle, server routes, auth/account/preflight handling, user-stream resilience, FOK/FAK order submission validation, cancellation, redemption state handling, and failure classification. The sidecar security audit gate fails on moderate-or-higher npm advisories; current upstream Polymarket SDK dependencies still carry low-severity ethers/elliptic advisories with no available fix.
+Before changing venue behavior, re-check official Polymarket docs and update tests against the current contract. Do not assume old CLOB behavior is still true.
 
-Before live-money work touches the sidecar or bot runtime, re-check current official Polymarket docs and update tests to the current venue contract. The sidecar write boundary is implemented, and the bot `live_trading` runtime now has local disarmed CLI-control, admin dashboard-control queueing, terminal risk/halt enforcement, and `live-closeout` evidence export for verification. Deployment and real arming remain gated until later phases.
+## Low-Latency Gates
 
-Low-latency bot safety has its own gate:
+The bot hot path has dedicated checks:
 
 ```bash
 make hot-path-audit
@@ -77,67 +83,98 @@ make live-low-latency-local
 make live-docker-smoke
 ```
 
-The hot-path audit rejects known full DB scans, runtime replay validators, DB or venue side effects inside the pure decision worker, direct feed-path SQLite calls, sidecar/account/control awaits in the runtime loop, legacy direct live-submission methods, direct live venue submissions from the feed path, opt-out `tick_data` defaults, and `quick_check` healthchecks. The local low-latency runner writes evidence under `/tmp` by default and checks the feed writer, concurrent-feed resilience, and Compose configuration without touching the deployment host.
+`audit-hot-path.py` rejects known mistakes: replay validators in runtime paths, SQLite scans in decision paths, direct feed-path DB writes, sidecar/account/control awaits inside the feed reactor, legacy direct live submission paths, direct venue submissions from feed branches, opt-out tick logging defaults, and `quick_check` healthchecks.
 
-The Docker smoke runner starts the local no-Caddy `live_readonly` stack on a Docker-native runtime volume, not a macOS bind-mounted SQLite WAL path. It fails on container restarts, `Bus error`, SQLite disk I/O or malformed-image errors, unintended live order/cancel/redeem rows, failed offline DB integrity checks after shutdown, or failed `validate-replay-data` when feed rows were captured.
+`live-low-latency-local` writes an evidence bundle under `/tmp` by default and checks feed writer, runtime profile, and Compose guardrails.
 
-## Comment and Docs Policy
+`live-docker-smoke` runs the no-Caddy local `live_readonly` stack on Docker-native runtime storage, then checks restart counts, DB health after shutdown, feed classes, replay validation when enough data exists, and zero unintended live venue rows.
 
-`make lint` runs strict Rust and TypeScript comment audits.
+## Data Quality Gates
 
-Rust policy:
-
-- Every Rust function needs concise `///` rustdoc, including private helpers and tests.
-- Avoid inline comments inside Rust function bodies.
-- Prefer self-explanatory names, extracted helpers, and rustdoc.
-- Do not use decorative separator comments.
-
-TypeScript policy:
-
-- Non-directive comments are rejected in dashboard TypeScript.
-- Prefer names and component structure over explanatory comments.
-
-Markdown policy:
-
-- Use ASCII punctuation.
-- Do not use em dashes or double dashes as prose separators.
-- Do not use tables for prose.
-- Keep docs direct and current.
-- Active implementation plans belong in the repo root, not in `docs/`.
-
-## Docs Audit
+Public replay completeness:
 
 ```bash
-make docs-audit
+buba-paint validate-replay-data --data <db> --start <time> --end <time>
 ```
 
-The docs audit checks readme casing, local Markdown links, stale layout references, data directory notes, transient SQLite files under derived data, root scratch files, and active-plan files under `docs/`.
+Backtest tool compatibility:
+
+```bash
+buba-paint validate-backtest-input --data <db> --start <time> --end <time>
+```
+
+Sweep preparation:
+
+```bash
+buba-paint prepare-backtest-input --data <db> --start <time> --end <time> --output /tmp/prepared.db
+```
+
+Funded live evidence:
+
+```bash
+buba-paint validate-live-fidelity --db-path <db> --start <time> --end <time> --output /tmp/live-fidelity.json
+```
+
+Do not run these validators inside the trading hot path. They are offline, pre-sweep, closeout, or diagnostics tools.
 
 ## Coverage Gates
 
-Coverage floors are enforced by `make coverage-gate`. Thin `main.rs` bootstrapping entrypoints are excluded from Rust coverage calculations.
+`make coverage-gate` enforces component coverage floors. Treat coverage as a regression guard, not a proof of trading profitability or venue safety.
 
-Current floor targets:
+Thin `main.rs` entrypoints are excluded from Rust coverage calculations.
 
-- `buba-paint`: 80%
-- `buba-agent`: 90%
-- `buba-dashboard`: 90%
-- dashboard frontend: 80%
+## Docs Fact-Check Checklist
 
-Treat coverage as a regression guard, not as proof of trading safety.
+Every nontrivial docs claim should be traceable:
 
-## Real-Money Readiness Validation
+* commands and gates: `Makefile`
+* Docker service shape: `docker-compose*.yml`
+* deploy workflow: `scripts/deploy-docker.py`
+* bot modes, defaults, storage knobs, strategy knobs, and live caps: `bots/paint/src/config.rs`
+* bot CLI: `bots/paint/src/cli.rs`
+* live-control behavior: `bots/paint/src/live_control.rs` and `bots/paint/src/live.rs`
+* DB tables and migrations: `bots/paint/src/db/schema.rs`
+* CLOB replay blocks: `bots/paint/src/db/clob_replay_blocks.rs`, `bots/paint/src/live_feed_writer.rs`, and `bots/paint/src/backtest/tick_replay.rs`
+* replay/backtest gates: `bots/paint/src/backtest/` and `bots/paint/src/db/backtest_prepare.rs`
+* dashboard pages: `dashboard/client/src/lib/routes.ts`
+* dashboard API calls: `dashboard/client/src/lib/api.ts`
+* dashboard server routes: `dashboard/server/src/main.rs`
+* agent routes and machine/log behavior: `agent/src/main.rs`, `agent/src/machine.rs`, and `agent/src/process_manager.rs`
+* sidecar routes/config/packages: `polymarket-sidecar/src/server.ts`, `polymarket-sidecar/src/config.ts`, and `polymarket-sidecar/package.json`
+* venue facts: current official Polymarket docs, then production-safe readonly checks
 
-Before any funded run, the validation ladder in [LIVE_TRADING_PLAN.md](../LIVE_TRADING_PLAN.md) controls. At minimum, live-money work requires:
+If a fact cannot be traced, either remove it or phrase it as an operational assumption that must be verified.
 
-- local mocked tests for sidecar, bot, dashboard, and failure paths
-- local evidence bundle from `make live-readiness-local`
-- readonly production-host smoke checks
-- replay-grade data validation
-- private live-fidelity validation for funded intervals
-- dashboard Execution state verification
-- terminal halt and closeout export verification
-- explicit operator approval before any order-placement smoke
-- post-run DB/log/account export and postmortem
+## Documentation Hygiene
 
-No validation shortcut is acceptable just because the bankroll is small.
+```bash
+make docs-audit
+make comment-audit
+git diff --check
+```
+
+Docs rules:
+
+* stable docs describe current system truth, not work history
+* unfinished implementation plans are temporary root files only
+* broken local links are not allowed
+* root scratch files are not allowed
+* ASCII punctuation only
+* no prose tables unless the table is genuinely clearer than paragraphs
+* no stale references to deleted prompts or plans
+
+## Future Live-Readiness
+
+Future funded work needs evidence, not confidence:
+
+* local mocked sidecar, bot, dashboard, and failure-path tests
+* local readiness bundle
+* no-order host readonly soak
+* replay-grade public capture validation
+* backtest-input validation
+* private live-fidelity validation for funded intervals
+* dashboard Execution verification
+* terminal halt and closeout export verification
+* explicit operator approval before any order placement
+
+No shortcut is acceptable because the bankroll is small.

@@ -11,13 +11,13 @@ Re-ran the rust-004 sweep after significant code refactoring (workspace restruct
 
 Identical to rust-004. Same data, same grid, same fixed params.
 
-- Data: `data/market-data.db` (runs 004-007)
-- Time range: 2026-02-20T03:13 to 2026-02-28T00:00 (188.8h)
-- Ticks: 2,710,038
-- Balance: $200
-- Swept: 11 x 5 x 5 = 275 combinations (same grid as rust-004)
-- Fixed: `SPREAD_CAPTURE_THRESHOLD=0.50`, `PEAK_DD_PAUSE_PCT=1.0`
-- Runtime: ~42s
+* Data: `data/market-data.db` (runs 004-007)
+* Time range: 2026-02-20T03:13 to 2026-02-28T00:00 (188.8h)
+* Ticks: 2,710,038
+* Balance: $200
+* Swept: 11 x 5 x 5 = 275 combinations (same grid as rust-004)
+* Fixed: `SPREAD_CAPTURE_THRESHOLD=0.50`, `PEAK_DD_PAUSE_PCT=1.0`
+* Runtime: ~42s
 
 ## Command
 

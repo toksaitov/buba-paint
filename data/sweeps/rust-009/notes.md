@@ -11,13 +11,13 @@ Re-ran the rust-008 parameter grid with v0.8 code (provisional settlement, Polym
 
 Identical to rust-008.
 
-- Data: `data/market-data.db` (runs 004-008, rebuilt from scratch)
-- Time range: 2026-02-15 to 2026-03-27 (~928h, ~39 days)
-- Ticks: 11,074,264
-- Balance: $200
-- Swept: 6 x 5 x 5 = 150 combinations (same grid as rust-008)
-- Fixed: `SPREAD_CAPTURE_THRESHOLD=0.50`, `PEAK_DD_PAUSE_PCT=1.0`
-- Runtime: 175s (~3 min)
+* Data: `data/market-data.db` (runs 004-008, rebuilt from scratch)
+* Time range: 2026-02-15 to 2026-03-27 (~928h, ~39 days)
+* Ticks: 11,074,264
+* Balance: $200
+* Swept: 6 x 5 x 5 = 150 combinations (same grid as rust-008)
+* Fixed: `SPREAD_CAPTURE_THRESHOLD=0.50`, `PEAK_DD_PAUSE_PCT=1.0`
+* Runtime: 175s (~3 min)
 
 ## Command
 

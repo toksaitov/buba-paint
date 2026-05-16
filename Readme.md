@@ -1,18 +1,88 @@
-# buba
+# Buba
 
-`buba` is a Rust-first trading research workspace for Polymarket prediction markets. The first bot, `paint`, trades 5-minute BTC Up/Down markets in paper mode and supports authenticated readonly venue monitoring. The workspace includes the bot, a monitoring agent, a dashboard server, a React dashboard client, and a TypeScript Polymarket sidecar.
+Buba is a trading system for short-horizon prediction markets. Its goal is to run a strategy from observation to execution with the same discipline expected of a small exchange-facing system: bounded decision latency, explicit risk limits, reproducible data capture, and enough evidence after a run to replay what the bot saw.
 
-Current state:
+The current implementation focuses on Polymarket BTC 5-minute Up/Down markets. It can run paper sessions, run authenticated readonly sessions against Polymarket, collect replay-grade market data, show an operator dashboard, and run offline backtests and parameter sweeps. Real-money trading is not part of the current operating posture. If it is resumed later, it must start from a fresh plan and pass the documented readiness gates.
 
-- `paper` is the production research mode.
-- `live_readonly` is real authenticated venue/account monitoring plus the shared shadow paper runtime.
-- `live_trading` starts disarmed and is local-verification only. It requires audited live-control commands from the CLI or admin dashboard and is not deployed or armed yet.
-- Replay-grade public feed capture is the default for new research runs.
-- Active live-money implementation planning lives in [LIVE_TRADING_PLAN.md](./LIVE_TRADING_PLAN.md), not in `docs/`.
+## System Overview
 
-Start with [docs/Readme.md](./docs/Readme.md) for durable system documentation. Repository agent instructions live in [CLAUDE.md](./CLAUDE.md); [AGENTS.md](./AGENTS.md) is only a compatibility alias.
+Buba is organized around one latency-sensitive bot and four supporting services.
 
-## Quick Start
+* The Rust bot ingests feeds, maintains in-memory market state, evaluates strategies, simulates paper execution, and writes the run database.
+* The TypeScript sidecar holds Polymarket credentials and performs authenticated CLOB V2 account, preflight, activity, order, cancel, and redemption calls.
+* The agent reads the run database, tails bounded logs, samples machine state, and exposes REST and WebSocket APIs.
+* The dashboard server authenticates users and proxies agent APIs.
+* The dashboard client presents execution state, logs, parameters, machine health, trades, signals, strategies, and equity history.
+
+The bot owns trading decisions. The sidecar owns venue credentials. The agent and dashboard observe the system and queue controls; they must not become dependencies of feed handling or strategy evaluation.
+
+## Strategies
+
+`paint`, the active bot, evaluates three strategy families.
+
+* `latency-arb` trades when Binance BTC moves before Polymarket reprices.
+* `spread-capture` buys both UP and DOWN when the combined asks are cheap enough after fees. Its legs are independent, so one-leg residual exposure is a real risk.
+* `calm-persistence` trades quiet late-window persistence when the currently winning side appears underpriced.
+
+The current remote profile is latency-only: `LATENCY_ARB_ENABLED=true`, `SPREAD_CAPTURE_ENABLED=false`, `CALM_PERSISTENCE_ENABLED=false`, replay-grade capture, and a `$100` shadow balance. Confirm live values from the dashboard Parameters page or `run_metadata.runtime_config_snapshot`.
+
+## Execution Modes
+
+`paper` runs the shared strategy engine with simulated execution.
+
+`live_readonly` adds authenticated sidecar account, preflight, market metadata, user activity, and reconciliation reads while continuing shadow paper trading. It does not submit venue orders.
+
+`live_trading` exists locally as a disarmed real-venue runtime. It has audited controls, live ledger tables, terminal halt state, and durable decision evidence. Remote arming is deferred.
+
+A running process is not an armed process. Sidecar write endpoints and dashboard controls are not permission to trade real money.
+
+## Data Model
+
+The run database is SQLite. It stores market windows, public feed replay inputs, strategy signals, rejection summaries, simulated trades, balance history, live-readonly account snapshots, and live ledger rows when applicable.
+
+Use the data labels exactly:
+
+* `replay_grade` is the configured storage profile for public decision inputs.
+* `sweep_grade` means an interval actually contains the required public feed classes.
+* `backtest_ready` means the current backtester can load and dry-run the interval.
+* `prepared_backtest` means a derived database has been copied, validated, and indexed for large sweeps.
+* `research_grade_live` means a funded live interval has complete private lifecycle, account, control, and reconciliation evidence.
+
+The trading loop does not run replay validators, SQLite `quick_check`, whole-table scans, or dashboard summaries. Those checks are offline gates.
+
+## Quick Deploy
+
+The normal remote deployment is Docker Compose with Caddy TLS in `live_readonly` mode. It runs the bot, sidecar, agent, dashboard, and Caddy on `buba-paint`; only Caddy publishes public ports.
+
+Prerequisites:
+
+* `ssh buba-paint` works from the operator machine.
+* `buba.toksaitov.com` points at the `buba-paint` host.
+* inbound TCP `80` and `443` are open.
+* `.secrets/buba-paint-live-sidecar.env` exists locally and is not committed.
+
+Preview and deploy:
+
+```bash
+make docker-deploy-dry-run
+make docker-deploy
+```
+
+The default deployment target is `live_readonly` on `https://buba.toksaitov.com`. It is for authenticated readonly monitoring and shadow paper trading, not arming real money. Details, cleanup, and partial-redeploy commands are in [docs/deployment-and-ops.md](./docs/deployment-and-ops.md) and [ops/docker/Readme.md](./ops/docker/Readme.md).
+
+## Operation
+
+Remote operation uses Docker Compose with Caddy.
+
+* Caddy is the only public edge and publishes ports `80` and `443`.
+* Caddy provisions TLS and reverse-proxies the dashboard.
+* bot, sidecar, agent, and dashboard stay on a private Compose network.
+* runtime DBs and logs live under `~/buba-paint-live/runtime/<runtime-name>`.
+* stable config and Caddy state live under `~/buba-paint-live/config` and `~/buba-paint-live/caddy`.
+
+## Local Use
+
+Build and run core checks:
 
 ```bash
 cargo build --release
@@ -24,70 +94,34 @@ cd dashboard/client && npm install && npm test
 cd polymarket-sidecar && npm install && npm test
 ```
 
-Requires Rust 1.94+ and Node 22+ for local frontend and sidecar work. Docker Compose starts a local paper stack with paint, agent, and dashboard when combined with the paper/local overrides.
+Start the local paper stack:
 
 ```bash
 mkdir -p .docker/runtime
 docker compose -f docker-compose.yml -f docker-compose.paper.yml -f docker-compose.local.yml up -d --build
 ```
 
-The production deployment path uses Docker Compose with Caddy automatic HTTPS:
+Validate replay and backtest inputs:
 
 ```bash
-make docker-deploy-dry-run
-make docker-deploy
+cargo run -p buba-paint --release -- validate-replay-data --data /path/to/paint.db --start <time> --end <time>
+cargo run -p buba-paint --release -- validate-backtest-input --data /path/to/paint.db --start <time> --end <time>
+cargo run -p buba-paint --release -- prepare-backtest-input --data /path/to/paint.db --start <time> --end <time> --output /tmp/prepared.db
 ```
 
-The default deployment target is `buba.toksaitov.com` on `buba-paint`, running `live_readonly` with no arming and no order placement.
+Use `/tmp` for scratch databases and evidence. Do not put temporary DB, WAL, SHM, log, or readiness artifacts in the repository root.
 
-## Where To Read Next
+## Documentation
 
-- [docs/system-architecture.md](./docs/system-architecture.md): services, data flow, strategy families, dashboard IA, and current execution modes.
-- [docs/commands-and-config.md](./docs/commands-and-config.md): common CLI commands, environment knobs, and local stack commands.
-- [docs/data-and-replay.md](./docs/data-and-replay.md): run data, replay-grade capture, DB schema, backtesting, and sweep safety.
-- [docs/testing-and-validation.md](./docs/testing-and-validation.md): lint, tests, coverage, comment policy, and acceptance gates.
-- [docs/deployment-and-ops.md](./docs/deployment-and-ops.md): local and remote process model, staging, server checks, and cleanup policy.
-- [docs/live-trading-architecture.md](./docs/live-trading-architecture.md): current live-readonly and future live-trading architecture.
-- [docs/polymarket-live-constraints.md](./docs/polymarket-live-constraints.md): venue facts that must be revalidated before funded deployment.
-- [docs/live-session-runbook.md](./docs/live-session-runbook.md): intended operator workflow for a future real-money session.
-- [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md): reserve accounting and exact-run replay semantics.
-- [docs/runs.md](./docs/runs.md): local run index and historical quality notes.
+Start with [docs/Readme.md](./docs/Readme.md). The main chapters are:
 
-## Safety State
+* [docs/system-architecture.md](./docs/system-architecture.md): services, data flow, hot-path boundaries, and dashboard shape.
+* [docs/strategy-and-risk.md](./docs/strategy-and-risk.md): strategies, current enablement, risk controls, and future canary posture.
+* [docs/data-and-replay.md](./docs/data-and-replay.md): replay storage, validation classes, backtest readiness, and sweep preparation.
+* [docs/deployment-and-ops.md](./docs/deployment-and-ops.md): Docker/Caddy deployment, remote layout, partial redeploys, and runtime checks.
+* [docs/testing-and-validation.md](./docs/testing-and-validation.md): test lanes, low-latency gates, docs fact-checking, and readiness evidence.
+* [docs/polymarket-live-constraints.md](./docs/polymarket-live-constraints.md): venue facts that must be revalidated before funded trading.
 
-The sidecar implements the authenticated venue boundary for `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, `/redeem-all`, and `/activity`. The bot now has a local disarmed `live_trading` runtime with ledger, CLI-control, and admin dashboard control queueing under verification. Deployment and real arming remain unfinished phases.
+Agent instructions are in [CLAUDE.md](./CLAUDE.md). [AGENTS.md](./AGENTS.md) is only a compatibility alias.
 
-New runs intended for research should keep:
-
-```bash
-FEED_EVENT_STORAGE_PROFILE=replay_grade
-```
-
-Run `buba-paint validate-replay-data` and `buba-paint validate-backtest-input` before any long sweep. For large intervals, first derive an indexed DB with `buba-paint prepare-backtest-input` so sweeps do not hit append-optimized runtime storage directly. For funded live intervals, also run `buba-paint validate-live-fidelity`. Sweeps refuse inputs that are not both raw-feed complete and backtest-ready, and funded intervals must be `research_grade_live`. Old runs that lack required Binance book state are descriptive evidence only, not trusted optimization inputs.
-
-Runtime replay capture is isolated from the decision path. The bot records feed rows through a bounded writer worker and keeps full replay/fidelity validation offline, in closeout, or in explicit diagnostics.
-
-## Main Commands
-
-```bash
-cargo run -p buba-paint --release -- live --db-path /tmp/paint.db --balance 100
-cargo run -p buba-paint --release -- live-preflight
-cargo run -p buba-paint --release -- live-control --db-path /tmp/paint.db arm --actor operator --reason "preflight passed"
-cargo run -p buba-paint --release -- backtest --data data/market-data.db --start 2026-02-20 --end 2026-03-04
-cargo run -p buba-paint --release -- sweep --data data/market-data.db --start 2026-02-20 --end 2026-03-04 --output data/sweeps/test/sweep.csv
-cargo run -p buba-paint --release -- validate-replay-data --data data/market-data.db --start 2026-02-20 --end 2026-03-04
-cargo run -p buba-paint --release -- validate-backtest-input --data data/market-data.db --start 2026-02-20 --end 2026-03-04
-cargo run -p buba-paint --release -- prepare-backtest-input --data /path/to/runtime/paint.db --start 2026-05-09T00:00:00Z --end 2026-05-10T00:00:00Z --output /tmp/prepared-backtest.db
-cargo run -p buba-paint --release -- validate-live-fidelity --db-path /path/to/live-run/paint.db --start 2026-05-01T00:00:00Z --end 2026-05-01T01:00:00Z
-cargo run -p buba-paint --release -- db-footprint --db-path /tmp/paint.db
-```
-
-Never create temporary or test databases in the project root. Use `/tmp` or test tempfiles.
-
-## Data Preservation
-
-`runs/` contains primary run data and should not be edited manually. `data/` contains derived experiments, sweeps, caches, and merged data that are reproducible but still useful. Database files should stay out of Git and LFS history.
-
-## Active Work
-
-Root active-plan files are allowed when work is unfinished and intentionally visible. Stable docs must not contain active implementation plans. The current active plan is [LIVE_TRADING_PLAN.md](./LIVE_TRADING_PLAN.md). Delete it when the live-trading work is complete and move only durable facts into `docs/`.
+Stable documentation belongs under `docs/`. Root planning files are temporary and should be removed when closed. Run evidence belongs under `data/experiments/...`, sweep outputs under `data/sweeps/...`, and primary run data under `runs/`.

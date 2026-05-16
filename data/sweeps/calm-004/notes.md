@@ -4,8 +4,8 @@
 
 This sweep is intentionally narrow. It only re-tests the two calm knobs that the live data challenged:
 
-- `CALM_PERSISTENCE_MAX_ASK`
-- `CALM_PERSISTENCE_MIN_EXPECTED_EDGE`
+* `CALM_PERSISTENCE_MAX_ASK`
+* `CALM_PERSISTENCE_MIN_EXPECTED_EDGE`
 
 Everything else stays pinned to the previously viable calm row.
 
@@ -59,7 +59,7 @@ Top rows by PnL:
 
 Important loser from the old worldview:
 
-- `MAX_ASK=0.75`, `MIN_EXPECTED_EDGE=0.00` only reaches `+$43,796.78` with `34.5%` max DD
+* `MAX_ASK=0.75`, `MIN_EXPECTED_EDGE=0.00` only reaches `+$43,796.78` with `34.5%` max DD
 
 ## Interpretation
 
@@ -69,8 +69,8 @@ First, `0.75` is no longer the best calm ask cap. Once calm actually gets its ow
 
 Second, the new expected-edge floor is a real drawdown control. `MIN_EXPECTED_EDGE=0.05` on the `0.65` row gives up some raw PnL versus `0.00`, but it materially improves the historical drawdown profile:
 
-- `0.65 / 0.00` -> `26.3%` DD
-- `0.65 / 0.05` -> `21.1%` DD
+* `0.65 / 0.00` -> `26.3%` DD
+* `0.65 / 0.05` -> `21.1%` DD
 
 That makes `0.65 / 0.05` the best historical compromise row in this narrowed sweep.
 
@@ -80,7 +80,7 @@ That makes `0.65 / 0.05` the best historical compromise row in this narrowed swe
 
 The best broad historical compromise after the calm fix is:
 
-- `CALM_PERSISTENCE_MAX_ASK=0.65`
-- `CALM_PERSISTENCE_MIN_EXPECTED_EDGE=0.05`
+* `CALM_PERSISTENCE_MAX_ASK=0.65`
+* `CALM_PERSISTENCE_MIN_EXPECTED_EDGE=0.05`
 
 That is the row taken forward into the exact `run-011` combined confirmation.

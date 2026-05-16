@@ -4,8 +4,8 @@ This directory holds derived parameter sweep outputs.
 
 Preferred naming:
 
-- `run-XXX-topic-NNN`
-- example: `run-012-001`
+* `run-XXX-topic-NNN`
+* example: `run-012-001`
 
 Every new sweep directory should include either `notes.md`, `RUNNING.md`, or `SWEEP_BLOCKED.md` explaining the input DB, git SHA, command, and conclusion.
 

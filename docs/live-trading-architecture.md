@@ -1,196 +1,141 @@
 # Live Trading Architecture
 
-This document describes the real-money architecture that now exists in the local tree.
+This chapter documents the live-capable architecture in the local tree. It is advanced context for future funded work. It is not permission to deploy or arm real money.
 
-The system has three execution modes:
+## Modes
 
-- `paper`: the current production-quality paper trading and backtest environment
-- `live_readonly`: authenticated venue/account monitoring plus the shared shadow paper runtime, still without order placement
-- `live_trading`: local disarmed real venue runtime for ledger, reconciliation, CLI-control, and admin dashboard-control verification
+The mode boundary is `Config::execution_mode`.
 
-The mode boundary is explicit in `Config::execution_mode`. The goal is to keep the strategy core shared while isolating venue-specific risk.
+* `paper`: simulated execution, backtests, sweeps, and ordinary research.
+* `live_readonly`: authenticated venue/account reads plus the shared shadow paper runtime.
+* `live_trading`: local disarmed real-venue runtime with ledger, reconciliation, risk halt, sidecar write boundary, and audited controls.
 
-## Shared bot core
+Remote operation should stay in `live_readonly` unless a fresh funded-run plan explicitly changes it.
 
-These parts stay shared across paper, live-readonly, and future live-trading:
+## Shared Decision Core
 
-- market discovery
-- public feeds
-- feature engine
-- strategy evaluation
-- portfolio router
-- reserve and bankroll policy
-- rejection tracking
-- signal telemetry
-- backtest parity tooling
+Paper, readonly, backtest, and future live paths share one strategy core.
 
-This keeps parameter research, paper runs, and live runs on one decision engine instead of three diverging code paths.
+Shared components:
 
-## Venue boundary
+* market discovery
+* public feed ingestion
+* feature engine
+* strategy evaluation
+* bankroll and reserve policy
+* exposure checks
+* rejection tracking
+* signal telemetry
+* replay and backtest tooling
 
-The venue boundary is intentionally narrow:
+The hot path updates in-memory state, evaluates the latest decision snapshot, and enqueues bounded work. It must not run SQLite scans, replay validators, dashboard aggregation, account polling, control polling, sidecar calls, or venue submission.
 
-- `PaperVenue`: current simulated order submission and settlement path
-- `LiveReadonlyVenue`: authenticated account and venue state, but no order placement
-- `LiveVenue`: real order submission, fills, redemption, and reconciliation behind explicit local arming
+## Venue Boundary
 
-In the current local tree, `buba-paint live` supports `EXECUTION_MODE=live_readonly` as a real authenticated venue/account monitor layered on top of the shared paper runtime. It creates readonly live sessions, polls live account state, persists account snapshots, logs reconciliation events, and continues to generate shadow paper signals/trades/equity without placing real orders. `EXECUTION_MODE=live_trading` can start locally, but it starts disarmed, requires audited live-control commands from the CLI or admin dashboard, atomically persists critical decision evidence plus live intents before sidecar submission, and blocks on unhealthy preflight, stale account state, missing replay-grade capture, terminal halt state, or unresolved reconciliation.
+The venue boundary is intentionally narrow. The current code exposes three behavioral roles rather than three public venue types:
 
-## Authenticated sidecar
+* paper execution handles simulated orders and settlement
+* live-readonly execution handles authenticated account, preflight, metadata, activity, and reconciliation reads
+* live write execution handles real order, cancel, redemption, fill, and reconciliation surfaces behind explicit arming
 
-The authenticated Polymarket boundary lives in `polymarket-sidecar/`.
+In `live_readonly`, the bot creates readonly live sessions, polls account/activity/preflight state through the sidecar, persists account snapshots and reconciliation facts, and continues shadow paper trading. It does not submit, cancel, redeem, or arm venue actions.
 
-Reason:
+In `live_trading`, the process starts disarmed. Live submission is routed through a worker that persists critical decision evidence and live order intent before any sidecar call. Unknown submission outcomes, stale account truth, user-stream failure, replay capture failure, terminal halt state, or critical reconciliation block new risk.
 
-- official Rust support covers the CLOB API
-- official relayer and gasless redemption support is TypeScript and Python only
-- proxy-wallet accounts are safest when the credential-heavy boundary is isolated from the main bot runtime
+## Sidecar Contract
 
-The sidecar owns:
+`polymarket-sidecar` isolates private venue credentials and authenticated Polymarket calls from the Rust bot. It is a private service in Docker Compose and is not exposed to the browser.
 
-- CLOB V2 auth material
-- relayer auth
-- private user-stream connectivity
-- allowance and account checks
-- real venue order placement through the sidecar boundary
-- cancellation and redemption submission through the sidecar boundary
+Local HTTP routes:
 
-In the current local tree, the sidecar has a real readonly provider for:
+* `GET /health`
+* `GET /account`
+* `GET /activity`
+* `POST /preflight`
+* `POST /orders`
+* `POST /cancel`
+* `POST /cancel-all`
+* `POST /redeem-all`
 
-- `GET /health`
-- `GET /account`
-- `POST /preflight`
+Implemented responsibilities:
 
-These endpoints use real proxy-wallet auth, host geoblock checks, account-state reads, active-market discovery, CLOB V2 market metadata, pUSD collateral diagnostics, and authenticated user-stream connectivity.
+* CLOB V2 auth bootstrap
+* geoblock, clock, account, collateral, allowance, and market metadata checks
+* pUSD collateral diagnostics
+* authenticated user-stream and activity recovery
+* FOK/FAK order submission boundary
+* single-order cancel and cancel-all boundary
+* pUSD CTF redemption boundary
+* raw-safe failure classification and details
+* secret redaction
 
-The sidecar now also carries its own crash-resistance and readiness model:
+The active sidecar packages are `@polymarket/clob-client-v2`, `@polymarket/builder-relayer-client`, and `@polymarket/builder-signing-sdk`. The configured proxy-wallet model uses `POLYMARKET_SIGNATURE_TYPE=1`; `POLYMARKET_FUNDER` defaults to `POLYMARKET_PROXY_WALLET` when omitted.
 
-- websocket user-stream lifecycle is explicit and reconnect-safe
-- auth bootstrap failures are not cached forever
-- health stays live at `200` but includes additive readiness fields
-- account refresh remains fail-closed for money and order facts
-- graceful shutdown and fatal-process logging are part of the process model
+Dashboard controls never call these sidecar routes directly. Controls go through dashboard server, agent, the bot control ledger, and the running bot.
 
-The Rust bot talks to the sidecar over a private local HTTP contract:
+## Ledger And Control
 
-- `GET /health`
-- `GET /account`
-- `POST /preflight`
-- `POST /orders`
-- `POST /cancel`
-- `POST /cancel-all`
-- `POST /redeem-all`
-- `GET /activity`
+Live state is persisted as ledger facts, not inferred from one balance number.
 
-The sidecar now implements the authenticated venue boundary for health, account, preflight, FOK/FAK order submission, single-order cancellation, cancel-all, pUSD CTF redemption, and sanitized activity recovery. The bot live runtime can call these surfaces only after audited arming and fail-closed checks. Dashboard controls queue bot-applied live-control commands through the agent and control ledger; they never call the sidecar or venue directly.
+The live schema records:
 
-The active CLOB client package is `@polymarket/clob-client-v2`. The sidecar uses the V2 constructor shape, V2 signature types, and `createOrDeriveApiKey` for L1-to-L2 auth bootstrap. It no longer depends on V1 CLOB or order-utils packages. Gasless redemption uses `@polymarket/builder-relayer-client` and `@polymarket/builder-signing-sdk`; redemption stays fail-closed unless the required builder relayer credentials are configured.
+* sessions
+* account snapshots
+* order intents
+* venue orders
+* fills
+* redemptions
+* reconciliation events
+* control state
+* control commands and audit
 
-The preferred host process model is no longer an unsupervised `nohup node` process. The target deployment shape is:
+`live-control` queues audited commands into the DB. Supported actions are `preflight`, `arm`, `disarm`, `stop-after-flat`, `kill-switch`, `cancel-all`, and `redeem-all`. The running bot applies commands; the agent and dashboard only enqueue and observe.
 
-- sidecar code from `~/buba-paint-live/current/polymarket-sidecar`
-- env from `~/buba-paint-live/config/sidecar.env`
-- logs at `~/buba-paint-live/logs/sidecar.log`
-- supervised restart policy
+`live-closeout` exports evidence after terminal halt or funded-session shutdown. It does not clear halted state or make a DB re-armable.
 
-## Proxy-wallet account model
+## Risk And Halt
 
-The first real-money pilot is designed for a Polymarket email or Magic Link account:
+Future live risk is enforced from authoritative account snapshots plus the local ledger.
 
-- account type: `POLY_PROXY`
-- signature type: `1`
-- credentials: exported Polymarket private key
-- wallet/funder: the proxy wallet shown by Polymarket (the local sidecar config defaults `POLYMARKET_FUNDER` to `POLYMARKET_PROXY_WALLET` when it is omitted)
-- gasless path: builder relayer credentials for the currently installed relayer SDK
+Tracked risk state includes:
 
-The sidecar config reflects that account model directly.
+* session start equity
+* UTC-day baseline equity
+* high-water mark
+* trough
+* current equity
+* daily loss
+* session drawdown
+* percentage drawdown
+* terminal halt reason
 
-The current collateral model is pUSD. Internal account values remain USD-denominated numbers derived from 6-decimal collateral units. User-facing copy should say pUSD or collateral where the venue-specific distinction matters.
+Current defaults are `LIVE_MAX_DAILY_LOSS_USD=15`, `LIVE_MAX_SESSION_DRAWDOWN_USD=20`, and the existing `MAX_DRAWDOWN_PCT`.
 
-## Strategy readiness
+Terminal halt is persistent. Drawdown breach, daily-loss breach, auth/geoblock failure, storage failure, replay capture failure, critical reconciliation, unresolved unknown order state, or prolonged account/user-stream/venue degradation blocks new submissions. Restarting `live_trading` against terminal live state fails fast.
 
-The implementation target is live capability for all strategy families. The initial funded rollout policy is intentionally narrower: enable `latency-arb` only by runtime config and keep `calm-persistence` and `spread-capture` disabled until real-money data and residual-exposure handling justify enabling them.
+## Replay And Fidelity
 
-Control-command application is isolated from remote account/preflight/activity refresh so emergency operator commands are not delayed behind venue polling. Feed, persistence, strategy, and submission workers use bounded queues and timed shutdown; closeout should report any worker that cannot flush within the configured shutdown budget.
+Replay-grade public capture remains mandatory. It is not enough for funded research.
 
-The readiness matrix is surfaced in the sidecar preflight request and should stay aligned with actual rollout policy. Spread capture is not atomic because each leg is an independent order, so it needs explicit residual-exposure handling before it can be enabled with real money.
+Funded intervals need both:
 
-## Live ledger and telemetry
+* `validate-replay-data` reporting public `sweep_grade`
+* `validate-live-fidelity` reporting private `research_grade_live`
 
-Live-money state is not modeled as one balance number. The additive live tables capture:
+`research_grade_live` requires explainable decision evidence, market metadata, token ID, order fields, client order ID, submit/ack/update timing, venue state, fills/cancels/unknowns, account snapshots, reconciliation events, and control audit.
 
-- live sessions
-- order intents
-- venue orders
-- fills
-- account snapshots
-- redemptions
-- reconciliation events
-- control audit actions
+Even then, replay is not an exact exchange simulator. Queue position, hidden liquidity, matching-engine internals, network path differences, and relayer timing are not fully reconstructable.
 
-The intended cash model is:
+## Safe Workflow
 
-- `cash_available`
-- `cash_reserved_for_orders`
-- `inventory_mark_value`
-- `redeemable_value`
-- `pending_redeem_value`
-- `total_equity`
+Current safe workflow:
 
-The first real-money pilot may spend only `cash_available`.
+1. use `paper` for ordinary research and dashboard work
+2. use Docker/Caddy `live_readonly` for authenticated readonly operation
+3. run `live-preflight` only as a readonly readiness check
+4. use `live_trading` only in local or mocked verification unless a fresh funded plan explicitly approves otherwise
+5. use `live-control` and dashboard Execution controls only as bot-ledger controls, never as direct sidecar controls
+6. use `live-closeout` after terminal halt or funded-session shutdown
+7. validate replay, backtest input, and live fidelity offline before using funded data for research
 
-## Live risk and terminal halt policy
-
-Live risk is enforced from authoritative account snapshots and the local live ledger. The bot tracks session start equity, UTC-day baseline equity, high-water mark, trough, current equity, daily loss, and session drawdown. Current defaults are `LIVE_MAX_DAILY_LOSS_USD=15` and `LIVE_MAX_SESSION_DRAWDOWN_USD=20`, with the existing `MAX_DRAWDOWN_PCT` still enforced where applicable.
-
-Terminal halt is persistent. Session drawdown, daily loss, geoblock/auth failure, storage-quality failure, critical reconciliation, unresolved unknown order state, or account/user-stream/venue degradation beyond 2 minutes sets the live session to `halted` or `unknown_order`, blocks new submissions, attempts cancel-all, and records audit/reconciliation evidence. Restarting `live_trading` against a DB that contains terminal live state fails fast. The next funded attempt must use a new run DB.
-
-The `live-closeout` CLI exports the evidence package for postmortem:
-
-- summary and manifest JSON
-- SQLite quick-check result
-- replay-quality report
-- live-fidelity report
-- live session, intent, order, fill, account, redemption, reconciliation, control-state, command, and audit exports
-- postmortem stub
-
-Closeout records `live_closeout_exported` but does not clear halted state. The dashboard Execution summary surfaces halt reason, halt time, high-water mark, trough/current equity, daily loss, session drawdown, and closeout status when present.
-
-Private live-account SQLite capture must stay compact. Public market feed capture for research runs should use `FEED_EVENT_STORAGE_PROFILE=replay_grade` so future sweeps have the Binance book state needed for parity:
-
-- one row per state transition
-- periodic account snapshots every 60s
-- event-driven snapshots after order, fill, redeem, and reconcile transitions
-- optional forensic raw private payload capture only as rotated compressed files outside SQLite
-
-## Live fidelity and replay limits
-
-Funded live data is research-usable only when both gates pass:
-
-- public `validate-replay-data` classifies the interval as `sweep_grade`
-- private `validate-live-fidelity` classifies the interval as `research_grade_live`
-
-The private gate checks that every funded order can be explained from persisted decision evidence, strategy features, market/window state, fee and tick metadata, token ID, requested order fields, client order ID, submit/ack/update timing, venue status, fills or cancels, account snapshots, reconciliation events, and control audit. Missing lifecycle or decision evidence downgrades the interval to `descriptive_only_live`.
-
-Even `research_grade_live` is not an exact exchange simulator. Queue position, hidden liquidity, network path differences, matching-engine internals, and relayer timing cannot be perfectly reconstructed from public and account-visible data. Postmortems must state those limits instead of treating replay as ground truth.
-
-## Fee handling
-
-Fee handling can no longer be hardcoded safely.
-
-The sidecar readonly preflight includes CLOB V2 market fee metadata where available. The write boundary returns fee metadata, tick size, min size, submit timing, CLOB status, and raw-safe response fragments in `details_json`. The bot runtime persists those summaries into the live ledger before and after sidecar calls. Paper mode and backtests should use the same fee-resolution path as the live-readiness surfaces. This is necessary because live venue data has shown fee-surface inconsistency between market objects and the `fee-rate` endpoint for BTC 5-minute markets.
-
-## Current safe workflow
-
-Local-only safe workflow:
-
-1. keep `EXECUTION_MODE=paper` for ordinary research and dashboard work
-2. run `live-preflight` with `EXECUTION_MODE=live_readonly` against the sidecar
-3. run `buba-paint live` with `EXECUTION_MODE=live_readonly` for an authenticated readonly soak
-4. run `EXECUTION_MODE=live_trading buba-paint live` only in local or mocked verification until deployment is explicitly planned
-5. use `buba-paint live-control --db-path <db> arm|disarm|stop-after-flat|kill-switch|cancel-all|redeem-all --actor <name> --reason <text>` or the admin dashboard Execution controls for local live-control state
-6. use `buba-paint live-closeout --db-path <db> --output-dir <dir> --actor <name> --reason <text>` after a terminal halt or funded-session shutdown
-7. inspect live readiness, control audit, risk/halt facts, and reconciliation state in the dashboard Execution page and agent live endpoints
-8. do not deploy or arm real trading until host rollout, manual canary checks, and final verification phases pass
-
-This repository state is intentionally staged for correctness. It exposes real sidecar venue actions and a local disarmed bot runtime without pretending that deployed live-money operation is ready.
+The architecture exposes real venue-action boundaries, but the current operating posture is still no-order `live_readonly`.

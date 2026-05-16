@@ -9,19 +9,19 @@ Extended the sweep from the 8-day window (Feb 20-28) used in sweeps 001-005 to t
 
 ## Parameters
 
-- Data: `data/market-data.db` (runs 004-007)
-- Time range: 2026-02-15 to 2026-03-20 (769.3h, ~32 days)
-- Ticks: 8,788,883
-- Balance: $200
-- Swept:
-  - `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.001 to 0.003, step 0.0002 (11 values)
-  - `LATENCY_ARB_MAX_ASK`: 0.45, 0.50, 0.55, 0.60, 0.65 (5 values)
-  - `MAX_POSITION_FRACTION`: 0.05, 0.075, 0.10, 0.125, 0.15 (5 values)
-- Fixed:
-  - `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
-  - `PEAK_DD_PAUSE_PCT=1.0` (disables peak drawdown pause)
-- Total: 275 combinations
-- Runtime: ~4 min
+* Data: `data/market-data.db` (runs 004-007)
+* Time range: 2026-02-15 to 2026-03-20 (769.3h, ~32 days)
+* Ticks: 8,788,883
+* Balance: $200
+* Swept:
+  * `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.001 to 0.003, step 0.0002 (11 values)
+  * `LATENCY_ARB_MAX_ASK`: 0.45, 0.50, 0.55, 0.60, 0.65 (5 values)
+  * `MAX_POSITION_FRACTION`: 0.05, 0.075, 0.10, 0.125, 0.15 (5 values)
+* Fixed:
+  * `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
+  * `PEAK_DD_PAUSE_PCT=1.0` (disables peak drawdown pause)
+* Total: 275 combinations
+* Runtime: ~4 min
 
 ## Command
 

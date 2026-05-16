@@ -1,40 +1,48 @@
 # CLAUDE.md
 
-AI development guidelines for the buba workspace. [AGENTS.md](./AGENTS.md) is only a compatibility alias. Treat this file as the canonical repository instruction file.
+Canonical repository instructions for coding agents. [AGENTS.md](./AGENTS.md) is only a compatibility alias.
 
-## Project
+## Context Reconstruction
 
-`buba` is a Rust-first trading research workspace for Polymarket prediction markets. The first bot, `paint`, trades 5-minute BTC Up/Down markets in paper mode, supports authenticated `live_readonly` venue monitoring, and has a local disarmed `live_trading` runtime for mocked verification.
+Do not rely on chat history. Rebuild context from repository files:
 
-Primary components:
+1. [Readme.md](./Readme.md)
+2. [docs/Readme.md](./docs/Readme.md)
+3. [docs/system-architecture.md](./docs/system-architecture.md)
+4. [docs/strategy-and-risk.md](./docs/strategy-and-risk.md)
+5. [docs/data-and-replay.md](./docs/data-and-replay.md)
+6. [docs/deployment-and-ops.md](./docs/deployment-and-ops.md)
+7. [docs/testing-and-validation.md](./docs/testing-and-validation.md)
 
-- `bots/paint`: bot runtime, strategies, feeds, SQLite persistence, backtests, sweeps, settlement verification, and replay-data validation.
-- `agent`: read-only DB monitor with REST and WebSocket APIs.
-- `dashboard/server`: authenticated dashboard backend and agent proxy.
-- `dashboard/client`: React dashboard.
-- `polymarket-sidecar`: TypeScript authenticated Polymarket boundary for readonly checks, FOK/FAK order submission, cancellation, and redemption.
+Use executable truth for factual claims: `Makefile`, Compose files, `bots/paint/src/config.rs`, `bots/paint/src/cli.rs`, dashboard route/API files, agent routes, sidecar config/server files, DB schema, validators, and current official Polymarket docs for venue behavior.
 
-Durable system docs start at [docs/Readme.md](./docs/Readme.md). Active unfinished live-money work lives in [LIVE_TRADING_PLAN.md](./LIVE_TRADING_PLAN.md), not in `docs/`.
+## Repository Map
 
-Current safety state:
+* `bots/paint`: Rust bot runtime, strategies, feeds, SQLite persistence, backtests, sweeps, live-readonly, disarmed live-trading, live-control, and replay validators.
+* `polymarket-sidecar`: TypeScript authenticated Polymarket boundary for CLOB V2 auth, account/preflight/activity, FOK/FAK orders, cancellation, and redemption.
+* `agent`: read-only monitor over the bot DB, runtime logs, process control, and machine state.
+* `dashboard/server`: authenticated dashboard backend and agent proxy.
+* `dashboard/client`: React operator dashboard.
+* `docs/`: stable system documentation.
+* `ops/`: deployment artifacts, with Docker/Caddy preferred and systemd retained as legacy reference.
+* `scripts/`: repo automation, deploy runners, audits, profiling, and smoke gates.
+* `runs/`: primary run data. Do not edit manually.
+* `data/`: derived experiments, sweeps, caches, and reports.
 
-- `paper` is the production research mode.
-- `live_readonly` is real authenticated venue/account monitoring plus shadow paper trading.
-- `live_trading` starts disarmed, requires audited live-control commands from the CLI or admin dashboard, and is not deployed or armed.
-- Sidecar `/health`, `/account`, `/preflight`, `/orders`, `/cancel`, `/cancel-all`, and `/redeem-all` are real venue-boundary surfaces.
-- Bot runtime order submission, live ledger persistence, reconciliation, CLI control, and admin dashboard control queueing are local-verification surfaces only. Deployment and real arming remain unfinished phases.
+Current operating posture: `paper` and Docker/Caddy `live_readonly` are normal. Real-money trading is deferred and requires a fresh explicit plan before arming.
 
-## Build and Test
+## Build And Test
 
 ```bash
 cargo build
 cargo build --release
-cargo test
 cargo fmt --all --check
 cargo clippy --workspace -- -D warnings
+cargo test
 make lint
 make comment-audit
 make docs-audit
+make hot-path-audit
 make test-fast
 make test-integration
 make test-slow
@@ -43,144 +51,100 @@ make test-all
 make coverage
 make coverage-gate
 
-cd dashboard/client && npm test
-cd dashboard/client && npm run test:e2e
-cd dashboard/client && npm run test:coverage
-cd polymarket-sidecar && npm test
-cd polymarket-sidecar && npm run build
+cd dashboard/client && npm test && npm run build
+cd polymarket-sidecar && npm test && npm run build
 ```
 
-Use [docs/commands-and-config.md](./docs/commands-and-config.md) for command details.
+Use [docs/commands-and-config.md](./docs/commands-and-config.md) for command details and environment knobs.
 
-## Architecture Rules
+## Engineering Rules
 
-1. No `unwrap()` or `expect()` in library code. Use `anyhow::Result` or `thiserror`. Acceptable only in tests and in `main()`.
-2. Use `f64`, never `f32`, for prices, balances, and fractions.
+1. No `unwrap()` or `expect()` in library code. Use `anyhow::Result` or typed errors. Tests and thin `main()` bootstraps are the only normal exceptions.
+2. Use `f64`, never `f32`, for prices, balances, probabilities, and fractions.
 3. Config is immutable after construction. Pass `&Config`.
-4. Clock is injectable through the `Clock` trait.
-5. Database layer owns SQL. Do not add raw SQL outside `src/db/`.
-6. Strategies are stateful structs implementing the `Strategy` trait.
+4. Time is injectable through the `Clock` trait where behavior needs deterministic tests.
+5. SQL belongs in `bots/paint/src/db/` or the owning DB boundary. Do not scatter raw SQL through runtime logic.
+6. Strategies are stateful structs implementing the strategy interfaces already present in the bot.
 7. Unit tests live under `src/*/tests/` via `#[cfg(test)] #[path = "tests/foo_tests.rs"] mod tests;`. Integration tests live under crate-level `tests/`.
-8. TDD is required. When a test fails, fix the code, not the test, unless the expected value is demonstrably wrong.
+8. TDD is expected. When a test fails, fix the code unless the expected value is demonstrably wrong.
 9. Frontend tests use Vitest and React Testing Library, colocated in `__tests__/` directories.
-10. After major behavior, schema, API, or workflow changes, revise relevant docs. Do not append blindly.
+10. After behavior, schema, API, deployment, or workflow changes, update the relevant docs.
 
-## Documentation Style
+## Hot-Path Rules
 
-When writing Markdown, comments, or prose:
+The trading hot path may update in-memory state, compute features, evaluate strategy candidates, and enqueue bounded work. It must not:
 
-- Use ASCII punctuation. Do not use em dashes or double dashes as prose separators.
-- Do not overuse bold. Markdown must be readable as plain text.
-- Do not use ASCII art diagrams.
-- Do not use tables for prose.
-- Do not hard-wrap prose.
-- Keep writing direct and current.
-- Every Rust function needs concise `///` rustdoc, including private helpers and tests.
-- Do not leave inline comments inside Rust function bodies.
-- Do not use decorative separator comments.
-- When touching a file, remove or rewrite stale comments.
-- Active implementation plans belong in the repo root, not in `docs/`.
+* run SQLite whole-table scans
+* run replay validators or `quick_check`
+* aggregate dashboard summaries
+* await sidecar/account/control/network work
+* perform direct feed-path SQLite persistence
+* submit venue orders directly from feed branches
 
-`make lint` enforces strict Rust and TypeScript comment policies. `make docs-audit` enforces documentation hygiene.
+Replay-grade capture, decision evidence, live intent durability, sidecar submission, control polling, account refresh, settlement resolution, and observer summaries belong in bounded workers. Dashboard and agent freshness may degrade before bot latency degrades.
 
-## Module Map
+## Documentation Rules
 
-Paint bot:
+* Use ASCII punctuation.
+* Do not use em dashes or double dashes as prose separators.
+* Do not use decorative separator comments.
+* Do not use tables for prose.
+* Use `*` for unordered Markdown list markers.
+* Keep docs direct and current.
+* Active implementation plans belong in the repo root only while unfinished.
+* Stable docs under `docs/` describe current system truth, not chronological implementation history.
+* When touching a doc, verify nontrivial claims against code/config or official docs.
 
-- `cli.rs`: CLI parsing and command dispatch.
-- `live.rs`: shared paper, readonly, and disarmed live-trading runtime.
-- `live_readonly.rs`: readonly sessions, preflight, account snapshots, reconciliation, and rollups.
-- `config.rs`: env config, sweep overrides, execution mode, caps, reserve knobs, and settlement mode.
-- `feeds/`: Binance, CLOB, Chainlink, and feed utility code.
-- `strategies/`: latency-arb, spread-capture, and calm-persistence.
-- `strategy_cycle.rs`: shared evaluation, routing, signal persistence, and submission.
-- `executor.rs`: shared paper execution model.
-- `signal_features.rs`: shared feature engine.
-- `bankroll.rs`, `position_manager.rs`, `portfolio.rs`: sizing, trade lifecycle, reserve handling, and regime routing.
-- `market_discovery.rs`, `fees.rs`, `verify.rs`: venue metadata, dynamic fees, and settlement verification.
-- `backtest/`: replay, feed state, window manager, runner, and sweeps.
-- `db/`: schema, database wrapper, historical upgrades, and derived-data build tools.
-- `live_sidecar.rs`: typed Rust client for the local sidecar.
+Rust comment policy:
 
-Agent:
+* Every Rust function needs concise `///` rustdoc, including private helpers and tests.
+* Avoid inline comments inside Rust function bodies.
+* Prefer names, extracted helpers, and rustdoc over explanatory comments.
 
-- `api.rs`, `db_reader.rs`, `ws.rs`, `process_manager.rs`, `auth.rs`, `types.rs`, `error.rs`.
+TypeScript comment policy:
 
-Dashboard server:
+* Non-directive comments are rejected in dashboard TypeScript.
+* Prefer naming and component structure over explanatory comments.
 
-- `auth.rs`, `config.rs`, `db.rs`, `proxy.rs`, `error.rs`, and `api/*`.
-
-Dashboard client:
-
-- `pages/`: Login, Overview, Execution, Logs, Equity, Trades, Signals, Strategies.
-- `hooks/`: API/cache hooks.
-- `lib/`: API client, routes, types, formatting, WebSocket, trading-summary presentation helpers.
-- `components/`: layout, common, UI primitives, charts, tables, and dashboard surfaces.
-- `stores/`: auth, mobile nav, and theme state.
-
-Dashboard mobile targets are iPhone SE-sized, notched iPhone, Dynamic Island-sized iPhone, iPad Mini, large iPad, Pixel-class Android phone, and Android tablet-class layouts. Installed PWA mode must preserve safe-area spacing and must not hide real-money controls behind untested mobile-only layouts. Keep details in [docs/testing-and-validation.md](./docs/testing-and-validation.md).
-
-Sidecar:
-
-- TypeScript package for proxy-wallet auth, account/preflight checks, user-stream health, and future real order/redeem boundary.
-
-Use [docs/system-architecture.md](./docs/system-architecture.md) for the durable architecture narrative.
+`make lint` and `make docs-audit` enforce these policies.
 
 ## Data Preservation
 
-`runs/` contains primary run data and must not be edited manually. `data/` contains derived data and should still be treated as valuable. Do not create temporary or test databases in the project root. Use `/tmp` or test tempfiles.
+Do not create scratch DBs, WAL files, logs, screenshots, or evidence bundles in the repo root. Use `/tmp` or an ignored data path.
 
-Replay-grade capture is the research default. Run `buba-paint validate-replay-data` and `buba-paint validate-backtest-input` before long sweeps. Funded live intervals also require `buba-paint validate-live-fidelity` before they can be used for parameter selection. See [docs/data-and-replay.md](./docs/data-and-replay.md).
+`runs/` is primary run evidence and must not be edited manually. `data/` is derived but still valuable. Do not delete data unless the user explicitly approves the exact files.
 
-The bot hot path must not run whole-table scans, replay validators, `quick_check`, dashboard aggregation, sidecar/account/control awaits, or direct SQLite persistence. Runtime decisions must stay pure and in-memory through the decision worker; replay-grade persistence, decision evidence, and live submission are handled by bounded workers. Validation is offline or closeout-only.
+Before long sweeps, run:
+
+```bash
+buba-paint validate-replay-data --data <db> --start <time> --end <time>
+buba-paint validate-backtest-input --data <db> --start <time> --end <time>
+```
+
+Use `prepare-backtest-input` for large sweeps. Funded live intervals also need `validate-live-fidelity`.
 
 ## Deployment Discipline
 
-Do not improvise on the `buba-paint` server. Use the release-directory and runtime-directory workflow documented in [docs/deployment-and-ops.md](./docs/deployment-and-ops.md).
+Do not improvise on `buba-paint`. Use [docs/deployment-and-ops.md](./docs/deployment-and-ops.md) and [ops/docker/Readme.md](./ops/docker/Readme.md).
+
+Preferred remote model: Docker Compose with Caddy. Caddy is the public edge; bot, sidecar, agent, and dashboard stay private.
 
 Minimum local gates before server work:
 
-- `make lint`
-- `make test-all`
-- `make coverage-gate`
-- `cargo build --release`
-- `cd dashboard/client && npm run build`
+* `make lint`
+* `make test-all`
+* `cargo build --release`
+* `cd dashboard/client && npm run build`
 
-The server may not have the right Node version for frontend builds. Prefer building `dashboard/client/dist` locally and copying it into the staged release.
+For dashboard-only or agent-only iteration, use `docker compose build <service>` and `docker compose up -d --no-deps <service>` so the bot is not disturbed.
 
-## Key Behavioral Constraints
+## Debugging Pointers
 
-- Raw `feed_events` replay at exact timestamps. Legacy `tick_data` fallback is lower fidelity.
-- Run-012 risky pending-settlement reserve mode is the current canary baseline. See [docs/pending-settlement-modes.md](./docs/pending-settlement-modes.md).
-- Settlement can record provisional observability, but bankroll and strategy state update only on authoritative Polymarket outcomes.
-- Market windows activate only after their start time.
-- Spread legs are independent. One-sided residual exposure is possible.
-- Dynamic taker fees must not be hardcoded without checking current venue metadata.
-- Feed reconnect knobs reduce stale downtime only. They must not loosen stale-data gates.
-- CLOB freshness uses local observed receipt time when source timestamps are missing, while preserving raw source timestamps for replay/debugging.
-- Missing CLOB size fields must not overwrite existing in-memory liquidity with zero.
-- Submit-time sizing must enforce min bet and venue min size before queueing.
-- `SIM_ORDER_LATENCY_MS` is a paper assumption, not measured venue latency.
-- `AGENT_SECRET` is required for normal agent startup.
-- Exact pulled-run replay should use `BACKTEST_SETTLEMENT_MODE=observed_market_resolution`.
-- Old runs without replay-grade Binance book state are descriptive-only for parameter selection.
+* No signals: inspect `strategy_rejection_summaries` and `strategy rejection rollup` logs.
+* Signal but no trade: inspect `signal_metrics.decision_status` and `rejection_reason`.
+* Trades open after market close: inspect settlement and Gamma resolution logs.
+* Replay mismatch: check settlement mode, reserve mode, replay quality, and backtest readiness.
+* Dashboard login loops: verify dashboard JWT config, `AGENT_SECRET`, and agent health.
+* Disk growth: inspect runtime DB, WAL, CLOB replay block counts, and feed class counts before deleting anything.
 
-## Common Debugging Pointers
-
-- No signals: inspect `strategy_rejection_summaries` and `strategy rejection rollup` logs before retuning.
-- Signal but no trade: inspect `signal_metrics.decision_status` and `rejection_reason`.
-- Trades open after market close: inspect pending-resolution and Gamma settlement logs.
-- Replay mismatch: check settlement mode, reserve mode, and replay data quality.
-- Dashboard login loops: verify `AGENT_SECRET`, dashboard JWT config, and agent health.
-- Root DB garbage: move scratch DBs to `/tmp`.
-
-Useful SQL snippets live in [docs/data-and-replay.md](./docs/data-and-replay.md).
-
-## Naming and Precision
-
-- Rust files and functions: snake_case.
-- Rust types: PascalCase.
-- Frontend files: kebab-case.
-- Frontend components: PascalCase.
-- Config fields: snake_case.
-- Sweep CSV output: raw `f64`, no rounding.
+Useful SQL and data concepts live in [docs/data-and-replay.md](./docs/data-and-replay.md).

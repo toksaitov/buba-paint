@@ -9,19 +9,19 @@ After run 008 produced extraordinary results ($200 to $1.4M in 6.6 days, 74.2% W
 
 ## Parameters
 
-- Data: `data/market-data.db` (runs 004-008)
-- Time range: 2026-02-15 to 2026-03-27 (~928h, ~39 days)
-- Ticks: 11,074,264
-- Balance: $200
-- Swept:
-  - `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.0008, 0.0010, 0.0012, 0.0014, 0.0016, 0.0018 (6 values)
-  - `LATENCY_ARB_MAX_ASK`: 0.50, 0.55, 0.60, 0.65, 0.70 (5 values)
-  - `MAX_POSITION_FRACTION`: 0.03, 0.05, 0.075, 0.10, 0.125 (5 values)
-- Fixed:
-  - `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
-  - `PEAK_DD_PAUSE_PCT=1.0` (disables peak drawdown pause)
-- Total: 150 combinations
-- Runtime: 178s (~3 min)
+* Data: `data/market-data.db` (runs 004-008)
+* Time range: 2026-02-15 to 2026-03-27 (~928h, ~39 days)
+* Ticks: 11,074,264
+* Balance: $200
+* Swept:
+  * `LATENCY_ARB_MOMENTUM_THRESHOLD`: 0.0008, 0.0010, 0.0012, 0.0014, 0.0016, 0.0018 (6 values)
+  * `LATENCY_ARB_MAX_ASK`: 0.50, 0.55, 0.60, 0.65, 0.70 (5 values)
+  * `MAX_POSITION_FRACTION`: 0.03, 0.05, 0.075, 0.10, 0.125 (5 values)
+* Fixed:
+  * `SPREAD_CAPTURE_THRESHOLD=0.50` (disables spread-capture)
+  * `PEAK_DD_PAUSE_PCT=1.0` (disables peak drawdown pause)
+* Total: 150 combinations
+* Runtime: 178s (~3 min)
 
 ## Command
 
