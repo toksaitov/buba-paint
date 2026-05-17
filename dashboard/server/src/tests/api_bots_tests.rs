@@ -36,6 +36,8 @@ fn test_app_with_agent(agent_url: &str) -> (Router, Arc<DashboardDb>) {
     let state = AppState {
         db: Arc::clone(&db),
         jwt_secret: "test-jwt-secret".to_string(),
+        research_worker_token: None,
+        research_work_root: None,
         agents: vec![test_agent(agent_url)],
     };
 
@@ -100,6 +102,8 @@ fn test_app_no_agents() -> (Router, Arc<DashboardDb>) {
     let state = AppState {
         db: Arc::clone(&db),
         jwt_secret: "test-jwt-secret".to_string(),
+        research_worker_token: None,
+        research_work_root: None,
         agents: vec![],
     };
 
@@ -151,7 +155,7 @@ fn auth_post(path: &str, token: &str) -> Request<Body> {
 }
 
 /// Auth post with json.
-fn auth_json_post(path: &str, token: &str, body: serde_json::Value) -> Request<Body> {
+fn auth_json_post(path: &str, token: &str, body: &serde_json::Value) -> Request<Body> {
     Request::post(path)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
@@ -622,7 +626,7 @@ async fn bot_live_control_admin_posts_to_agent() {
         .oneshot(auth_json_post(
             "/api/bots/paint/live/control",
             &token,
-            serde_json::json!({
+            &serde_json::json!({
                 "action": "preflight",
                 "reason": "refresh gates"
             }),
@@ -651,7 +655,7 @@ async fn bot_live_control_observer_forbidden() {
         .oneshot(auth_json_post(
             "/api/bots/paint/live/control",
             &token,
-            serde_json::json!({
+            &serde_json::json!({
                 "action": "preflight",
                 "reason": "observer should not mutate"
             }),
@@ -675,7 +679,7 @@ async fn bot_live_control_rechecks_current_user_role() {
         .oneshot(auth_json_post(
             "/api/bots/paint/live/control",
             &token,
-            serde_json::json!({
+            &serde_json::json!({
                 "action": "preflight",
                 "reason": "stale role should not mutate"
             }),
@@ -721,7 +725,7 @@ async fn bot_live_control_agent_failure_is_returned() {
         .oneshot(auth_json_post(
             "/api/bots/paint/live/control",
             &token,
-            serde_json::json!({
+            &serde_json::json!({
                 "action": "preflight",
                 "reason": "refresh gates"
             }),

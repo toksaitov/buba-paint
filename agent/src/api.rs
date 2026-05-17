@@ -255,6 +255,7 @@ pub async fn get_trading_summary(
         process.active,
         process.control_available,
         shadow_status.last_tick_at,
+        shadow_status.live_session_status.as_deref(),
     );
     let trading_state = derive_trading_state(
         &shadow_status.execution_mode,
@@ -585,7 +586,11 @@ fn derive_process_state(
     process_active: bool,
     control_available: bool,
     last_tick_at: Option<u64>,
+    live_session_status: Option<&str>,
 ) -> String {
+    if live_session_status.is_some_and(is_stopped_live_session_status) {
+        return "stopped".to_string();
+    }
     if process_active {
         return "running".to_string();
     }
@@ -596,6 +601,11 @@ fn derive_process_state(
         return "monitoring".to_string();
     }
     "stopped".to_string()
+}
+
+/// Return whether the live session status is an explicit terminal stop.
+fn is_stopped_live_session_status(status: &str) -> bool {
+    matches!(status, "readonly_stopped" | "stopped")
 }
 
 /// Returns whether the latest bot tick is still recent enough to imply activity.

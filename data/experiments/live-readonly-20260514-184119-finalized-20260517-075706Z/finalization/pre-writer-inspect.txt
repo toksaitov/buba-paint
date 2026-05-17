@@ -1,0 +1,2 @@
+/buba-paint-paint-1 image=sha256:3d7b4f7413c066479444dfa164adad9cda50acea817c84c73b755ca44005a3bd started=2026-05-14T18:54:25.078805531Z status=running
+/buba-paint-sidecar-1 image=sha256:fff2f57be90d79c36597ebe9147f0078b1ae71fcfd0eba915c7345ff07769f2c started=2026-05-14T18:54:19.285665843Z status=running

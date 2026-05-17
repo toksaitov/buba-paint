@@ -14,6 +14,8 @@ use crate::error::DashboardError;
 pub struct AppState {
     pub db: Arc<DashboardDb>,
     pub jwt_secret: String,
+    pub research_worker_token: Option<String>,
+    pub research_work_root: Option<String>,
     pub agents: Vec<crate::config::AgentConfig>,
 }
 

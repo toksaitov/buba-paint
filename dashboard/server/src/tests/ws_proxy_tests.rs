@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::get;
+use futures_util::StreamExt;
 use rusqlite::Connection;
 
 use crate::api::auth_routes::AppState;
@@ -30,6 +31,8 @@ async fn spawn_dashboard(agent_url: &str) -> (String, Arc<DashboardDb>) {
     let state = AppState {
         db: Arc::clone(&db),
         jwt_secret: "test-jwt-secret".to_string(),
+        research_worker_token: None,
+        research_work_root: None,
         agents: vec![test_agent(agent_url)],
     };
 
@@ -59,6 +62,8 @@ async fn spawn_dashboard_no_agents() -> (String, Arc<DashboardDb>) {
     let state = AppState {
         db: Arc::clone(&db),
         jwt_secret: "test-jwt-secret".to_string(),
+        research_worker_token: None,
+        research_work_root: None,
         agents: vec![],
     };
 
@@ -182,7 +187,6 @@ async fn ws_proxy_forwards_agent_messages() {
             .await
             .unwrap();
 
-    use futures_util::StreamExt;
     let mut found = false;
     for _ in 0..10 {
         match tokio::time::timeout(Duration::from_millis(3000), ws.next()).await {
@@ -192,14 +196,14 @@ async fn ws_proxy_forwards_agent_messages() {
                 found = true;
                 break;
             }
-            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Ok(_))) => {}
             _ => break,
         }
     }
     assert!(found, "expected a balance text message from proxy");
 }
 
-/// Verify that the proxy's connect_async can talk to a mock agent
+/// Verify that the proxy's `connect_async` can talk to a mock agent
 /// (this isolates the proxy → agent connection from the client → proxy path).
 #[tokio::test]
 async fn proxy_connect_async_works_with_mock_agent() {
@@ -231,7 +235,6 @@ async fn proxy_connect_async_works_with_mock_agent() {
 
     match result {
         Ok(Ok((mut ws, _))) => {
-            use futures_util::StreamExt;
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = ws.next().await {
                 let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
                 assert_eq!(parsed["type"], "balance");
@@ -240,6 +243,6 @@ async fn proxy_connect_async_works_with_mock_agent() {
             }
         }
         Ok(Err(e)) => panic!("connect_async failed: {e}"),
-        Err(_) => panic!("connect_async timed out"),
+        Err(err) => panic!("connect_async timed out: {err}"),
     }
 }

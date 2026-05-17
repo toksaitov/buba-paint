@@ -1,0 +1,5 @@
+-- sqlite finalize started 2026-05-17T07:57:30Z
+60000
+0	0	0
+ok
+-- sqlite finalize finished 2026-05-17T08:13:06Z

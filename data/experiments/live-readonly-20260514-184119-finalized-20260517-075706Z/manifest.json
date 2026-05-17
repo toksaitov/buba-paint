@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "artifact_id": "live-readonly-20260514-184119-finalized-20260517-075706Z",
+  "kind": "readonly_run",
+  "source_machine_id": "live",
+  "run_mode": "live_readonly",
+  "created_at_ms": 1779008066629,
+  "interval_start_ms": 1778784865339,
+  "interval_end_ms": 1779004627584,
+  "files": [
+    {
+      "logical_name": "runtime_db",
+      "kind": "sqlite",
+      "relative_path": "remote-runtime/paint.db",
+      "bytes": 6342098944,
+      "sha256": "2f3a778d9955117f7468bec6e459742f7d17417ce8287c7681b61231fba75a81"
+    }
+  ]
+}

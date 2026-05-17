@@ -1,0 +1,18 @@
+{
+  "kind": "buba_live_readonly_finalization",
+  "run_id": "live-readonly-20260514-184119",
+  "finalization_id": "live-readonly-20260514-184119-finalized-20260517-075706Z",
+  "generated_at_utc": "2026-05-17T08:14:32Z",
+  "host": "ip-172-31-20-159",
+  "runtime_path": "/home/ubuntu/buba-paint-live/runtime/live-readonly-20260514-184119",
+  "release_path": "/home/ubuntu/buba-paint-live/current",
+  "paint_db_path": "/home/ubuntu/buba-paint-live/runtime/live-readonly-20260514-184119/paint.db",
+  "sqlite_checkpoint": "0 0 0",
+  "sqlite_quick_check": "ok",
+  "paint_db_bytes": 6342098944,
+  "paint_wal_bytes": 0,
+  "stopped_services": ["paint", "sidecar"],
+  "left_running_services": ["dashboard", "agent", "caddy"],
+  "remote_copy_policy": "original runtime retained in place; no duplicate DB created on buba-paint due disk headroom",
+  "local_target_hint": "data/experiments/live-readonly-20260514-184119-finalized-20260517-075706Z/remote-runtime"
+}

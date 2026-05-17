@@ -82,7 +82,11 @@ pub struct AuthState {
 /// Stores `Claims` in request extensions on success.
 pub async fn require_auth(mut request: Request, next: Next) -> Result<Response, StatusCode> {
     let path = request.uri().path();
-    if path == "/api/auth/login" || path == "/health" || path.starts_with("/ws/") {
+    if path == "/api/auth/login"
+        || path == "/health"
+        || path == "/api/research/workers/heartbeat"
+        || path.starts_with("/ws/")
+    {
         return Ok(next.run(request).await);
     }
 

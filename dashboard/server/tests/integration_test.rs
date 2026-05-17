@@ -36,6 +36,8 @@ async fn spawn_dashboard_with_static(
     let state = AppState {
         db: Arc::clone(&db),
         jwt_secret: "test-jwt-secret".to_string(),
+        research_worker_token: None,
+        research_work_root: None,
         agents: vec![test_agent(agent_url)],
     };
 

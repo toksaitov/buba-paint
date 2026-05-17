@@ -328,7 +328,7 @@ impl DbReader {
             high_water_mark,
             uptime_hours,
             open_trades,
-            last_tick_at: last_tick.or(Some(now_ms)),
+            last_tick_at: last_tick,
             current_window,
         };
         drop(conn);

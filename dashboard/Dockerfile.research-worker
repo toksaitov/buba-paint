@@ -1,0 +1,23 @@
+FROM rust:1.94-slim AS builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY dashboard/server/ dashboard/server/
+COPY bots/paint/ bots/paint/
+RUN mkdir -p agent/src && echo 'fn main() {}' > agent/src/main.rs
+COPY agent/Cargo.toml agent/Cargo.toml
+RUN cargo build --release -p buba-dashboard --bin buba-research-worker
+RUN cargo build --release -p buba-paint
+
+FROM debian:trixie-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates openssh-client rsync sqlite3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /home/buba \
+    && printf 'buba:x:1000:1000:Buba Research:/home/buba:/usr/sbin/nologin\n' >> /etc/passwd \
+    && printf 'buba:x:1000:\n' >> /etc/group \
+    && chown 1000:1000 /home/buba \
+    && chmod 755 /home/buba
+COPY --from=builder /app/target/release/buba-research-worker /usr/local/bin/buba-research-worker
+COPY --from=builder /app/target/release/buba-paint /usr/local/bin/buba-paint
+ENTRYPOINT ["buba-research-worker"]

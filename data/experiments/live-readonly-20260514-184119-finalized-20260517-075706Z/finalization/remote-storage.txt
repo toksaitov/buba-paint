@@ -1,0 +1,14 @@
+Remote disk after finalization:
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root        29G   21G  7.5G  74% /
+/dev/root        29G   21G  7.5G  74% /
+
+Runtime sizes:
+6.0G	paint.db
+0	paint.db-wal
+96K	paint.db-shm
+6.8M	paint.log
+564K	sidecar.log
+4.0K	agent.log
+4.0K	dashboard.log
+4.0K	dashboard.db

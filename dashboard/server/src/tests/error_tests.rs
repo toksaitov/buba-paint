@@ -3,7 +3,7 @@ use axum::response::IntoResponse;
 
 use crate::error::DashboardError;
 
-/// Helper: extract status code and body `JSON` from a DashboardError response.
+/// Helper: extract status code and body `JSON` from a `DashboardError` response.
 async fn error_parts(err: DashboardError) -> (StatusCode, serde_json::Value) {
     let response = err.into_response();
     let status = response.status();

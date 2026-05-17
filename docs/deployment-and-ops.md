@@ -76,6 +76,47 @@ make live-docker-smoke
 
 The smoke runner uses Docker-native runtime storage by default. That avoids macOS Docker Desktop bind-mounted SQLite WAL behavior, which is not accepted as HFT/replay evidence.
 
+Local research control plane:
+
+```bash
+mkdir -p .docker/research/runtime .docker/research/work
+docker compose -f docker-compose.research.yml up -d --build
+```
+
+This starts only `research-dashboard` and `research-worker`. It is for local orchestration testing and does not start the trading bot, sidecar, agent, Caddy, or any remote host process. The worker shares the dashboard SQLite DB and writes artifacts, prepared DBs, reports, and scratch outputs under `.docker/research/work`.
+
+Artifact transfers are worker-owned. Same-machine transfers use append-style resumable file copies. Remote transfers use `rsync` over SSH with partial append verification, compression, and protected remote path arguments. Set `BUBA_RESEARCH_SSH_DIR` when the worker container needs a specific SSH config or key directory; the Compose file mounts it at `/home/buba/.ssh`. Running transfer rows older than `BUBA_RESEARCH_TRANSFER_STALE_MS` are recovered to `retryable` on the next worker tick so a restarted worker can resume from partial files. The default is `1800000` milliseconds; set it to `0` to disable automatic stale recovery.
+
+Remote source artifacts enter the dashboard through `POST /api/research/artifacts/register`. That endpoint stores manifest metadata and source paths without local file reads; the research worker verifies actual bytes and checksums after transfer. Local artifacts already present under `BUBA_RESEARCH_WORK_ROOT` use `POST /api/research/artifacts/import`, which verifies files before storing the row.
+
+Inventory dry-run plans:
+
+```bash
+python3 scripts/deploy-machine.py --machine live --dry-run
+python3 scripts/deploy-machine.py --machine research --dry-run
+```
+
+Remote research stack on `testing` through Ubuntu WSL:
+
+```bash
+python3 scripts/deploy-machine.py --machine research
+python3 scripts/deploy-machine.py --machine research --skip-build
+```
+
+The runner syncs repository source to `/home/testing/buba-paint-research`, excludes local `data/` and `runs/`, preserves remote `.env` and `.docker/research`, builds or reuses `buba-dashboard:local` and `buba-research-worker:local`, then starts `research-dashboard` and `research-worker`. The generated admin password, research worker token, and JWT secret remain on `testing` under `/home/testing/buba-paint-research/.env` and `.docker/research/config/dashboard.toml`.
+
+The generated research `.env` sets `BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh` and `BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`. That lets the worker container use the WSL SSH alias `buba-paint` for live-to-research artifact transfers and recover killed transfer workers after the stale window. The worker image includes `rsync` and `openssh-client`.
+
+The worker heartbeat path is token-authenticated with `BUBA_RESEARCH_WORKER_TOKEN`. In the temporary standalone research stack, `BUBA_RESEARCH_CONTROLLER_URL` points to `http://research-dashboard:3001`, so the worker updates the local research dashboard machine row. For the final central-control deployment, point `BUBA_RESEARCH_CONTROLLER_URL` at the main dashboard URL and configure the same `BUBA_RESEARCH_WORKER_TOKEN` on that dashboard.
+
+Remote research checks:
+
+```bash
+ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-research && docker compose -f docker-compose.research.yml ps'"
+ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'curl -sf http://localhost:3002/health'"
+ssh testing "curl.exe -s http://localhost:3002/health"
+```
+
 Manual local bot run:
 
 ```bash

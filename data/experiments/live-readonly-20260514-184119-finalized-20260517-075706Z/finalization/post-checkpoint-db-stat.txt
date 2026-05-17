@@ -1,0 +1,3 @@
+/home/ubuntu/buba-paint-live/runtime/live-readonly-20260514-184119/paint.db size=6342098944 mtime=2026-05-17 07:57:30.573912563 +0000
+/home/ubuntu/buba-paint-live/runtime/live-readonly-20260514-184119/paint.db-wal size=0 mtime=2026-05-17 07:57:30.603912904 +0000
+/home/ubuntu/buba-paint-live/runtime/live-readonly-20260514-184119/paint.db-shm size=98304 mtime=2026-05-17 07:57:30.550912302 +0000

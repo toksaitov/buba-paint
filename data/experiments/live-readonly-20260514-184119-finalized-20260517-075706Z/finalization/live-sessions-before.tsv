@@ -1,0 +1,2 @@
+id	started_at_ms	ended_at_ms	status	execution_mode	wallet_address	proxy_wallet	cash_cap_usd
+1	1778784865339		readonly_ready	live_readonly	0xE7C092ffa4c73EA874d8309cFC0e8915cb348616	0xE7C092ffa4c73EA874d8309cFC0e8915cb348616	100.0

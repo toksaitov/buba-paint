@@ -21,6 +21,8 @@ fn test_app() -> (Router, Arc<DashboardDb>) {
     let state = AppState {
         db: Arc::clone(&db),
         jwt_secret: "test-jwt-secret".to_string(),
+        research_worker_token: None,
+        research_work_root: None,
         agents: vec![],
     };
 

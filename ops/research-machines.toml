@@ -1,0 +1,35 @@
+[defaults]
+project_name = "buba-paint"
+image_tag = "local"
+registry = ""
+
+[images]
+dashboard = "buba-dashboard:local"
+agent = "buba-agent:local"
+paint = "buba-paint-bot:local"
+sidecar = "buba-polymarket-sidecar:local"
+research_worker = "buba-research-worker:local"
+
+[machines.live]
+role = "live"
+ssh_alias = "buba-paint"
+mode = "live-readonly"
+remote_root = "~/buba-paint-live"
+compose_files = ["docker-compose.yml", "docker-compose.live-readonly.yml", "docker-compose.prod.yml"]
+services = ["sidecar", "paint", "agent", "dashboard", "caddy"]
+build_strategy = "remote"
+registry_pinned = false
+deferred = false
+
+[machines.research]
+role = "research"
+ssh_alias = "testing"
+mode = "research"
+remote_root = "/home/testing/buba-paint-research"
+compose_files = ["docker-compose.research.yml"]
+services = ["research-dashboard", "research-worker"]
+build_strategy = "remote"
+registry_pinned = false
+execution_environment = "wsl"
+wsl_distro = "Ubuntu-24.04"
+deferred = false

@@ -49,6 +49,40 @@ mkdir -p .docker/runtime
 docker compose -f docker-compose.yml -f docker-compose.paper.yml -f docker-compose.local.yml up -d --build
 ```
 
+Local research control plane:
+
+```bash
+mkdir -p .docker/research/runtime .docker/research/work
+docker compose -f docker-compose.research.yml up -d --build
+```
+
+This starts only the research dashboard backend and the local research worker. It does not start the trading bot, sidecar, agent, Caddy, or any remote host process.
+
+The research worker can claim artifact transfer records. Same-machine transfers use resumable append copies. Remote transfers use `rsync` over SSH with partial append verification, compression, and protected remote path arguments. Set `BUBA_RESEARCH_SSH_DIR` when the worker container needs a specific SSH directory; it is mounted at `/home/buba/.ssh`. Running transfers older than `BUBA_RESEARCH_TRANSFER_STALE_MS` are moved back to `retryable` so a restarted worker can resume from the partial destination.
+
+Register remote source artifacts with `POST /api/research/artifacts/register` after finalization writes a manifest on the live machine. Use `POST /api/research/artifacts/import` only for artifact directories already present under the research work root.
+
+Inventory dry-run plans:
+
+```bash
+python3 scripts/deploy-machine.py --machine live --dry-run
+python3 scripts/deploy-machine.py --machine research --dry-run
+```
+
+Deploy or refresh the remote research stack on `testing`:
+
+```bash
+python3 scripts/deploy-machine.py --machine research
+python3 scripts/deploy-machine.py --machine research --skip-build
+```
+
+The research deployment targets Ubuntu WSL on `testing`, syncs source into `/home/testing/buba-paint-research`, excludes local `data/` and `runs/`, preserves remote `.env` and `.docker/research`, and starts only `research-dashboard` and `research-worker`. The generated `.env` includes `BUBA_RESEARCH_WORKER_TOKEN`, `BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh`, and `BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`; the worker uses the token when `BUBA_RESEARCH_CONTROLLER_URL` is set, uses the SSH directory for remote artifact transfers, and recovers stale running transfers after the configured window. Check it with:
+
+```bash
+ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-research && docker compose -f docker-compose.research.yml ps'"
+ssh testing "curl.exe -s http://localhost:3002/health"
+```
+
 ## Operations
 
 Inspect services:

@@ -1,0 +1,6 @@
+NAME                     IMAGE                           COMMAND                  SERVICE     CREATED      STATUS                PORTS
+buba-paint-agent-1       buba-agent:local                "/bin/sh -lc 'while …"   agent       2 days ago   Up 2 days (healthy)   9090/tcp
+buba-paint-caddy-1       caddy:2-alpine                  "caddy run --config …"   caddy       2 days ago   Up 2 days             0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp, 443/udp, 2019/tcp
+buba-paint-dashboard-1   buba-dashboard:local            "/bin/sh -lc 'touch …"   dashboard   2 days ago   Up 2 days (healthy)   3001/tcp
+buba-paint-paint-1       buba-paint-bot:local            "/bin/sh -lc 'mkdir …"   paint       2 days ago   Up 2 days (healthy)   
+buba-paint-sidecar-1     buba-polymarket-sidecar:local   "/bin/sh -lc 'touch …"   sidecar     2 days ago   Up 2 days (healthy)   3210/tcp

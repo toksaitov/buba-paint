@@ -829,16 +829,26 @@ fn derive_process_state_covers_runtime_modes() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    assert_eq!(super::derive_process_state(true, true, None), "running");
     assert_eq!(
-        super::derive_process_state(false, false, Some(now_ms)),
+        super::derive_process_state(true, true, None, None),
         "running"
     );
     assert_eq!(
-        super::derive_process_state(false, false, Some(1)),
+        super::derive_process_state(false, false, Some(now_ms), None),
+        "running"
+    );
+    assert_eq!(
+        super::derive_process_state(false, false, Some(1), None),
         "monitoring"
     );
-    assert_eq!(super::derive_process_state(false, true, None), "stopped");
+    assert_eq!(
+        super::derive_process_state(false, true, None, None),
+        "stopped"
+    );
+    assert_eq!(
+        super::derive_process_state(false, false, Some(now_ms), Some("readonly_stopped")),
+        "stopped"
+    );
 }
 
 /// Verifies that trading-state derivation handles readonly and live-trading states.
