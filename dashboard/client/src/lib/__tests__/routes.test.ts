@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { dashboardRoutes, routeMetaForPath } from "../routes";
 
 describe("dashboardRoutes", () => {
-  test("keeps Execution near the top under Monitor", () => {
+  test("keeps Execution near the top under Monitor and Research at the end", () => {
     expect(dashboardRoutes.map((route) => route.label)).toEqual([
       "Overview",
       "Execution",
@@ -13,16 +13,35 @@ describe("dashboardRoutes", () => {
       "Trades",
       "Signals",
       "Strategies",
+      "Overview",
+      "Machines",
+      "Artifacts",
+      "Transfers",
+      "Jobs",
+      "Reports",
     ]);
     expect(dashboardRoutes[1]?.section).toBe("Monitor");
+    expect(dashboardRoutes[dashboardRoutes.length - 1]?.section).toBe("Research");
   });
 
-  test("keeps the global intro bar only on overview, execution, logs, parameters, and machine", () => {
+  test("intro bar shows on Monitor entries and all Research entries", () => {
     expect(
       dashboardRoutes
         .filter((route) => route.showContextStrip)
         .map((route) => route.label),
-    ).toEqual(["Overview", "Execution", "Logs", "Parameters", "Machine"]);
+    ).toEqual([
+      "Overview",
+      "Execution",
+      "Logs",
+      "Parameters",
+      "Machine",
+      "Overview",
+      "Machines",
+      "Artifacts",
+      "Transfers",
+      "Jobs",
+      "Reports",
+    ]);
   });
 });
 

@@ -78,6 +78,25 @@ export function truncateMiddle(value: string, head = 8, tail = 6): string {
   return `${value.slice(0, head)}...${value.slice(-tail)}`;
 }
 
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null) return "—";
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[index]}`;
+}
+
+export function humanize(value: string): string {
+  if (!value) return value;
+  const spaced = value.replace(/_/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
+
 export function formatDurationShort(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "0s";
   const totalSeconds = Math.floor(ms / 1000);

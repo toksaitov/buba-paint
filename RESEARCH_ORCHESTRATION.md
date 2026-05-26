@@ -366,7 +366,7 @@ Observable results:
 
 Remaining Phase 7 implementation work:
 
-* Add dashboard UI for artifact import, job creation, job step progress, and report browsing.
+* Dashboard UI for artifact import, job creation, job step progress, and report browsing: complete. The `/research/*` routes in `dashboard/client/src/App.tsx` cover Overview, Machines, Artifacts, Transfers, Jobs, and Reports lists plus detail pages. Lifecycle controls follow `dashboard/client/src/lib/research-permissions.ts`. Functional spec is `docs/research-ui-handoff.md`.
 
 ### Phase 7C: Worker Transfer Executor
 

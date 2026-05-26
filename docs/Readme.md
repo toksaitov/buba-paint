@@ -85,6 +85,7 @@ When docs and code disagree, code wins until the docs are corrected. When local 
 * [live-session-runbook.md](./live-session-runbook.md): future funded-session workflow and closeout expectations.
 * [pending-settlement-modes.md](./pending-settlement-modes.md): settlement timing and reserve semantics.
 * [runs.md](./runs.md): historical run index and quality notes.
+* [research-ui-handoff.md](./research-ui-handoff.md): functional spec for the research orchestration dashboard surface that powers `/research/*` routes.
 
 ## Provenance And Archives
 

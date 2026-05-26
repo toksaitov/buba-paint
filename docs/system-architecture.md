@@ -16,7 +16,7 @@ Buba is a single-bot trading system where the Rust bot owns decisions and the ru
 
 `dashboard/server` authenticates dashboard users, serves the built frontend, and proxies configured agent APIs.
 
-`dashboard/client` is the operator UI. Its Monitor pages are Overview, Execution, Logs, Parameters, and Machine. Its Analysis pages are Trend, Trades, Signals, and Strategies. Compatibility redirects map `/live` and `/trading` to Execution, `/config` to Parameters, and `/stats` to Strategies.
+`dashboard/client` is the operator UI. Its Monitor pages are Overview, Execution, Logs, Parameters, and Machine. Its Analysis pages are Trend, Trades, Signals, and Strategies. Its Research pages are Overview, Machines, Artifacts, Transfers, Jobs, and Reports. Compatibility redirects map `/live` and `/trading` to Execution, `/config` to Parameters, and `/stats` to Strategies.
 
 ## Runtime Flow
 
@@ -103,6 +103,17 @@ Analysis pages:
 * Trades: simulated trade and settlement review.
 * Signals: signal metrics, grouped bursts, and rejection investigation.
 * Strategies: strategy-family contribution and risk context.
+
+Research pages:
+
+* Overview: cross-entity counts, recent jobs, transfers, and reports.
+* Machines: live, research, and custom worker hosts with role, status, dependency counts, and lifecycle controls.
+* Artifacts: exported run packages with manifest, checksum, verification, and metadata-only or files-included deletion.
+* Transfers: artifact transfers with progress, stale detection, checksum status, pause/resume/cancel/retry/verify lifecycle.
+* Jobs: export, backtest, and sweep jobs with step timeline, embedded event stream, blocked/failed recovery, clone, and regenerate report.
+* Reports: backtest and sweep reports with summary metrics, equity curve, sweep points, and JSON/CSV inspection.
+
+The Research section is observation-and-steering only. Worker leases, heartbeats, and rsync execution happen in the `buba-research-worker` process on each host; the dashboard never runs jobs directly. Adaptive polling pulls at 3 seconds for active jobs and transfers and 10 seconds for terminal entities. The canonical lifecycle state machine lives at `dashboard/client/src/lib/research-permissions.ts` and is the single source of truth for which controls render. Backend API surface for these pages lives under `/api/research/*` (see `dashboard/server/src/api/research.rs`). The functional spec is `docs/research-ui-handoff.md`.
 
 The dashboard does not call the sidecar or venue directly. Live-control mutations route through dashboard server, agent, control ledger, and the running bot.
 

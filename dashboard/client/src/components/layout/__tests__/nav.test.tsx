@@ -11,7 +11,7 @@ const defaultProps = {
   onSelectBot: vi.fn(),
 };
 
-test("renders grouped navigation with Execution near the top", () => {
+test("renders grouped navigation with Monitor, Analysis, and Research sections", () => {
   render(
     <MemoryRouter>
       <Nav {...defaultProps} />
@@ -20,13 +20,19 @@ test("renders grouped navigation with Execution near the top", () => {
 
   expect(screen.getByText("Monitor")).toBeInTheDocument();
   expect(screen.getByText("Analysis")).toBeInTheDocument();
-  expect(screen.getByText("Overview")).toBeInTheDocument();
+  expect(screen.getByText("Research")).toBeInTheDocument();
+  expect(screen.getAllByText("Overview").length).toBeGreaterThanOrEqual(2);
   expect(screen.getByText("Execution")).toBeInTheDocument();
   expect(screen.getByText("Logs")).toBeInTheDocument();
   expect(screen.getByText("Trend")).toBeInTheDocument();
   expect(screen.getByText("Trades")).toBeInTheDocument();
   expect(screen.getByText("Signals")).toBeInTheDocument();
   expect(screen.getByText("Strategies")).toBeInTheDocument();
+  expect(screen.getByText("Machines")).toBeInTheDocument();
+  expect(screen.getByText("Artifacts")).toBeInTheDocument();
+  expect(screen.getByText("Transfers")).toBeInTheDocument();
+  expect(screen.getByText("Jobs")).toBeInTheDocument();
+  expect(screen.getByText("Reports")).toBeInTheDocument();
 });
 
 test("highlights the active execution route", () => {

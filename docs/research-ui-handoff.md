@@ -1,12 +1,39 @@
 # Research UI Functional Handoff
 
-This file is a functional product and API handoff for the frontend colleague who will design and implement the Research dashboard. It intentionally avoids visual layout direction. The colleague should decide presentation, information hierarchy, interaction details, and styling using the existing dashboard system.
+This file is a functional product and API handoff for the frontend colleague who will design and implement the Research dashboard. It defines operational goals, data contracts, lifecycle coverage, failure states, and testing expectations. It intentionally avoids direction on visual design, layout, presentation, component composition, styling, or exact product copy.
 
 ## Non-Negotiable Principle
 
 The Research UI is not complete unless every long-running entity has full lifecycle operations. Listing things is not enough.
 
 For every entity that can be created or started, the user must be able to inspect it, edit allowed fields, stop/cancel it, continue/resume it when safe, retry it after failure, archive/delete it when appropriate, and understand exactly why an operation is disabled.
+
+## Functional Quality Bar
+
+The finished Research UI should be operationally complete and reliable, not a thin read-only wrapper over API lists.
+
+Functional completeness means:
+
+* Every long-running entity has complete lifecycle coverage for the operations the backend supports.
+* Every unsupported operation is still accounted for with an explicit unavailable state or backend ticket.
+* Every failure state has a recovery path when recovery is safe.
+* Every destructive operation distinguishes metadata-only changes from file/data deletion.
+* Every operation refreshes or invalidates enough state that the operator can trust what they see next.
+* Every object preserves provenance so the operator can move from machine to artifact to transfer to job to step to report and back again.
+
+Operational polish means:
+
+* Operators should not hit dead ends during normal export, transfer, backtest, sweep, report, archive, retry, resume, or cancel workflows.
+* Partial progress is a first-class state, especially for transfers, leased steps, cancelled jobs, missing report files, and retryable failures.
+* Observer and admin experiences are both complete: observer users can inspect everything relevant, while mutation paths remain unavailable to them.
+* The system should make stale state, missing files, blocked work, and unsafe operations explicit enough that an operator can decide the next action without reading logs manually.
+
+Testing completeness means:
+
+* Tests must cover the happy path and every seeded edge state.
+* Tests must cover admin and observer permissions for every mutation family.
+* Tests must cover resume, retry, cancel, pause, archive, restore, delete, clone, and regeneration flows where the backend supports them.
+* Tests must verify that unsupported operations are not silently omitted or accidentally enabled.
 
 ## Product Goal
 
@@ -20,6 +47,35 @@ The dashboard should centrally control the research workflow:
 6. Resume or retry safely after partial failure.
 7. Archive scratch data after reports are preserved.
 8. Keep a searchable history of runs, artifacts, jobs, transfers, and reports.
+
+## Environment Context
+
+The frontend colleague may know the local environment and `ssh buba-paint`; the Research workflow also uses a separate research machine.
+
+Current machines:
+
+| Machine | Access | Role |
+| --- | --- | --- |
+| Local workstation | local repo checkout | Development, fixture seeding, local dashboard and worker testing. |
+| `buba-paint` | `ssh buba-paint` | Live/source host. It owns live/readonly run data and finalized artifacts. |
+| `testing` | `ssh testing` | Research host. It is a Windows machine with Ubuntu WSL and runs the research stack. |
+
+Current research host facts:
+
+* The `testing` research stack lives under `/home/testing/buba-paint-research` inside Ubuntu WSL.
+* It runs `research-dashboard` and `research-worker` with `docker-compose.research.yml`.
+* The health check inside WSL is `http://localhost:3002/health`.
+* The inventory source of truth is `ops/research-machines.toml`.
+* Deployment and health-check commands are documented in `docs/deployment-and-ops.md` and `ops/docker/Readme.md`.
+
+Current intended data flow:
+
+1. A live/readonly run is finalized or exported on `buba-paint`.
+2. The resulting artifact manifest and runtime data are registered with the Research control plane.
+3. Transfer state is tracked by the dashboard and executed by the worker.
+4. The artifact is staged on `testing`.
+5. Current-params backtests, sweeps, reports, and archive operations run on the research machine.
+6. The dashboard remains the central control surface for creating, observing, retrying, resuming, cancelling, archiving, and deleting research entities.
 
 ## Current Backend Reality
 
@@ -129,7 +185,7 @@ Seeded jobs and reports:
 | `fixture-job-cancelled` | Cancelled export job with completed prior work. |
 | `fixture-job-running` | Leased/running first step. |
 | `fixture-job-paused` | Paused validation step. |
-| `fixture-report-available` | JSON and CSV files exist and include chart-friendly metrics. |
+| `fixture-report-available` | JSON and CSV files exist and include representative metrics, equity samples, and sweep samples. |
 | `fixture-report-archived` | Archived report metadata with preserved files. |
 | `fixture-report-missing-file` | Metadata exists but JSON/CSV files are absent. |
 
@@ -505,7 +561,7 @@ Do not call the Research UI complete until either these exist or the product own
 7. Add explicit UI placeholders or disabled actions for every remaining missing lifecycle operation in the matrix.
 8. Work with backend to fill remaining CRUD/control endpoints.
 9. Replace placeholders with live actions as endpoints land.
-10. Add fixtures/tests for all edge states before visual polish.
+10. Add fixtures/tests for all edge states before treating the experience as complete.
 
 ## What This File Does Not Specify
 

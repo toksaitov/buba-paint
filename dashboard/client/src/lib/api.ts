@@ -70,6 +70,55 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function patch<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PATCH",
+    headers: headers(),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<T>;
+}
+
+function withQuery(path: string, params?: Record<string, string>): string {
+  if (!params) return path;
+  const search = new URLSearchParams(params).toString();
+  if (!search) return path;
+  return path.includes("?") ? `${path}&${search}` : `${path}?${search}`;
+}
+
+async function del<T>(
+  path: string,
+  params?: Record<string, string>,
+): Promise<T> {
+  const res = await fetch(`${BASE}${withQuery(path, params)}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<T>;
+}
+
+async function getText(path: string): Promise<string> {
+  const res = await fetch(`${BASE}${path}`, { headers: headers() });
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.text();
+}
+
+export { get, post, patch, del, getText };
+
 export async function login(
   username: string,
   password: string,

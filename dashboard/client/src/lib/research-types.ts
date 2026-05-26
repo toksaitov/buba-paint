@@ -1,0 +1,365 @@
+export const TRANSFER_STALE_MS = 30 * 60 * 1000;
+
+export type MachineRole = "live" | "research" | "controller";
+
+export type MachineStatus =
+  | "not_configured"
+  | "configured"
+  | "online"
+  | "idle"
+  | "busy"
+  | "degraded"
+  | "error"
+  | "disabled"
+  | "unreachable"
+  | "maintenance";
+
+export type ArtifactStatus = "available" | "archived";
+
+export type TransferStatus =
+  | "queued"
+  | "running"
+  | "retryable"
+  | "paused"
+  | "failed"
+  | "cancelled"
+  | "completed";
+
+export type TransferChecksumStatus =
+  | "pending"
+  | "verifying"
+  | "verified"
+  | "failed"
+  | "skipped";
+
+export type JobType = "export" | "current_params" | "sweep";
+
+export type JobStatus =
+  | "queued"
+  | "running"
+  | "retryable"
+  | "paused"
+  | "blocked"
+  | "failed"
+  | "cancelled"
+  | "completed";
+
+export type StepStatus =
+  | "queued"
+  | "leased"
+  | "running"
+  | "retryable"
+  | "blocked"
+  | "paused"
+  | "failed"
+  | "cancelled"
+  | "completed";
+
+export type ReportStatus = "available" | "archived";
+
+export type EventLevel = "info" | "warn" | "error" | "progress" | "debug";
+
+export interface ResearchMachine {
+  id: string;
+  name: string;
+  role: MachineRole;
+  ssh_alias: string | null;
+  status: MachineStatus;
+  details_json: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ResearchMachineDependencyCounts {
+  artifacts: number;
+  transfers_as_source: number;
+  transfers_as_destination: number;
+  active_transfers: number;
+  jobs_using_source_artifacts: number;
+  reports_using_source_artifacts: number;
+}
+
+export interface MachineHealthResponse {
+  machine: ResearchMachine;
+  details: Record<string, unknown> | null;
+  dependencies: ResearchMachineDependencyCounts;
+  disabled: boolean;
+}
+
+export interface ResearchArtifact {
+  id: string;
+  source_machine_id: string | null;
+  kind: string;
+  status: ArtifactStatus;
+  run_mode: string | null;
+  artifact_root: string | null;
+  manifest_path: string | null;
+  bundle_path: string | null;
+  source_db_path: string | null;
+  interval_start_ms: number | null;
+  interval_end_ms: number | null;
+  bytes: number | null;
+  checksum: string | null;
+  replay_quality_class: string | null;
+  backtest_ready_class: string | null;
+  live_fidelity_class: string | null;
+  created_at: number;
+  updated_at: number;
+  archived_at: number | null;
+}
+
+export interface ArtifactManifestFile {
+  logical_name: string;
+  kind: string;
+  relative_path: string;
+  bytes: number;
+  sha256: string;
+}
+
+export interface ArtifactManifest {
+  schema_version: number;
+  artifact_id: string;
+  kind: string;
+  source_machine_id: string | null;
+  run_mode: string | null;
+  created_at_ms: number;
+  interval_start_ms: number | null;
+  interval_end_ms: number | null;
+  files: ArtifactManifestFile[];
+}
+
+export interface ArtifactVerification {
+  artifact_id: string;
+  files_checked: number;
+  bytes_checked: number;
+}
+
+export interface ImportArtifactResponse {
+  artifact: ResearchArtifact;
+  verification: ArtifactVerification;
+}
+
+export interface RegisterArtifactManifestSummary {
+  artifact_id: string;
+  files: number;
+  bytes: number;
+}
+
+export interface RegisterArtifactResponse {
+  artifact: ResearchArtifact;
+  manifest_summary: RegisterArtifactManifestSummary;
+}
+
+export interface VerifyArtifactResponse {
+  artifact: ResearchArtifact;
+  verification: ArtifactVerification;
+}
+
+export interface ArtifactTransfer {
+  id: string;
+  artifact_id: string;
+  source_machine_id: string | null;
+  dest_machine_id: string | null;
+  status: TransferStatus;
+  bytes_total: number | null;
+  bytes_done: number;
+  checksum_status: TransferChecksumStatus | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
+}
+
+export interface VerifyTransferResponse {
+  transfer: ArtifactTransfer;
+  verification: ArtifactVerification;
+}
+
+export interface ResearchJob {
+  id: string;
+  job_type: JobType;
+  artifact_id: string | null;
+  status: JobStatus;
+  priority: number;
+  requested_by: string;
+  params_json: string | null;
+  created_at: number;
+  updated_at: number;
+  cancelled_at: number | null;
+  completed_at: number | null;
+}
+
+export interface ResearchJobStep {
+  id: string;
+  job_id: string;
+  step_index: number;
+  name: string;
+  status: StepStatus;
+  lease_owner: string | null;
+  leased_until_ms: number | null;
+  attempts: number;
+  input_json: string | null;
+  output_json: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  started_at: number | null;
+  completed_at: number | null;
+}
+
+export interface ResearchJobEvent {
+  id: string;
+  job_id: string;
+  step_id: string | null;
+  timestamp_ms: number;
+  level: EventLevel;
+  message: string;
+  details_json: string | null;
+}
+
+export interface JobDetailResponse {
+  job: ResearchJob;
+  steps: ResearchJobStep[];
+  events: ResearchJobEvent[];
+}
+
+export interface ResearchReport {
+  id: string;
+  job_id: string;
+  artifact_id: string | null;
+  title: string;
+  status: ReportStatus;
+  summary_json: string | null;
+  report_path: string | null;
+  csv_path: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface RegenerateReportResponse {
+  report: ResearchReport;
+  report_path: string;
+  csv_path: string;
+}
+
+export interface CreateMachineRequest {
+  id: string;
+  name: string;
+  role: MachineRole;
+  ssh_alias?: string;
+  status?: MachineStatus;
+  details?: Record<string, unknown>;
+}
+
+export interface UpdateMachineRequest {
+  name?: string;
+  role?: MachineRole;
+  ssh_alias?: string | null;
+  status?: MachineStatus;
+  details?: Record<string, unknown> | null;
+}
+
+export interface ImportArtifactRequest {
+  artifact_root: string;
+  artifact_id?: string;
+  source_machine_id?: string;
+  status?: ArtifactStatus;
+}
+
+export interface RegisterArtifactRequest {
+  artifact_root: string;
+  manifest: ArtifactManifest;
+  source_machine_id?: string;
+  status?: ArtifactStatus;
+}
+
+export interface UpdateArtifactRequest {
+  source_machine_id?: string;
+  run_mode?: string;
+  replay_quality_class?: string;
+  backtest_ready_class?: string;
+  live_fidelity_class?: string;
+}
+
+export interface CreateTransferRequest {
+  artifact_id: string;
+  source_machine_id?: string;
+  dest_machine_id?: string;
+  bytes_total?: number;
+}
+
+export interface TransferProgressRequest {
+  status: TransferStatus;
+  bytes_done?: number;
+  bytes_total?: number;
+  checksum_status?: TransferChecksumStatus;
+  error?: string;
+}
+
+export interface RetryTransferRequest {
+  resume?: boolean;
+}
+
+export interface CreateJobRequest {
+  job_type: JobType;
+  artifact_id?: string;
+  priority?: number;
+  params?: Record<string, unknown>;
+}
+
+export interface UpdateJobRequest {
+  artifact_id?: string | null;
+  priority?: number;
+  params?: Record<string, unknown> | null;
+}
+
+export interface CloneJobRequest {
+  artifact_id?: string | null;
+  priority?: number;
+  params?: Record<string, unknown> | null;
+}
+
+export interface AppendEventRequest {
+  step_id?: string;
+  level: EventLevel;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface UpdateReportRequest {
+  title?: string;
+  status?: ReportStatus;
+}
+
+export type ResearchEntityKind =
+  | "machine"
+  | "artifact"
+  | "transfer"
+  | "job"
+  | "step"
+  | "report";
+
+export type ResearchAction =
+  | "read"
+  | "create"
+  | "update"
+  | "delete"
+  | "delete_with_files"
+  | "archive"
+  | "restore"
+  | "cancel"
+  | "pause"
+  | "resume"
+  | "continue"
+  | "retry"
+  | "clone"
+  | "verify"
+  | "health"
+  | "enable"
+  | "disable"
+  | "import"
+  | "register"
+  | "clear_lease"
+  | "resolve_blocker"
+  | "append_event"
+  | "regenerate_report";

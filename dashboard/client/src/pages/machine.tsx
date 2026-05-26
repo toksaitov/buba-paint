@@ -15,25 +15,13 @@ import {
 import { useMachine } from "../hooks/use-machine";
 import { useTheme } from "../hooks/use-theme";
 import { getChartColors } from "../lib/chart-colors";
+import { formatBytes } from "../lib/utils";
 import type { MachineResponse, MachineSample } from "../lib/types";
 
 type ChipTone = "neutral" | "muted" | "success" | "warning" | "danger";
 
 const GIB = 1024 * 1024 * 1024;
 const MIB = 1024 * 1024;
-
-function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null) return "—";
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let value = bytes;
-  let index = 0;
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024;
-    index += 1;
-  }
-  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[index]}`;
-}
 
 function formatPercent(used: number, total: number): string {
   if (total <= 0) return "—";

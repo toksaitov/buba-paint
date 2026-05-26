@@ -1,8 +1,19 @@
 import { Bot as BotIcon } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { dashboardRoutes } from "../../lib/routes";
 import type { Bot } from "../../lib/types";
+
+function pickActiveNavTarget(pathname: string): string | null {
+  const exact = dashboardRoutes.find((route) => route.to === pathname);
+  if (exact) return exact.to;
+  const prefixed = dashboardRoutes
+    .filter(
+      (route) => route.to !== "/" && pathname.startsWith(`${route.to}/`),
+    )
+    .sort((a, b) => b.to.length - a.to.length);
+  return prefixed[0]?.to ?? null;
+}
 
 interface NavProps {
   collapsed: boolean;
@@ -21,6 +32,10 @@ const groupedRoutes = [
     label: "Analysis",
     routes: dashboardRoutes.filter((route) => route.section === "Analysis"),
   },
+  {
+    label: "Research",
+    routes: dashboardRoutes.filter((route) => route.section === "Research"),
+  },
 ];
 
 export function Nav({
@@ -30,6 +45,8 @@ export function Nav({
   onSelectBot,
   onNavigate,
 }: NavProps) {
+  const location = useLocation();
+  const activeTarget = pickActiveNavTarget(location.pathname);
   return (
     <nav className="flex flex-col flex-1 overflow-y-auto pb-[var(--app-safe-bottom)]">
       {bots.length > 0 && (
@@ -81,26 +98,27 @@ export function Nav({
             {!collapsed && (
               <div className="px-3 text-[10px] text-muted">{group.label}</div>
             )}
-            {group.routes.map(({ to, icon: Icon, label }) => (
-              <NavLink
-                key={to}
-                to={to}
-                end={to === "/"}
-                onClick={onNavigate}
-                className={({ isActive }) =>
-                  cn(
+            {group.routes.map(({ to, icon: Icon, label }) => {
+              const isActive = activeTarget === to;
+              return (
+                <Link
+                  key={to}
+                  to={to}
+                  onClick={onNavigate}
+                  aria-current={isActive ? "page" : undefined}
+                  className={cn(
                     "flex items-center gap-2 px-3 py-3 text-[14px] transition-colors md:py-2 md:text-[13px]",
                     isActive
                       ? "bg-text font-semibold text-bg"
                       : "text-text hover:bg-surface",
                     collapsed && "justify-center",
-                  )
-                }
-              >
-                <Icon size={16} strokeWidth={2} />
-                {!collapsed && <span>{label}</span>}
-              </NavLink>
-            ))}
+                  )}
+                >
+                  <Icon size={16} strokeWidth={2} />
+                  {!collapsed && <span>{label}</span>}
+                </Link>
+              );
+            })}
           </div>
         ))}
       </div>
