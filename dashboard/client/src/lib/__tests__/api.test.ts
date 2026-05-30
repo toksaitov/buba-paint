@@ -44,10 +44,6 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-function requestFromCall(): Request {
-  return mockFetch.mock.calls[0][0] as Request;
-}
-
 function pathFromCall(): string {
   const [input] = mockFetch.mock.calls[0] as [Request | string, RequestInit | undefined];
   if (typeof input === "string") return input;

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Body;
@@ -66,6 +67,10 @@ fn test_research_routes() -> Router<AppState> {
         .route(
             "/api/research/machines/{id}/health",
             get(research::get_machine_health),
+        )
+        .route(
+            "/api/research/machines/{id}/telemetry",
+            get(research::get_machine_telemetry),
         )
         .route(
             "/api/research/workers/heartbeat",
@@ -175,6 +180,10 @@ fn test_job_routes() -> Router<AppState> {
         .route(
             "/api/research/jobs/{id}/report/regenerate",
             post(research::regenerate_job_report),
+        )
+        .route(
+            "/api/research/jobs/{id}/archive-scratch",
+            post(research::archive_job_scratch),
         )
         .route(
             "/api/research/jobs/{job_id}/steps/{step_id}/retry",
@@ -301,6 +310,64 @@ fn worker_json_post(path: &str, token: Option<&str>, body: &serde_json::Value) -
 async fn json_body(resp: axum::response::Response) -> serde_json::Value {
     let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     serde_json::from_slice(&body).unwrap()
+}
+
+/// Build a deterministic telemetry sample JSON object.
+fn telemetry_sample_json(sampled_at_ms: i64) -> serde_json::Value {
+    serde_json::json!({
+        "sampled_at_ms": sampled_at_ms,
+        "cpu_percent": 12.5,
+        "per_core_cpu": [12.5, 8.0],
+        "load_one": 0.5,
+        "load_five": 0.4,
+        "load_fifteen": 0.3,
+        "mem_used_bytes": 4096,
+        "mem_total_bytes": 16384,
+        "mem_available_bytes": 12288,
+        "swap_used_bytes": 0,
+        "swap_total_bytes": 0,
+        "disk_used_bytes": 50000,
+        "disk_total_bytes": 100000,
+        "disk_mount": "/research"
+    })
+}
+
+/// Build a complete worker heartbeat body with typed telemetry.
+fn telemetry_heartbeat_body() -> serde_json::Value {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(10_000);
+    serde_json::json!({
+        "machine_id": "research",
+        "worker_id": "research-worker-testing",
+        "worker_version": "0.2.0",
+        "status": "idle",
+        "details": {"queue_depth": 0},
+        "host": {
+            "hostname": "testing",
+            "os_name": "Linux",
+            "os_version": "test",
+            "kernel_version": "test",
+            "cpu_count": 2,
+            "total_ram_bytes": 16384
+        },
+        "sampler": {
+            "sample_interval_ms": 5000,
+            "samples_collected": 2,
+            "last_error": null
+        },
+        "samples": [
+            telemetry_sample_json(now_ms.saturating_sub(5_000)),
+            telemetry_sample_json(now_ms)
+        ],
+        "activity": {
+            "phase": "idle",
+            "heartbeat_interval_ms": 30000,
+            "processed_last_tick": 0,
+            "transfers_processed_last_tick": 0
+        }
+    })
 }
 
 /// Parse a text response body.
@@ -649,6 +716,124 @@ async fn worker_heartbeat_updates_machine_status() {
     assert_eq!(details["details"]["queue_depth"], 0);
 }
 
+/// Verifies observer users can read typed research machine telemetry.
+#[tokio::test]
+async fn observer_can_read_research_machine_telemetry() {
+    let (app, db) = test_app();
+    let observer = observer_token(&db).await;
+
+    let heartbeat = app
+        .clone()
+        .oneshot(worker_json_post(
+            "/api/research/workers/heartbeat",
+            Some("test-worker-token"),
+            &telemetry_heartbeat_body(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(heartbeat.status(), StatusCode::OK);
+
+    let resp = app
+        .oneshot(auth_get(
+            "/api/research/machines/research/telemetry",
+            &observer,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["machine"]["id"], "research");
+    assert_eq!(body["telemetry"]["worker_id"], "research-worker-testing");
+    assert_eq!(body["telemetry"]["host"]["hostname"], "testing");
+    assert_eq!(body["samples"].as_array().unwrap().len(), 2);
+    assert_eq!(body["dependencies"]["artifacts"], 0);
+    assert_eq!(body["disabled"], false);
+    assert_eq!(body["stale_after_ms"], 90_000);
+}
+
+/// Verifies missing machine telemetry reads return not found.
+#[tokio::test]
+async fn machine_telemetry_missing_machine_returns_404() {
+    let (app, db) = test_app();
+    let observer = observer_token(&db).await;
+
+    let resp = app
+        .oneshot(auth_get(
+            "/api/research/machines/missing/telemetry",
+            &observer,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// Verifies stale state is computed from persisted heartbeat timestamps.
+#[tokio::test]
+async fn machine_telemetry_reports_stale_heartbeats() {
+    let (app, db) = test_app();
+    let observer = observer_token(&db).await;
+    let host = buba_machine_telemetry::HostIdentity {
+        hostname: "testing".to_string(),
+        os_name: "Linux".to_string(),
+        os_version: "test".to_string(),
+        kernel_version: "test".to_string(),
+        cpu_count: 2,
+        total_ram_bytes: 16_384,
+    };
+    let sampler = buba_machine_telemetry::MachineSamplerHealth {
+        sample_interval_ms: 5_000,
+        samples_collected: 1,
+        last_error: None,
+    };
+    let activity = serde_json::json!({"phase":"idle","heartbeat_interval_ms":1000});
+    let samples = vec![buba_machine_telemetry::MachineSample {
+        sampled_at_ms: 1_000,
+        cpu_percent: 12.5,
+        per_core_cpu: vec![12.5, 8.0],
+        load_one: None,
+        load_five: None,
+        load_fifteen: None,
+        mem_used_bytes: 4_096,
+        mem_total_bytes: 16_384,
+        mem_available_bytes: 12_288,
+        swap_used_bytes: 0,
+        swap_total_bytes: 0,
+        disk_used_bytes: 50_000,
+        disk_total_bytes: 100_000,
+        disk_mount: "/research".to_string(),
+    }];
+    db.record_research_machine_heartbeat_with_telemetry_at(
+        &crate::db::ResearchMachineHeartbeatRecord {
+            machine_id: "research",
+            worker_id: "research-worker-testing",
+            worker_version: Some("0.2.0"),
+            status: "idle",
+            details: Some(&activity),
+            telemetry: crate::db::ResearchMachineTelemetryUpdate {
+                host: Some(&host),
+                sampler: Some(&sampler),
+                samples: &samples,
+                activity: Some(&activity),
+            },
+        },
+        1_000,
+    )
+    .await
+    .unwrap();
+
+    let resp = app
+        .oneshot(auth_get(
+            "/api/research/machines/research/telemetry",
+            &observer,
+        ))
+        .await
+        .unwrap();
+    let body = json_body(resp).await;
+    assert_eq!(body["stale"], true);
+    assert_eq!(body["stale_after_ms"], 90_000);
+}
+
 /// Verifies that worker heartbeats require the configured worker token.
 #[tokio::test]
 async fn worker_heartbeat_rejects_missing_or_invalid_token() {
@@ -704,6 +889,25 @@ async fn worker_heartbeat_rejects_invalid_payloads() {
             "{body}"
         );
     }
+}
+
+/// Verifies typed heartbeat sample validation rejects unsafe sample values.
+#[tokio::test]
+async fn worker_heartbeat_rejects_invalid_telemetry_samples() {
+    let (app, _db) = test_app();
+    let mut body = telemetry_heartbeat_body();
+    body["samples"][0]["disk_mount"] = serde_json::json!("");
+
+    let resp = app
+        .oneshot(worker_json_post(
+            "/api/research/workers/heartbeat",
+            Some("test-worker-token"),
+            &body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 /// Verifies admins can import an already-local artifact by manifest.
@@ -1763,6 +1967,151 @@ async fn admin_can_regenerate_job_report_files() {
     assert_eq!(report_json["steps"].as_array().unwrap().len(), 4);
     let csv = std::fs::read_to_string(csv_path).unwrap();
     assert!(csv.contains("step_index,name,status,attempts,error"));
+}
+
+/// Verifies admins can idempotently archive only bulky job scratch DB files.
+#[tokio::test]
+async fn admin_can_archive_completed_job_scratch_dbs() {
+    let (app, db) = test_app();
+    let token = admin_token(&db).await;
+    let admin_user = db.get_user_by_username("admin").await.unwrap().unwrap();
+    let artifact_dir = artifact_fixture();
+    let artifact = db
+        .create_research_artifact(
+            Some("live"),
+            "readonly_run",
+            "available",
+            Some("live_readonly"),
+            Some(artifact_dir.path().join("manifest.json").to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+    let params = serde_json::json!({
+        "start": "1970-01-01T00:00:01Z",
+        "end": "1970-01-01T00:00:02Z"
+    });
+    let job = db
+        .create_research_job(
+            "current_params",
+            Some(&artifact.id),
+            &admin_user.id,
+            0,
+            Some(&params.to_string()),
+        )
+        .await
+        .unwrap();
+    complete_all_job_steps(&db, "worker-archive").await;
+
+    let job_root = std::env::temp_dir().join("jobs").join(&job.id);
+    std::fs::create_dir_all(&job_root).unwrap();
+    let prepared = job_root.join("prepared-backtest.db");
+    let prepared_wal = job_root.join("prepared-backtest.db-wal");
+    let prepared_shm = job_root.join("prepared-backtest.db-shm");
+    let backtest = job_root.join("backtest.db");
+    let report_json = job_root.join("report.json");
+    let report_csv = job_root.join("report.csv");
+    for path in [&prepared, &prepared_wal, &prepared_shm, &backtest] {
+        std::fs::write(path, b"scratch").unwrap();
+    }
+    std::fs::write(&report_json, r#"{"schema_version":1}"#).unwrap();
+    std::fs::write(&report_csv, "step,status\n").unwrap();
+    db.create_or_update_research_report(&crate::db::ResearchReportRecord {
+        job_id: &job.id,
+        artifact_id: Some(&artifact.id),
+        title: "Completed backtest",
+        status: "available",
+        summary_json: Some(r#"{"schema_version":1}"#),
+        report_path: Some(report_json.to_str().unwrap()),
+        csv_path: Some(report_csv.to_str().unwrap()),
+    })
+    .await
+    .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_post(
+            &format!("/api/research/jobs/{}/archive-scratch", job.id),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["job"]["status"], "completed");
+    assert!(body["archive"]["deleted_paths"].as_array().unwrap().len() >= 4);
+    for path in [&prepared, &prepared_wal, &prepared_shm, &backtest] {
+        assert!(!path.exists(), "scratch file should be deleted: {path:?}");
+    }
+    assert!(report_json.exists());
+    assert!(report_csv.exists());
+    assert!(artifact_dir.path().join("manifest.json").exists());
+
+    let second = app
+        .oneshot(auth_post(
+            &format!("/api/research/jobs/{}/archive-scratch", job.id),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = json_body(second).await;
+    assert_eq!(
+        second_body["archive"]["deleted_paths"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert!(
+        second_body["archive"]["skipped_paths"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 6
+    );
+}
+
+/// Verifies scratch archival rejects unsafe or premature lifecycle states.
+#[tokio::test]
+async fn archive_scratch_requires_admin_completed_job_and_report() {
+    let (app, db) = test_app();
+    let admin = admin_token(&db).await;
+    let observer = observer_token(&db).await;
+    let admin_user = db.get_user_by_username("admin").await.unwrap().unwrap();
+    let job = db
+        .create_research_job("export", None, &admin_user.id, 0, None)
+        .await
+        .unwrap();
+
+    let observer_resp = app
+        .clone()
+        .oneshot(auth_post(
+            &format!("/api/research/jobs/{}/archive-scratch", job.id),
+            &observer,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(observer_resp.status(), StatusCode::FORBIDDEN);
+
+    let queued_resp = app
+        .clone()
+        .oneshot(auth_post(
+            &format!("/api/research/jobs/{}/archive-scratch", job.id),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(queued_resp.status(), StatusCode::BAD_REQUEST);
+
+    complete_all_job_steps(&db, "worker-no-report").await;
+    let no_report_resp = app
+        .oneshot(auth_post(
+            &format!("/api/research/jobs/{}/archive-scratch", job.id),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(no_report_resp.status(), StatusCode::BAD_REQUEST);
 }
 
 /// Verifies report regeneration requires admin permissions.

@@ -5,7 +5,7 @@ import type {
   ReactNode,
   TextareaHTMLAttributes,
 } from "react";
-import { useEffect, useId, useRef, useState } from "react";
+import { forwardRef, useEffect, useId, useRef, useState } from "react";
 import { Check, Copy, Loader2, X, Info, AlertTriangle, AlertOctagon, CheckCircle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { TradingAlert } from "../../lib/types";
@@ -474,9 +474,13 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   state?: "idle" | "valid" | "invalid";
 }
 
-export function Input({ state = "idle", className, ...rest }: InputProps) {
+export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
+  { state = "idle", className, ...rest },
+  ref,
+) {
   return (
     <input
+      ref={ref}
       data-state={state}
       className={cn(
         "w-full border bg-bg px-2 py-1.5 text-sm outline-none transition-colors",
@@ -486,7 +490,7 @@ export function Input({ state = "idle", className, ...rest }: InputProps) {
       {...rest}
     />
   );
-}
+});
 
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   state?: "idle" | "valid" | "invalid";

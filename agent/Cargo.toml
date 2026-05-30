@@ -36,7 +36,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 shell-words = "1"
-sysinfo = { version = "0.38", default-features = false, features = ["system", "disk"] }
+buba-machine-telemetry = { path = "../crates/buba-machine-telemetry" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

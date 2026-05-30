@@ -34,7 +34,9 @@ export function connectWs(
     ws.onmessage = (ev) => {
       try {
         onMessage(JSON.parse(ev.data as string));
-      } catch {}
+      } catch {
+        return;
+      }
     };
 
     ws.onclose = () => {

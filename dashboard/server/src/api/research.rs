@@ -6,22 +6,26 @@
 //! authenticated dashboard user.
 
 use std::path::{Component, Path as StdPath, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, header};
 use axum::response::IntoResponse;
+use buba_machine_telemetry::{HostIdentity, MachineSample, MachineSamplerHealth};
 
 use crate::api::auth_routes::AppState;
 use crate::auth::Claims;
 use crate::db::{
     ArtifactTransferRecord, NullableUpdate, ResearchArtifact, ResearchArtifactRecord, ResearchJob,
     ResearchJobEvent, ResearchJobStep, ResearchMachine, ResearchMachineDependencyCounts,
-    ResearchMachineRecord, ResearchReport,
+    ResearchMachineHeartbeatRecord, ResearchMachineRecord, ResearchMachineTelemetryState,
+    ResearchMachineTelemetryUpdate, ResearchReport,
 };
 use crate::error::DashboardError;
 use crate::research_artifacts;
+use crate::research_pipeline::{ArchiveSummary, ResearchPipelineConfig, archive_scratch_dbs};
 
 /// Response body for `GET /api/research/machines`.
 #[derive(serde::Serialize)]
@@ -48,6 +52,25 @@ pub struct MachineHealthResponse {
     pub dependencies: ResearchMachineDependencyCounts,
     /// Whether new background work should be avoided for this machine.
     pub disabled: bool,
+}
+
+/// Response body for `GET /api/research/machines/:id/telemetry`.
+#[derive(serde::Serialize)]
+pub struct MachineTelemetryResponse {
+    /// Machine metadata row.
+    pub machine: ResearchMachine,
+    /// Latest durable telemetry state, if the worker has reported it.
+    pub telemetry: Option<ResearchMachineTelemetryState>,
+    /// Historical host samples in chronological order.
+    pub samples: Vec<MachineSample>,
+    /// Durable records that reference this machine.
+    pub dependencies: ResearchMachineDependencyCounts,
+    /// Whether new background work should be avoided for this machine.
+    pub disabled: bool,
+    /// Whether the latest worker heartbeat is older than its stale threshold.
+    pub stale: bool,
+    /// Threshold used to compute stale state.
+    pub stale_after_ms: u64,
 }
 
 /// Response body for `GET /api/research/artifacts`.
@@ -190,6 +213,21 @@ pub struct JobDetailResponse {
     pub events: Vec<ResearchJobEvent>,
 }
 
+/// Response body returned after bulky scratch DB files are archived.
+#[derive(serde::Serialize)]
+pub struct ArchiveScratchResponse {
+    /// Durable job metadata and current lifecycle status.
+    pub job: ResearchJob,
+    /// Ordered step records for the job.
+    pub steps: Vec<ResearchJobStep>,
+    /// Timeline events associated with the job.
+    pub events: Vec<ResearchJobEvent>,
+    /// Existing report metadata row that makes scratch archival safe.
+    pub report: ResearchReport,
+    /// Files deleted or skipped by the idempotent archive pass.
+    pub archive: ArchiveSummary,
+}
+
 /// Response body for `GET /api/research/jobs/:id/events`.
 #[derive(serde::Serialize)]
 pub struct EventsResponse {
@@ -263,6 +301,15 @@ pub struct WorkerHeartbeatRequest {
     pub status: String,
     /// Optional structured machine or worker telemetry.
     pub details: Option<serde_json::Value>,
+    /// Optional host identity captured by the shared sampler.
+    pub host: Option<HostIdentity>,
+    /// Optional sampler health metadata.
+    pub sampler: Option<MachineSamplerHealth>,
+    /// Optional typed host metric samples.
+    #[serde(default)]
+    pub samples: Vec<MachineSample>,
+    /// Optional structured worker activity state.
+    pub activity: Option<serde_json::Value>,
 }
 
 /// Response body returned after a heartbeat updates machine state.
@@ -363,6 +410,15 @@ pub struct DeleteArtifactQuery {
     /// Delete artifact files as well as metadata when explicitly true.
     #[serde(default)]
     pub delete_files: bool,
+}
+
+/// Query parameters for telemetry history reads.
+#[derive(serde::Deserialize)]
+pub struct MachineTelemetryQuery {
+    /// Optional sample limit; the database clamps it to its supported maximum.
+    pub limit: Option<usize>,
+    /// Optional inclusive sample lower bound in epoch milliseconds.
+    pub since_ms: Option<i64>,
 }
 
 /// `GET /api/research/machines`
@@ -497,6 +553,34 @@ pub async fn get_machine_health(
     }))
 }
 
+/// `GET /api/research/machines/:id/telemetry`
+pub async fn get_machine_telemetry(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<MachineTelemetryQuery>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let machine = research_machine_by_id(&state, &id).await?;
+    let dependencies = state.db.research_machine_dependency_counts(&id).await?;
+    let telemetry = state
+        .db
+        .get_research_machine_telemetry(&id, query.limit, query.since_ms)
+        .await?;
+    let stale_after_ms = telemetry_stale_after_ms(telemetry.state.as_ref());
+    let stale = telemetry.state.as_ref().is_none_or(|state| {
+        current_epoch_ms().saturating_sub(state.last_heartbeat_ms) > stale_after_ms
+    });
+    let disabled = machine.status == "disabled";
+    Ok(Json(MachineTelemetryResponse {
+        machine,
+        telemetry: telemetry.state,
+        samples: telemetry.samples,
+        dependencies,
+        disabled,
+        stale,
+        stale_after_ms,
+    }))
+}
+
 /// `POST /api/research/workers/heartbeat`
 pub async fn worker_heartbeat(
     State(state): State<AppState>,
@@ -504,15 +588,23 @@ pub async fn worker_heartbeat(
     Json(req): Json<WorkerHeartbeatRequest>,
 ) -> Result<impl IntoResponse, DashboardError> {
     require_worker_token(&state, &headers)?;
+    let telemetry = ResearchMachineTelemetryUpdate {
+        host: req.host.as_ref(),
+        sampler: req.sampler.as_ref(),
+        samples: &req.samples,
+        activity: req.activity.as_ref(),
+    };
+    let record = ResearchMachineHeartbeatRecord {
+        machine_id: &req.machine_id,
+        worker_id: &req.worker_id,
+        worker_version: req.worker_version.as_deref(),
+        status: &req.status,
+        details: req.details.as_ref(),
+        telemetry,
+    };
     let machine = state
         .db
-        .record_research_machine_heartbeat(
-            &req.machine_id,
-            &req.worker_id,
-            req.worker_version.as_deref(),
-            &req.status,
-            req.details,
-        )
+        .record_research_machine_heartbeat_with_telemetry(&record)
         .await?;
     Ok(Json(WorkerHeartbeatResponse { machine }))
 }
@@ -1288,6 +1380,45 @@ pub async fn regenerate_job_report(
     }))
 }
 
+/// `POST /api/research/jobs/:id/archive-scratch`
+pub async fn archive_job_scratch(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    require_admin(&claims)?;
+    let detail = job_detail(&state, &id).await?;
+    if detail.job.status != "completed" {
+        return Err(DashboardError::BadRequest(format!(
+            "research job '{}' must be completed before scratch DBs can be archived",
+            detail.job.id
+        )));
+    }
+    let report = state
+        .db
+        .get_research_report_for_job(&id)
+        .await?
+        .ok_or_else(|| {
+            DashboardError::BadRequest(format!(
+                "research job '{}' has no report to preserve",
+                detail.job.id
+            ))
+        })?;
+    let artifact = research_artifact_for_job(&state, &detail.job).await?;
+    let pipeline = pipeline_for_archive(&state)?;
+    let plan = pipeline.plan_for_job(&detail.job, artifact.as_ref())?;
+    let archive = archive_scratch_dbs(&plan)?;
+    let report = update_report_archive_summary(&state, &detail, &report, &archive).await?;
+    let detail = job_detail(&state, &id).await?;
+    Ok(Json(ArchiveScratchResponse {
+        job: detail.job,
+        steps: detail.steps,
+        events: detail.events,
+        report,
+        archive,
+    }))
+}
+
 /// `GET /api/research/reports`
 pub async fn list_reports(
     State(state): State<AppState>,
@@ -1426,6 +1557,31 @@ fn parse_stored_json(
                 .map_err(|error| DashboardError::Internal(format!("parsing {name}: {error}")))
         })
         .transpose()
+}
+
+/// Compute the heartbeat staleness window for the latest telemetry state.
+fn telemetry_stale_after_ms(state: Option<&ResearchMachineTelemetryState>) -> u64 {
+    let configured = state
+        .and_then(|state| state.activity.as_ref())
+        .and_then(|activity| activity.get("heartbeat_interval_ms"))
+        .and_then(json_u64)
+        .map(|interval| interval.saturating_mul(3));
+    configured.unwrap_or(90_000).max(90_000)
+}
+
+/// Interpret a JSON integer field as an unsigned millisecond value.
+fn json_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok()))
+}
+
+/// Return the current wall-clock millisecond epoch.
+fn current_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Return one artifact by ID or a route-level not found error.
@@ -1661,6 +1817,86 @@ fn delete_report_files(state: &AppState, report: &ResearchReport) -> Result<(), 
     remove_report_file(state, report.report_path.as_deref(), "report_path")?;
     remove_report_file(state, report.csv_path.as_deref(), "csv_path")?;
     Ok(())
+}
+
+/// Return the artifact referenced by one job, if present.
+async fn research_artifact_for_job(
+    state: &AppState,
+    job: &ResearchJob,
+) -> Result<Option<ResearchArtifact>, DashboardError> {
+    let Some(artifact_id) = job.artifact_id.as_deref() else {
+        return Ok(None);
+    };
+    state
+        .db
+        .get_research_artifact(artifact_id)
+        .await?
+        .map_or_else(
+            || {
+                Err(DashboardError::NotFound(format!(
+                    "artifact '{artifact_id}' not found"
+                )))
+            },
+            |artifact| Ok(Some(artifact)),
+        )
+}
+
+/// Build a research pipeline config for post-run scratch archival.
+fn pipeline_for_archive(state: &AppState) -> Result<ResearchPipelineConfig, DashboardError> {
+    let work_root = state.research_work_root.as_deref().ok_or_else(|| {
+        DashboardError::BadRequest("research work root is not configured".to_string())
+    })?;
+    let repo_root = std::env::current_dir()
+        .map_err(|error| DashboardError::Internal(format!("resolving current dir: {error}")))?;
+    ResearchPipelineConfig::new(repo_root, work_root)
+}
+
+/// Persist archive summary metadata while preserving report files.
+async fn update_report_archive_summary(
+    state: &AppState,
+    detail: &JobDetailResponse,
+    report: &ResearchReport,
+    archive: &ArchiveSummary,
+) -> Result<ResearchReport, DashboardError> {
+    let mut summary = match report.summary_json.as_deref() {
+        Some(summary_json) if !summary_json.trim().is_empty() => serde_json::from_str(summary_json)
+            .map_err(|error| {
+                DashboardError::Internal(format!("parsing research report summary: {error}"))
+            })?,
+        _ => serde_json::json!({
+            "schema_version": 1,
+            "job": &detail.job,
+            "steps": &detail.steps,
+            "events": &detail.events,
+        }),
+    };
+    summary["archive"] = serde_json::to_value(archive)
+        .map_err(|error| DashboardError::Internal(format!("serializing archive: {error}")))?;
+    let summary_json = serde_json::to_string_pretty(&summary)
+        .map_err(|error| DashboardError::Internal(format!("serializing report: {error}")))?;
+
+    if report.report_path.is_some() {
+        let report_path =
+            resolve_report_file_path(state, report.report_path.as_deref(), "report_path")?;
+        std::fs::write(&report_path, &summary_json)
+            .map_err(|error| DashboardError::Internal(format!("writing report JSON: {error}")))?;
+    }
+
+    state
+        .db
+        .create_or_update_research_report(&crate::db::ResearchReportRecord {
+            job_id: &detail.job.id,
+            artifact_id: report
+                .artifact_id
+                .as_deref()
+                .or(detail.job.artifact_id.as_deref()),
+            title: &report.title,
+            status: &report.status,
+            summary_json: Some(&summary_json),
+            report_path: report.report_path.as_deref(),
+            csv_path: report.csv_path.as_deref(),
+        })
+        .await
 }
 
 /// Remove one stored report file if it exists.

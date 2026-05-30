@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { vi, beforeEach } from "vitest";
+import { beforeEach } from "vitest";
 import { ProtectedRoute } from "../protected-route";
 import { useAuthStore } from "../../../stores/auth-store";
 
@@ -24,7 +24,7 @@ test("renders children when token exists", () => {
 });
 
 test("redirects to login when no token", () => {
-  const { container } = render(
+  render(
     <MemoryRouter initialEntries={["/dashboard"]}>
       <ProtectedRoute>
         <div>Secret content</div>

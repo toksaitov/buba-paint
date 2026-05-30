@@ -48,7 +48,12 @@ struct FunctionCollector {
 impl<'ast> Visit<'ast> for FunctionCollector {
     /// Visits a free function and stores its audit metadata.
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        self.push_function(&node.attrs, &node.sig.ident.to_string(), node.span().start(), None);
+        self.push_function(
+            &node.attrs,
+            &node.sig.ident.to_string(),
+            node.span().start(),
+            None,
+        );
         syn::visit::visit_item_fn(self, node);
     }
 
@@ -66,7 +71,12 @@ impl<'ast> Visit<'ast> for FunctionCollector {
 
     /// Visits a trait method and stores its audit metadata.
     fn visit_trait_item_fn(&mut self, node: &'ast TraitItemFn) {
-        self.push_function(&node.attrs, &node.sig.ident.to_string(), node.span().start(), None);
+        self.push_function(
+            &node.attrs,
+            &node.sig.ident.to_string(),
+            node.span().start(),
+            None,
+        );
         syn::visit::visit_trait_item_fn(self, node);
     }
 
@@ -131,7 +141,10 @@ fn parse_command(command: Option<&str>) -> Result<Command> {
 
 /// Parses optional root arguments after the command name.
 fn parse_roots(args: &[String]) -> Vec<PathBuf> {
-    let start = usize::from(matches!(args.first().map(String::as_str), Some("check" | "report" | "fix")));
+    let start = usize::from(matches!(
+        args.first().map(String::as_str),
+        Some("check" | "report" | "fix")
+    ));
     let roots = &args[start..];
     if roots.is_empty() {
         DEFAULT_ROOTS.iter().map(PathBuf::from).collect()
@@ -144,7 +157,9 @@ fn parse_roots(args: &[String]) -> Vec<PathBuf> {
 fn check(cwd: &Path, roots: &[PathBuf]) -> Result<()> {
     let summary = analyze_workspace(cwd, roots)?;
     if summary.is_empty() {
-        println!("rust comment policy summary: files_with_backlog=0, missing_docs=0, non_doc_comments=0");
+        println!(
+            "rust comment policy summary: files_with_backlog=0, missing_docs=0, non_doc_comments=0"
+        );
         return Ok(());
     }
 
@@ -208,25 +223,45 @@ fn analyze_workspace(cwd: &Path, roots: &[PathBuf]) -> Result<BTreeMap<String, F
 
 /// Analyzes one `Rust` file for missing rustdoc and non-doc comments.
 fn analyze_file(cwd: &Path, path: &Path) -> Result<FileCounts> {
-    let source = fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.strip_prefix(cwd).unwrap_or(path).display()))?;
-    let parsed: File = syn::parse_file(&source)
-        .with_context(|| format!("parsing {}", path.strip_prefix(cwd).unwrap_or(path).display()))?;
+    let source = fs::read_to_string(path).with_context(|| {
+        format!(
+            "reading {}",
+            path.strip_prefix(cwd).unwrap_or(path).display()
+        )
+    })?;
+    let parsed: File = syn::parse_file(&source).with_context(|| {
+        format!(
+            "parsing {}",
+            path.strip_prefix(cwd).unwrap_or(path).display()
+        )
+    })?;
     let mut collector = FunctionCollector::default();
     collector.visit_file(&parsed);
 
     Ok(FileCounts {
-        missing_docs: collector.functions.iter().filter(|function| !function.has_docs).count(),
+        missing_docs: collector
+            .functions
+            .iter()
+            .filter(|function| !function.has_docs)
+            .count(),
         non_doc_comments: non_doc_comment_ranges(&source).len(),
     })
 }
 
 /// Applies rustdoc insertion and non-doc comment stripping to one file.
 fn fix_file(cwd: &Path, path: &Path) -> Result<bool> {
-    let source = fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.strip_prefix(cwd).unwrap_or(path).display()))?;
-    let parsed: File = syn::parse_file(&source)
-        .with_context(|| format!("parsing {}", path.strip_prefix(cwd).unwrap_or(path).display()))?;
+    let source = fs::read_to_string(path).with_context(|| {
+        format!(
+            "reading {}",
+            path.strip_prefix(cwd).unwrap_or(path).display()
+        )
+    })?;
+    let parsed: File = syn::parse_file(&source).with_context(|| {
+        format!(
+            "parsing {}",
+            path.strip_prefix(cwd).unwrap_or(path).display()
+        )
+    })?;
     let mut collector = FunctionCollector::default();
     collector.visit_file(&parsed);
 
@@ -259,8 +294,12 @@ fn fix_file(cwd: &Path, path: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    fs::write(path, updated)
-        .with_context(|| format!("writing {}", path.strip_prefix(cwd).unwrap_or(path).display()))?;
+    fs::write(path, updated).with_context(|| {
+        format!(
+            "writing {}",
+            path.strip_prefix(cwd).unwrap_or(path).display()
+        )
+    })?;
     Ok(true)
 }
 
@@ -271,14 +310,21 @@ fn has_rustdoc(attrs: &[Attribute]) -> bool {
 
 /// Returns whether any attribute marks the function as a test.
 fn has_test_attr(attrs: &[Attribute]) -> bool {
-    attrs.iter()
-        .any(|attr| attr.path().segments.last().is_some_and(|segment| segment.ident == "test"))
+    attrs.iter().any(|attr| {
+        attr.path()
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "test")
+    })
 }
 
 /// Resolves the simple type name for an impl block owner.
 fn type_name(ty: &Type) -> Option<String> {
     match ty {
-        Type::Path(TypePath { path, .. }) => path.segments.last().map(|segment| segment.ident.to_string()),
+        Type::Path(TypePath { path, .. }) => path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string()),
         _ => None,
     }
 }
@@ -329,14 +375,14 @@ fn doc_sentence(function: &FunctionInfo) -> String {
     }
 
     match function.name.as_str() {
-        "new" => function
-            .owner
-            .as_deref()
-            .map_or_else(|| "Creates a new instance.".to_string(), |owner| format!("Creates a new `{owner}`.")),
-        "default" => function
-            .owner
-            .as_deref()
-            .map_or_else(|| "Builds the default value.".to_string(), |owner| format!("Builds the default `{owner}`.")),
+        "new" => function.owner.as_deref().map_or_else(
+            || "Creates a new instance.".to_string(),
+            |owner| format!("Creates a new `{owner}`."),
+        ),
+        "default" => function.owner.as_deref().map_or_else(
+            || "Builds the default value.".to_string(),
+            |owner| format!("Builds the default `{owner}`."),
+        ),
         _ => prefixed_sentence(&function.name),
     }
 }
@@ -428,7 +474,10 @@ fn non_doc_comment_ranges(source: &str) -> Vec<(usize, usize)> {
 
     for token in tokenize(source) {
         let end = offset + token.len;
-        if matches!(token.kind, TokenKind::LineComment | TokenKind::BlockComment { .. }) {
+        if matches!(
+            token.kind,
+            TokenKind::LineComment | TokenKind::BlockComment { .. }
+        ) {
             let slice = &source[offset..end];
             if !is_doc_comment(slice) {
                 ranges.push((offset, end));
@@ -507,13 +556,15 @@ fn print_summary(label: &str, summary: &BTreeMap<String, FileCounts>) {
 
 /// Aggregates the workspace totals from the per-file summary.
 fn summary_totals(summary: &BTreeMap<String, FileCounts>) -> (usize, usize, usize) {
-    summary.values().fold((0, 0, 0), |(files, docs, comments), counts| {
-        (
-            files + 1,
-            docs + counts.missing_docs,
-            comments + counts.non_doc_comments,
-        )
-    })
+    summary
+        .values()
+        .fold((0, 0, 0), |(files, docs, comments), counts| {
+            (
+                files + 1,
+                docs + counts.missing_docs,
+                comments + counts.non_doc_comments,
+            )
+        })
 }
 
 /// Converts a path into a normalized workspace-relative string.

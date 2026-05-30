@@ -134,6 +134,10 @@ fn research_routes() -> Router<AppState> {
             get(research::get_machine_health),
         )
         .route(
+            "/api/research/machines/{id}/telemetry",
+            get(research::get_machine_telemetry),
+        )
+        .route(
             "/api/research/workers/heartbeat",
             post(research::worker_heartbeat),
         )
@@ -241,6 +245,10 @@ fn research_job_routes() -> Router<AppState> {
         .route(
             "/api/research/jobs/{id}/report/regenerate",
             post(research::regenerate_job_report),
+        )
+        .route(
+            "/api/research/jobs/{id}/archive-scratch",
+            post(research::archive_job_scratch),
         )
         .route(
             "/api/research/jobs/{job_id}/steps/{step_id}/retry",

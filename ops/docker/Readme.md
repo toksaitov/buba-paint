@@ -72,11 +72,12 @@ python3 scripts/deploy-machine.py --machine research --dry-run
 Deploy or refresh the remote research stack on `testing`:
 
 ```bash
+gh auth refresh -s write:packages
+python3 scripts/publish-research-images.py
 python3 scripts/deploy-machine.py --machine research
-python3 scripts/deploy-machine.py --machine research --skip-build
 ```
 
-The research deployment targets Ubuntu WSL on `testing`, syncs source into `/home/testing/buba-paint-research`, excludes local `data/` and `runs/`, preserves remote `.env` and `.docker/research`, and starts only `research-dashboard` and `research-worker`. The generated `.env` includes `BUBA_RESEARCH_WORKER_TOKEN`, `BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh`, and `BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`; the worker uses the token when `BUBA_RESEARCH_CONTROLLER_URL` is set, uses the SSH directory for remote artifact transfers, and recovers stale running transfers after the configured window. Check it with:
+The research deployment targets Ubuntu WSL on `testing`, uses digest-pinned private GHCR images from `ops/research-images.lock.json`, syncs only the research Compose file into `/home/testing/buba-paint-research`, preserves remote `.env` and `.docker/research`, and starts only `research-dashboard` and `research-worker`. The deploy runner sends the current `gh` token over SSH only for a temporary GHCR login and removes the temporary Docker config before the session exits. The generated `.env` includes `BUBA_RESEARCH_WORKER_TOKEN`, `BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh`, and `BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`; the worker uses the token when `BUBA_RESEARCH_CONTROLLER_URL` is set, uses the SSH directory for remote artifact transfers, and recovers stale running transfers after the configured window. Check it with:
 
 ```bash
 ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-research && docker compose -f docker-compose.research.yml ps'"

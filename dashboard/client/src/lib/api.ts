@@ -42,7 +42,9 @@ async function extractError(res: Response): Promise<string> {
   try {
     const json = await res.json();
     if (json && typeof json.error === "string") return json.error;
-  } catch {}
+  } catch {
+    return `${res.status} ${res.statusText}`;
+  }
   return `${res.status} ${res.statusText}`;
 }
 

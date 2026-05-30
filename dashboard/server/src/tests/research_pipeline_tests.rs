@@ -1,5 +1,8 @@
-use crate::db::{ResearchArtifact, ResearchJob};
+use std::time::{Duration, Instant};
+
+use crate::db::{DashboardDb, ResearchArtifact, ResearchJob};
 use crate::research_artifacts::{ArtifactFileSpec, build_manifest, write_manifest_files};
+use rusqlite::Connection;
 
 use super::*;
 
@@ -543,4 +546,55 @@ fn process_command_executor_captures_status_stdout_and_stderr() {
     assert_eq!(output.status_code, Some(7));
     assert_eq!(output.stdout, "ok");
     assert_eq!(output.stderr, "err");
+}
+
+/// Verifies that supervised process execution kills a cancelled command promptly.
+#[tokio::test]
+async fn process_command_executor_terminates_cancelled_command() {
+    let db = DashboardDb::from_connection(Connection::open_in_memory().unwrap());
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let job = db
+        .create_research_job("export", None, &user.id, 0, None)
+        .await
+        .unwrap();
+    let step_id = db.get_research_job_steps(&job.id).await.unwrap()[0]
+        .id
+        .clone();
+    let executor = ProcessCommandExecutor;
+    let command = CommandSpec {
+        program: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "printf started; sleep 30; printf done".to_string(),
+        ],
+        cwd: std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+    };
+    let started_at = Instant::now();
+
+    let output = tokio::join!(
+        executor.execute_supervised(
+            &command,
+            CommandCancellation {
+                db: &db,
+                job_id: &job.id,
+                step_id: &step_id,
+                poll_interval: Duration::from_millis(50),
+            },
+        ),
+        async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            db.cancel_research_job(&job.id).await.unwrap();
+        }
+    )
+    .0
+    .unwrap();
+
+    assert!(started_at.elapsed() < Duration::from_secs(5));
+    assert!(output.cancelled);
+    assert!(!output.success);
+    assert!(output.stdout.contains("started"));
+    assert!(!output.stdout.contains("done"));
 }

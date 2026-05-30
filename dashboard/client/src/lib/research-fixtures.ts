@@ -6,8 +6,11 @@ import type {
   ResearchJobEvent,
   ResearchJobStep,
   ResearchMachine,
+  ResearchMachineTelemetryState,
   ResearchReport,
+  MachineTelemetryResponse,
 } from "./research-types";
+import type { MachineSample } from "./types";
 
 export const FIXTURE_TIMESTAMP_MS = 1_779_000_000_000;
 export const FIXTURE_INTERVAL_START_MS = 1_779_000_000_000;
@@ -91,6 +94,87 @@ export function fixtureMachineDefaultResearch(): ResearchMachine {
     }),
     created_at: FIXTURE_TIMESTAMP_MS,
     updated_at: FIXTURE_TIMESTAMP_MS,
+  };
+}
+
+export function fixtureMachineSample(
+  overrides: Partial<MachineSample> = {},
+): MachineSample {
+  return {
+    sampled_at_ms: FIXTURE_TIMESTAMP_MS,
+    cpu_percent: 25,
+    per_core_cpu: [22, 28],
+    load_one: 0.7,
+    load_five: 0.6,
+    load_fifteen: 0.5,
+    mem_used_bytes: 4 * 1024 * 1024 * 1024,
+    mem_total_bytes: 16 * 1024 * 1024 * 1024,
+    mem_available_bytes: 12 * 1024 * 1024 * 1024,
+    swap_used_bytes: 0,
+    swap_total_bytes: 2 * 1024 * 1024 * 1024,
+    disk_used_bytes: 100 * 1024 * 1024 * 1024,
+    disk_total_bytes: 500 * 1024 * 1024 * 1024,
+    disk_mount: "/research",
+    ...overrides,
+  };
+}
+
+export function fixtureMachineTelemetryState(
+  overrides: Partial<ResearchMachineTelemetryState> = {},
+): ResearchMachineTelemetryState {
+  return {
+    machine_id: "fixture-research",
+    worker_id: "fixture-worker",
+    worker_version: "0.1.0",
+    worker_status: "idle",
+    host: {
+      hostname: "fixture-research",
+      os_name: "Linux",
+      os_version: "fixture",
+      kernel_version: "fixture-kernel",
+      cpu_count: 2,
+      total_ram_bytes: 16 * 1024 * 1024 * 1024,
+    },
+    sampler: {
+      sample_interval_ms: 5_000,
+      samples_collected: 12,
+      last_error: null,
+    },
+    activity: {
+      phase: "idle",
+      heartbeat_interval_ms: 30_000,
+      processed_last_tick: 0,
+      transfers_processed_last_tick: 0,
+    },
+    last_heartbeat_ms: FIXTURE_TIMESTAMP_MS,
+    last_sample_ms: FIXTURE_TIMESTAMP_MS,
+    last_error: null,
+    updated_at: FIXTURE_TIMESTAMP_MS,
+    ...overrides,
+  };
+}
+
+export function fixtureMachineTelemetryResponse(
+  overrides: Partial<MachineTelemetryResponse> = {},
+): MachineTelemetryResponse {
+  const state = fixtureMachineTelemetryState();
+  const sample = fixtureMachineSample();
+  return {
+    machine: fixtureMachineResearch(),
+    telemetry: state,
+    samples: [sample],
+    dependencies: {
+      artifacts: 1,
+      transfers_as_source: 0,
+      transfers_as_destination: 2,
+      active_transfers: 1,
+      jobs_using_source_artifacts: 3,
+      reports_using_source_artifacts: 1,
+    },
+    disabled: false,
+    stale: false,
+    stale_after_ms: 90_000,
+    ...overrides,
   };
 }
 

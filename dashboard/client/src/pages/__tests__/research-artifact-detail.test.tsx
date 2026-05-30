@@ -25,6 +25,10 @@ vi.mock("../../hooks/use-research-transfers", () => ({
   useResearchTransfers: vi.fn(() => ({ data: { transfers: [] } })),
 }));
 
+vi.mock("../../hooks/use-research-machines", () => ({
+  useResearchMachines: vi.fn(() => ({ data: { machines: [] } })),
+}));
+
 vi.mock("../../hooks/use-research-jobs", () => ({
   useResearchJobs: vi.fn(() => ({ data: { jobs: [] } })),
 }));
@@ -47,11 +51,17 @@ vi.mock("../../components/common/loading", () => ({
 
 import { ResearchArtifactDetailPage } from "../research-artifact-detail";
 import { useResearchArtifact } from "../../hooks/use-research-artifacts";
+import { useResearchMachines } from "../../hooks/use-research-machines";
 import { verifyResearchArtifact } from "../../lib/research-api";
 import { useAuthStore } from "../../stores/auth-store";
-import { fixtureArtifactBadChecksum } from "../../lib/research-fixtures";
+import {
+  fixtureArtifactBadChecksum,
+  fixtureMachineLive,
+  fixtureMachineResearch,
+} from "../../lib/research-fixtures";
 
 const mockUseArtifact = vi.mocked(useResearchArtifact);
+const mockUseMachines = vi.mocked(useResearchMachines);
 const mockVerify = vi.mocked(verifyResearchArtifact);
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -70,6 +80,9 @@ beforeEach(() => {
     isLoading: false,
     isError: false,
   } as ReturnType<typeof useResearchArtifact>);
+  mockUseMachines.mockReturnValue({
+    data: { machines: [fixtureMachineLive(), fixtureMachineResearch()] },
+  } as ReturnType<typeof useResearchMachines>);
 });
 
 describe("ResearchArtifactDetailPage - bad checksum", () => {
@@ -117,5 +130,12 @@ describe("ResearchArtifactDetailPage - bad checksum", () => {
     expect(
       screen.getByText(/labels\/notes: unsupported/i),
     ).toBeInTheDocument();
+  });
+
+  it("renders live source machines as provenance labels instead of links", () => {
+    render(<ResearchArtifactDetailPage />, { wrapper });
+    const source = screen.getByText("fixture-live");
+
+    expect(source.closest("a")).toBeNull();
   });
 });

@@ -131,6 +131,41 @@ describe("ResearchJobDetailPage - completed", () => {
       screen.getByRole("button", { name: /delete record/i }),
     ).toBeInTheDocument();
   });
+
+  it("shows scratch archive action for completed jobs with reports", () => {
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+    mockUseResearchReports.mockReturnValue({
+      data: {
+        reports: [
+          {
+            id: "report-1",
+            job_id: "fixture-job-blocked",
+            artifact_id: "fixture-artifact-available",
+            title: "Completed report",
+            status: "available",
+            summary_json: null,
+            report_path: "/tmp/report.json",
+            csv_path: "/tmp/report.csv",
+            created_at: 0,
+            updated_at: 0,
+          },
+        ],
+      },
+    } as ReturnType<typeof useResearchReports>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    expect(
+      screen.getByRole("button", { name: /archive scratch dbs/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /delete record/i }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("ResearchJobDetailPage - loading and error states", () => {

@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 ARG BUBA_GIT_SHA=unknown
 ENV BUBA_GIT_SHA=$BUBA_GIT_SHA
 COPY Cargo.toml Cargo.lock ./
+COPY crates/buba-machine-telemetry/ crates/buba-machine-telemetry/
 COPY bots/paint/ bots/paint/
 # Create stub workspace members so cargo doesn't fail
 RUN mkdir -p agent/src && echo 'fn main() {}' > agent/src/main.rs && \

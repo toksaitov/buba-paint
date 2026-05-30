@@ -203,11 +203,21 @@ function MobileSignalGroupCard({ group }: { group: SignalGroupRow }) {
 
 export function SignalGroupTable({ groups }: { groups: SignalGroupRow[] }) {
   const [filters, setFilters] = useState(readSignalGroupFilterPreferences);
-  const { strategy, direction } = filters;
   const strategies = useMemo(
     () => Array.from(new Set(groups.map((group) => group.strategy))).sort(),
     [groups],
   );
+  const effectiveFilters = useMemo(
+    () => ({
+      ...filters,
+      strategy:
+        filters.strategy === "all" || strategies.includes(filters.strategy)
+          ? filters.strategy
+          : "all",
+    }),
+    [filters, strategies],
+  );
+  const { strategy, direction } = effectiveFilters;
   const filtered = useMemo(
     () =>
       groups.filter((group) => {
@@ -220,17 +230,14 @@ export function SignalGroupTable({ groups }: { groups: SignalGroupRow[] }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem(SIGNAL_GROUP_FILTERS_STORAGE_KEY, JSON.stringify(filters));
+      localStorage.setItem(
+        SIGNAL_GROUP_FILTERS_STORAGE_KEY,
+        JSON.stringify(effectiveFilters),
+      );
     } catch {
+      return;
     }
-  }, [filters]);
-
-  useEffect(() => {
-    setFilters((current) => {
-      if (current.strategy === "all" || strategies.includes(current.strategy)) return current;
-      return { ...current, strategy: "all" };
-    });
-  }, [strategies]);
+  }, [effectiveFilters]);
 
   return (
     <div className="border border-border bg-bg">
@@ -260,7 +267,13 @@ export function SignalGroupTable({ groups }: { groups: SignalGroupRow[] }) {
             <select
               aria-label="Direction"
               value={direction}
-              onChange={(event) => setFilters((current) => ({ ...current, direction: event.target.value }))}
+              onChange={(event) =>
+                setFilters((current) => ({
+                  ...current,
+                  strategy,
+                  direction: event.target.value,
+                }))
+              }
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All directions</option>

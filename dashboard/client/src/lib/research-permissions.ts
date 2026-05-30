@@ -232,6 +232,7 @@ const ALL_ACTIONS: ResearchAction[] = [
   "resolve_blocker",
   "append_event",
   "regenerate_report",
+  "archive_scratch",
 ];
 
 export function getAllowedActions(
@@ -289,6 +290,7 @@ function jobActions(status: JobStatus, ctx: ActionContext): ResearchAction[] {
       return [
         "clone",
         "regenerate_report",
+        ...((ctx.has_reports ? ["archive_scratch"] : []) as ResearchAction[]),
         ...((deletable ? ["delete"] : []) as ResearchAction[]),
         "append_event",
       ];
@@ -407,6 +409,7 @@ export const ACTION_LABELS: Record<ResearchAction, string> = {
   resolve_blocker: "Resolve blocker",
   append_event: "Add note",
   regenerate_report: "Regenerate report",
+  archive_scratch: "Archive scratch DBs",
 };
 
 export function actionLabel(action: ResearchAction): string {

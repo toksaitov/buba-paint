@@ -457,12 +457,7 @@ pub struct RuntimeDbFiles {
 }
 
 /// Sampler health metadata returned alongside the machine snapshot.
-#[derive(Debug, Clone, Serialize)]
-pub struct SamplerHealth {
-    pub sample_interval_ms: u32,
-    pub samples_collected: u64,
-    pub last_error: Option<String>,
-}
+pub type SamplerHealth = crate::machine::MachineSamplerHealth;
 
 /// Top-level response shape for `GET /api/machine`.
 #[derive(Debug, Clone, Serialize)]

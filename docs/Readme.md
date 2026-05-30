@@ -68,6 +68,7 @@ Documentation explains durable design. Runtime truth comes from executable state
 * sidecar routes and SDK versions: `polymarket-sidecar/src/server.ts`, `polymarket-sidecar/src/config.ts`, and `polymarket-sidecar/package.json`
 * deployed runtime config: dashboard Parameters page, `GET /api/runtime/config`, or `run_metadata.runtime_config_snapshot`
 * machine state: dashboard Machine page or `GET /api/machine`
+* research host telemetry: `GET /api/research/machines/:id/telemetry` and the `research_machine_telemetry_*` tables
 * data quality: `validate-replay-data`, `validate-backtest-input`, `prepare-backtest-input`, and `validate-live-fidelity`
 
 When docs and code disagree, code wins until the docs are corrected. When local venue assumptions and official Polymarket docs disagree, official docs win until production-safe readonly checks prove otherwise.
@@ -85,7 +86,6 @@ When docs and code disagree, code wins until the docs are corrected. When local 
 * [live-session-runbook.md](./live-session-runbook.md): future funded-session workflow and closeout expectations.
 * [pending-settlement-modes.md](./pending-settlement-modes.md): settlement timing and reserve semantics.
 * [runs.md](./runs.md): historical run index and quality notes.
-* [research-ui-handoff.md](./research-ui-handoff.md): functional spec for the research orchestration dashboard surface that powers `/research/*` routes.
 
 ## Provenance And Archives
 

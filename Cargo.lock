@@ -259,6 +259,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "buba-machine-telemetry",
  "chrono",
  "clap",
  "futures-util",
@@ -268,7 +269,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-words",
- "sysinfo",
  "tempfile",
  "thiserror",
  "tokio",
@@ -287,6 +287,7 @@ dependencies = [
  "argon2",
  "axum",
  "axum-extra",
+ "buba-machine-telemetry",
  "chrono",
  "clap",
  "futures-util",
@@ -309,6 +310,16 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "buba-machine-telemetry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sysinfo",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

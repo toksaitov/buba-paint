@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCw } from "lucide-react";
@@ -62,17 +62,12 @@ export function AppShell() {
     queryFn: getBots,
   });
 
-  const bots = data?.bots ?? [];
-
-  useEffect(() => {
-    if (bots.length > 0) {
-      if (!selectedBotId || !bots.find((b) => b.id === selectedBotId)) {
-        setSelectedBotId(bots[0].id);
-      }
-    }
-  }, [bots, selectedBotId]);
-
-  const bot = bots.find((b) => b.id === selectedBotId) ?? null;
+  const bots = useMemo(() => data?.bots ?? [], [data?.bots]);
+  const activeBotId =
+    selectedBotId && bots.some((b) => b.id === selectedBotId)
+      ? selectedBotId
+      : bots[0]?.id;
+  const bot = bots.find((b) => b.id === activeBotId) ?? null;
   const botId = bot?.id ?? "";
   const routeMeta = routeMetaForPath(location.pathname);
   const { data: tradingSummary } = useTradingSummary(botId);

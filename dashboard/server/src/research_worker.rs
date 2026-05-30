@@ -7,6 +7,7 @@
 //! this durable state machine.
 
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::db::{
     DashboardDb, ResearchArtifact, ResearchArtifactRecord, ResearchReportRecord, ResearchStepLease,
@@ -15,7 +16,7 @@ use crate::error::DashboardError;
 use crate::research_artifacts;
 use crate::research_export;
 use crate::research_pipeline::{
-    BubaPaintCommandKind, CommandOutput, CommandSpec, ResearchCommandExecutor,
+    BubaPaintCommandKind, CommandCancellation, CommandOutput, CommandSpec, ResearchCommandExecutor,
     ResearchPipelineConfig, ResearchPipelinePlan, archive_scratch_dbs, write_report_files,
 };
 
@@ -421,8 +422,33 @@ impl LocalResearchWorker {
         )
         .await?;
 
-        let command_output = executor.execute(&command)?;
+        let command_output = executor
+            .execute_supervised(
+                &command,
+                CommandCancellation {
+                    db,
+                    job_id: &lease.job.id,
+                    step_id: &lease.step.id,
+                    poll_interval: Duration::from_millis(500),
+                },
+            )
+            .await?;
         let output_json = command_step_output(step_kind, &command, &command_output)?;
+        if command_output.cancelled {
+            db.cancel_research_job(&lease.job.id).await?;
+            db.append_research_job_event(
+                &lease.job.id,
+                Some(&lease.step.id),
+                "info",
+                "research command terminated after cancellation",
+                Some(&output_json),
+            )
+            .await?;
+            return Err(DashboardError::BadRequest(format!(
+                "{} command cancelled",
+                step_kind.as_str()
+            )));
+        }
         if !command_output.success {
             db.append_research_job_event(
                 &lease.job.id,
@@ -714,6 +740,23 @@ async fn complete_or_block_pipeline_step(
             }))
         }
         Err(error) => {
+            if let Some(cancelled) = cancelled_step_lease(db, lease).await? {
+                let output = serde_json::json!({
+                    "executor": "local_command",
+                    "status": "cancelled",
+                    "error": error.to_string(),
+                })
+                .to_string();
+                db.append_research_job_event(
+                    &lease.job.id,
+                    Some(&lease.step.id),
+                    "info",
+                    "local command worker observed cancellation",
+                    Some(&output),
+                )
+                .await?;
+                return Ok(Some(cancelled));
+            }
             let reason = error.to_string();
             db.append_research_job_event(
                 &lease.job.id,
@@ -752,6 +795,27 @@ async fn research_artifact_for_job(
     )
 }
 
+/// Return the fresh cancelled lease when the operator cancelled the active step.
+async fn cancelled_step_lease(
+    db: &DashboardDb,
+    lease: &ResearchStepLease,
+) -> Result<Option<ResearchStepLease>, DashboardError> {
+    let Some(job) = db.get_research_job(&lease.job.id).await? else {
+        return Ok(None);
+    };
+    if job.status != "cancelled" {
+        return Ok(None);
+    }
+    let steps = db.get_research_job_steps(&lease.job.id).await?;
+    let Some(step) = steps.into_iter().find(|step| step.id == lease.step.id) else {
+        return Ok(None);
+    };
+    if step.status != "cancelled" {
+        return Ok(None);
+    }
+    Ok(Some(ResearchStepLease { job, step }))
+}
+
 /// Return serialized command output for a completed command-backed step.
 fn command_step_output(
     step_kind: ResearchStepKind,
@@ -761,7 +825,13 @@ fn command_step_output(
     serde_json::to_string(&serde_json::json!({
         "executor": "local_command",
         "step_kind": step_kind.as_str(),
-        "status": if command_output.success { "completed" } else { "failed" },
+        "status": if command_output.cancelled {
+            "cancelled"
+        } else if command_output.success {
+            "completed"
+        } else {
+            "failed"
+        },
         "command": command,
         "command_output": command_output,
     }))

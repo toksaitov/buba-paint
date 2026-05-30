@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use buba_machine_telemetry::{HostIdentity, MachineSample, MachineSamplerHealth};
+use rusqlite::{Connection, OptionalExtension, params, types::Type};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
 
 use crate::error::DashboardError;
@@ -83,6 +86,85 @@ pub struct ResearchMachineDependencyCounts {
     pub jobs_using_source_artifacts: u64,
     /// Reports whose attached artifact came from this machine.
     pub reports_using_source_artifacts: u64,
+}
+
+/// Latest telemetry known for one research machine.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResearchMachineTelemetryState {
+    /// Machine that owns this telemetry state.
+    pub machine_id: String,
+    /// Stable worker process ID that last reported.
+    pub worker_id: String,
+    /// Optional worker binary version.
+    pub worker_version: Option<String>,
+    /// Last reported worker status.
+    pub worker_status: String,
+    /// Latest host identity reported by the worker.
+    pub host: Option<HostIdentity>,
+    /// Latest sampler health reported by the worker.
+    pub sampler: Option<MachineSamplerHealth>,
+    /// Latest worker activity context.
+    pub activity: Option<serde_json::Value>,
+    /// Last heartbeat time in milliseconds since the Unix epoch.
+    pub last_heartbeat_ms: u64,
+    /// Last sample timestamp reported by the worker.
+    pub last_sample_ms: Option<i64>,
+    /// Last sampler or worker error, when known.
+    pub last_error: Option<String>,
+    /// Last telemetry state update time in milliseconds since the Unix epoch.
+    pub updated_at: u64,
+}
+
+/// Telemetry history and latest state for one research machine.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResearchMachineTelemetry {
+    /// Latest telemetry state, if any heartbeat has reported.
+    pub state: Option<ResearchMachineTelemetryState>,
+    /// Historical samples in chronological order.
+    pub samples: Vec<MachineSample>,
+}
+
+/// Borrowed telemetry payload supplied by a worker heartbeat.
+#[derive(Debug, Clone, Copy)]
+pub struct ResearchMachineTelemetryUpdate<'a> {
+    /// Latest host identity reported by the worker.
+    pub host: Option<&'a HostIdentity>,
+    /// Latest sampler health reported by the worker.
+    pub sampler: Option<&'a MachineSamplerHealth>,
+    /// Historical host samples reported since the last heartbeat.
+    pub samples: &'a [MachineSample],
+    /// Latest worker activity context.
+    pub activity: Option<&'a serde_json::Value>,
+}
+
+/// Borrowed heartbeat payload used to update machine status and telemetry.
+#[derive(Debug, Clone, Copy)]
+pub struct ResearchMachineHeartbeatRecord<'a> {
+    /// Machine row that owns this worker.
+    pub machine_id: &'a str,
+    /// Stable worker process ID used in leases and logs.
+    pub worker_id: &'a str,
+    /// Optional worker binary version.
+    pub worker_version: Option<&'a str>,
+    /// Worker status: `online`, `idle`, `busy`, `degraded`, or `error`.
+    pub status: &'a str,
+    /// Backward-compatible untyped heartbeat details.
+    pub details: Option<&'a serde_json::Value>,
+    /// Optional typed host telemetry.
+    pub telemetry: ResearchMachineTelemetryUpdate<'a>,
+}
+
+impl<'a> ResearchMachineTelemetryUpdate<'a> {
+    /// Return an empty telemetry update for legacy heartbeat callers.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            host: None,
+            sampler: None,
+            samples: &[],
+            activity: None,
+        }
+    }
 }
 
 /// Persisted metadata for one exported runtime artifact.
@@ -390,6 +472,41 @@ CREATE TABLE IF NOT EXISTS research_machines (
     updated_at   INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS research_machine_telemetry_state (
+    machine_id        TEXT PRIMARY KEY REFERENCES research_machines(id) ON DELETE CASCADE,
+    worker_id         TEXT NOT NULL,
+    worker_version    TEXT,
+    worker_status     TEXT NOT NULL,
+    host_json         TEXT,
+    sampler_json      TEXT,
+    activity_json     TEXT,
+    last_heartbeat_ms INTEGER NOT NULL,
+    last_sample_ms    INTEGER,
+    last_error        TEXT,
+    updated_at        INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_machine_telemetry_samples (
+    machine_id          TEXT NOT NULL REFERENCES research_machines(id) ON DELETE CASCADE,
+    sampled_at_ms       INTEGER NOT NULL,
+    cpu_percent         REAL NOT NULL,
+    per_core_cpu_json   TEXT NOT NULL,
+    load_one            REAL,
+    load_five           REAL,
+    load_fifteen        REAL,
+    mem_used_bytes      INTEGER NOT NULL,
+    mem_total_bytes     INTEGER NOT NULL,
+    mem_available_bytes INTEGER NOT NULL,
+    swap_used_bytes     INTEGER NOT NULL,
+    swap_total_bytes    INTEGER NOT NULL,
+    disk_used_bytes     INTEGER NOT NULL,
+    disk_total_bytes    INTEGER NOT NULL,
+    disk_mount          TEXT NOT NULL,
+    PRIMARY KEY(machine_id, sampled_at_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_research_machine_telemetry_samples_machine_time
+    ON research_machine_telemetry_samples(machine_id, sampled_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS run_artifacts (
     id                   TEXT PRIMARY KEY,
     source_machine_id    TEXT REFERENCES research_machines(id),
@@ -493,6 +610,15 @@ CREATE TABLE IF NOT EXISTS research_reports (
 );
 CREATE INDEX IF NOT EXISTS idx_research_reports_job ON research_reports(job_id, created_at);
 ";
+
+/// Default number of telemetry samples returned by API queries.
+pub const RESEARCH_TELEMETRY_DEFAULT_LIMIT: usize = 60;
+
+/// Maximum telemetry samples returned by one API query.
+pub const RESEARCH_TELEMETRY_MAX_LIMIT: usize = 720;
+
+/// Retention window for research machine telemetry samples.
+pub const RESEARCH_TELEMETRY_RETENTION_MS: u64 = 6 * 60 * 60 * 1_000;
 
 impl DashboardDb {
     /// Open or create the dashboard database.
@@ -938,29 +1064,42 @@ impl DashboardDb {
         details: Option<serde_json::Value>,
         now: u64,
     ) -> Result<ResearchMachine, DashboardError> {
-        if machine_id.trim().is_empty() {
-            return Err(DashboardError::BadRequest(
-                "machine_id must not be empty".to_string(),
-            ));
-        }
-        if worker_id.trim().is_empty() {
-            return Err(DashboardError::BadRequest(
-                "worker_id must not be empty".to_string(),
-            ));
-        }
-        if !matches!(status, "online" | "idle" | "busy" | "degraded" | "error") {
-            return Err(DashboardError::BadRequest(
-                "worker status must be online, idle, busy, degraded, or error".to_string(),
-            ));
-        }
+        let record = ResearchMachineHeartbeatRecord {
+            machine_id,
+            worker_id,
+            worker_version,
+            status,
+            details: details.as_ref(),
+            telemetry: ResearchMachineTelemetryUpdate::empty(),
+        };
+        self.record_research_machine_heartbeat_with_telemetry_at(&record, now)
+            .await
+    }
+
+    /// Record a research worker heartbeat and optional typed telemetry.
+    pub async fn record_research_machine_heartbeat_with_telemetry(
+        &self,
+        record: &ResearchMachineHeartbeatRecord<'_>,
+    ) -> Result<ResearchMachine, DashboardError> {
+        self.record_research_machine_heartbeat_with_telemetry_at(record, now_ms())
+            .await
+    }
+
+    /// Record a research worker heartbeat and optional typed telemetry at a deterministic timestamp.
+    pub async fn record_research_machine_heartbeat_with_telemetry_at(
+        &self,
+        record: &ResearchMachineHeartbeatRecord<'_>,
+        now: u64,
+    ) -> Result<ResearchMachine, DashboardError> {
+        validate_research_machine_heartbeat(record)?;
 
         let conn = self.conn.lock().await;
         let payload = serde_json::json!({
-            "worker_id": worker_id,
-            "worker_version": worker_version,
+            "worker_id": record.worker_id,
+            "worker_version": record.worker_version,
             "last_heartbeat_ms": now,
-            "heartbeat_status": status,
-            "details": details.unwrap_or_else(|| serde_json::json!({})),
+            "heartbeat_status": record.status,
+            "details": record.details.cloned().unwrap_or_else(|| serde_json::json!({})),
         });
         let details_json = serde_json::to_string(&payload)
             .map_err(|e| DashboardError::Internal(format!("serializing heartbeat: {e}")))?;
@@ -970,21 +1109,48 @@ impl DashboardDb {
                  details_json = ?3,
                  updated_at = ?4
              WHERE id = ?1",
-            params![machine_id, status, details_json, now],
+            params![record.machine_id, record.status, details_json, now],
         )?;
         if updated == 0 {
             return Err(DashboardError::NotFound(format!(
-                "research machine '{machine_id}' not found"
+                "research machine '{}' not found",
+                record.machine_id
             )));
         }
+        upsert_research_machine_telemetry_state(&conn, record, now)?;
+        insert_research_machine_telemetry_samples(
+            &conn,
+            record.machine_id,
+            record.telemetry.samples,
+        )?;
+        prune_research_machine_telemetry_samples(
+            &conn,
+            record.machine_id,
+            now.saturating_sub(RESEARCH_TELEMETRY_RETENTION_MS),
+        )?;
         conn.query_row(
             "SELECT id, name, role, ssh_alias, status, details_json, created_at, updated_at
              FROM research_machines
              WHERE id = ?1",
-            params![machine_id],
+            params![record.machine_id],
             research_machine_from_row,
         )
         .map_err(DashboardError::from)
+    }
+
+    /// Return latest telemetry state and bounded sample history for one research machine.
+    pub async fn get_research_machine_telemetry(
+        &self,
+        machine_id: &str,
+        limit: Option<usize>,
+        since_ms: Option<i64>,
+    ) -> Result<ResearchMachineTelemetry, DashboardError> {
+        validate_research_machine_id(machine_id)?;
+        let conn = self.conn.lock().await;
+        ensure_research_machine_exists(&conn, machine_id)?;
+        let state = query_research_machine_telemetry_state(&conn, machine_id)?;
+        let samples = query_research_machine_telemetry_samples(&conn, machine_id, limit, since_ms)?;
+        Ok(ResearchMachineTelemetry { state, samples })
     }
 
     /// List exported run artifacts.
@@ -2796,6 +2962,194 @@ fn query_research_machine(conn: &Connection, id: &str) -> Result<ResearchMachine
     .ok_or_else(|| DashboardError::NotFound(format!("research machine '{id}' not found")))
 }
 
+/// Return telemetry state for one research machine.
+fn query_research_machine_telemetry_state(
+    conn: &Connection,
+    machine_id: &str,
+) -> Result<Option<ResearchMachineTelemetryState>, DashboardError> {
+    conn.query_row(
+        "SELECT machine_id, worker_id, worker_version, worker_status, host_json, sampler_json,
+                activity_json, last_heartbeat_ms, last_sample_ms, last_error, updated_at
+         FROM research_machine_telemetry_state
+         WHERE machine_id = ?1",
+        params![machine_id],
+        research_machine_telemetry_state_from_row,
+    )
+    .optional()
+    .map_err(DashboardError::from)
+}
+
+/// Return bounded sample history for one research machine.
+fn query_research_machine_telemetry_samples(
+    conn: &Connection,
+    machine_id: &str,
+    limit: Option<usize>,
+    since_ms: Option<i64>,
+) -> Result<Vec<MachineSample>, DashboardError> {
+    let limit = clamp_telemetry_limit(limit) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT sampled_at_ms, cpu_percent, per_core_cpu_json, load_one, load_five, load_fifteen,
+                mem_used_bytes, mem_total_bytes, mem_available_bytes, swap_used_bytes,
+                swap_total_bytes, disk_used_bytes, disk_total_bytes, disk_mount
+         FROM research_machine_telemetry_samples
+         WHERE machine_id = ?1 AND (?2 IS NULL OR sampled_at_ms >= ?2)
+         ORDER BY sampled_at_ms DESC
+         LIMIT ?3",
+    )?;
+    let mut samples = stmt
+        .query_map(
+            params![machine_id, since_ms, limit],
+            machine_sample_from_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    samples.reverse();
+    Ok(samples)
+}
+
+/// Upsert the latest telemetry state for one research worker heartbeat.
+fn upsert_research_machine_telemetry_state(
+    conn: &Connection,
+    record: &ResearchMachineHeartbeatRecord<'_>,
+    now: u64,
+) -> Result<(), DashboardError> {
+    let host_json = serialize_optional_json("host", record.telemetry.host)?;
+    let sampler_json = serialize_optional_json("sampler", record.telemetry.sampler)?;
+    let activity_json = serialize_optional_json("activity", record.telemetry.activity)?;
+    let last_sample_ms = record
+        .telemetry
+        .samples
+        .iter()
+        .map(|sample| sample.sampled_at_ms)
+        .max();
+    let last_error = telemetry_last_error(record);
+    let last_error_is_authoritative =
+        record.telemetry.sampler.is_some() || last_error.as_deref().is_some();
+    conn.execute(
+        "INSERT INTO research_machine_telemetry_state (
+            machine_id, worker_id, worker_version, worker_status, host_json, sampler_json,
+            activity_json, last_heartbeat_ms, last_sample_ms, last_error, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(machine_id) DO UPDATE SET
+            worker_id = excluded.worker_id,
+            worker_version = excluded.worker_version,
+            worker_status = excluded.worker_status,
+            host_json = COALESCE(excluded.host_json, research_machine_telemetry_state.host_json),
+            sampler_json = COALESCE(excluded.sampler_json, research_machine_telemetry_state.sampler_json),
+            activity_json = COALESCE(excluded.activity_json, research_machine_telemetry_state.activity_json),
+            last_heartbeat_ms = excluded.last_heartbeat_ms,
+            last_sample_ms = COALESCE(excluded.last_sample_ms, research_machine_telemetry_state.last_sample_ms),
+            last_error = CASE WHEN ?12 THEN excluded.last_error ELSE research_machine_telemetry_state.last_error END,
+            updated_at = excluded.updated_at",
+        params![
+            record.machine_id,
+            record.worker_id,
+            record.worker_version,
+            record.status,
+            host_json,
+            sampler_json,
+            activity_json,
+            now,
+            last_sample_ms,
+            last_error,
+            now,
+            last_error_is_authoritative,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Insert sample history, ignoring exact duplicate sample timestamps.
+fn insert_research_machine_telemetry_samples(
+    conn: &Connection,
+    machine_id: &str,
+    samples: &[MachineSample],
+) -> Result<(), DashboardError> {
+    for sample in samples {
+        validate_machine_sample(sample)?;
+        let per_core_cpu_json = serde_json::to_string(&sample.per_core_cpu)
+            .map_err(|e| DashboardError::Internal(format!("serializing per-core CPU: {e}")))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO research_machine_telemetry_samples (
+                machine_id, sampled_at_ms, cpu_percent, per_core_cpu_json, load_one, load_five,
+                load_fifteen, mem_used_bytes, mem_total_bytes, mem_available_bytes,
+                swap_used_bytes, swap_total_bytes, disk_used_bytes, disk_total_bytes, disk_mount
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                machine_id,
+                sample.sampled_at_ms,
+                f64::from(sample.cpu_percent),
+                per_core_cpu_json,
+                sample.load_one.map(f64::from),
+                sample.load_five.map(f64::from),
+                sample.load_fifteen.map(f64::from),
+                sample.mem_used_bytes,
+                sample.mem_total_bytes,
+                sample.mem_available_bytes,
+                sample.swap_used_bytes,
+                sample.swap_total_bytes,
+                sample.disk_used_bytes,
+                sample.disk_total_bytes,
+                sample.disk_mount,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Prune old sample history for one research machine.
+fn prune_research_machine_telemetry_samples(
+    conn: &Connection,
+    machine_id: &str,
+    cutoff_ms: u64,
+) -> Result<usize, DashboardError> {
+    let deleted = conn.execute(
+        "DELETE FROM research_machine_telemetry_samples
+         WHERE machine_id = ?1 AND sampled_at_ms < ?2",
+        params![machine_id, u64_to_i64_saturating(cutoff_ms)],
+    )?;
+    Ok(deleted)
+}
+
+/// Map one telemetry state row.
+fn research_machine_telemetry_state_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ResearchMachineTelemetryState> {
+    Ok(ResearchMachineTelemetryState {
+        machine_id: row.get(0)?,
+        worker_id: row.get(1)?,
+        worker_version: row.get(2)?,
+        worker_status: row.get(3)?,
+        host: json_from_column(row.get(4)?, 4)?,
+        sampler: json_from_column(row.get(5)?, 5)?,
+        activity: json_from_column(row.get(6)?, 6)?,
+        last_heartbeat_ms: row.get(7)?,
+        last_sample_ms: row.get(8)?,
+        last_error: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+/// Map one telemetry sample row.
+fn machine_sample_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MachineSample> {
+    let per_core_cpu: Vec<f32> = json_from_column(Some(row.get(2)?), 2)?.unwrap_or_default();
+    Ok(MachineSample {
+        sampled_at_ms: row.get(0)?,
+        cpu_percent: f64_to_f32(row.get(1)?),
+        per_core_cpu,
+        load_one: optional_f64_to_f32(row.get(3)?),
+        load_five: optional_f64_to_f32(row.get(4)?),
+        load_fifteen: optional_f64_to_f32(row.get(5)?),
+        mem_used_bytes: row.get(6)?,
+        mem_total_bytes: row.get(7)?,
+        mem_available_bytes: row.get(8)?,
+        swap_used_bytes: row.get(9)?,
+        swap_total_bytes: row.get(10)?,
+        disk_used_bytes: row.get(11)?,
+        disk_total_bytes: row.get(12)?,
+        disk_mount: row.get(13)?,
+    })
+}
+
 /// Return dependency counts for one research machine.
 fn research_machine_dependency_counts(
     conn: &Connection,
@@ -2845,6 +3199,34 @@ fn research_machine_accepts_work(conn: &Connection, id: &str) -> Result<bool, Da
     Ok(status != "disabled")
 }
 
+/// Validate a worker heartbeat and its optional telemetry payload.
+fn validate_research_machine_heartbeat(
+    record: &ResearchMachineHeartbeatRecord<'_>,
+) -> Result<(), DashboardError> {
+    if record.machine_id.trim().is_empty() {
+        return Err(DashboardError::BadRequest(
+            "machine_id must not be empty".to_string(),
+        ));
+    }
+    if record.worker_id.trim().is_empty() {
+        return Err(DashboardError::BadRequest(
+            "worker_id must not be empty".to_string(),
+        ));
+    }
+    validate_worker_status(record.status)?;
+    if let Some(host) = record.telemetry.host
+        && host.cpu_count == 0
+    {
+        return Err(DashboardError::BadRequest(
+            "host cpu_count must be positive".to_string(),
+        ));
+    }
+    for sample in record.telemetry.samples {
+        validate_machine_sample(sample)?;
+    }
+    Ok(())
+}
+
 /// Validate a complete research machine input record.
 fn validate_research_machine_record(
     record: &ResearchMachineRecord<'_>,
@@ -2856,6 +3238,122 @@ fn validate_research_machine_record(
     validate_research_machine_status(record.status)?;
     validate_optional_json_text("details_json", record.details_json)?;
     Ok(())
+}
+
+/// Validate a worker heartbeat status.
+fn validate_worker_status(status: &str) -> Result<(), DashboardError> {
+    if !matches!(status, "online" | "idle" | "busy" | "degraded" | "error") {
+        return Err(DashboardError::BadRequest(
+            "worker status must be online, idle, busy, degraded, or error".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate one typed machine telemetry sample.
+fn validate_machine_sample(sample: &MachineSample) -> Result<(), DashboardError> {
+    if sample.sampled_at_ms < 0 {
+        return Err(DashboardError::BadRequest(
+            "sampled_at_ms must be non-negative".to_string(),
+        ));
+    }
+    if sample.per_core_cpu.is_empty() {
+        return Err(DashboardError::BadRequest(
+            "per_core_cpu must not be empty".to_string(),
+        ));
+    }
+    if sample.disk_mount.trim().is_empty() {
+        return Err(DashboardError::BadRequest(
+            "disk_mount must not be empty".to_string(),
+        ));
+    }
+    validate_finite_f32("cpu_percent", sample.cpu_percent)?;
+    for value in &sample.per_core_cpu {
+        validate_finite_f32("per_core_cpu", *value)?;
+    }
+    for (name, value) in [
+        ("load_one", sample.load_one),
+        ("load_five", sample.load_five),
+        ("load_fifteen", sample.load_fifteen),
+    ] {
+        if let Some(value) = value {
+            validate_finite_f32(name, value)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate a finite floating-point telemetry field.
+fn validate_finite_f32(name: &str, value: f32) -> Result<(), DashboardError> {
+    if !value.is_finite() {
+        return Err(DashboardError::BadRequest(format!("{name} must be finite")));
+    }
+    Ok(())
+}
+
+/// Clamp requested telemetry history size to the supported API bounds.
+fn clamp_telemetry_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(RESEARCH_TELEMETRY_DEFAULT_LIMIT)
+        .clamp(1, RESEARCH_TELEMETRY_MAX_LIMIT)
+}
+
+/// Serialize an optional JSON column value with a field-specific error message.
+fn serialize_optional_json<T: Serialize>(
+    name: &str,
+    value: Option<&T>,
+) -> Result<Option<String>, DashboardError> {
+    value
+        .map(|value| {
+            serde_json::to_string(value)
+                .map_err(|error| DashboardError::Internal(format!("serializing {name}: {error}")))
+        })
+        .transpose()
+}
+
+/// Return the most relevant error carried by a telemetry heartbeat.
+fn telemetry_last_error(record: &ResearchMachineHeartbeatRecord<'_>) -> Option<String> {
+    record
+        .telemetry
+        .sampler
+        .and_then(|sampler| sampler.last_error.clone())
+        .or_else(|| {
+            record
+                .telemetry
+                .activity
+                .and_then(|activity| activity.get("last_loop_error"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+/// Deserialize an optional JSON column into a typed value.
+fn json_from_column<T: DeserializeOwned>(
+    value: Option<String>,
+    column: usize,
+) -> rusqlite::Result<Option<T>> {
+    value
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+            })
+        })
+        .transpose()
+}
+
+/// Convert a finite database `REAL` value into an `f32` sample field.
+fn f64_to_f32(value: f64) -> f32 {
+    value as f32
+}
+
+/// Convert a nullable database `REAL` value into an optional `f32` sample field.
+fn optional_f64_to_f32(value: Option<f64>) -> Option<f32> {
+    value.map(f64_to_f32)
+}
+
+/// Convert a `u64` timestamp to SQLite's signed integer range.
+fn u64_to_i64_saturating(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 /// Validate a machine ID used by APIs and workers.

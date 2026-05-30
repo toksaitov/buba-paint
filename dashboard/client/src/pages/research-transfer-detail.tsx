@@ -11,7 +11,9 @@ import {
   StatusChip,
 } from "../components/ui/dashboard-primitives";
 import { Loading } from "../components/common/loading";
+import { MachineReference } from "../components/research/machine-reference";
 import { StaleTransferBanner } from "../components/research/stale-transfer-banner";
+import { useResearchMachines } from "../hooks/use-research-machines";
 import { useResearchTransfer } from "../hooks/use-research-transfers";
 import { useAuthStore } from "../stores/auth-store";
 import {
@@ -46,6 +48,7 @@ export function ResearchTransferDetailPage() {
   const role = user?.role;
 
   const transferQuery = useResearchTransfer(id);
+  const machinesQuery = useResearchMachines();
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<ResearchAction | null>(
     null,
@@ -259,28 +262,20 @@ export function ResearchTransferDetailPage() {
             },
             {
               label: "Source machine",
-              value: transfer.source_machine_id ? (
-                <Link
-                  to={`/research/machines/${encodeURIComponent(transfer.source_machine_id)}`}
-                  className="font-mono text-[11px] hover:underline"
-                >
-                  {transfer.source_machine_id}
-                </Link>
-              ) : (
-                "—"
+              value: (
+                <MachineReference
+                  machineId={transfer.source_machine_id}
+                  machines={machinesQuery.data?.machines ?? []}
+                />
               ),
             },
             {
               label: "Destination machine",
-              value: transfer.dest_machine_id ? (
-                <Link
-                  to={`/research/machines/${encodeURIComponent(transfer.dest_machine_id)}`}
-                  className="font-mono text-[11px] hover:underline"
-                >
-                  {transfer.dest_machine_id}
-                </Link>
-              ) : (
-                "—"
+              value: (
+                <MachineReference
+                  machineId={transfer.dest_machine_id}
+                  machines={machinesQuery.data?.machines ?? []}
+                />
               ),
             },
             {

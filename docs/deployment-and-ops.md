@@ -99,11 +99,18 @@ python3 scripts/deploy-machine.py --machine research --dry-run
 Remote research stack on `testing` through Ubuntu WSL:
 
 ```bash
+gh auth refresh -s write:packages
+python3 scripts/publish-research-images.py
 python3 scripts/deploy-machine.py --machine research
-python3 scripts/deploy-machine.py --machine research --skip-build
 ```
 
-The runner syncs repository source to `/home/testing/buba-paint-research`, excludes local `data/` and `runs/`, preserves remote `.env` and `.docker/research`, builds or reuses `buba-dashboard:local` and `buba-research-worker:local`, then starts `research-dashboard` and `research-worker`. The generated admin password, research worker token, and JWT secret remain on `testing` under `/home/testing/buba-paint-research/.env` and `.docker/research/config/dashboard.toml`.
+The publisher builds `research-dashboard` and `research-worker`, pushes private GHCR images, resolves their digests, and writes `ops/research-images.lock.json`. The deploy runner syncs only the research Compose file to `/home/testing/buba-paint-research`, preserves remote `.env` and `.docker/research`, authenticates to GHCR with a temporary Docker config using the current `gh` token, pulls the digest-pinned images, removes the temporary auth config, and starts `research-dashboard` and `research-worker` without building on `testing`. The generated admin password, research worker token, and JWT secret remain on `testing` under `/home/testing/buba-paint-research/.env` and `.docker/research/config/dashboard.toml`.
+
+The GHCR token is not persisted on `testing`. If publishing or deployment reports missing package scopes, refresh local GitHub auth with:
+
+```bash
+gh auth refresh -s write:packages
+```
 
 The generated research `.env` sets `BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh` and `BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`. That lets the worker container use the WSL SSH alias `buba-paint` for live-to-research artifact transfers and recover killed transfer workers after the stale window. The worker image includes `rsync` and `openssh-client`.
 

@@ -48,7 +48,9 @@ export function ResearchOverviewPage() {
     );
   }
 
-  const machines = machinesQuery.data?.machines ?? [];
+  const machines = (machinesQuery.data?.machines ?? []).filter(
+    (m) => m.role === "research",
+  );
   const artifacts = artifactsQuery.data?.artifacts ?? [];
   const transfers = transfersQuery.data?.transfers ?? [];
   const jobs = jobsQuery.data?.jobs ?? [];
@@ -87,9 +89,9 @@ export function ResearchOverviewPage() {
         />
       </div>
 
-      <SectionCard title="Machines">
+      <SectionCard title="Research hosts">
         {machines.length === 0 ? (
-          <StateEmpty message="No machines registered." />
+          <StateEmpty message="No research hosts registered." />
         ) : (
           <div className="flex flex-wrap gap-2">
             {machines.map((machine) => (

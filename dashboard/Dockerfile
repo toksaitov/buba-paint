@@ -11,6 +11,7 @@ FROM rust:1.94-slim AS backend
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
+COPY crates/buba-machine-telemetry/ crates/buba-machine-telemetry/
 COPY dashboard/server/ dashboard/server/
 # Create stub workspace members
 RUN mkdir -p bots/paint/src && echo 'fn main() {}' > bots/paint/src/main.rs && \

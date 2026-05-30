@@ -104,7 +104,6 @@ export function TradeTable({
 }: TradeTableProps) {
   const totalPages = Math.max(1, Math.ceil(total / perPage));
   const [filters, setFilters] = useState(readTradeFilterPreferences);
-  const { strategy, side, status, market } = filters;
   const strategies = useMemo(
     () => Array.from(new Set(trades.map((trade) => trade.strategy))).sort(),
     [trades],
@@ -113,6 +112,21 @@ export function TradeTable({
     () => Array.from(new Set(trades.map((trade) => trade.status))).sort(),
     [trades],
   );
+  const effectiveFilters = useMemo(
+    () => ({
+      ...filters,
+      strategy:
+        filters.strategy === "all" || strategies.includes(filters.strategy)
+          ? filters.strategy
+          : "all",
+      status:
+        filters.status === "all" || statuses.includes(filters.status)
+          ? filters.status
+          : "all",
+    }),
+    [filters, statuses, strategies],
+  );
+  const { strategy, side, status, market } = effectiveFilters;
   const filtered = useMemo(
     () =>
       trades.filter((trade) => {
@@ -131,23 +145,14 @@ export function TradeTable({
 
   useEffect(() => {
     try {
-      localStorage.setItem(TRADE_FILTERS_STORAGE_KEY, JSON.stringify(filters));
+      localStorage.setItem(
+        TRADE_FILTERS_STORAGE_KEY,
+        JSON.stringify(effectiveFilters),
+      );
     } catch {
+      return;
     }
-  }, [filters]);
-
-  useEffect(() => {
-    setFilters((current) => {
-      const strategyStillValid = current.strategy === "all" || strategies.includes(current.strategy);
-      const statusStillValid = current.status === "all" || statuses.includes(current.status);
-      if (strategyStillValid && statusStillValid) return current;
-      return {
-        ...current,
-        strategy: strategyStillValid ? current.strategy : "all",
-        status: statusStillValid ? current.status : "all",
-      };
-    });
-  }, [statuses, strategies]);
+  }, [effectiveFilters]);
 
   return (
     <div className="border border-border bg-bg">
@@ -164,7 +169,13 @@ export function TradeTable({
             <select
               aria-label="Strategy"
               value={strategy}
-              onChange={(event) => setFilters((current) => ({ ...current, strategy: event.target.value }))}
+              onChange={(event) =>
+                setFilters((current) => ({
+                  ...current,
+                  strategy: event.target.value,
+                  status,
+                }))
+              }
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All strategies</option>
@@ -177,7 +188,14 @@ export function TradeTable({
             <select
               aria-label="Side"
               value={side}
-              onChange={(event) => setFilters((current) => ({ ...current, side: event.target.value }))}
+              onChange={(event) =>
+                setFilters((current) => ({
+                  ...current,
+                  strategy,
+                  side: event.target.value,
+                  status,
+                }))
+              }
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All sides</option>
@@ -187,7 +205,13 @@ export function TradeTable({
             <select
               aria-label="Status"
               value={status}
-              onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
+              onChange={(event) =>
+                setFilters((current) => ({
+                  ...current,
+                  strategy,
+                  status: event.target.value,
+                }))
+              }
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               <option value="all">All statuses</option>
@@ -199,7 +223,14 @@ export function TradeTable({
             </select>
             <input
               value={market}
-              onChange={(event) => setFilters((current) => ({ ...current, market: event.target.value }))}
+              onChange={(event) =>
+                setFilters((current) => ({
+                  ...current,
+                  strategy,
+                  status,
+                  market: event.target.value,
+                }))
+              }
               placeholder="Market"
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             />

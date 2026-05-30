@@ -5,11 +5,16 @@
 //! archive operations. It deliberately keeps orchestration state in the
 //! database layer and only owns local planning/execution primitives.
 
+use std::future::Future;
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
+use std::process::ExitStatus;
+use std::time::Duration;
 
 use serde::Serialize;
+use tokio::io::AsyncReadExt;
 
-use crate::db::{ResearchArtifact, ResearchJob, ResearchJobStep};
+use crate::db::{DashboardDb, ResearchArtifact, ResearchJob, ResearchJobStep};
 use crate::error::DashboardError;
 use crate::research_artifacts;
 
@@ -70,12 +75,55 @@ pub struct CommandOutput {
     pub stdout: String,
     /// Captured standard error as lossy UTF-8 text.
     pub stderr: String,
+    /// Whether the process was terminated after an operator cancellation.
+    pub cancelled: bool,
+}
+
+/// Future returned by cancellable command executors.
+pub type CommandExecutionFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<CommandOutput, DashboardError>> + Send + 'a>>;
+
+/// Durable cancellation context for one running research command.
+pub struct CommandCancellation<'a> {
+    /// Dashboard database used to observe job and step state.
+    pub db: &'a DashboardDb,
+    /// Job currently owning the command-backed step.
+    pub job_id: &'a str,
+    /// Step currently owning the command process.
+    pub step_id: &'a str,
+    /// Poll interval while the child is still running.
+    pub poll_interval: Duration,
+}
+
+impl CommandCancellation<'_> {
+    /// Return true once either the job or active step has been cancelled.
+    pub async fn is_cancelled(&self) -> Result<bool, DashboardError> {
+        let Some(job) = self.db.get_research_job(self.job_id).await? else {
+            return Ok(true);
+        };
+        if job.status == "cancelled" {
+            return Ok(true);
+        }
+        let steps = self.db.get_research_job_steps(self.job_id).await?;
+        Ok(steps
+            .iter()
+            .any(|step| step.id == self.step_id && step.status == "cancelled"))
+    }
 }
 
 /// Pluggable executor for local research commands.
-pub trait ResearchCommandExecutor {
+pub trait ResearchCommandExecutor: Sync {
     /// Execute one command specification and return captured process output.
     fn execute(&self, command: &CommandSpec) -> Result<CommandOutput, DashboardError>;
+
+    /// Execute one command while checking for durable operator cancellation.
+    fn execute_supervised<'a>(
+        &'a self,
+        command: &'a CommandSpec,
+        _cancellation: CommandCancellation<'a>,
+    ) -> CommandExecutionFuture<'a> {
+        Box::pin(async move { self.execute(command) })
+    }
 }
 
 /// Production executor that runs commands as child processes.
@@ -358,8 +406,123 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
             status_code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            cancelled: false,
         })
     }
+
+    /// Execute one command as a supervised child and terminate it on cancellation.
+    fn execute_supervised<'a>(
+        &'a self,
+        command: &'a CommandSpec,
+        cancellation: CommandCancellation<'a>,
+    ) -> CommandExecutionFuture<'a> {
+        Box::pin(async move {
+            let mut process = tokio::process::Command::new(&command.program);
+            process
+                .args(&command.args)
+                .current_dir(&command.cwd)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            #[cfg(unix)]
+            process.process_group(0);
+
+            let mut child = process.spawn().map_err(|e| {
+                DashboardError::Internal(format!("executing research command: {e}"))
+            })?;
+
+            let stdout = child.stdout.take().ok_or_else(|| {
+                DashboardError::Internal("capturing research command stdout".to_string())
+            })?;
+            let stderr = child.stderr.take().ok_or_else(|| {
+                DashboardError::Internal("capturing research command stderr".to_string())
+            })?;
+            let stdout_task = tokio::spawn(read_child_output(stdout));
+            let stderr_task = tokio::spawn(read_child_output(stderr));
+
+            let mut cancelled = false;
+            let status = loop {
+                if let Some(status) = child.try_wait().map_err(|e| {
+                    DashboardError::Internal(format!("waiting for research command: {e}"))
+                })? {
+                    break status;
+                }
+                if cancellation.is_cancelled().await? {
+                    cancelled = true;
+                    break terminate_cancelled_child(&mut child).await?;
+                }
+                tokio::time::sleep(cancellation.poll_interval).await;
+            };
+
+            let stdout = join_child_output(stdout_task).await?;
+            let stderr = join_child_output(stderr_task).await?;
+            Ok(CommandOutput {
+                success: status.success() && !cancelled,
+                status_code: status.code(),
+                stdout,
+                stderr,
+                cancelled,
+            })
+        })
+    }
+}
+
+async fn terminate_cancelled_child(
+    child: &mut tokio::process::Child,
+) -> Result<ExitStatus, DashboardError> {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let _ = send_process_group_signal(pid, "TERM");
+        for _ in 0..10 {
+            if let Some(status) = child.try_wait().map_err(|e| {
+                DashboardError::Internal(format!("waiting for cancelled research command: {e}"))
+            })? {
+                return Ok(status);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = send_process_group_signal(pid, "KILL");
+    }
+
+    child.kill().await.map_err(|e| {
+        DashboardError::Internal(format!("terminating cancelled research command: {e}"))
+    })?;
+    child.wait().await.map_err(|e| {
+        DashboardError::Internal(format!("waiting for cancelled research command: {e}"))
+    })
+}
+
+#[cfg(unix)]
+fn send_process_group_signal(pid: u32, signal: &str) -> Result<(), DashboardError> {
+    let status = std::process::Command::new("kill")
+        .arg(format!("-{signal}"))
+        .arg(format!("-{pid}"))
+        .status()
+        .map_err(|e| DashboardError::Internal(format!("signalling process group: {e}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DashboardError::Internal(format!(
+            "signalling process group failed with status {:?}",
+            status.code()
+        )))
+    }
+}
+
+async fn read_child_output<R>(mut reader: R) -> Result<String, std::io::Error>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await?;
+    Ok(String::from_utf8_lossy(&bytes).to_string())
+}
+
+async fn join_child_output(
+    task: tokio::task::JoinHandle<Result<String, std::io::Error>>,
+) -> Result<String, DashboardError> {
+    task.await
+        .map_err(|e| DashboardError::Internal(format!("joining command output task: {e}")))?
+        .map_err(|e| DashboardError::Internal(format!("reading research command output: {e}")))
 }
 
 /// Write a JSON report and step-summary CSV for one completed research job.

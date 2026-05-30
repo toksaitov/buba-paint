@@ -1,0 +1,27 @@
+[package]
+name = "buba-machine-telemetry"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Shared host telemetry sampler for buba services"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sysinfo = { version = "0.38", default-features = false, features = ["system", "disk"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

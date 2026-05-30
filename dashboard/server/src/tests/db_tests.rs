@@ -1,3 +1,4 @@
+use buba_machine_telemetry::{HostIdentity, MachineSample, MachineSamplerHealth};
 use rusqlite::Connection;
 
 use super::*;
@@ -5,6 +6,47 @@ use super::*;
 /// Test db.
 fn test_db() -> DashboardDb {
     DashboardDb::from_connection(Connection::open_in_memory().unwrap())
+}
+
+/// Build a deterministic host identity for telemetry tests.
+fn telemetry_host() -> HostIdentity {
+    HostIdentity {
+        hostname: "testing".to_string(),
+        os_name: "Linux".to_string(),
+        os_version: "test".to_string(),
+        kernel_version: "test".to_string(),
+        cpu_count: 2,
+        total_ram_bytes: 16_384,
+    }
+}
+
+/// Build deterministic sampler health for telemetry tests.
+fn telemetry_sampler(samples_collected: u64, last_error: Option<&str>) -> MachineSamplerHealth {
+    MachineSamplerHealth {
+        sample_interval_ms: 5_000,
+        samples_collected,
+        last_error: last_error.map(str::to_string),
+    }
+}
+
+/// Build a deterministic host sample for telemetry tests.
+fn telemetry_sample_at(sampled_at_ms: i64) -> MachineSample {
+    MachineSample {
+        sampled_at_ms,
+        cpu_percent: 12.5,
+        per_core_cpu: vec![12.5, 8.0],
+        load_one: Some(0.5),
+        load_five: Some(0.4),
+        load_fifteen: Some(0.3),
+        mem_used_bytes: 4_096,
+        mem_total_bytes: 16_384,
+        mem_available_bytes: 12_288,
+        swap_used_bytes: 0,
+        swap_total_bytes: 0,
+        disk_used_bytes: 50_000,
+        disk_total_bytes: 100_000,
+        disk_mount: "/research".to_string(),
+    }
 }
 
 /// Verifies that seed admin creates user when empty.
@@ -220,6 +262,215 @@ async fn research_machine_heartbeat_rejects_invalid_inputs() {
             .await;
         assert!(result.is_err(), "{machine_id} {worker_id} {status}");
     }
+}
+
+/// Verifies telemetry state upsert creates and replaces latest state.
+#[tokio::test]
+async fn research_machine_telemetry_state_upsert_replaces_latest_state() {
+    let db = test_db();
+    let host = telemetry_host();
+    let first_sampler = telemetry_sampler(1, None);
+    let first_activity = serde_json::json!({"phase":"idle","heartbeat_interval_ms":30_000});
+    let first_samples = vec![telemetry_sample_at(1_000)];
+    db.record_research_machine_heartbeat_with_telemetry_at(
+        &ResearchMachineHeartbeatRecord {
+            machine_id: "research",
+            worker_id: "worker-a",
+            worker_version: Some("0.1.0"),
+            status: "idle",
+            details: Some(&first_activity),
+            telemetry: ResearchMachineTelemetryUpdate {
+                host: Some(&host),
+                sampler: Some(&first_sampler),
+                samples: &first_samples,
+                activity: Some(&first_activity),
+            },
+        },
+        10_000,
+    )
+    .await
+    .unwrap();
+
+    let second_sampler = telemetry_sampler(2, Some("sampler warning"));
+    let second_activity = serde_json::json!({"phase":"processed","processed_last_tick":1,"heartbeat_interval_ms":10_000});
+    let second_samples = vec![telemetry_sample_at(2_000)];
+    db.record_research_machine_heartbeat_with_telemetry_at(
+        &ResearchMachineHeartbeatRecord {
+            machine_id: "research",
+            worker_id: "worker-a",
+            worker_version: Some("0.2.0"),
+            status: "busy",
+            details: Some(&second_activity),
+            telemetry: ResearchMachineTelemetryUpdate {
+                host: Some(&host),
+                sampler: Some(&second_sampler),
+                samples: &second_samples,
+                activity: Some(&second_activity),
+            },
+        },
+        20_000,
+    )
+    .await
+    .unwrap();
+
+    let telemetry = db
+        .get_research_machine_telemetry("research", None, None)
+        .await
+        .unwrap();
+    let state = telemetry.state.unwrap();
+    assert_eq!(state.worker_version.as_deref(), Some("0.2.0"));
+    assert_eq!(state.worker_status, "busy");
+    assert_eq!(state.last_heartbeat_ms, 20_000);
+    assert_eq!(state.last_sample_ms, Some(2_000));
+    assert_eq!(state.last_error.as_deref(), Some("sampler warning"));
+    assert_eq!(telemetry.samples.len(), 2);
+}
+
+/// Verifies sample inserts de-duplicate, bound query sizes, and honor `since_ms`.
+#[tokio::test]
+async fn research_machine_telemetry_samples_dedupe_limits_and_since() {
+    let db = test_db();
+    let host = telemetry_host();
+    let sampler = telemetry_sampler(800, None);
+    let activity = serde_json::json!({"phase":"idle","heartbeat_interval_ms":30_000});
+    let samples = (0..800)
+        .map(|index| telemetry_sample_at(1_000 + index))
+        .collect::<Vec<_>>();
+    let mut duplicate_samples = vec![telemetry_sample_at(1_100)];
+    duplicate_samples.extend(samples.clone());
+
+    db.record_research_machine_heartbeat_with_telemetry_at(
+        &ResearchMachineHeartbeatRecord {
+            machine_id: "research",
+            worker_id: "worker-a",
+            worker_version: Some("0.1.0"),
+            status: "idle",
+            details: Some(&activity),
+            telemetry: ResearchMachineTelemetryUpdate {
+                host: Some(&host),
+                sampler: Some(&sampler),
+                samples: &duplicate_samples,
+                activity: Some(&activity),
+            },
+        },
+        10_000,
+    )
+    .await
+    .unwrap();
+
+    let default_query = db
+        .get_research_machine_telemetry("research", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        default_query.samples.len(),
+        RESEARCH_TELEMETRY_DEFAULT_LIMIT
+    );
+    assert_eq!(default_query.samples.first().unwrap().sampled_at_ms, 1_740);
+    assert_eq!(default_query.samples.last().unwrap().sampled_at_ms, 1_799);
+
+    let explicit = db
+        .get_research_machine_telemetry("research", Some(10), Some(1_795))
+        .await
+        .unwrap();
+    assert_eq!(
+        explicit
+            .samples
+            .iter()
+            .map(|sample| sample.sampled_at_ms)
+            .collect::<Vec<_>>(),
+        vec![1_795, 1_796, 1_797, 1_798, 1_799]
+    );
+
+    let max_limited = db
+        .get_research_machine_telemetry("research", Some(10_000), None)
+        .await
+        .unwrap();
+    assert_eq!(max_limited.samples.len(), RESEARCH_TELEMETRY_MAX_LIMIT);
+}
+
+/// Verifies pruning removes samples outside the retention window.
+#[tokio::test]
+async fn research_machine_telemetry_prunes_old_samples() {
+    let db = test_db();
+    let host = telemetry_host();
+    let sampler = telemetry_sampler(2, None);
+    let activity = serde_json::json!({"phase":"idle"});
+    let old_sample = telemetry_sample_at(1_000);
+    let recent_sample = telemetry_sample_at((RESEARCH_TELEMETRY_RETENTION_MS + 2_000) as i64);
+    let samples = vec![old_sample, recent_sample.clone()];
+
+    db.record_research_machine_heartbeat_with_telemetry_at(
+        &ResearchMachineHeartbeatRecord {
+            machine_id: "research",
+            worker_id: "worker-a",
+            worker_version: Some("0.1.0"),
+            status: "idle",
+            details: Some(&activity),
+            telemetry: ResearchMachineTelemetryUpdate {
+                host: Some(&host),
+                sampler: Some(&sampler),
+                samples: &samples,
+                activity: Some(&activity),
+            },
+        },
+        RESEARCH_TELEMETRY_RETENTION_MS + 2_500,
+    )
+    .await
+    .unwrap();
+
+    let telemetry = db
+        .get_research_machine_telemetry("research", Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(telemetry.samples.len(), 1);
+    assert_eq!(
+        telemetry.samples[0].sampled_at_ms,
+        recent_sample.sampled_at_ms
+    );
+}
+
+/// Verifies disabled machine status survives telemetry updates.
+#[tokio::test]
+async fn disabled_research_machine_preserves_status_while_telemetry_updates() {
+    let db = test_db();
+    let host = telemetry_host();
+    let sampler = telemetry_sampler(1, None);
+    let activity = serde_json::json!({"phase":"disabled","disabled":true});
+    let samples = vec![telemetry_sample_at(1_000)];
+    db.set_research_machine_status_at("research", "disabled", 1_000)
+        .await
+        .unwrap();
+
+    let machine = db
+        .record_research_machine_heartbeat_with_telemetry_at(
+            &ResearchMachineHeartbeatRecord {
+                machine_id: "research",
+                worker_id: "worker-a",
+                worker_version: Some("0.1.0"),
+                status: "idle",
+                details: Some(&activity),
+                telemetry: ResearchMachineTelemetryUpdate {
+                    host: Some(&host),
+                    sampler: Some(&sampler),
+                    samples: &samples,
+                    activity: Some(&activity),
+                },
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+    let telemetry = db
+        .get_research_machine_telemetry("research", None, None)
+        .await
+        .unwrap();
+    assert_eq!(machine.status, "disabled");
+    assert_eq!(
+        telemetry.state.unwrap().activity.unwrap()["disabled"],
+        serde_json::json!(true)
+    );
 }
 
 /// Verifies that custom research machines can be created, updated, and deleted.

@@ -19,6 +19,7 @@ import { useResearchReports } from "../hooks/use-research-reports";
 import { useAuthStore } from "../stores/auth-store";
 import {
   appendResearchJobEvent,
+  archiveResearchJobScratch,
   cancelResearchJob,
   cancelResearchStep,
   clearResearchStepLease,
@@ -43,6 +44,7 @@ import {
 } from "../lib/research-permissions";
 import type {
   AppendEventRequest,
+  ArchiveScratchSummary,
   JobDetailResponse,
   ResearchAction,
 } from "../lib/research-types";
@@ -69,6 +71,10 @@ export function ResearchJobDetailPage() {
   const [appendError, setAppendError] = useState<string | null>(null);
   const [isAppending, setIsAppending] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [confirmArchiveScratchOpen, setConfirmArchiveScratchOpen] =
+    useState(false);
+  const [archiveSummary, setArchiveSummary] =
+    useState<ArchiveScratchSummary | null>(null);
 
   const invalidateJob = () => {
     queryClient.invalidateQueries({ queryKey: ["research", "jobs"] });
@@ -127,6 +133,31 @@ export function ResearchJobDetailPage() {
     },
   });
 
+  const archiveScratchMutation = useMutation({
+    mutationFn: () => archiveResearchJobScratch(id),
+    onMutate: () => {
+      setPendingAction("archive_scratch");
+      setActionError(null);
+      setArchiveSummary(null);
+    },
+    onSuccess: (res) => {
+      setPendingAction(null);
+      setConfirmArchiveScratchOpen(false);
+      setArchiveSummary(res.archive);
+      queryClient.setQueryData(["research", "job", id], {
+        job: res.job,
+        steps: res.steps,
+        events: res.events,
+      });
+      queryClient.invalidateQueries({ queryKey: ["research", "reports"] });
+      invalidateJob();
+    },
+    onError: (err: Error) => {
+      setPendingAction(null);
+      setActionError(err.message);
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: () => deleteResearchJob(id),
     onSuccess: () => {
@@ -152,6 +183,8 @@ export function ResearchJobDetailPage() {
         return cloneMutation.mutate();
       case "regenerate_report":
         return regenerateMutation.mutate();
+      case "archive_scratch":
+        return setConfirmArchiveScratchOpen(true);
       case "delete":
         return setConfirmDeleteOpen(true);
       default:
@@ -271,11 +304,19 @@ export function ResearchJobDetailPage() {
       )}
       {(job.status === "running" || job.status === "queued") &&
         pendingAction === "cancel" && (
-          <Banner tone="info" title="Cancellation in flight">
-            The durable state has been updated. A running worker process may
-            continue briefly until it observes the cancellation.
-          </Banner>
-        )}
+        <Banner tone="info" title="Cancellation in flight">
+            The durable state has been updated. A running worker process will
+            terminate its active command when it observes the cancellation.
+        </Banner>
+      )}
+      {archiveSummary && (
+        <Banner tone="success" title="Scratch DB archive complete">
+          Deleted {archiveSummary.deleted_paths.length} scratch file
+          {archiveSummary.deleted_paths.length === 1 ? "" : "s"}; skipped{" "}
+          {archiveSummary.skipped_paths.length} already-absent file
+          {archiveSummary.skipped_paths.length === 1 ? "" : "s"}.
+        </Banner>
+      )}
 
       <SectionCard title="Actions">
         <div className="flex flex-wrap items-center gap-2">
@@ -422,6 +463,21 @@ export function ResearchJobDetailPage() {
         }
         onConfirm={() => deleteMutation.mutate()}
         onClose={() => setConfirmDeleteOpen(false)}
+      />
+      <ConfirmDialog
+        open={confirmArchiveScratchOpen}
+        title="Archive scratch DBs"
+        description="Type the job ID to confirm. Deletes only prepared/backtest scratch SQLite files and WAL/SHM sidecars under this job root. Report JSON, CSV, metadata, artifacts, and manifests remain."
+        phrase={job.id}
+        confirmLabel="Archive scratch DBs"
+        pending={archiveScratchMutation.isPending}
+        errorMessage={
+          archiveScratchMutation.isError
+            ? (archiveScratchMutation.error as Error)?.message
+            : undefined
+        }
+        onConfirm={() => archiveScratchMutation.mutate()}
+        onClose={() => setConfirmArchiveScratchOpen(false)}
       />
     </div>
   );

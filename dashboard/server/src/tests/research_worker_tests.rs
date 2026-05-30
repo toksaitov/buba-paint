@@ -5,7 +5,8 @@ use super::*;
 use crate::db::DashboardDb;
 use crate::research_artifacts::{ArtifactFileSpec, build_manifest, write_manifest_files};
 use crate::research_pipeline::{
-    CommandOutput, CommandSpec, ResearchCommandExecutor, ResearchPipelineConfig,
+    CommandCancellation, CommandExecutionFuture, CommandOutput, CommandSpec,
+    ResearchCommandExecutor, ResearchPipelineConfig,
 };
 
 /// Build an in-memory dashboard DB.
@@ -17,6 +18,19 @@ fn test_db() -> DashboardDb {
 struct FakeExecutor {
     outputs: Mutex<Vec<CommandOutput>>,
     commands: Mutex<Vec<CommandSpec>>,
+}
+
+/// Fake executor that marks the active job cancelled while the command runs.
+struct CancellingExecutor {
+    commands: Mutex<Vec<CommandSpec>>,
+}
+
+impl CancellingExecutor {
+    fn new() -> Self {
+        Self {
+            commands: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl FakeExecutor {
@@ -46,6 +60,28 @@ impl ResearchCommandExecutor for FakeExecutor {
     }
 }
 
+impl ResearchCommandExecutor for CancellingExecutor {
+    fn execute(&self, command: &CommandSpec) -> Result<CommandOutput, DashboardError> {
+        self.commands.lock().unwrap().push(command.clone());
+        Ok(cancelled_output("operator cancelled"))
+    }
+
+    fn execute_supervised<'a>(
+        &'a self,
+        command: &'a CommandSpec,
+        cancellation: CommandCancellation<'a>,
+    ) -> CommandExecutionFuture<'a> {
+        Box::pin(async move {
+            self.commands.lock().unwrap().push(command.clone());
+            cancellation
+                .db
+                .cancel_research_job(cancellation.job_id)
+                .await?;
+            Ok(cancelled_output("operator cancelled"))
+        })
+    }
+}
+
 /// Return one successful fake command output.
 fn success_output(stdout: &str) -> CommandOutput {
     CommandOutput {
@@ -53,6 +89,7 @@ fn success_output(stdout: &str) -> CommandOutput {
         status_code: Some(0),
         stdout: stdout.to_string(),
         stderr: String::new(),
+        cancelled: false,
     }
 }
 
@@ -63,6 +100,18 @@ fn failure_output(stderr: &str) -> CommandOutput {
         status_code: Some(2),
         stdout: String::new(),
         stderr: stderr.to_string(),
+        cancelled: false,
+    }
+}
+
+/// Return one cancelled fake command output.
+fn cancelled_output(stderr: &str) -> CommandOutput {
+    CommandOutput {
+        success: false,
+        status_code: None,
+        stdout: String::new(),
+        stderr: stderr.to_string(),
+        cancelled: true,
     }
 }
 
@@ -238,8 +287,18 @@ async fn local_worker_verifies_artifact_then_blocks_command_step() {
         )
         .await
         .unwrap();
+    let params = serde_json::json!({
+        "start": "1970-01-01T00:00:01Z",
+        "end": "1970-01-01T00:00:02Z"
+    });
     let job = db
-        .create_research_job("current_params", Some(&artifact.id), &user.id, 0, None)
+        .create_research_job(
+            "current_params",
+            Some(&artifact.id),
+            &user.id,
+            0,
+            Some(&params.to_string()),
+        )
         .await
         .unwrap();
     let worker = LocalResearchWorker::new("local-worker", 1_000).unwrap();
@@ -273,8 +332,18 @@ async fn local_worker_blocks_bad_artifact_verification_and_clears_lease() {
         )
         .await
         .unwrap();
+    let params = serde_json::json!({
+        "start": "1970-01-01T00:00:01Z",
+        "end": "1970-01-01T00:00:02Z"
+    });
     let job = db
-        .create_research_job("current_params", Some(&artifact.id), &user.id, 0, None)
+        .create_research_job(
+            "current_params",
+            Some(&artifact.id),
+            &user.id,
+            0,
+            Some(&params.to_string()),
+        )
         .await
         .unwrap();
     let worker = LocalResearchWorker::new("local-worker", 1_000).unwrap();
@@ -358,6 +427,75 @@ async fn local_worker_runs_current_params_pipeline_with_fake_commands() {
             .contains(&"prepare-backtest-input".to_string())
     );
     assert!(commands[3].args.contains(&"backtest".to_string()));
+}
+
+/// Verifies a cancelled command leaves durable state cancelled, not blocked.
+#[tokio::test]
+async fn local_worker_preserves_cancelled_state_after_command_cancellation() {
+    let db = test_db();
+    let artifact_dir = artifact_fixture();
+    let work_dir = tempfile::tempdir().unwrap();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let artifact = db
+        .create_research_artifact(
+            Some("live"),
+            "readonly_run",
+            "available",
+            Some("live_readonly"),
+            Some(artifact_dir.path().join("manifest.json").to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+    let params = serde_json::json!({
+        "start": "1970-01-01T00:00:01Z",
+        "end": "1970-01-01T00:00:02Z"
+    });
+    let job = db
+        .create_research_job(
+            "current_params",
+            Some(&artifact.id),
+            &user.id,
+            0,
+            Some(&params.to_string()),
+        )
+        .await
+        .unwrap();
+    let worker = LocalResearchWorker::new("local-worker", 1_000).unwrap();
+    let pipeline = test_pipeline(work_dir.path());
+    let executor = CancellingExecutor::new();
+
+    let verified = worker
+        .run_one_local_with_pipeline(&db, &pipeline, &executor)
+        .await
+        .unwrap()
+        .unwrap();
+    let cancelled = worker
+        .run_one_local_with_pipeline(&db, &pipeline, &executor)
+        .await
+        .unwrap()
+        .unwrap();
+    let idle = worker
+        .run_one_local_with_pipeline(&db, &pipeline, &executor)
+        .await
+        .unwrap();
+    let stored_job = db.get_research_job(&job.id).await.unwrap().unwrap();
+    let events = db.list_research_job_events(&job.id).await.unwrap();
+
+    assert_eq!(verified.step.status, "completed");
+    assert_eq!(cancelled.step.status, "cancelled");
+    assert_eq!(stored_job.status, "cancelled");
+    assert!(cancelled.step.error.is_none());
+    assert!(idle.is_none());
+    assert!(
+        events
+            .iter()
+            .any(|event| { event.message == "research command terminated after cancellation" })
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| { event.message == "local command worker observed cancellation" })
+    );
 }
 
 /// Verifies that a failed validation blocks later backtest work.

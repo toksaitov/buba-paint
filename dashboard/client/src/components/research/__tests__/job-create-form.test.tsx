@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { JobCreateForm } from "../job-create-form";
 import type { ResearchArtifact } from "../../../lib/research-types";
@@ -131,6 +131,12 @@ describe("JobCreateForm - sweep", () => {
     await userEvent.type(keyInput, "K");
     await userEvent.type(valueInput, "1.0,2.0");
 
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /confirm this interval before creating the job/i,
+      }),
+    );
+
     expect(createBtn).not.toBeDisabled();
     await userEvent.click(createBtn);
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -142,7 +148,72 @@ describe("JobCreateForm - sweep", () => {
 });
 
 describe("JobCreateForm - backtest", () => {
-  it("requires an artifact and positive balance", async () => {
+  it("submits explicit start/end from datetime-local inputs", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <JobCreateForm
+        artifacts={[makeArtifact({ id: "art-77" })]}
+        initialType="current_params"
+        pending={false}
+        error={null}
+        onSubmit={onSubmit}
+      />,
+    );
+    const start = "2026-05-17T07:39";
+    const end = "2026-05-17T07:41";
+    fireEvent.change(screen.getByLabelText(/^Start/i), {
+      target: { value: start },
+    });
+    fireEvent.change(screen.getByLabelText(/^End/i), {
+      target: { value: end },
+    });
+
+    const createBtn = screen.getByRole("button", { name: /create job/i });
+    expect(createBtn).not.toBeDisabled();
+    await userEvent.click(createBtn);
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        job_type: "current_params",
+        artifact_id: "art-77",
+      }),
+    );
+    const payload = onSubmit.mock.calls[0][0];
+    expect(payload.params.start_ms).toBe(Date.parse(start));
+    expect(payload.params.end_ms).toBe(Date.parse(end));
+    expect(screen.getByText(/effective interval/i)).toBeInTheDocument();
+    expect(screen.getByText(/explicit input/i)).toBeInTheDocument();
+  });
+
+  it("syncs browser-filled datetime-local values on blur", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <JobCreateForm
+        artifacts={[makeArtifact({ id: "art-77" })]}
+        initialType="current_params"
+        pending={false}
+        error={null}
+        onSubmit={onSubmit}
+      />,
+    );
+    const start = "2026-05-17T07:39";
+    const end = "2026-05-17T07:41";
+    const startInput = screen.getByLabelText(/^Start/i) as HTMLInputElement;
+    const endInput = screen.getByLabelText(/^End/i) as HTMLInputElement;
+    startInput.value = start;
+    fireEvent.blur(startInput);
+    endInput.value = end;
+    fireEvent.blur(endInput);
+
+    const createBtn = screen.getByRole("button", { name: /create job/i });
+    expect(createBtn).not.toBeDisabled();
+    await userEvent.click(createBtn);
+
+    const payload = onSubmit.mock.calls[0][0];
+    expect(payload.params.start_ms).toBe(Date.parse(start));
+    expect(payload.params.end_ms).toBe(Date.parse(end));
+  });
+
+  it("requires confirmation for artifact fallback intervals", async () => {
     const onSubmit = vi.fn();
     render(
       <JobCreateForm
@@ -154,13 +225,63 @@ describe("JobCreateForm - backtest", () => {
       />,
     );
     const createBtn = screen.getByRole("button", { name: /create job/i });
-    expect(createBtn).not.toBeDisabled();
-    await userEvent.click(createBtn);
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        job_type: "current_params",
-        artifact_id: "art-77",
+    expect(createBtn).toBeDisabled();
+
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /confirm this interval before creating the job/i,
       }),
     );
+
+    expect(createBtn).not.toBeDisabled();
+    await userEvent.click(createBtn);
+    const payload = onSubmit.mock.calls[0][0];
+    expect(payload.params.start_ms).toBe(1_000);
+    expect(payload.params.end_ms).toBe(2_000);
+  });
+
+  it("blocks invalid, missing, reversed, and unconfirmed large intervals", async () => {
+    render(
+      <JobCreateForm
+        artifacts={[
+          makeArtifact({
+            id: "art-77",
+            interval_start_ms: null,
+            interval_end_ms: null,
+          }),
+        ]}
+        initialType="current_params"
+        pending={false}
+        error={null}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const createBtn = screen.getByRole("button", { name: /create job/i });
+    expect(createBtn).toBeDisabled();
+    expect(screen.getByText(/start and end are required/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/^Start/i), {
+      target: { value: "2026-05-17T09:00" },
+    });
+    fireEvent.change(screen.getByLabelText(/^End/i), {
+      target: { value: "2026-05-17T08:00" },
+    });
+    expect(createBtn).toBeDisabled();
+    expect(screen.getByText(/end must be after start/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/^Start/i), {
+      target: { value: "2026-05-17T00:00" },
+    });
+    fireEvent.change(screen.getByLabelText(/^End/i), {
+      target: { value: "2026-05-17T07:01" },
+    });
+    expect(createBtn).toBeDisabled();
+
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /confirm this interval before creating the job/i,
+      }),
+    );
+    expect(createBtn).not.toBeDisabled();
   });
 });

@@ -1,6 +1,7 @@
 import { del, get, getText, patch, post } from "./api";
 import type {
   AppendEventRequest,
+  ArchiveScratchResponse,
   ArtifactManifest,
   ArtifactTransfer,
   CloneJobRequest,
@@ -11,6 +12,7 @@ import type {
   ImportArtifactResponse,
   JobDetailResponse,
   MachineHealthResponse,
+  MachineTelemetryResponse,
   RegenerateReportResponse,
   RegisterArtifactRequest,
   RegisterArtifactResponse,
@@ -76,6 +78,12 @@ export async function getResearchMachineHealth(
   id: string,
 ): Promise<MachineHealthResponse> {
   return get(`/api/research/machines/${encodeURIComponent(id)}/health`);
+}
+
+export async function getResearchMachineTelemetry(
+  id: string,
+): Promise<MachineTelemetryResponse> {
+  return get(`/api/research/machines/${encodeURIComponent(id)}/telemetry`);
 }
 
 export async function listResearchArtifacts(): Promise<{
@@ -287,6 +295,12 @@ export async function regenerateResearchJobReport(
   return post(
     `/api/research/jobs/${encodeURIComponent(id)}/report/regenerate`,
   );
+}
+
+export async function archiveResearchJobScratch(
+  id: string,
+): Promise<ArchiveScratchResponse> {
+  return post(`/api/research/jobs/${encodeURIComponent(id)}/archive-scratch`);
 }
 
 export async function listResearchJobEvents(

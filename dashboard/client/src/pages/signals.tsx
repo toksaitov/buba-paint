@@ -29,6 +29,7 @@ export function SignalsPage() {
     try {
       localStorage.setItem(SIGNALS_VIEW_STORAGE_KEY, view);
     } catch {
+      return;
     }
   }, [view]);
 

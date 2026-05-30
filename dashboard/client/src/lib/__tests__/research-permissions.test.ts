@@ -52,6 +52,7 @@ describe("canPerform", () => {
       "resolve_blocker",
       "append_event",
       "regenerate_report",
+      "archive_scratch",
     ] as const;
     for (const action of mutations) {
       expect(canPerform("observer", action)).toBe(false);
@@ -117,6 +118,14 @@ describe("getAllowedActions - job", () => {
     expect(actions).toContain("clone");
     expect(actions).toContain("regenerate_report");
     expect(actions).toContain("delete");
+  });
+
+  it("completed job with reports exposes archive_scratch and hides delete", () => {
+    const actions = getAllowedActions("job", "completed", {
+      has_reports: true,
+    });
+    expect(actions).toContain("archive_scratch");
+    expect(actions).not.toContain("delete");
   });
 });
 

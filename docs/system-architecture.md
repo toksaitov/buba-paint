@@ -16,7 +16,7 @@ Buba is a single-bot trading system where the Rust bot owns decisions and the ru
 
 `dashboard/server` authenticates dashboard users, serves the built frontend, and proxies configured agent APIs.
 
-`dashboard/client` is the operator UI. Its Monitor pages are Overview, Execution, Logs, Parameters, and Machine. Its Analysis pages are Trend, Trades, Signals, and Strategies. Its Research pages are Overview, Machines, Artifacts, Transfers, Jobs, and Reports. Compatibility redirects map `/live` and `/trading` to Execution, `/config` to Parameters, and `/stats` to Strategies.
+`dashboard/client` is the operator UI. Its Monitor pages are Overview, Execution, Logs, Parameters, and Machine. Its Analysis pages are Trend, Trades, Signals, and Strategies. Its Research pages currently include Overview, Machines, Artifacts, Transfers, Jobs, and Reports. Compatibility redirects map `/live` and `/trading` to Execution, `/config` to Parameters, and `/stats` to Strategies.
 
 ## Runtime Flow
 
@@ -107,13 +107,17 @@ Analysis pages:
 Research pages:
 
 * Overview: cross-entity counts, recent jobs, transfers, and reports.
-* Machines: live, research, and custom worker hosts with role, status, dependency counts, and lifecycle controls.
+* Machines: read-only observability for research-role hosts, with machine status, stale or missing telemetry state, worker heartbeat and activity, dependency counts, and host telemetry detail. Machine create, edit, disable, enable, and delete remain backend/API/script operations only.
 * Artifacts: exported run packages with manifest, checksum, verification, and metadata-only or files-included deletion.
 * Transfers: artifact transfers with progress, stale detection, checksum status, pause/resume/cancel/retry/verify lifecycle.
 * Jobs: export, backtest, and sweep jobs with step timeline, embedded event stream, blocked/failed recovery, clone, and regenerate report.
 * Reports: backtest and sweep reports with summary metrics, equity curve, sweep points, and JSON/CSV inspection.
 
-The Research section is observation-and-steering only. Worker leases, heartbeats, and rsync execution happen in the `buba-research-worker` process on each host; the dashboard never runs jobs directly. Adaptive polling pulls at 3 seconds for active jobs and transfers and 10 seconds for terminal entities. The canonical lifecycle state machine lives at `dashboard/client/src/lib/research-permissions.ts` and is the single source of truth for which controls render. Backend API surface for these pages lives under `/api/research/*` (see `dashboard/server/src/api/research.rs`). The functional spec is `docs/research-ui-handoff.md`.
+The Research section is observation-and-steering only. Worker leases, heartbeats, and rsync execution happen in the `buba-research-worker` process on each host; the dashboard never runs jobs directly. Adaptive polling pulls at 3 seconds for active jobs and transfers and 10 seconds for terminal entities. The canonical lifecycle state machine lives at `dashboard/client/src/lib/research-permissions.ts` and is the single source of truth for which controls render. Backend API surface for these pages lives under `/api/research/*` in `dashboard/server/src/api/research.rs`.
+
+Research machine identity comes from dashboard state and `ops/research-machines.toml`. Docker Compose services are deployment and health evidence, not the source of machine identity. Research pages use machines as source, destination, worker health, and provenance context for artifacts, transfers, jobs, and reports.
+
+Machine telemetry is separate from identity and management. The shared `buba-machine-telemetry` crate defines host identity, host samples, and sampler health for both the live bot agent and research workers. The agent keeps `GET /api/machine` response-compatible for Monitor > Machine. The research worker writes typed telemetry into `research_machine_telemetry_state` and `research_machine_telemetry_samples`, and can optionally publish the same heartbeat payload to a controller dashboard. `GET /api/research/machines/:id/telemetry` returns machine metadata, latest telemetry, bounded sample history, dependency counts, disabled state, stale state, and the stale threshold.
 
 The dashboard does not call the sidecar or venue directly. Live-control mutations route through dashboard server, agent, control ledger, and the running bot.
 
@@ -144,8 +148,10 @@ Paint bot:
 
 Other services:
 
+* `crates/buba-machine-telemetry`: shared host identity, sample, sampler health, and ring-buffer telemetry contract.
 * `agent/src/main.rs`: agent routes.
 * `dashboard/server/src/main.rs`: dashboard server routes.
+* `dashboard/server/src/bin/buba-research-worker.rs`: local research worker loop, artifact transfer execution, local telemetry persistence, and optional controller heartbeat publishing.
 * `dashboard/client/src/lib/routes.ts`: dashboard page metadata.
 * `dashboard/client/src/lib/api.ts`: frontend API client.
 * `polymarket-sidecar/src/server.ts`: sidecar HTTP routes.

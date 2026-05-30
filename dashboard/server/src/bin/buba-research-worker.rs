@@ -5,13 +5,16 @@
 //! deployments on research machines or for one-shot local verification runs.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Context;
+use buba_machine_telemetry::MachineSampler;
 use clap::Parser;
 
-use buba_dashboard::db::DashboardDb;
+use buba_dashboard::db::{
+    DashboardDb, ResearchMachineHeartbeatRecord, ResearchMachineTelemetryUpdate,
+};
 use buba_dashboard::research_pipeline::{
     BubaPaintCommand, ProcessCommandExecutor, ResearchPipelineConfig,
 };
@@ -111,20 +114,46 @@ struct Cli {
 }
 
 /// Optional remote heartbeat configuration.
+#[derive(Clone)]
 struct RemoteHeartbeatConfig {
     controller_url: String,
+    worker_token: String,
+}
+
+/// Local and optional remote heartbeat sender for research worker telemetry.
+#[derive(Clone)]
+struct RemoteHeartbeat {
+    config: Option<RemoteHeartbeatConfig>,
+    client: reqwest::Client,
     machine_id: String,
     worker_id: String,
-    worker_token: String,
     worker_version: String,
     interval: Duration,
 }
 
-/// Remote heartbeat sender for central dashboard machine status.
-struct RemoteHeartbeat {
-    config: Option<RemoteHeartbeatConfig>,
-    client: reqwest::Client,
-    last_sent: Option<Instant>,
+/// Shared worker activity state reported with each telemetry heartbeat.
+#[derive(Debug, Clone, serde::Serialize)]
+struct WorkerActivity {
+    /// Worker status reported to the machine row.
+    status: String,
+    /// Coarse worker phase for operator diagnostics.
+    phase: String,
+    /// Whether the configured machine is disabled for work.
+    disabled: bool,
+    /// Number of research job steps processed by the latest completed tick.
+    processed_last_tick: usize,
+    /// Number of artifact transfers processed by the latest completed tick.
+    transfers_processed_last_tick: usize,
+    /// Configured maximum job steps per worker tick.
+    max_steps_per_tick: usize,
+    /// Configured maximum transfers per worker tick.
+    max_transfers_per_tick: usize,
+    /// Whether transfer claiming is enabled for this worker.
+    transfers_enabled: bool,
+    /// Configured telemetry heartbeat interval.
+    heartbeat_interval_ms: u64,
+    /// Latest loop error, if the worker path failed.
+    last_loop_error: Option<String>,
 }
 
 /// Run the local research worker loop.
@@ -134,62 +163,101 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let db = Arc::new(DashboardDb::new(&cli.db_path)?);
+    let work_root = resolve_root(&cli.work_root)?;
+    std::fs::create_dir_all(&work_root).context("creating research work root for telemetry")?;
+    let sampler = MachineSampler::start(work_root);
     let pipeline = build_pipeline(&cli)?;
     let worker = LocalResearchWorker::new(cli.worker_id.clone(), cli.lease_ms)?;
     let transfer_worker = build_transfer_worker(&cli)?;
     let executor = ProcessCommandExecutor;
-    let mut heartbeat = RemoteHeartbeat::from_cli(&cli)?;
-    send_heartbeat(
-        &mut heartbeat,
-        "online",
-        serde_json::json!({"phase":"startup"}),
-        true,
-    )
-    .await;
+    let heartbeat = RemoteHeartbeat::from_cli(&cli)?;
+    let activity = Arc::new(Mutex::new(WorkerActivity::from_cli(&cli)));
+    send_heartbeat(&db, &heartbeat, &sampler, &activity_snapshot(&activity)).await;
+    let _heartbeat_task = (!cli.run_once).then(|| {
+        spawn_heartbeat_loop(
+            Arc::clone(&db),
+            heartbeat.clone(),
+            Arc::clone(&sampler),
+            Arc::clone(&activity),
+        )
+    });
 
     loop {
         if machine_work_disabled(&db, &cli.machine_id).await? {
-            send_heartbeat(
-                &mut heartbeat,
-                "idle",
-                serde_json::json!({"disabled":true,"processed_last_tick":0}),
-                cli.run_once,
-            )
-            .await;
+            update_activity(&activity, |activity| {
+                activity.status = "idle".to_string();
+                activity.phase = "disabled".to_string();
+                activity.disabled = true;
+                activity.processed_last_tick = 0;
+                activity.transfers_processed_last_tick = 0;
+                activity.last_loop_error = None;
+            });
             if cli.run_once {
+                send_heartbeat(&db, &heartbeat, &sampler, &activity_snapshot(&activity)).await;
                 tracing::info!("research worker run-once skipped because machine is disabled");
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(cli.poll_ms)).await;
             continue;
         }
-        let transfers_processed = if cli.transfers_enabled {
-            transfer_worker
-                .run_until_idle(&db, cli.max_transfers_per_tick)
+        update_activity(&activity, |activity| {
+            activity.status = "busy".to_string();
+            activity.phase = "processing".to_string();
+            activity.disabled = false;
+            activity.last_loop_error = None;
+        });
+        let tick_result = async {
+            let transfers_processed = if cli.transfers_enabled {
+                transfer_worker
+                    .run_until_idle(&db, cli.max_transfers_per_tick)
+                    .await
+                    .context("running artifact transfer tick")?
+            } else {
+                0
+            };
+            let processed = worker
+                .run_local_with_pipeline_until_idle(
+                    &db,
+                    &pipeline,
+                    &executor,
+                    cli.max_steps_per_tick,
+                )
                 .await
-                .context("running artifact transfer tick")?
-        } else {
-            0
-        };
-        let processed = worker
-            .run_local_with_pipeline_until_idle(&db, &pipeline, &executor, cli.max_steps_per_tick)
-            .await
-            .context("running research worker tick")?;
-        let total_processed = transfers_processed + processed;
-        let heartbeat_status = if total_processed == 0 { "idle" } else { "busy" };
-        send_heartbeat(
-            &mut heartbeat,
-            heartbeat_status,
-            serde_json::json!({
-                "processed_last_tick": processed,
-                "transfers_processed_last_tick": transfers_processed,
-                "max_steps_per_tick": cli.max_steps_per_tick,
-                "max_transfers_per_tick": cli.max_transfers_per_tick,
-            }),
-            cli.run_once,
-        )
+                .context("running research worker tick")?;
+            Ok::<_, anyhow::Error>((processed, transfers_processed))
+        }
         .await;
+        let (processed, transfers_processed) = match tick_result {
+            Ok(result) => result,
+            Err(error) => {
+                update_activity(&activity, |activity| {
+                    activity.status = "error".to_string();
+                    activity.phase = "error".to_string();
+                    activity.last_loop_error = Some(error.to_string());
+                });
+                send_heartbeat(&db, &heartbeat, &sampler, &activity_snapshot(&activity)).await;
+                return Err(error);
+            }
+        };
+        let total_processed = transfers_processed + processed;
+        update_activity(&activity, |activity| {
+            activity.status = if total_processed == 0 {
+                "idle".to_string()
+            } else {
+                "busy".to_string()
+            };
+            activity.phase = if total_processed == 0 {
+                "idle".to_string()
+            } else {
+                "processed".to_string()
+            };
+            activity.disabled = false;
+            activity.processed_last_tick = processed;
+            activity.transfers_processed_last_tick = transfers_processed;
+            activity.last_loop_error = None;
+        });
         if cli.run_once {
+            send_heartbeat(&db, &heartbeat, &sampler, &activity_snapshot(&activity)).await;
             tracing::info!(
                 processed,
                 transfers_processed,
@@ -257,14 +325,68 @@ async fn machine_work_disabled(db: &DashboardDb, machine_id: &str) -> anyhow::Re
     Ok(machine.is_some_and(|machine| machine.status == "disabled"))
 }
 
+impl WorkerActivity {
+    /// Build the initial activity payload from CLI configuration.
+    fn from_cli(cli: &Cli) -> Self {
+        Self {
+            status: "online".to_string(),
+            phase: "startup".to_string(),
+            disabled: false,
+            processed_last_tick: 0,
+            transfers_processed_last_tick: 0,
+            max_steps_per_tick: cli.max_steps_per_tick,
+            max_transfers_per_tick: cli.max_transfers_per_tick,
+            transfers_enabled: cli.transfers_enabled,
+            heartbeat_interval_ms: cli.heartbeat_ms,
+            last_loop_error: None,
+        }
+    }
+}
+
+/// Mutate shared worker activity without panicking on a poisoned mutex.
+fn update_activity(
+    activity: &Arc<Mutex<WorkerActivity>>,
+    update: impl FnOnce(&mut WorkerActivity),
+) {
+    let mut guard = match activity.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    update(&mut guard);
+}
+
+/// Clone shared worker activity without panicking on a poisoned mutex.
+fn activity_snapshot(activity: &Arc<Mutex<WorkerActivity>>) -> WorkerActivity {
+    match activity.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// Spawn periodic telemetry publishing independent of the work loop.
+fn spawn_heartbeat_loop(
+    db: Arc<DashboardDb>,
+    heartbeat: RemoteHeartbeat,
+    sampler: Arc<MachineSampler>,
+    activity: Arc<Mutex<WorkerActivity>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(heartbeat.interval()).await;
+            let activity = activity_snapshot(&activity);
+            send_heartbeat(&db, &heartbeat, &sampler, &activity).await;
+        }
+    })
+}
+
 impl RemoteHeartbeat {
     /// Build heartbeat state from CLI options.
     fn from_cli(cli: &Cli) -> anyhow::Result<Self> {
+        if cli.heartbeat_ms == 0 {
+            anyhow::bail!("BUBA_RESEARCH_HEARTBEAT_MS must be positive");
+        }
         let config = match optional_value(cli.controller_url.as_deref()) {
             Some(controller_url) => {
-                if cli.heartbeat_ms == 0 {
-                    anyhow::bail!("BUBA_RESEARCH_HEARTBEAT_MS must be positive");
-                }
                 let worker_token = optional_value(cli.worker_token.as_deref()).ok_or_else(|| {
                     anyhow::anyhow!(
                         "BUBA_RESEARCH_WORKER_TOKEN is required when BUBA_RESEARCH_CONTROLLER_URL is set"
@@ -272,11 +394,7 @@ impl RemoteHeartbeat {
                 })?;
                 Some(RemoteHeartbeatConfig {
                     controller_url: controller_url.trim_end_matches('/').to_string(),
-                    machine_id: cli.machine_id.trim().to_string(),
-                    worker_id: cli.worker_id.trim().to_string(),
                     worker_token,
-                    worker_version: env!("CARGO_PKG_VERSION").to_string(),
-                    interval: Duration::from_millis(cli.heartbeat_ms),
                 })
             }
             None => None,
@@ -284,39 +402,45 @@ impl RemoteHeartbeat {
         Ok(Self {
             config,
             client: reqwest::Client::new(),
-            last_sent: None,
+            machine_id: cli.machine_id.trim().to_string(),
+            worker_id: cli.worker_id.trim().to_string(),
+            worker_version: env!("CARGO_PKG_VERSION").to_string(),
+            interval: Duration::from_millis(cli.heartbeat_ms),
         })
     }
 
-    /// Send a heartbeat when forced or when the configured interval elapsed.
-    async fn send_if_due(
-        &mut self,
+    /// Return the configured telemetry publishing interval.
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    /// Post one heartbeat payload to the central dashboard when configured.
+    async fn post_to_controller(
+        &self,
         status: &str,
-        details: serde_json::Value,
-        force: bool,
+        details: &serde_json::Value,
+        sampler: &MachineSampler,
+        sampler_health: &buba_machine_telemetry::MachineSamplerHealth,
+        samples: &[buba_machine_telemetry::MachineSample],
     ) -> anyhow::Result<()> {
         let Some(config) = &self.config else {
             return Ok(());
         };
-        let now = Instant::now();
-        if !force
-            && self
-                .last_sent
-                .is_some_and(|last_sent| now.duration_since(last_sent) < config.interval)
-        {
-            return Ok(());
-        }
         let url = format!("{}/api/research/workers/heartbeat", config.controller_url);
         let response = self
             .client
             .post(url)
             .header("x-buba-research-worker-token", &config.worker_token)
             .json(&serde_json::json!({
-                "machine_id": config.machine_id,
-                "worker_id": config.worker_id,
-                "worker_version": config.worker_version,
+                "machine_id": &self.machine_id,
+                "worker_id": &self.worker_id,
+                "worker_version": &self.worker_version,
                 "status": status,
                 "details": details,
+                "host": sampler.host(),
+                "sampler": sampler_health,
+                "samples": samples,
+                "activity": details,
             }))
             .send()
             .await
@@ -326,19 +450,57 @@ impl RemoteHeartbeat {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("research worker heartbeat failed with {status}: {body}");
         }
-        self.last_sent = Some(now);
         Ok(())
     }
 }
 
-/// Send a heartbeat and keep the worker alive if central status reporting fails.
+/// Publish one heartbeat to the local DB and optionally to a central dashboard.
+async fn publish_heartbeat_once(
+    db: &DashboardDb,
+    heartbeat: &RemoteHeartbeat,
+    sampler: &MachineSampler,
+    activity: &WorkerActivity,
+) -> anyhow::Result<()> {
+    let details = serde_json::to_value(activity).context("serializing research worker activity")?;
+    let snapshot = sampler.snapshot();
+    let sampler_health = snapshot.health();
+    let telemetry = ResearchMachineTelemetryUpdate {
+        host: Some(sampler.host()),
+        sampler: Some(&sampler_health),
+        samples: &snapshot.history,
+        activity: Some(&details),
+    };
+    let record = ResearchMachineHeartbeatRecord {
+        machine_id: &heartbeat.machine_id,
+        worker_id: &heartbeat.worker_id,
+        worker_version: Some(&heartbeat.worker_version),
+        status: &activity.status,
+        details: Some(&details),
+        telemetry,
+    };
+    db.record_research_machine_heartbeat_with_telemetry(&record)
+        .await
+        .context("recording local research worker heartbeat")?;
+    heartbeat
+        .post_to_controller(
+            &activity.status,
+            &details,
+            sampler,
+            &sampler_health,
+            &snapshot.history,
+        )
+        .await?;
+    Ok(())
+}
+
+/// Send a heartbeat and keep the worker alive if telemetry reporting fails.
 async fn send_heartbeat(
-    heartbeat: &mut RemoteHeartbeat,
-    status: &str,
-    details: serde_json::Value,
-    force: bool,
+    db: &DashboardDb,
+    heartbeat: &RemoteHeartbeat,
+    sampler: &MachineSampler,
+    activity: &WorkerActivity,
 ) {
-    if let Err(error) = heartbeat.send_if_due(status, details, force).await {
+    if let Err(error) = publish_heartbeat_once(db, heartbeat, sampler, activity).await {
         tracing::warn!(?error, "research worker heartbeat failed");
     }
 }
@@ -353,6 +515,7 @@ fn optional_value(value: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use buba_machine_telemetry::{HostIdentity, MachineSample, MachineSamplerState};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -380,6 +543,44 @@ mod tests {
             worker_token: None,
             heartbeat_ms: 30_000,
         }
+    }
+
+    /// Build a seeded sampler for deterministic heartbeat tests.
+    fn test_sampler() -> Arc<MachineSampler> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(10_000);
+        let mut state = MachineSamplerState::new();
+        state.push(MachineSample {
+            sampled_at_ms: now_ms,
+            cpu_percent: 12.5,
+            per_core_cpu: vec![12.5, 8.0],
+            load_one: Some(0.5),
+            load_five: Some(0.4),
+            load_fifteen: Some(0.3),
+            mem_used_bytes: 512,
+            mem_total_bytes: 1_024,
+            mem_available_bytes: 512,
+            swap_used_bytes: 0,
+            swap_total_bytes: 0,
+            disk_used_bytes: 2_048,
+            disk_total_bytes: 4_096,
+            disk_mount: "/tmp".to_string(),
+        });
+        MachineSampler::with_seeded_state(
+            HostIdentity {
+                hostname: "testing".to_string(),
+                os_name: "Linux".to_string(),
+                os_version: "test".to_string(),
+                kernel_version: "test".to_string(),
+                cpu_count: 2,
+                total_ram_bytes: 1_024,
+            },
+            state,
+            900,
+            PathBuf::from("/tmp/research"),
+        )
     }
 
     /// Verifies heartbeat config is disabled without a controller URL.
@@ -419,11 +620,69 @@ mod tests {
         let mut cli = test_cli();
         cli.controller_url = Some(server.uri());
         cli.worker_token = Some("secret".to_string());
-        let mut heartbeat = RemoteHeartbeat::from_cli(&cli).unwrap();
+        let heartbeat = RemoteHeartbeat::from_cli(&cli).unwrap();
+        let db = DashboardDb::new(":memory:").unwrap();
+        let sampler = test_sampler();
+        let mut activity = WorkerActivity::from_cli(&cli);
+        activity.status = "idle".to_string();
+        activity.phase = "idle".to_string();
 
-        heartbeat
-            .send_if_due("idle", serde_json::json!({"queue_depth": 0}), true)
+        publish_heartbeat_once(&db, &heartbeat, &sampler, &activity)
             .await
             .unwrap();
+    }
+
+    /// Verifies local telemetry is recorded when no controller URL is configured.
+    #[tokio::test]
+    async fn heartbeat_without_controller_records_local_telemetry() {
+        let cli = test_cli();
+        let heartbeat = RemoteHeartbeat::from_cli(&cli).unwrap();
+        let db = DashboardDb::new(":memory:").unwrap();
+        let sampler = test_sampler();
+        let mut activity = WorkerActivity::from_cli(&cli);
+        activity.status = "idle".to_string();
+        activity.phase = "idle".to_string();
+
+        publish_heartbeat_once(&db, &heartbeat, &sampler, &activity)
+            .await
+            .unwrap();
+
+        let telemetry = db
+            .get_research_machine_telemetry("research", None, None)
+            .await
+            .unwrap();
+        assert_eq!(telemetry.state.unwrap().worker_id, "worker-a");
+        assert_eq!(telemetry.samples.len(), 1);
+    }
+
+    /// Verifies controller failures do not prevent local telemetry persistence.
+    #[tokio::test]
+    async fn failed_controller_heartbeat_is_nonfatal() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/research/workers/heartbeat"))
+            .and(header("x-buba-research-worker-token", "secret"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut cli = test_cli();
+        cli.controller_url = Some(server.uri());
+        cli.worker_token = Some("secret".to_string());
+        let heartbeat = RemoteHeartbeat::from_cli(&cli).unwrap();
+        let db = DashboardDb::new(":memory:").unwrap();
+        let sampler = test_sampler();
+        let mut activity = WorkerActivity::from_cli(&cli);
+        activity.status = "idle".to_string();
+        activity.phase = "idle".to_string();
+
+        send_heartbeat(&db, &heartbeat, &sampler, &activity).await;
+
+        let telemetry = db
+            .get_research_machine_telemetry("research", None, None)
+            .await
+            .unwrap();
+        assert_eq!(telemetry.state.unwrap().worker_status, "idle");
     }
 }

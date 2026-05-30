@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Banner,
   Button,
@@ -13,9 +13,11 @@ import type {
   JobType,
   ResearchArtifact,
 } from "../../lib/research-types";
+import { formatDateTime, formatDurationShort } from "../../lib/utils";
 
 const EXPORT_RUN_MODES = ["paper", "live_readonly", "live_trading"] as const;
 const EXPORT_SOURCE_STATES = ["stopped", "running_readonly"] as const;
+const LARGE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 type ExportRunMode = (typeof EXPORT_RUN_MODES)[number];
 type ExportSourceState = (typeof EXPORT_SOURCE_STATES)[number];
@@ -37,6 +39,7 @@ interface BacktestState {
   start_iso: string;
   end_iso: string;
   balance: string;
+  confirm_interval: boolean;
   setOverrides: KeyValueRow[];
 }
 
@@ -58,6 +61,70 @@ function isoToMs(value: string): number | undefined {
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return undefined;
   return parsed;
+}
+
+type IntervalSource = "explicit input" | "artifact fallback" | "missing" | "invalid";
+
+interface IntervalBoundary {
+  ms: number | undefined;
+  source: IntervalSource;
+}
+
+interface EffectiveInterval {
+  start: IntervalBoundary;
+  end: IntervalBoundary;
+  durationMs: number | undefined;
+  valid: boolean;
+  reason: string | null;
+  requiresConfirmation: boolean;
+}
+
+function resolveIntervalBoundary(
+  value: string,
+  artifactMs: number | null | undefined,
+): IntervalBoundary {
+  if (value.trim()) {
+    const ms = isoToMs(value);
+    return ms == null
+      ? { ms: undefined, source: "invalid" }
+      : { ms, source: "explicit input" };
+  }
+  return artifactMs == null
+    ? { ms: undefined, source: "missing" }
+    : { ms: artifactMs, source: "artifact fallback" };
+}
+
+function effectiveInterval(
+  state: BacktestState,
+  artifact: ResearchArtifact | undefined,
+): EffectiveInterval {
+  const start = resolveIntervalBoundary(
+    state.start_iso,
+    artifact?.interval_start_ms,
+  );
+  const end = resolveIntervalBoundary(state.end_iso, artifact?.interval_end_ms);
+  let reason: string | null = null;
+  let durationMs: number | undefined;
+  if (start.source === "invalid" || end.source === "invalid") {
+    reason = "Start and end must be valid datetimes.";
+  } else if (start.ms == null || end.ms == null) {
+    reason = "Start and end are required, either explicitly or from artifact metadata.";
+  } else if (end.ms <= start.ms) {
+    reason = "End must be after start.";
+  } else {
+    durationMs = end.ms - start.ms;
+  }
+  const fallbackDerived =
+    start.source === "artifact fallback" || end.source === "artifact fallback";
+  return {
+    start,
+    end,
+    durationMs,
+    valid: reason == null,
+    reason,
+    requiresConfirmation:
+      fallbackDerived || (durationMs != null && durationMs > LARGE_INTERVAL_MS),
+  };
 }
 
 function buildExportParams(state: ExportState): Record<string, unknown> {
@@ -90,9 +157,9 @@ function buildBacktestParams(
   if (state.data_db_path.trim()) {
     params.data_db_path = state.data_db_path.trim();
   }
-  const start =
-    isoToMs(state.start_iso) ?? artifact?.interval_start_ms ?? undefined;
-  const end = isoToMs(state.end_iso) ?? artifact?.interval_end_ms ?? undefined;
+  const interval = effectiveInterval(state, artifact);
+  const start = interval.start.ms;
+  const end = interval.end.ms;
   if (start != null) params.start_ms = start;
   if (end != null) params.end_ms = end;
   const balance = Number(state.balance);
@@ -142,6 +209,7 @@ export function JobCreateForm({
     start_iso: "",
     end_iso: "",
     balance: "200",
+    confirm_interval: false,
     setOverrides: [],
   });
 
@@ -151,6 +219,7 @@ export function JobCreateForm({
     start_iso: "",
     end_iso: "",
     balance: "200",
+    confirm_interval: false,
     setOverrides: [],
     sweeps: [],
   });
@@ -165,8 +234,13 @@ export function JobCreateForm({
   const backtestArtifact = availableArtifacts.find(
     (a) => a.id === backtestState.artifact_id,
   );
+  const backtestInterval = effectiveInterval(backtestState, backtestArtifact);
+  const backtestIntervalConfirmed =
+    !backtestInterval.requiresConfirmation || backtestState.confirm_interval;
   const backtestValid =
     backtestState.artifact_id.trim().length > 0 &&
+    backtestInterval.valid &&
+    backtestIntervalConfirmed &&
     Number.isFinite(Number(backtestState.balance)) &&
     Number(backtestState.balance) > 0;
 
@@ -176,9 +250,14 @@ export function JobCreateForm({
   const sweepRows = sweepState.sweeps.filter(
     (row) => row.key.trim() && row.value.trim(),
   );
+  const sweepInterval = effectiveInterval(sweepState, sweepArtifact);
+  const sweepIntervalConfirmed =
+    !sweepInterval.requiresConfirmation || sweepState.confirm_interval;
   const sweepValid =
     sweepState.artifact_id.trim().length > 0 &&
     sweepRows.length >= 1 &&
+    sweepInterval.valid &&
+    sweepIntervalConfirmed &&
     Number.isFinite(Number(sweepState.balance)) &&
     Number(sweepState.balance) > 0;
 
@@ -317,30 +396,42 @@ export function JobCreateForm({
                   id={id}
                   type="datetime-local"
                   value={exportState.interval_start_iso}
-                  onChange={(event) =>
-                    setExportState({
-                      ...exportState,
-                      interval_start_iso: event.currentTarget.value,
-                    })
-                  }
-                />
-              )}
-            </FormField>
+                onChange={(event) =>
+                  setExportState({
+                    ...exportState,
+                    interval_start_iso: event.currentTarget.value,
+                  })
+                }
+                onBlur={(event) =>
+                  setExportState({
+                    ...exportState,
+                    interval_start_iso: event.currentTarget.value,
+                  })
+                }
+              />
+            )}
+          </FormField>
             <FormField label="Interval end" hint="Optional ISO datetime">
               {({ id }) => (
                 <Input
                   id={id}
                   type="datetime-local"
                   value={exportState.interval_end_iso}
-                  onChange={(event) =>
-                    setExportState({
-                      ...exportState,
-                      interval_end_iso: event.currentTarget.value,
-                    })
-                  }
-                />
-              )}
-            </FormField>
+                onChange={(event) =>
+                  setExportState({
+                    ...exportState,
+                    interval_end_iso: event.currentTarget.value,
+                  })
+                }
+                onBlur={(event) =>
+                  setExportState({
+                    ...exportState,
+                    interval_end_iso: event.currentTarget.value,
+                  })
+                }
+              />
+            )}
+          </FormField>
           </div>
           <FormField label="Log paths" hint="One path per line, optional">
             {({ id }) => (
@@ -406,6 +497,8 @@ export function JobCreateForm({
       {(type === "current_params" || type === "sweep") && (
         <BacktestFields
           state={type === "current_params" ? backtestState : sweepState}
+          artifact={type === "current_params" ? backtestArtifact : sweepArtifact}
+          interval={type === "current_params" ? backtestInterval : sweepInterval}
           artifacts={availableArtifacts}
           onChange={(next) =>
             type === "current_params"
@@ -457,11 +550,45 @@ export function JobCreateForm({
 
 interface BacktestFieldsProps {
   state: BacktestState;
+  artifact: ResearchArtifact | undefined;
+  interval: EffectiveInterval;
   artifacts: ResearchArtifact[];
   onChange: (next: BacktestState) => void;
 }
 
-function BacktestFields({ state, artifacts, onChange }: BacktestFieldsProps) {
+function BacktestFields({
+  state,
+  artifact,
+  interval,
+  artifacts,
+  onChange,
+}: BacktestFieldsProps) {
+  const startInputRef = useRef<HTMLInputElement | null>(null);
+  const endInputRef = useRef<HTMLInputElement | null>(null);
+  const sourceLabel = [interval.start.source, interval.end.source]
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .join(", ");
+  const resetIntervalConfirmation = (next: BacktestState): BacktestState => ({
+    ...next,
+    confirm_interval: false,
+  });
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const startValue = startInputRef.current?.value ?? state.start_iso;
+      const endValue = endInputRef.current?.value ?? state.end_iso;
+      if (startValue === state.start_iso && endValue === state.end_iso) {
+        return;
+      }
+      onChange({
+        ...state,
+        start_iso: startValue,
+        end_iso: endValue,
+        confirm_interval: false,
+      });
+    }, 250);
+    return () => window.clearInterval(intervalId);
+  }, [onChange, state]);
+
   return (
     <div className="space-y-3">
       <FormField label="Source artifact" required>
@@ -470,7 +597,12 @@ function BacktestFields({ state, artifacts, onChange }: BacktestFieldsProps) {
             id={id}
             value={state.artifact_id}
             onChange={(event) =>
-              onChange({ ...state, artifact_id: event.currentTarget.value })
+              onChange(
+                resetIntervalConfirmation({
+                  ...state,
+                  artifact_id: event.currentTarget.value,
+                }),
+              )
             }
             className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
           >
@@ -499,11 +631,25 @@ function BacktestFields({ state, artifacts, onChange }: BacktestFieldsProps) {
         <FormField label="Start" hint="Falls back to artifact interval">
           {({ id }) => (
             <Input
+              ref={startInputRef}
               id={id}
               type="datetime-local"
               value={state.start_iso}
               onChange={(event) =>
-                onChange({ ...state, start_iso: event.currentTarget.value })
+                onChange(
+                  resetIntervalConfirmation({
+                    ...state,
+                    start_iso: event.currentTarget.value,
+                  }),
+                )
+              }
+              onBlur={(event) =>
+                onChange(
+                  resetIntervalConfirmation({
+                    ...state,
+                    start_iso: event.currentTarget.value,
+                  }),
+                )
               }
             />
           )}
@@ -511,15 +657,78 @@ function BacktestFields({ state, artifacts, onChange }: BacktestFieldsProps) {
         <FormField label="End" hint="Falls back to artifact interval">
           {({ id }) => (
             <Input
+              ref={endInputRef}
               id={id}
               type="datetime-local"
               value={state.end_iso}
               onChange={(event) =>
-                onChange({ ...state, end_iso: event.currentTarget.value })
+                onChange(
+                  resetIntervalConfirmation({
+                    ...state,
+                    end_iso: event.currentTarget.value,
+                  }),
+                )
+              }
+              onBlur={(event) =>
+                onChange(
+                  resetIntervalConfirmation({
+                    ...state,
+                    end_iso: event.currentTarget.value,
+                  }),
+                )
               }
             />
           )}
         </FormField>
+      </div>
+      <div className="border border-border bg-bg px-3 py-2 text-[12px]">
+        <div className="font-semibold">Effective interval</div>
+        {interval.valid &&
+        interval.start.ms != null &&
+        interval.end.ms != null &&
+        interval.durationMs != null ? (
+          <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div>
+              <dt className="text-muted">Start</dt>
+              <dd>{formatDateTime(interval.start.ms)}</dd>
+            </div>
+            <div>
+              <dt className="text-muted">End</dt>
+              <dd>{formatDateTime(interval.end.ms)}</dd>
+            </div>
+            <div>
+              <dt className="text-muted">Duration</dt>
+              <dd>{formatDurationShort(interval.durationMs)}</dd>
+            </div>
+            <div>
+              <dt className="text-muted">Source</dt>
+              <dd>{sourceLabel}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="mt-1 text-accent-red">
+            {interval.reason ?? "Select an artifact or provide explicit bounds."}
+          </p>
+        )}
+        {artifact && interval.requiresConfirmation && (
+          <label className="mt-3 flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={state.confirm_interval}
+              onChange={(event) =>
+                onChange({
+                  ...state,
+                  confirm_interval: event.currentTarget.checked,
+                })
+              }
+              className="mt-0.5"
+            />
+            <span>
+              Confirm this interval before creating the job. Confirmation is
+              required for artifact-derived or large ranges.
+            </span>
+          </label>
+        )}
       </div>
       <FormField label="Balance" hint="Positive number, default 200" required>
         {({ id }) => (

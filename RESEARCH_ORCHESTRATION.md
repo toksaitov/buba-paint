@@ -4,17 +4,35 @@ This is the active local implementation tracker for dashboard-centered research 
 
 ## Operating Defaults
 
-* Early work is local-first and `buba-paint`-safe.
-* Remote integration may use Docker, SSH, and WSL on `testing` after the user has installed and enabled them.
-* Do not implement Research UI in this track. Produce a handoff prompt for a frontend colleague after backend flows work.
+* Current work is remote-capable but still `buba-paint`-safe.
+* Remote integration uses Docker, SSH, and Ubuntu WSL on `testing`.
+* Research UI is merged. Keep remaining UI cleanup narrow and reflect durable facts in `docs/` instead of temporary handoff notes.
+* Treat machine identity, telemetry, and management as separate concerns.
+* Machine identity comes from dashboard state plus `ops/research-machines.toml`; Docker Compose is deployment and health evidence, not the source of machine identity.
 * Keep the current `live_readonly` posture unchanged. Do not restart or disturb a running bot unless the user explicitly approves that phase.
 * Use Compose plus inventory-driven scripts as the deploy direction.
 * Use SSH-only transfer for v1 once host setup exists.
-* Treat registry-pinned images as the target, with local or remote build fallback until registry setup is convenient.
+* Use registry-pinned GHCR images for the `testing` research deploy. Keep the live deploy on the existing non-registry path until a live-specific phase exists.
 
 ## Phase Gates
 
 Each phase stops after its verification commands and observable results. The user verifies before the next phase begins.
+
+## Current State
+
+The orchestration backend, remote research worker, artifact transfer path, job lifecycle controls, report lifecycle controls, machine lifecycle API, report regeneration, fixture data, and initial Research UI are implemented and merged.
+
+The current active work is not generic machine CRUD. It is unified host observability for both the bot machine and the research machine:
+
+* Preserve `research_machines` as durable identity and provenance state.
+* Keep machine CRUD available through backend/API/scripts.
+* Keep Research > Machines as a read-only observability area for research-role hosts.
+* Add production-grade research host telemetry so `testing` can be observed at a similar operational depth to the existing bot Machine page.
+* Surface research-host health and provenance through Research Machines, the Research Overview host list, and object details where implemented.
+
+Open work:
+
+* None in the current 7M-7S research observability/deploy/workflow sequence. Choose the next phase from the verified state below.
 
 ## Phase 1: Local Contracts And Tracking
 
@@ -222,7 +240,7 @@ python3 scripts/deploy-machine.py --machine research --dry-run
 
 ## Phase 7: Remote Multi-Machine Integration
 
-Status: in progress. Remote Compose baseline, worker heartbeat, first remote job smoke, artifact import API, remote artifact registration API, transfer lifecycle API, transfer worker execution, stale-transfer recovery, scratch archive safety, machine lifecycle API, and report regeneration API are complete.
+Status: complete through Phase 7S. Remote Compose baseline, worker heartbeat, first remote job smoke, artifact import API, remote artifact registration API, transfer lifecycle API, transfer worker execution, stale-transfer recovery, scratch archive safety, machine lifecycle API, report regeneration API, initial Research UI, shared host sampler extraction, research telemetry backend, Research Machines UI cleanup, remote telemetry smoke, registry-pinned research deploy, and browser-smoke workflow gap fixes are implemented and verified.
 
 Deliverables:
 
@@ -241,7 +259,10 @@ Deliverables:
 * Complete: expose artifact verification, manifest/checksum reads, metadata update, archive, restore, and guarded delete controls for the dashboard.
 * Complete: expose machine create, read, update, disable, enable, guarded delete, and health controls for the dashboard.
 * Complete: expose report regeneration from persisted job, step, event, and report metadata.
-* Pending: optionally switch to registry-pinned images.
+* Complete: merge the initial Research UI for overview, artifacts, transfers, jobs, reports, and machine management.
+* Complete locally: replace the top-level Machines management page with research-host observability.
+* Complete locally: persist and expose research host telemetry through typed state, sample history, and the authenticated telemetry endpoint.
+* Complete remotely: switch the `testing` research deploy to registry-pinned private GHCR images.
 
 Observable results:
 
@@ -256,6 +277,13 @@ Observable results:
 * Complete: artifact manifest, checksum, verify, metadata update, archive, restore, and guarded delete routes are available to the authenticated dashboard.
 * Complete: machine create, patch, disable, enable, health, and guarded delete routes are available to the authenticated dashboard; default `live` and `research` machines are protected from deletion.
 * Complete: report regeneration is available for terminal/recoverable jobs or existing report rows without rerunning backtest or sweep commands.
+* Complete: Research UI is merged in commit `bde037e`.
+* Complete: research machine telemetry persists latest host identity, sampler health, worker activity, heartbeat metadata, and bounded CPU, memory, swap, disk, and load sample history; remote `testing` smoke is verified.
+* Complete: Research > Machines is read-only, research-role-only, and links to telemetry detail instead of exposing machine CRUD or lifecycle controls.
+* Complete remotely: `testing` Compose uses current digest-pinned private GHCR images:
+  * `ghcr.io/toksaitov/buba-paint-dashboard@sha256:1bda559f8da7feb91c774fb7e4d7242073b55866e13605b976ec44eab10dcb4d`
+  * `ghcr.io/toksaitov/buba-paint-research-worker@sha256:ecc49890c16a776a76feeee45decc7588d3a97f3e85d3f902798174637b0ce65`
+* Complete: browser-created bounded jobs submit explicit `start_ms` and `end_ms`, completed reports can load JSON/CSV, scratch DBs can be archived from job detail, and UI cancellation terminates active child commands.
 
 Verification:
 
@@ -366,7 +394,11 @@ Observable results:
 
 Remaining Phase 7 implementation work:
 
-* Dashboard UI for artifact import, job creation, job step progress, and report browsing: complete. The `/research/*` routes in `dashboard/client/src/App.tsx` cover Overview, Machines, Artifacts, Transfers, Jobs, and Reports lists plus detail pages. Lifecycle controls follow `dashboard/client/src/lib/research-permissions.ts`. Functional spec is `docs/research-ui-handoff.md`.
+* Dashboard UI for artifact import, job creation, job step progress, and report browsing: merged in commit `bde037e`.
+* The current `/research/*` routes in `dashboard/client/src/App.tsx` cover Overview, Machines, Artifacts, Transfers, Jobs, and Reports lists plus detail pages.
+* Lifecycle controls follow `dashboard/client/src/lib/research-permissions.ts`.
+* Host-observability cleanup is complete locally: Research > Machines is now a research-host telemetry area, and machine records remain shared lookup, source/destination, health, and provenance data for the other Research pages.
+* Registry-pinned deploy cleanup is complete for the `testing` research stack. The live stack remains on the existing non-registry deploy path.
 
 ### Phase 7C: Worker Transfer Executor
 
@@ -572,21 +604,246 @@ Observable results:
 * Unit tests cover successful regeneration, observer rejection, unready-job rejection, unsafe existing path rejection, file creation, and persisted report metadata.
 * Remote smoke on `testing` created a temporary completed export job state, regenerated JSON/CSV through the API, read both files through report file endpoints, deleted the generated report with files, deleted the temporary job, and verified zero smoke leftovers in SQLite.
 
-## Phase 8: UI Handoff Prompt
+### Phase 7M: Unified Host Observability And Machines UI Cleanup
 
-Status: complete as a functional handoff draft.
+Status: complete. 7M.1 shared sampler, 7M.2 research telemetry backend, 7M.3 Machines UI cleanup, and 7M.4 remote telemetry smoke are implemented and verified.
+
+Problem:
+
+* The bot Machine page is backed by a real host sampler in `agent/src/machine.rs`.
+* The research worker now records typed host telemetry locally and can optionally publish the same payload to a controller dashboard.
+* The initial merged Research Machines page exposed infrastructure CRUD as a primary Research page, but the product need is operational host observability, not day-to-day machine management.
+
+Design direction:
+
+* Treat machine identity, host telemetry, and machine management as separate concerns.
+* Keep `research_machines` and `ops/research-machines.toml` as machine identity and provenance sources.
+* Keep machine lifecycle APIs for scripts, admin recovery, and future multi-worker registration.
+* Add first-class host telemetry for `testing` through the research worker.
+* Keep Research > Machines in navigation as research-host observability, not management.
+* Surface research-host health and provenance in object detail pages without forcing CRUD navigation.
 
 Deliverables:
 
-* Create `docs/research-ui-handoff.md` for a frontend colleague.
-* Include product goal, workflows, backend API contracts, permissions, page list, required states, chart data fixtures, mobile constraints, and acceptance tests.
-* Do not implement Research UI in this track.
-* Keep the handoff focused on required functionality and lifecycle coverage, not visual design.
+* Complete: extract the shared `buba-machine-telemetry` crate so bot and research hosts use one telemetry contract.
+* Complete locally: add host sampling to `buba-research-worker` for CPU, per-core CPU, load, memory, swap, work-root disk, sampler health, and worker status.
+* Complete locally: include worker activity context in research telemetry for disabled state, processed job steps, processed transfers, configured worker limits, heartbeat interval, and last loop error.
+* Complete locally: persist research host samples in `research_machine_telemetry_state` and `research_machine_telemetry_samples` instead of storing only arbitrary heartbeat details.
+* Complete locally: add `GET /api/research/machines/:id/telemetry` for authenticated dashboard reads.
+* Complete locally: update seed fixtures so Research UI tests can cover healthy, stale, loaded, low-disk, disabled, and no-telemetry hosts.
+* Complete locally: replace Research Machines as a top-level management page with research-host telemetry list and detail pages.
+* Complete locally: render artifact and transfer source/destination machine references as telemetry links only for research-role hosts, and as provenance labels otherwise.
+* Complete locally: keep machine create/update/delete/disable/enable API coverage while telemetry backend remains separate from management.
+* Complete locally: update docs to describe machine identity versus telemetry versus management.
+* Complete remotely: keep non-registry research deploys on an isolated remote `DOCKER_CONFIG` so SSH-driven Docker Desktop builds do not depend on an interactive credential helper session.
 
 Observable results:
 
-* Handoff doc is complete enough for independent frontend planning.
-* Missing backend CRUD and lifecycle-control endpoints are explicitly called out.
+* Complete locally: Bot Machine page keeps working with the shared sampler-backed agent API.
+* Complete locally: research telemetry API returns current state, bounded sample history, dependency counts, disabled state, stale state, and stale threshold.
+* Complete locally: Research Machines list and detail pages show telemetry health for research-role hosts when telemetry exists.
+* Complete locally: Research UI still works when no research telemetry exists, and marks the state as missing or stale rather than inventing health.
+* Complete locally: Artifact and transfer detail views show machine context without requiring a Machines management page.
+* Complete locally: a disabled research machine does not claim work and still updates telemetry state.
+* Complete locally: high CPU, low memory, swap pressure, low disk, stale heartbeat, sampler errors, and worker errors produce operator-visible UI warnings.
+* Complete locally: machine CRUD remains tested at the API level but is no longer a primary Research navigation destination.
+* Complete remotely: `testing` runs `research-dashboard` and `research-worker` through `docker-compose.research.yml`; `/health` returns ok.
+* Complete remotely: authenticated telemetry for `research` is fresh, non-stale, and includes worker state plus CPU, memory, swap, disk, load, host identity, and sampler health fields from real `testing` samples.
+* Complete remotely: Research > Machines and Research > Machines > research render through a temporary SSH tunnel with Host, CPU, Memory & Swap, Disk, and Worker sections and without machine CRUD controls.
+* Complete remotely: `buba-paint` container IDs and uptime remained unchanged during 7M.4.
+
+Verification:
+
+```bash
+cargo fmt --all --check
+cargo test -p buba-agent
+cargo test -p buba-dashboard
+cd dashboard/client && npm test
+python3 scripts/audit-docs.py
+docker compose -f docker-compose.research.yml config --quiet
+python3 scripts/deploy-machine.py --machine research --dry-run
+```
+
+Remote smoke target:
+
+```bash
+python3 scripts/deploy-machine.py --machine research
+ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-research && docker compose -f docker-compose.research.yml ps'"
+ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'curl -sf http://localhost:3002/health'"
+```
+
+### Phase 7Q: Frontend Lint Debt Cleanup
+
+Status: complete locally.
+
+Deliverables:
+
+* Complete: make `cd dashboard/client && npm run lint` pass with zero errors and zero warnings.
+* Complete: remove unused frontend test symbols without changing test intent.
+* Complete: replace empty frontend catches with explicit no-op or fallback returns.
+* Complete: refactor media-query, app-shell, header, signal-filter, and trade-filter state so lint-clean code preserves existing behavior.
+* Complete: split the shared test provider from `renderWithProviders` so fast-refresh lint stays clean.
+
+Observable results:
+
+* Complete: frontend lint is a passing gate before 7M.4 remote smoke.
+* Complete: protected-route auth behavior, bot selection fallback, mobile header behavior, media-query updates, persisted filters, and websocket invalid-message tolerance remain covered by existing tests.
+
+Verification:
+
+```bash
+cd dashboard/client && npm run lint
+cd dashboard/client && npm test
+cd dashboard/client && npm run build
+cd dashboard/client && npm run test:e2e -- --project=chromium
+python3 scripts/audit-docs.py
+git diff --check
+```
+
+### Phase 7R: Registry-Pinned Research Deployment
+
+Status: complete. Local publishing, digest lock validation, registry-pinned research deploy, authenticated telemetry, UI smoke, and live safety checks passed.
+
+Deliverables:
+
+* Complete: add a local research image publisher that builds dashboard and research-worker images, pushes private GHCR tags, resolves digest refs, and writes `ops/research-images.lock.json`.
+* Complete: use digest refs from the lock file for `testing` research deploys.
+* Complete: keep `live` on the existing non-registry path.
+* Complete: sync only research deployment files for registry-pinned research deploys.
+* Complete: authenticate remote GHCR pulls with a temporary Docker config and the current local `gh` token over SSH; remove the config before the session exits.
+* Complete: keep non-registry fallback behavior for local or remote builds.
+
+Observable results:
+
+* Complete: `python3 scripts/publish-research-images.py --dry-run` reports planned GHCR images, source input hashes, and package-scope readiness.
+* Complete: `python3 scripts/deploy-machine.py --machine research --dry-run` fails when the image lock is missing or stale and passes once the lock matches current image inputs.
+* Complete: `python3 scripts/deploy-machine.py --machine live --dry-run` remains non-registry and does not require the research lock.
+* Complete: remote research deploy pulls digest-pinned GHCR images and does not build on `testing`.
+* Complete: `buba-paint` remains untouched except for before and after status snapshots.
+* Complete: published linux/amd64 image refs:
+  * `ghcr.io/toksaitov/buba-paint-dashboard@sha256:c1381019ab5978f00897790f2ade2deaa9d48e18f1762cf00c5569568ed72d0e`
+  * `ghcr.io/toksaitov/buba-paint-research-worker@sha256:e9290e9050807922e3ac7b6727685d6407dc8957a57946267fd0e3605009ff25`
+* Complete: `testing` Compose uses those digest refs for `research-dashboard` and `research-worker`.
+* Complete: authenticated telemetry for `research` was fresh and non-stale with 60 samples, worker `research-worker-testing`, CPU, memory, swap, disk, load, host identity, and sampler interval fields.
+* Complete: Research > Machines UI smoke through a temporary SSH tunnel rendered the research host list and detail page with Host, CPU, Memory & Swap, Disk, and Worker sections and no machine CRUD controls.
+* Complete: `buba-paint` before and after snapshots kept container IDs unchanged: `50003527ee0e`, `2deb6c87a582`, and `773286fe7eb7`.
+
+Verification:
+
+```bash
+python3 scripts/publish-research-images.py --dry-run
+gh auth status
+docker compose -f docker-compose.research.yml config --quiet
+python3 scripts/deploy-machine.py --machine research --dry-run
+python3 scripts/deploy-machine.py --machine live --dry-run
+python3 scripts/deploy-machine.py --machine research
+python3 scripts/audit-docs.py
+git diff --check
+```
+
+### Phase 7S: End-To-End Research Workflow Smoke And Gap Fixes
+
+Status: complete.
+
+Goal:
+
+* Prove the real operator workflow on `testing` through the browser before adding more deployment machinery.
+* Use the finalized live-readonly artifact already present on the research host.
+* Keep `buba-paint` untouched.
+* Record and fix workflow gaps that would make the dashboard unsafe or surprising for a real research run.
+
+Initial browser-controlled smoke results:
+
+* Complete: Research Overview, Artifacts, Jobs, Reports, and Machines loaded through the `127.0.0.1:3302` tunnel without fetch errors.
+* Complete: the browser-created job flow reached the job detail page and showed live step progress.
+* Complete: the oversized browser-created jobs were cancelled from the UI:
+  * `6b4f3a7b-92fe-422e-800d-04d91ca2b494`
+  * `b2bea74e-8198-4442-bf77-935c89850df1`
+* Complete: a bounded current-params backtest was created through the authenticated API after the browser form gap was found:
+  * job `4c57686a-b0c7-4a36-81f8-ed36fbea55f7`
+  * report `565561ba-05d6-4dd0-9dce-963399084018`
+  * interval `2026-05-17T07:39:00Z` to `2026-05-17T07:41:00Z`
+* Complete: the bounded job finished all six steps:
+  * `verify_artifact`
+  * `validate_replay_data`
+  * `validate_backtest_input`
+  * `prepare_backtest_input`
+  * `run_backtest`
+  * `write_report`
+* Complete: the report detail page loaded both JSON and CSV through the browser.
+* Complete: Research > Machines showed fresh non-stale telemetry and returned to `Idle` after the bounded job.
+
+Gaps found:
+
+* The New Job form is too easy to misuse. Explicit browser-filled Start and End values did not affect the request in the smoke, and both browser-created jobs fell back to the full artifact interval. At minimum, the UI needs a visible effective interval preview and stronger validation before submitting a multi-day artifact interval.
+* Job cancellation updates dashboard state immediately, but it does not interrupt an already-running `buba-paint` child process. Both oversized smoke jobs required manual child-process termination on `testing`; the worker container restarted after the manual termination.
+* Completed current-params jobs still leave scratch DBs in the job directory. For job `4c57686a-b0c7-4a36-81f8-ed36fbea55f7`, `prepared-backtest.db` and `backtest.db` remained next to `report.json` and `report.csv`. The dashboard needs an explicit archive or cleanup path that preserves reports and manifests while deleting scratch DBs.
+
+Fixes implemented:
+
+* Complete: New Job shows effective Start, End, duration, and source for current-params and sweep jobs.
+* Complete: explicit browser-filled `datetime-local` values are reflected in the effective interval and submitted as `start_ms` and `end_ms`.
+* Complete: invalid, missing, reversed, fallback-derived, and large intervals gate Create appropriately; large and fallback-derived intervals require confirmation.
+* Complete: active `buba-paint` child commands are supervised. Job cancellation terminates the child process, records a cancellation event, and keeps the worker alive.
+* Complete: `POST /api/research/jobs/:id/archive-scratch` deletes only prepared/backtest scratch SQLite families under the job root and preserves reports, artifacts, manifests, and report metadata.
+* Complete: Job detail exposes `Archive scratch DBs` only for completed jobs with reports and shows a deleted/skipped summary after confirmation.
+
+Final browser-controlled smoke results:
+
+* Complete: published and deployed digest-pinned research images to `testing`:
+  * dashboard `ghcr.io/toksaitov/buba-paint-dashboard@sha256:1bda559f8da7feb91c774fb7e4d7242073b55866e13605b976ec44eab10dcb4d`
+  * worker `ghcr.io/toksaitov/buba-paint-research-worker@sha256:ecc49890c16a776a76feeee45decc7588d3a97f3e85d3f902798174637b0ce65`
+* Complete: through the browser, created bounded current-params job `f8b4e4a5-5055-4345-9f2a-e89843ea4b2f` from artifact `live-readonly-20260514-184119-finalized-20260517-075706Z`.
+  * Effective interval preview showed explicit input from `2026-05-17 13:39:00 GMT+6` to `2026-05-17 13:41:00 GMT+6`.
+  * Job detail persisted `start_ms=1779003540000` and `end_ms=1779003660000`.
+  * All six steps completed and report `4d330f43-2b3d-4be2-8c3c-ca49f8fed1b1` was generated.
+* Complete: report detail loaded both JSON and CSV through browser controls.
+* Complete: `Archive scratch DBs` ran from the job detail page and reported 2 deleted scratch files and 4 skipped sidecars.
+  * Remote filesystem confirmed `prepared-backtest.db` and `backtest.db` were gone.
+  * Remote filesystem confirmed `report.json` and `report.csv` remained.
+* Complete: through the browser, created large explicit job `1e0b42ea-fdb3-4776-8655-23ec10df4530`, confirmed the large interval, waited until `validate_replay_data` was running, and cancelled from the job detail page.
+  * Worker recorded `research command terminated after cancellation`.
+  * Job and downstream steps remained `cancelled`; no failed/blocked overwrite occurred.
+  * `docker top buba-paint-research-research-worker-1` showed only `buba-research-worker`; no `buba-paint` child remained.
+* Complete: Research > Machines returned to `Idle`, telemetry stayed non-stale, and the latest telemetry had 60 samples.
+* Complete: `buba-paint` was not touched. Before and after snapshots kept container IDs unchanged: `50003527ee0e`, `2deb6c87a582`, and `773286fe7eb7`.
+
+Known smoke note:
+
+* Job `7c8e48df-bb5e-4323-9f50-63d06a0db5e7` intentionally remains as blocked smoke evidence. It used a 10-minute interval that passed validation but failed `prepare_backtest_input` due a missing boundary price. The successful final smoke used the previously verified 2-minute interval.
+
+Verification:
+
+```bash
+cargo fmt --all --check
+cargo test -p buba-dashboard
+cd dashboard/client && npm test
+cd dashboard/client && npm run build
+python3 scripts/audit-docs.py
+python3 scripts/publish-research-images.py --dry-run
+python3 scripts/publish-research-images.py
+python3 scripts/deploy-machine.py --machine research --dry-run
+python3 scripts/deploy-machine.py --machine research
+git diff --check
+```
+
+## Phase 8: UI Handoff And Merge
+
+Status: retired after UI merge.
+
+Deliverables:
+
+* Created a temporary functional handoff for a frontend colleague.
+* Captured product goal, workflows, backend API contracts, permissions, page list, required states, fixture data, environment context, and acceptance tests.
+* Keep the handoff focused on required functionality and lifecycle coverage, not visual design.
+* Delete the temporary handoff doc after UI merge and move durable facts into stable docs.
+
+Observable results:
+
+* Research dashboard UI is merged in commit `bde037e`.
+* Temporary UI handoff document was removed.
+* Durable Research UI facts now live in `docs/system-architecture.md`.
+* Remaining Machines-page cleanup stays tracked in this implementation file until the route is removed or demoted.
 
 Verification:
 

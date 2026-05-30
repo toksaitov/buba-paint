@@ -17,11 +17,13 @@ import { Loading } from "../components/common/loading";
 import { Dialog } from "../components/ui/dialog";
 import { ConfirmDialog } from "../components/research/confirm-dialog";
 import { JsonViewer } from "../components/research/json-viewer";
+import { MachineReference } from "../components/research/machine-reference";
 import {
   useResearchArtifact,
   useResearchArtifactChecksums,
   useResearchArtifactManifest,
 } from "../hooks/use-research-artifacts";
+import { useResearchMachines } from "../hooks/use-research-machines";
 import { useResearchTransfers } from "../hooks/use-research-transfers";
 import { useResearchJobs } from "../hooks/use-research-jobs";
 import { useResearchReports } from "../hooks/use-research-reports";
@@ -65,6 +67,7 @@ export function ResearchArtifactDetailPage() {
   const transfersQuery = useResearchTransfers();
   const jobsQuery = useResearchJobs();
   const reportsQuery = useResearchReports();
+  const machinesQuery = useResearchMachines();
 
   const [editOpen, setEditOpen] = useState(false);
   const [verifyResult, setVerifyResult] = useState<
@@ -228,15 +231,11 @@ export function ResearchArtifactDetailPage() {
             },
             {
               label: "Source machine",
-              value: artifact.source_machine_id ? (
-                <Link
-                  to={`/research/machines/${encodeURIComponent(artifact.source_machine_id)}`}
-                  className="font-mono text-[11px] hover:underline"
-                >
-                  {artifact.source_machine_id}
-                </Link>
-              ) : (
-                "—"
+              value: (
+                <MachineReference
+                  machineId={artifact.source_machine_id}
+                  machines={machinesQuery.data?.machines ?? []}
+                />
               ),
             },
             { label: "Interval", value: intervalLabel },

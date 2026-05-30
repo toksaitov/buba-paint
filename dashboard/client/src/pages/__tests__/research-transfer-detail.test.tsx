@@ -15,20 +15,28 @@ vi.mock("../../hooks/use-research-transfers", () => ({
   useResearchTransfer: vi.fn(),
 }));
 
+vi.mock("../../hooks/use-research-machines", () => ({
+  useResearchMachines: vi.fn(() => ({ data: { machines: [] } })),
+}));
+
 vi.mock("../../components/common/loading", () => ({
   Loading: () => <div data-testid="loading">Loading</div>,
 }));
 
 import { ResearchTransferDetailPage } from "../research-transfer-detail";
+import { useResearchMachines } from "../../hooks/use-research-machines";
 import { useResearchTransfer } from "../../hooks/use-research-transfers";
 import { useAuthStore } from "../../stores/auth-store";
 import {
+  fixtureMachineLive,
+  fixtureMachineResearch,
   fixtureTransferRunning,
   fixtureTransferRetryable,
   fixtureTransferCompleted,
 } from "../../lib/research-fixtures";
 
 const mockUseTransfer = vi.mocked(useResearchTransfer);
+const mockUseMachines = vi.mocked(useResearchMachines);
 
 function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -41,6 +49,9 @@ beforeEach(() => {
     token: "tok",
     user: { id: "1", username: "admin", role: "admin" },
   });
+  mockUseMachines.mockReturnValue({
+    data: { machines: [fixtureMachineLive(), fixtureMachineResearch()] },
+  } as ReturnType<typeof useResearchMachines>);
 });
 
 describe("ResearchTransferDetailPage", () => {
@@ -107,5 +118,23 @@ describe("ResearchTransferDetailPage", () => {
     render(<ResearchTransferDetailPage />, { wrapper });
     const cancel = screen.getByRole("button", { name: /^cancel$/i });
     expect(cancel).toBeDisabled();
+  });
+
+  it("links research destinations but renders live sources as labels", () => {
+    mockUseTransfer.mockReturnValue({
+      data: fixtureTransferRunning(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchTransfer>);
+
+    render(<ResearchTransferDetailPage />, { wrapper });
+    const source = screen.getByText("fixture-live");
+    const destination = screen.getByText("fixture-research");
+
+    expect(source.closest("a")).toBeNull();
+    expect(destination.closest("a")).toHaveAttribute(
+      "href",
+      "/research/machines/fixture-research",
+    );
   });
 });

@@ -6,11 +6,11 @@ use tokio::sync::broadcast;
 
 use crate::db_reader::DbReader;
 use crate::error::AgentError;
-use crate::machine::{MachineSampler, SAMPLE_INTERVAL_MS, stat_runtime_db_files};
+use crate::machine::{MachineSampler, stat_runtime_db_files};
 use crate::process_manager::ProcessManager;
 use crate::types::{
-    MachineResponse, RealAccountSummary, RuntimeConfigResponse, SamplerHealth, ShadowSummary,
-    TradingAlert, TradingCapabilities, TradingControlCapability, TradingHealth, TradingRiskSummary,
+    MachineResponse, RealAccountSummary, RuntimeConfigResponse, ShadowSummary, TradingAlert,
+    TradingCapabilities, TradingControlCapability, TradingHealth, TradingRiskSummary,
     TradingSummary, WsMessage,
 };
 use crate::ws;
@@ -70,6 +70,7 @@ pub async fn get_runtime_config(
 #[allow(clippy::unused_async)]
 pub async fn get_machine(State(state): State<AppState>) -> Result<impl IntoResponse, AgentError> {
     let snapshot = state.machine.snapshot();
+    let sampler = snapshot.health();
     let runtime_db = stat_runtime_db_files(state.machine.runtime_db_path());
     Ok(Json(MachineResponse {
         host: state.machine.host().clone(),
@@ -77,11 +78,7 @@ pub async fn get_machine(State(state): State<AppState>) -> Result<impl IntoRespo
         current: snapshot.current,
         history: snapshot.history,
         runtime_db,
-        sampler: SamplerHealth {
-            sample_interval_ms: SAMPLE_INTERVAL_MS as u32,
-            samples_collected: snapshot.samples_collected,
-            last_error: snapshot.last_error,
-        },
+        sampler,
     }))
 }
 

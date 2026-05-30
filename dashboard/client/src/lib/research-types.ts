@@ -1,3 +1,9 @@
+import type {
+  MachineHostIdentity,
+  MachineSample,
+  MachineSamplerHealth,
+} from "./types";
+
 export const TRANSFER_STALE_MS = 30 * 60 * 1000;
 
 export type MachineRole = "live" | "research" | "controller";
@@ -84,6 +90,30 @@ export interface MachineHealthResponse {
   details: Record<string, unknown> | null;
   dependencies: ResearchMachineDependencyCounts;
   disabled: boolean;
+}
+
+export interface ResearchMachineTelemetryState {
+  machine_id: string;
+  worker_id: string;
+  worker_version: string | null;
+  worker_status: string;
+  host: MachineHostIdentity | null;
+  sampler: MachineSamplerHealth | null;
+  activity: Record<string, unknown> | null;
+  last_heartbeat_ms: number;
+  last_sample_ms: number | null;
+  last_error: string | null;
+  updated_at: number;
+}
+
+export interface MachineTelemetryResponse {
+  machine: ResearchMachine;
+  telemetry: ResearchMachineTelemetryState | null;
+  samples: MachineSample[];
+  dependencies: ResearchMachineDependencyCounts;
+  disabled: boolean;
+  stale: boolean;
+  stale_after_ms: number;
 }
 
 export interface ResearchArtifact {
@@ -221,6 +251,16 @@ export interface JobDetailResponse {
   job: ResearchJob;
   steps: ResearchJobStep[];
   events: ResearchJobEvent[];
+}
+
+export interface ArchiveScratchSummary {
+  deleted_paths: string[];
+  skipped_paths: string[];
+}
+
+export interface ArchiveScratchResponse extends JobDetailResponse {
+  report: ResearchReport;
+  archive: ArchiveScratchSummary;
 }
 
 export interface ResearchReport {
@@ -362,4 +402,5 @@ export type ResearchAction =
   | "clear_lease"
   | "resolve_blocker"
   | "append_event"
-  | "regenerate_report";
+  | "regenerate_report"
+  | "archive_scratch";

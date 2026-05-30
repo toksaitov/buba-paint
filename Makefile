@@ -3,7 +3,7 @@ SIDECAR_DIR := polymarket-sidecar
 COMMENT_POLICY := cargo run --quiet --manifest-path tools/rust-comment-policy/Cargo.toml --
 TS_COMMENT_AUDIT := node scripts/ts_comment_audit.mjs
 
-.PHONY: lint comment-audit docs-audit hot-path-audit live-low-latency-local live-docker-smoke live-runtime-profile live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run deploy-machine-dry-run sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
+.PHONY: lint comment-audit docs-audit hot-path-audit live-low-latency-local live-docker-smoke live-runtime-profile live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run deploy-machine-dry-run publish-research-images sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
 
 lint:
 	cargo fmt --all --check
@@ -65,6 +65,10 @@ docker-deploy-dry-run:
 DEPLOY_MACHINE_ARGS ?= --machine research
 deploy-machine-dry-run:
 	python3 scripts/deploy-machine.py $(DEPLOY_MACHINE_ARGS) --dry-run
+
+PUBLISH_RESEARCH_IMAGES_ARGS ?=
+publish-research-images:
+	python3 scripts/publish-research-images.py $(PUBLISH_RESEARCH_IMAGES_ARGS)
 
 test-fast:
 	cargo test --workspace --lib

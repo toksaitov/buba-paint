@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
@@ -95,10 +95,7 @@ export function Header({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { mode: themeMode, setMode: setThemeMode, theme } = useTheme();
   const armed = theme === "armed";
-
-  useEffect(() => {
-    if (isDesktop) setMobileMenuOpen(false);
-  }, [isDesktop]);
+  const effectiveMobileMenuOpen = !isDesktop && mobileMenuOpen;
 
   const cycleTheme = () => {
     const next =
@@ -325,12 +322,12 @@ export function Header({
             className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center p-2 transition-colors hover:bg-surface"
             title="More header controls"
             aria-label="More header controls"
-            aria-expanded={mobileMenuOpen}
+            aria-expanded={effectiveMobileMenuOpen}
             aria-controls="mobile-header-controls"
           >
             <MoreHorizontal size={16} />
           </button>
-          {mobileMenuOpen && (
+          {effectiveMobileMenuOpen && (
             <div
               id="mobile-header-controls"
               role="menu"

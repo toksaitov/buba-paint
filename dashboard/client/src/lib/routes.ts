@@ -145,9 +145,9 @@ export const dashboardRoutes: DashboardRouteMeta[] = [
     section: "Research",
     scope: "research",
     showContextStrip: true,
-    contextTitle: "Machines",
+    contextTitle: "Research Hosts",
     contextDescription:
-      "Research hosts, live sources, and worker heartbeat state.",
+      "Research host telemetry, worker health, and dependency context.",
     icon: Server,
   },
   {
