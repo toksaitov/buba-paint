@@ -12,8 +12,11 @@ import {
 import { Loading } from "../components/common/loading";
 import { ConfirmDialog } from "../components/research/confirm-dialog";
 import { EventStream } from "../components/research/event-stream";
+import { JobCloneDialog } from "../components/research/job-clone-dialog";
+import { JobRecoveryDiagnosis } from "../components/research/job-recovery-diagnosis";
 import { JsonViewer } from "../components/research/json-viewer";
 import { StepTimeline } from "../components/research/step-timeline";
+import { useResearchArtifacts } from "../hooks/use-research-artifacts";
 import { useResearchJob } from "../hooks/use-research-jobs";
 import { useResearchReports } from "../hooks/use-research-reports";
 import { useAuthStore } from "../stores/auth-store";
@@ -45,6 +48,7 @@ import {
 import type {
   AppendEventRequest,
   ArchiveScratchSummary,
+  CloneJobRequest,
   JobDetailResponse,
   ResearchAction,
 } from "../lib/research-types";
@@ -59,6 +63,7 @@ export function ResearchJobDetailPage() {
 
   const jobQuery = useResearchJob(id);
   const reportsQuery = useResearchReports();
+  const artifactsQuery = useResearchArtifacts();
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<ResearchAction | null>(
@@ -73,6 +78,7 @@ export function ResearchJobDetailPage() {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmArchiveScratchOpen, setConfirmArchiveScratchOpen] =
     useState(false);
+  const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
   const [archiveSummary, setArchiveSummary] =
     useState<ArchiveScratchSummary | null>(null);
 
@@ -100,13 +106,14 @@ export function ResearchJobDetailPage() {
   };
 
   const cloneMutation = useMutation({
-    mutationFn: () => cloneResearchJob(id, {}),
+    mutationFn: (req: CloneJobRequest) => cloneResearchJob(id, req),
     onMutate: () => {
       setPendingAction("clone");
       setActionError(null);
     },
     onSuccess: (res) => {
       setPendingAction(null);
+      setCloneDialogOpen(false);
       queryClient.invalidateQueries({ queryKey: ["research", "jobs"] });
       navigate(`/research/jobs/${encodeURIComponent(res.job.id)}`);
     },
@@ -180,7 +187,9 @@ export function ResearchJobDetailPage() {
       case "retry":
         return runJobMutation("retry", () => retryResearchJob(id));
       case "clone":
-        return cloneMutation.mutate();
+        cloneMutation.reset();
+        setActionError(null);
+        return setCloneDialogOpen(true);
       case "regenerate_report":
         return regenerateMutation.mutate();
       case "archive_scratch":
@@ -318,11 +327,15 @@ export function ResearchJobDetailPage() {
         </Banner>
       )}
 
+      <JobRecoveryDiagnosis job={job} steps={steps} events={events} />
+
       <SectionCard title="Actions">
         <div className="flex flex-wrap items-center gap-2">
           {allowed.map((action) => {
             const gate = getActionGateState(role, action);
-            const disabled = gate !== "enabled";
+            const canPreviewClone =
+              action === "clone" && gate !== "enabled";
+            const disabled = gate !== "enabled" && !canPreviewClone;
             const isPending = pendingAction === action;
             const tone =
               action === "cancel" || action === "delete" ? "danger" : "neutral";
@@ -334,7 +347,13 @@ export function ResearchJobDetailPage() {
                 tone={tone}
                 disabled={disabled || isPending}
                 state={isPending ? "pending" : "idle"}
-                title={disabled ? permissionHint(action) : undefined}
+                title={
+                  disabled
+                    ? permissionHint(action)
+                    : canPreviewClone
+                      ? "Open clone preview. Admin role required to submit."
+                      : undefined
+                }
                 onClick={() => handleJobAction(action)}
               >
                 {ACTION_LABELS[action]}
@@ -478,6 +497,29 @@ export function ResearchJobDetailPage() {
         }
         onConfirm={() => archiveScratchMutation.mutate()}
         onClose={() => setConfirmArchiveScratchOpen(false)}
+      />
+      <JobCloneDialog
+        open={cloneDialogOpen}
+        job={job}
+        artifacts={artifactsQuery.data?.artifacts ?? []}
+        loadingArtifacts={artifactsQuery.isLoading}
+        artifactError={
+          artifactsQuery.isError
+            ? ((artifactsQuery.error as Error)?.message ?? "Unknown error")
+            : null
+        }
+        role={role}
+        pending={cloneMutation.isPending}
+        error={
+          cloneMutation.isError
+            ? ((cloneMutation.error as Error)?.message ?? "Clone failed")
+            : null
+        }
+        onSubmit={(req) => cloneMutation.mutate(req)}
+        onClose={() => {
+          setCloneDialogOpen(false);
+          cloneMutation.reset();
+        }}
       />
     </div>
   );

@@ -32,7 +32,7 @@ The current active work is not generic machine CRUD. It is unified host observab
 
 Open work:
 
-* None in the current 7M-7S research observability/deploy/workflow sequence. Choose the next phase from the verified state below.
+* None in the current 7M-7T research observability/deploy/workflow/recovery sequence. Choose the next phase from the verified state below.
 
 ## Phase 1: Local Contracts And Tracking
 
@@ -240,7 +240,7 @@ python3 scripts/deploy-machine.py --machine research --dry-run
 
 ## Phase 7: Remote Multi-Machine Integration
 
-Status: complete through Phase 7S. Remote Compose baseline, worker heartbeat, first remote job smoke, artifact import API, remote artifact registration API, transfer lifecycle API, transfer worker execution, stale-transfer recovery, scratch archive safety, machine lifecycle API, report regeneration API, initial Research UI, shared host sampler extraction, research telemetry backend, Research Machines UI cleanup, remote telemetry smoke, registry-pinned research deploy, and browser-smoke workflow gap fixes are implemented and verified.
+Status: complete through Phase 7T. Remote Compose baseline, worker heartbeat, first remote job smoke, artifact import API, remote artifact registration API, transfer lifecycle API, transfer worker execution, stale-transfer recovery, scratch archive safety, machine lifecycle API, report regeneration API, initial Research UI, shared host sampler extraction, research telemetry backend, Research Machines UI cleanup, remote telemetry smoke, registry-pinned research deploy, browser-smoke workflow gap fixes, and blocked-run recovery UX are implemented and verified.
 
 Deliverables:
 
@@ -263,6 +263,7 @@ Deliverables:
 * Complete locally: replace the top-level Machines management page with research-host observability.
 * Complete locally: persist and expose research host telemetry through typed state, sample history, and the authenticated telemetry endpoint.
 * Complete remotely: switch the `testing` research deploy to registry-pinned private GHCR images.
+* Complete remotely: diagnose a blocked `prepare_backtest_input` run, clone it with an adjusted explicit interval through the browser, and verify the cloned job completes.
 
 Observable results:
 
@@ -281,9 +282,11 @@ Observable results:
 * Complete: research machine telemetry persists latest host identity, sampler health, worker activity, heartbeat metadata, and bounded CPU, memory, swap, disk, and load sample history; remote `testing` smoke is verified.
 * Complete: Research > Machines is read-only, research-role-only, and links to telemetry detail instead of exposing machine CRUD or lifecycle controls.
 * Complete remotely: `testing` Compose uses current digest-pinned private GHCR images:
-  * `ghcr.io/toksaitov/buba-paint-dashboard@sha256:1bda559f8da7feb91c774fb7e4d7242073b55866e13605b976ec44eab10dcb4d`
-  * `ghcr.io/toksaitov/buba-paint-research-worker@sha256:ecc49890c16a776a76feeee45decc7588d3a97f3e85d3f902798174637b0ce65`
+  * `ghcr.io/toksaitov/buba-paint-dashboard@sha256:2c9b14c29a7ade7ed98837564e22133ab461b9d4fd1a3158973b0bc48c8fe718`
+  * `ghcr.io/toksaitov/buba-paint-research-worker@sha256:8d616e4a448e929b6b33cc0fb8825aea38bf77994fd92a95e3efde5113996e62`
 * Complete: browser-created bounded jobs submit explicit `start_ms` and `end_ms`, completed reports can load JSON/CSV, scratch DBs can be archived from job detail, and UI cancellation terminates active child commands.
+* Complete: blocked and failed job detail pages show command stderr/stdout/status context, raw event/step JSON, stale-lease guidance, and recovery guidance that distinguishes retrying same inputs from cloning with edited inputs.
+* Complete: Job detail Clone is an edit/confirm flow with prefilled params, unknown-param preservation, interval safety guards, and admin-only submission.
 
 Verification:
 
@@ -825,6 +828,59 @@ python3 scripts/publish-research-images.py
 python3 scripts/deploy-machine.py --machine research --dry-run
 python3 scripts/deploy-machine.py --machine research
 git diff --check
+```
+
+### Phase 7T: Operator Recovery And Blocked-Run UX
+
+Status: complete.
+
+Goal:
+
+* Make blocked and failed research jobs understandable and recoverable from the dashboard without guessing.
+* Keep recovery operator-confirmed: no automatic retries and no automatic interval edits.
+* Reuse existing recovery APIs for retry, continue, step retry, stale lease clearing, blocker resolution, and clone.
+* Keep `buba-paint` untouched except for before and after safety checks during the remote smoke.
+
+Deliverables:
+
+* Complete locally: Job detail shows a recovery diagnosis panel for blocked, failed, retryable, and stale-lease steps.
+* Complete locally: diagnosis extracts command program, args, working directory, status code, stdout, stderr, step error, attempt count, timing, raw event details, and raw step state from persisted event and step JSON.
+* Complete locally: deterministic guidance distinguishes stale leases, transient retry candidates, retrying the same deterministic blocker, and `prepare_backtest_input` missing boundary prices.
+* Complete locally: Job detail Clone opens a confirmation/edit dialog instead of immediately mutating.
+* Complete locally: clone dialog pre-fills job type, artifact, priority, explicit interval, balance, `--set` overrides, sweep dimensions, and preserves unknown source params in an editable additional JSON field.
+* Complete locally: clone uses the same interval safety rules as New Job; invalid/reversed/missing/fallback-derived/large intervals are blocked or require confirmation.
+* Complete locally: observers can inspect diagnosis and clone params, but submit and other recovery mutations remain admin-only.
+* Complete locally: fixture data includes realistic `research command failed` event details with command output, stdout, stderr, and status.
+
+Final browser-controlled smoke results:
+
+* Complete: published and deployed digest-pinned research images to `testing`:
+  * dashboard `ghcr.io/toksaitov/buba-paint-dashboard@sha256:2c9b14c29a7ade7ed98837564e22133ab461b9d4fd1a3158973b0bc48c8fe718`
+  * worker `ghcr.io/toksaitov/buba-paint-research-worker@sha256:8d616e4a448e929b6b33cc0fb8825aea38bf77994fd92a95e3efde5113996e62`
+* Complete: opened blocked job `7c8e48df-bb5e-4323-9f50-63d06a0db5e7` on `testing`.
+* Complete: diagnosis showed `prepare_backtest_input`, command program and args, status code `1`, raw event JSON, raw step JSON, and stderr:
+  `missing_open_prices=1,missing_close_prices=1`
+* Complete: browser Clone flow preserved the source job type and created clone `dfd84955-5944-4db1-9f45-83e43eb8e7ad` with explicit local interval `2026-05-17 13:39` to `2026-05-17 13:41`.
+* Complete: cloned job persisted `start_ms=1779003540000` and `end_ms=1779003660000`.
+* Complete: all six cloned job steps completed and report `21022f09-95e1-4842-9598-4b41e29c1e3e` was generated.
+* Complete: report detail loaded both report JSON and CSV through browser controls.
+* Complete: Research > Machines > research returned to worker `Idle`, telemetry stayed non-stale, and authenticated telemetry returned 60 samples.
+* Complete: `testing` worker process list showed only `buba-research-worker`; no lingering `buba-paint` child process remained after the run.
+* Complete: `buba-paint` was not touched. Before and after snapshots kept container IDs unchanged: `50003527ee0e`, `2deb6c87a582`, and `773286fe7eb7`.
+
+Verification:
+
+```bash
+cd dashboard/client && npm run lint
+cd dashboard/client && npm test
+cd dashboard/client && npm run build
+cargo test -p buba-dashboard
+python3 scripts/audit-docs.py
+git diff --check
+python3 scripts/publish-research-images.py --dry-run
+python3 scripts/publish-research-images.py
+python3 scripts/deploy-machine.py --machine research --dry-run
+python3 scripts/deploy-machine.py --machine research
 ```
 
 ## Phase 8: UI Handoff And Merge

@@ -339,6 +339,7 @@ function buildEvent(
   jobId: string,
   level: "info" | "warn",
   status: string,
+  overrides: Partial<ResearchJobEvent> = {},
 ): ResearchJobEvent {
   return {
     id: `${jobId}-event-0`,
@@ -348,6 +349,7 @@ function buildEvent(
     level,
     message: `fixture job is ${status}`,
     details_json: JSON.stringify({ fixture: true, status }),
+    ...overrides,
   };
 }
 
@@ -413,19 +415,81 @@ export function fixtureJobBlocked(): JobDetailResponse {
       output: COMPLETED_OUT("verify_artifact"),
     }),
     buildStep(jobId, 1, "validate_replay_data", {
+      status: "completed",
+      started: true,
+      completed: true,
+      output: COMPLETED_OUT("validate_replay_data"),
+    }),
+    buildStep(jobId, 2, "validate_backtest_input", {
+      status: "completed",
+      started: true,
+      completed: true,
+      output: COMPLETED_OUT("validate_backtest_input"),
+    }),
+    buildStep(jobId, 3, "prepare_backtest_input", {
       status: "blocked",
       started: true,
-      error: "validation requires operator review",
+      error: "prepare_backtest_input command failed with status Some(1)",
     }),
-    buildStep(jobId, 2, "validate_backtest_input", { status: "queued" }),
-    buildStep(jobId, 3, "prepare_backtest_input", { status: "queued" }),
     buildStep(jobId, 4, "run_backtest", { status: "queued" }),
     buildStep(jobId, 5, "write_report", { status: "queued" }),
   ];
+  const job = buildJob(jobId, "current_params", "blocked", "fixture-artifact-available");
+  job.params_json = JSON.stringify({
+    artifact_id: "fixture-artifact-available",
+    start_ms: FIXTURE_INTERVAL_START_MS,
+    end_ms: FIXTURE_INTERVAL_END_MS,
+    balance: 200,
+    set: ["RISK=low"],
+    preserved_unknown: "keep me",
+  });
+  const blockedStep = steps[3];
+  const command = {
+    program: "buba-paint",
+    args: [
+      "prepare-backtest-input",
+      "--data",
+      "/research/artifacts/fixture-artifact-available/remote-runtime/paint.db",
+      "--start",
+      "2026-05-17T07:40:00.000Z",
+      "--end",
+      "2026-05-17T07:50:00.000Z",
+      "--output",
+      "/research/jobs/fixture-job-blocked/prepared-backtest.db",
+    ],
+    cwd: "/workspace",
+  };
+  const details = {
+    executor: "local_command",
+    step_kind: "prepare_backtest_input",
+    status: "failed",
+    command,
+    command_output: {
+      success: false,
+      status_code: 1,
+      stdout: "checked replay rows before prepare\n",
+      stderr:
+        "Error: input DB is not backtest-ready: missing_open_prices=1,missing_close_prices=1.",
+      cancelled: false,
+    },
+  };
   return {
-    job: buildJob(jobId, "current_params", "blocked", "fixture-artifact-available"),
+    job,
     steps,
-    events: [buildEvent(jobId, "warn", "blocked")],
+    events: [
+      buildEvent(jobId, "info", "command-started", {
+        id: `${jobId}-event-started`,
+        step_id: blockedStep.id,
+        message: "research command started",
+        details_json: JSON.stringify(command),
+      }),
+      buildEvent(jobId, "warn", "blocked", {
+        id: `${jobId}-event-failed`,
+        step_id: blockedStep.id,
+        message: "research command failed",
+        details_json: JSON.stringify(details),
+      }),
+    ],
   };
 }
 
@@ -463,10 +527,44 @@ export function fixtureJobFailed(): JobDetailResponse {
     }),
     buildStep(jobId, 5, "write_report", { status: "queued" }),
   ];
+  const job = buildJob(jobId, "sweep", "failed", "fixture-artifact-available");
+  job.params_json = JSON.stringify({
+    artifact_id: "fixture-artifact-available",
+    start_ms: FIXTURE_INTERVAL_START_MS,
+    end_ms: FIXTURE_INTERVAL_END_MS,
+    balance: 200,
+    set: ["RISK=medium"],
+    sweeps: ["SIZE=1,2"],
+    retained: true,
+  });
+  const failedStep = steps[4];
+  const details = {
+    executor: "local_command",
+    step_kind: "run_sweep",
+    status: "failed",
+    command: {
+      program: "buba-paint",
+      args: ["sweep", "--db", "/research/jobs/fixture-job-failed/backtest.db"],
+      cwd: "/workspace",
+    },
+    command_output: {
+      success: false,
+      status_code: 2,
+      stdout: "loaded sweep dimensions\n",
+      stderr: "backtest command exited 1",
+      cancelled: false,
+    },
+  };
   return {
-    job: buildJob(jobId, "sweep", "failed", "fixture-artifact-available"),
+    job,
     steps,
-    events: [buildEvent(jobId, "warn", "failed")],
+    events: [
+      buildEvent(jobId, "warn", "failed", {
+        step_id: failedStep.id,
+        message: "research command failed",
+        details_json: JSON.stringify(details),
+      }),
+    ],
   };
 }
 

@@ -47,9 +47,32 @@ interface SweepState extends BacktestState {
   sweeps: KeyValueRow[];
 }
 
+type ExportInitialValues = Partial<ExportState>;
+
+type BacktestInitialValues = Partial<BacktestState>;
+
+type SweepInitialValues = Partial<SweepState>;
+
+export interface JobCreateFormInitialValues {
+  type?: JobType;
+  priority?: number;
+  export?: ExportInitialValues;
+  backtest?: BacktestInitialValues;
+  sweep?: SweepInitialValues;
+  additionalParamsJson?: string;
+}
+
 interface JobCreateFormProps {
   artifacts: ResearchArtifact[];
   initialType?: JobType;
+  initialValues?: JobCreateFormInitialValues;
+  typeLocked?: boolean;
+  showPriority?: boolean;
+  showAdditionalParams?: boolean;
+  submitLabel?: string;
+  submitDisabled?: boolean;
+  submitDisabledReason?: string;
+  errorTitle?: string;
   pending: boolean;
   error: string | null;
   onSubmit: (req: CreateJobRequest) => void;
@@ -175,9 +198,62 @@ function buildBacktestParams(
   return params;
 }
 
+function parseAdditionalParams(value: string): {
+  params: Record<string, unknown>;
+  error: string | null;
+} {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { params: {}, error: null };
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (
+      parsed == null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
+      return {
+        params: {},
+        error: "Additional params must be a JSON object.",
+      };
+    }
+    return { params: parsed as Record<string, unknown>, error: null };
+  } catch (err) {
+    return {
+      params: {},
+      error: err instanceof Error ? err.message : "Invalid JSON.",
+    };
+  }
+}
+
+function mergeParams(
+  additional: Record<string, unknown>,
+  known: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...additional,
+    ...known,
+  };
+}
+
+function jobTypeName(type: JobType): string {
+  if (type === "export") return "Export";
+  if (type === "sweep") return "Sweep";
+  return "Backtest";
+}
+
 export function JobCreateForm({
   artifacts,
   initialType = "current_params",
+  initialValues,
+  typeLocked = false,
+  showPriority = false,
+  showAdditionalParams = false,
+  submitLabel = "Create job",
+  submitDisabled = false,
+  submitDisabledReason,
+  errorTitle = "Job creation failed",
   pending,
   error,
   onSubmit,
@@ -188,41 +264,57 @@ export function JobCreateForm({
     [artifacts],
   );
 
-  const [type, setType] = useState<JobType>(initialType);
+  const startingType = initialValues?.type ?? initialType;
+  const [type, setType] = useState<JobType>(startingType);
+  const [priority, setPriority] = useState(
+    String(initialValues?.priority ?? 0),
+  );
+  const [additionalParamsJson, setAdditionalParamsJson] = useState(
+    initialValues?.additionalParamsJson ?? "",
+  );
 
   const [exportState, setExportState] = useState<ExportState>({
-    source_db_path: "",
-    run_mode: "live_readonly",
-    source_state: "stopped",
-    interval_start_iso: "",
-    interval_end_iso: "",
-    log_paths: "",
-    dry_run: true,
-    confirm_export: false,
+    source_db_path: initialValues?.export?.source_db_path ?? "",
+    run_mode: initialValues?.export?.run_mode ?? "live_readonly",
+    source_state: initialValues?.export?.source_state ?? "stopped",
+    interval_start_iso: initialValues?.export?.interval_start_iso ?? "",
+    interval_end_iso: initialValues?.export?.interval_end_iso ?? "",
+    log_paths: initialValues?.export?.log_paths ?? "",
+    dry_run: initialValues?.export?.dry_run ?? true,
+    confirm_export: initialValues?.export?.confirm_export ?? false,
   });
 
   const initialArtifactId = availableArtifacts[0]?.id ?? "";
 
   const [backtestState, setBacktestState] = useState<BacktestState>({
-    artifact_id: initialArtifactId,
-    data_db_path: "",
-    start_iso: "",
-    end_iso: "",
-    balance: "200",
-    confirm_interval: false,
-    setOverrides: [],
+    artifact_id: initialValues?.backtest?.artifact_id ?? initialArtifactId,
+    data_db_path: initialValues?.backtest?.data_db_path ?? "",
+    start_iso: initialValues?.backtest?.start_iso ?? "",
+    end_iso: initialValues?.backtest?.end_iso ?? "",
+    balance: initialValues?.backtest?.balance ?? "200",
+    confirm_interval: initialValues?.backtest?.confirm_interval ?? false,
+    setOverrides: initialValues?.backtest?.setOverrides ?? [],
   });
 
   const [sweepState, setSweepState] = useState<SweepState>({
-    artifact_id: initialArtifactId,
-    data_db_path: "",
-    start_iso: "",
-    end_iso: "",
-    balance: "200",
-    confirm_interval: false,
-    setOverrides: [],
-    sweeps: [],
+    artifact_id: initialValues?.sweep?.artifact_id ?? initialArtifactId,
+    data_db_path: initialValues?.sweep?.data_db_path ?? "",
+    start_iso: initialValues?.sweep?.start_iso ?? "",
+    end_iso: initialValues?.sweep?.end_iso ?? "",
+    balance: initialValues?.sweep?.balance ?? "200",
+    confirm_interval: initialValues?.sweep?.confirm_interval ?? false,
+    setOverrides: initialValues?.sweep?.setOverrides ?? [],
+    sweeps: initialValues?.sweep?.sweeps ?? [],
   });
+
+  const additionalParams = useMemo(
+    () => parseAdditionalParams(additionalParamsJson),
+    [additionalParamsJson],
+  );
+  const priorityNumber = Number(priority);
+  const priorityValid =
+    !showPriority ||
+    (Number.isInteger(priorityNumber) && priority.trim().length > 0);
 
   const exportBlocked = exportState.run_mode === "live_trading";
   const exportConfirmed = exportState.dry_run || exportState.confirm_export;
@@ -262,18 +354,25 @@ export function JobCreateForm({
     Number(sweepState.balance) > 0;
 
   const isValid =
-    type === "export"
+    additionalParams.error == null &&
+    priorityValid &&
+    (type === "export"
       ? exportValid
       : type === "current_params"
         ? backtestValid
-        : sweepValid;
+        : sweepValid);
 
   const submit = () => {
-    if (!isValid || pending) return;
+    if (!isValid || pending || submitDisabled) return;
+    const priorityPayload = showPriority ? { priority: priorityNumber } : {};
     if (type === "export") {
       onSubmit({
         job_type: "export",
-        params: buildExportParams(exportState),
+        ...priorityPayload,
+        params: mergeParams(
+          additionalParams.params,
+          buildExportParams(exportState),
+        ),
       });
       return;
     }
@@ -281,17 +380,25 @@ export function JobCreateForm({
       onSubmit({
         job_type: "current_params",
         artifact_id: backtestState.artifact_id,
-        params: buildBacktestParams(backtestState, backtestArtifact),
+        ...priorityPayload,
+        params: mergeParams(
+          additionalParams.params,
+          buildBacktestParams(backtestState, backtestArtifact),
+        ),
       });
       return;
     }
-    const sweepParams = buildBacktestParams(sweepState, sweepArtifact);
+    const sweepParams = mergeParams(
+      additionalParams.params,
+      buildBacktestParams(sweepState, sweepArtifact),
+    );
     sweepParams.sweeps = sweepRows.map(
       (row) => `${row.key.trim()}=${row.value.trim()}`,
     );
     onSubmit({
       job_type: "sweep",
       artifact_id: sweepState.artifact_id,
+      ...priorityPayload,
       params: sweepParams,
     });
   };
@@ -305,7 +412,12 @@ export function JobCreateForm({
       }}
     >
       <FormField label="Job type">
-        {() => (
+        {() =>
+          typeLocked ? (
+            <div className="border border-border bg-surface px-2 py-1.5 text-sm">
+              {jobTypeName(type)}
+            </div>
+          ) : (
           <Segment
             value={type}
             onChange={(value) => setType(value as JobType)}
@@ -316,11 +428,25 @@ export function JobCreateForm({
             ]}
             ariaLabel="Job type"
           />
-        )}
+          )
+        }
       </FormField>
 
+      {showPriority && (
+        <FormField label="Priority" hint="Integer queue priority">
+          {({ id }) => (
+            <Input
+              id={id}
+              value={priority}
+              inputMode="numeric"
+              onChange={(event) => setPriority(event.currentTarget.value)}
+            />
+          )}
+        </FormField>
+      )}
+
       {error && (
-        <Banner tone="danger" title="Job creation failed">
+        <Banner tone="danger" title={errorTitle}>
           {error}
         </Banner>
       )}
@@ -529,6 +655,35 @@ export function JobCreateForm({
         </FormField>
       )}
 
+      {showAdditionalParams && (
+        <FormField
+          label="Additional params JSON"
+          hint="Unknown source params are preserved here. Known form fields override duplicate keys."
+        >
+          {({ id }) => (
+            <div className="space-y-2">
+              <Textarea
+                id={id}
+                value={additionalParamsJson}
+                onChange={(event) =>
+                  setAdditionalParamsJson(event.currentTarget.value)
+                }
+                minRows={5}
+              />
+              {additionalParams.error && (
+                <div className="text-[12px] text-accent-red">
+                  {additionalParams.error}
+                </div>
+              )}
+            </div>
+          )}
+        </FormField>
+      )}
+
+      {submitDisabled && submitDisabledReason && (
+        <div className="text-[12px] text-muted">{submitDisabledReason}</div>
+      )}
+
       <div className="flex justify-end gap-2">
         {onCancel && (
           <Button onClick={onCancel} disabled={pending}>
@@ -538,10 +693,10 @@ export function JobCreateForm({
         <Button
           type="submit"
           tone="accent"
-          disabled={!isValid || pending}
+          disabled={!isValid || pending || submitDisabled}
           state={pending ? "pending" : "idle"}
         >
-          Create job
+          {submitLabel}
         </Button>
       </div>
     </form>
