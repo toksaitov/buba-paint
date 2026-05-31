@@ -79,6 +79,13 @@ fn test_research_routes() -> Router<AppState> {
         .merge(test_artifact_routes())
         .merge(test_transfer_routes())
         .merge(test_job_routes())
+        .merge(test_template_routes())
+        .route("/api/research/queue", get(research::get_queue))
+        .route("/api/research/retention", get(research::get_retention))
+        .route(
+            "/api/research/retention/archive",
+            post(research::archive_retention),
+        )
         .merge(test_report_routes())
 }
 
@@ -208,6 +215,29 @@ fn test_job_routes() -> Router<AppState> {
         .route(
             "/api/research/jobs/{id}/events",
             post(research::append_job_event),
+        )
+}
+
+/// Build reusable job template routes used by API tests.
+fn test_template_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/research/job-templates",
+            get(research::list_job_templates).post(research::create_job_template),
+        )
+        .route(
+            "/api/research/job-templates/{id}",
+            get(research::get_job_template)
+                .patch(research::update_job_template)
+                .delete(research::delete_job_template),
+        )
+        .route(
+            "/api/research/job-templates/{id}/archive",
+            post(research::archive_job_template),
+        )
+        .route(
+            "/api/research/job-templates/{id}/restore",
+            post(research::restore_job_template),
         )
 }
 
@@ -1442,6 +1472,142 @@ async fn admin_can_clone_job_with_provenance() {
     });
 }
 
+/// Verifies reusable job templates support admin mutation, observer reads, and job provenance.
+#[tokio::test]
+async fn job_template_api_crud_permissions_and_usage() {
+    let (app, db) = test_app();
+    let admin = admin_token(&db).await;
+    let observer = observer_token(&db).await;
+    let artifact = db
+        .create_research_artifact(
+            Some("live"),
+            "readonly_run",
+            "available",
+            Some("live_readonly"),
+            Some("/tmp/artifact/manifest.json"),
+        )
+        .await
+        .unwrap();
+
+    let created = app
+        .clone()
+        .oneshot(auth_json_post(
+            "/api/research/job-templates",
+            &admin,
+            &serde_json::json!({
+                "name": "Bounded smoke",
+                "description": "short current params",
+                "job_type": "current_params",
+                "artifact_id": artifact.id,
+                "priority": 4,
+                "params": {"start_ms": 1, "end_ms": 2, "balance": 200}
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let template_body = json_body(created).await;
+    let template_id = template_body["template"]["id"].as_str().unwrap();
+
+    let observer_list = app
+        .clone()
+        .oneshot(auth_get("/api/research/job-templates", &observer))
+        .await
+        .unwrap();
+    let observer_create = app
+        .clone()
+        .oneshot(auth_json_post(
+            "/api/research/job-templates",
+            &observer,
+            &serde_json::json!({
+                "name": "Observer template",
+                "job_type": "current_params",
+                "params": {}
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(observer_list.status(), StatusCode::OK);
+    assert_eq!(observer_create.status(), StatusCode::FORBIDDEN);
+
+    let job_body = json_body(
+        app.clone()
+            .oneshot(auth_json_post(
+                "/api/research/jobs",
+                &admin,
+                &serde_json::json!({
+                    "job_type": "current_params",
+                    "artifact_id": artifact.id,
+                    "template_id": template_id,
+                    "priority": 8,
+                    "params": {"start_ms": 10, "end_ms": 20, "balance": 250}
+                }),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let template_after_use = json_body(
+        app.clone()
+            .oneshot(auth_get(
+                &format!("/api/research/job-templates/{template_id}"),
+                &admin,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(job_body["job"]["priority"], 8);
+    assert_eq!(
+        job_body["events"][0]["message"],
+        "created from research job template"
+    );
+    assert_eq!(template_after_use["template"]["usage_count"], 1);
+
+    let archived = app
+        .clone()
+        .oneshot(auth_post(
+            &format!("/api/research/job-templates/{template_id}/archive"),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(archived.status(), StatusCode::OK);
+    let archived_job = app
+        .clone()
+        .oneshot(auth_json_post(
+            "/api/research/jobs",
+            &admin,
+            &serde_json::json!({
+                "job_type": "current_params",
+                "artifact_id": artifact.id,
+                "template_id": template_id,
+                "params": {"start_ms": 10, "end_ms": 20}
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(archived_job.status(), StatusCode::BAD_REQUEST);
+
+    let restored = app
+        .clone()
+        .oneshot(auth_post(
+            &format!("/api/research/job-templates/{template_id}/restore"),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(restored.status(), StatusCode::OK);
+    let deleted = app
+        .oneshot(auth_delete(
+            &format!("/api/research/job-templates/{template_id}"),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::OK);
+}
+
 /// Verifies admins can retry, resolve, cancel, and continue individual steps.
 #[tokio::test]
 async fn admin_can_recover_and_cancel_individual_steps() {
@@ -2069,6 +2235,141 @@ async fn admin_can_archive_completed_job_scratch_dbs() {
             .len()
             >= 6
     );
+}
+
+/// Verifies queue and retention endpoints summarize attention and archive-only candidates.
+#[tokio::test]
+async fn queue_and_retention_endpoints_summarize_operator_state() {
+    let (app, db) = test_app();
+    let admin = admin_token(&db).await;
+    let observer = observer_token(&db).await;
+    let admin_user = db.get_user_by_username("admin").await.unwrap().unwrap();
+    db.set_research_machine_status("research", "disabled")
+        .await
+        .unwrap();
+    let artifact_dir = artifact_fixture();
+    let artifact = db
+        .create_research_artifact(
+            Some("live"),
+            "readonly_run",
+            "available",
+            Some("live_readonly"),
+            Some(artifact_dir.path().join("manifest.json").to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+    let params = serde_json::json!({
+        "start": "1970-01-01T00:00:01Z",
+        "end": "1970-01-01T00:00:02Z"
+    });
+    let completed = db
+        .create_research_job(
+            "current_params",
+            Some(&artifact.id),
+            &admin_user.id,
+            0,
+            Some(&params.to_string()),
+        )
+        .await
+        .unwrap();
+    complete_all_job_steps(&db, "worker-retention").await;
+    let job_root = std::env::temp_dir().join("jobs").join(&completed.id);
+    std::fs::create_dir_all(&job_root).unwrap();
+    let prepared = job_root.join("prepared-backtest.db");
+    let backtest = job_root.join("backtest.db");
+    let report_json = job_root.join("report.json");
+    let report_csv = job_root.join("report.csv");
+    std::fs::write(&prepared, b"scratch").unwrap();
+    std::fs::write(&backtest, b"scratch").unwrap();
+    std::fs::write(&report_json, r#"{"schema_version":1}"#).unwrap();
+    std::fs::write(&report_csv, "step,status\n").unwrap();
+    let report = db
+        .create_or_update_research_report(&crate::db::ResearchReportRecord {
+            job_id: &completed.id,
+            artifact_id: Some(&artifact.id),
+            title: "Retention report",
+            status: "available",
+            summary_json: Some(r#"{"schema_version":1}"#),
+            report_path: Some(report_json.to_str().unwrap()),
+            csv_path: Some(report_csv.to_str().unwrap()),
+        })
+        .await
+        .unwrap();
+    db.create_research_job("export", None, &admin_user.id, 0, None)
+        .await
+        .unwrap();
+    let transfer = db
+        .create_artifact_transfer(&crate::db::ArtifactTransferRecord {
+            artifact_id: &artifact.id,
+            source_machine_id: None,
+            dest_machine_id: None,
+            bytes_total: Some(100),
+        })
+        .await
+        .unwrap();
+    db.update_artifact_transfer_progress(
+        &transfer.id,
+        "failed",
+        Some(10),
+        Some(100),
+        Some("failed"),
+        Some("checksum mismatch"),
+    )
+    .await
+    .unwrap();
+
+    let queue = json_body(
+        app.clone()
+            .oneshot(auth_get("/api/research/queue", &observer))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let retention = json_body(
+        app.clone()
+            .oneshot(auth_get("/api/research/retention", &observer))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let forbidden = app
+        .clone()
+        .oneshot(auth_json_post(
+            "/api/research/retention/archive",
+            &observer,
+            &serde_json::json!({"job_ids": [completed.id]}),
+        ))
+        .await
+        .unwrap();
+    let archived = json_body(
+        app.oneshot(auth_json_post(
+            "/api/research/retention/archive",
+            &admin,
+            &serde_json::json!({
+                "job_ids": [completed.id],
+                "report_ids": [report.id],
+                "artifact_ids": [artifact.id]
+            }),
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+
+    assert_eq!(queue["counts"]["jobs_waiting"], 1);
+    assert_eq!(queue["counts"]["transfers_attention"], 1);
+    assert_eq!(queue["counts"]["disabled_hosts"], 1);
+    assert_eq!(retention["totals"]["jobs"], 1);
+    assert_eq!(retention["totals"]["reports"], 1);
+    assert_eq!(retention["totals"]["artifacts"], 1);
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+    assert_eq!(archived["jobs"][0]["status"], "archived");
+    assert_eq!(archived["reports"][0]["status"], "archived");
+    assert_eq!(archived["artifacts"][0]["status"], "archived");
+    assert!(!prepared.exists());
+    assert!(!backtest.exists());
+    assert!(report_json.exists());
+    assert!(report_csv.exists());
 }
 
 /// Verifies scratch archival rejects unsafe or premature lifecycle states.

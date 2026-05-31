@@ -16,6 +16,11 @@ import type {
   RegenerateReportResponse,
   RegisterArtifactRequest,
   RegisterArtifactResponse,
+  ResearchJobTemplate,
+  ResearchQueueResponse,
+  ResearchRetentionResponse,
+  RetentionArchiveRequest,
+  RetentionArchiveResponse,
   ResearchArtifact,
   ResearchJob,
   ResearchJobEvent,
@@ -25,6 +30,7 @@ import type {
   TransferProgressRequest,
   UpdateArtifactRequest,
   UpdateJobRequest,
+  UpsertJobTemplateRequest,
   UpdateMachineRequest,
   UpdateReportRequest,
   VerifyArtifactResponse,
@@ -235,6 +241,63 @@ export async function createResearchJob(
   req: CreateJobRequest,
 ): Promise<JobDetailResponse> {
   return post("/api/research/jobs", req);
+}
+
+export async function listResearchJobTemplates(): Promise<{
+  templates: ResearchJobTemplate[];
+}> {
+  return get("/api/research/job-templates");
+}
+
+export async function createResearchJobTemplate(
+  req: UpsertJobTemplateRequest,
+): Promise<{ template: ResearchJobTemplate }> {
+  return post("/api/research/job-templates", req);
+}
+
+export async function getResearchJobTemplate(
+  id: string,
+): Promise<{ template: ResearchJobTemplate }> {
+  return get(`/api/research/job-templates/${encodeURIComponent(id)}`);
+}
+
+export async function updateResearchJobTemplate(
+  id: string,
+  req: UpsertJobTemplateRequest,
+): Promise<{ template: ResearchJobTemplate }> {
+  return patch(`/api/research/job-templates/${encodeURIComponent(id)}`, req);
+}
+
+export async function archiveResearchJobTemplate(
+  id: string,
+): Promise<{ template: ResearchJobTemplate }> {
+  return post(`/api/research/job-templates/${encodeURIComponent(id)}/archive`);
+}
+
+export async function restoreResearchJobTemplate(
+  id: string,
+): Promise<{ template: ResearchJobTemplate }> {
+  return post(`/api/research/job-templates/${encodeURIComponent(id)}/restore`);
+}
+
+export async function deleteResearchJobTemplate(
+  id: string,
+): Promise<{ template: ResearchJobTemplate }> {
+  return del(`/api/research/job-templates/${encodeURIComponent(id)}`);
+}
+
+export async function getResearchQueue(): Promise<ResearchQueueResponse> {
+  return get("/api/research/queue");
+}
+
+export async function getResearchRetention(): Promise<ResearchRetentionResponse> {
+  return get("/api/research/retention");
+}
+
+export async function archiveResearchRetention(
+  req: RetentionArchiveRequest,
+): Promise<RetentionArchiveResponse> {
+  return post("/api/research/retention/archive", req);
 }
 
 export async function getResearchJob(id: string): Promise<JobDetailResponse> {

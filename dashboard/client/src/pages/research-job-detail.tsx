@@ -4,18 +4,23 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Banner,
   Button,
+  FormField,
+  Input,
   KeyValueList,
   RelativeTime,
   SectionCard,
   StatusChip,
+  Textarea,
 } from "../components/ui/dashboard-primitives";
 import { Loading } from "../components/common/loading";
 import { ConfirmDialog } from "../components/research/confirm-dialog";
 import { EventStream } from "../components/research/event-stream";
 import { JobCloneDialog } from "../components/research/job-clone-dialog";
+import { parseRecord } from "../components/research/job-form-values";
 import { JobRecoveryDiagnosis } from "../components/research/job-recovery-diagnosis";
 import { JsonViewer } from "../components/research/json-viewer";
 import { StepTimeline } from "../components/research/step-timeline";
+import { Dialog } from "../components/ui/dialog";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
 import { useResearchJob } from "../hooks/use-research-jobs";
 import { useResearchReports } from "../hooks/use-research-reports";
@@ -28,6 +33,7 @@ import {
   clearResearchStepLease,
   cloneResearchJob,
   continueResearchJob,
+  createResearchJobTemplate,
   deleteResearchJob,
   pauseResearchJob,
   regenerateResearchJobReport,
@@ -51,6 +57,7 @@ import type {
   CloneJobRequest,
   JobDetailResponse,
   ResearchAction,
+  ResearchJob,
 } from "../lib/research-types";
 import { humanize } from "../lib/utils";
 
@@ -79,6 +86,7 @@ export function ResearchJobDetailPage() {
   const [confirmArchiveScratchOpen, setConfirmArchiveScratchOpen] =
     useState(false);
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [archiveSummary, setArchiveSummary] =
     useState<ArchiveScratchSummary | null>(null);
 
@@ -162,6 +170,30 @@ export function ResearchJobDetailPage() {
     onError: (err: Error) => {
       setPendingAction(null);
       setActionError(err.message);
+    },
+  });
+
+  const saveTemplateMutation = useMutation({
+    mutationFn: (req: { name: string; description?: string }) => {
+      const job = jobQuery.data?.job;
+      if (!job || (job.job_type !== "current_params" && job.job_type !== "sweep")) {
+        throw new Error("Only backtest and sweep jobs can be saved as templates.");
+      }
+      const jobType = job.job_type;
+      return createResearchJobTemplate({
+        name: req.name,
+        description: req.description,
+        job_type: jobType,
+        artifact_id: job.artifact_id ?? undefined,
+        priority: job.priority,
+        params: parseRecord(job.params_json),
+      });
+    },
+    onSuccess: () => {
+      setSaveTemplateOpen(false);
+      queryClient.invalidateQueries({
+        queryKey: ["research", "job-templates"],
+      });
     },
   });
 
@@ -270,6 +302,9 @@ export function ResearchJobDetailPage() {
     has_reports: hasReports,
   });
   const terminal = isJobTerminal(job.status);
+  const canSaveTemplate =
+    role === "admin" &&
+    (job.job_type === "current_params" || job.job_type === "sweep");
 
   const blockedStep = steps.find((s) => s.status === "blocked");
   const failedStep =
@@ -360,6 +395,21 @@ export function ResearchJobDetailPage() {
               </Button>
             );
           })}
+          <Button
+            size="sm"
+            disabled={!canSaveTemplate}
+            title={
+              canSaveTemplate
+                ? undefined
+                : "Admin role and a backtest or sweep job are required."
+            }
+            onClick={() => {
+              saveTemplateMutation.reset();
+              setSaveTemplateOpen(true);
+            }}
+          >
+            Save as template
+          </Button>
           {!allowed.includes("delete") && hasReports && terminal && (
             <span className="text-[11px] text-muted">
               Delete unavailable: a report references this job. Delete the
@@ -521,6 +571,101 @@ export function ResearchJobDetailPage() {
           cloneMutation.reset();
         }}
       />
+      <SaveTemplateDialog
+        open={saveTemplateOpen}
+        job={job}
+        pending={saveTemplateMutation.isPending}
+        error={
+          saveTemplateMutation.isError
+            ? ((saveTemplateMutation.error as Error)?.message ??
+              "Could not save template")
+            : null
+        }
+        onSubmit={(req) => saveTemplateMutation.mutate(req)}
+        onClose={() => {
+          setSaveTemplateOpen(false);
+          saveTemplateMutation.reset();
+        }}
+      />
     </div>
+  );
+}
+
+interface SaveTemplateDialogProps {
+  open: boolean;
+  job: ResearchJob;
+  pending: boolean;
+  error: string | null;
+  onSubmit: (req: { name: string; description?: string }) => void;
+  onClose: () => void;
+}
+
+function SaveTemplateDialog({
+  open,
+  job,
+  pending,
+  error,
+  onSubmit,
+  onClose,
+}: SaveTemplateDialogProps) {
+  const [name, setName] = useState(`Template from ${job.id.slice(0, 8)}`);
+  const [description, setDescription] = useState("");
+  const canSubmit = name.trim().length > 0 && !pending;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={pending ? () => undefined : onClose}
+      title="Save job as template"
+      description="Stores shared defaults for future backtest or sweep jobs."
+    >
+      <div className="space-y-3">
+        {error && (
+          <Banner tone="danger" title="Template save failed">
+            {error}
+          </Banner>
+        )}
+        <FormField label="Name" required>
+          {({ id }) => (
+            <Input
+              id={id}
+              value={name}
+              onChange={(event) => setName(event.currentTarget.value)}
+            />
+          )}
+        </FormField>
+        <FormField label="Description" hint="Optional">
+          {({ id }) => (
+            <Textarea
+              id={id}
+              value={description}
+              onChange={(event) => setDescription(event.currentTarget.value)}
+              minRows={3}
+            />
+          )}
+        </FormField>
+        <div className="text-[12px] text-muted">
+          Job {job.id} · {jobTypeLabel(job.job_type)} · priority {job.priority}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose} disabled={pending}>
+            Cancel
+          </Button>
+          <Button
+            tone="accent"
+            state={pending ? "pending" : "idle"}
+            disabled={!canSubmit}
+            onClick={() =>
+              onSubmit({
+                name: name.trim(),
+                description: description.trim() || undefined,
+              })
+            }
+          >
+            Save template
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   );
 }

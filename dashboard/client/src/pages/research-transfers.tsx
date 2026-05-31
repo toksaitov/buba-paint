@@ -30,6 +30,7 @@ import type {
   CreateTransferRequest,
   TransferStatus,
 } from "../lib/research-types";
+import { TRANSFER_STALE_MS } from "../lib/research-types";
 import { formatBytes, humanize } from "../lib/utils";
 
 const ALL_STATUSES: TransferStatus[] = [
@@ -50,6 +51,27 @@ const DEFAULT_FILTER: TransferStatus[] = [
   "failed",
 ];
 
+const PRESET_OPTIONS = [
+  { value: "all", label: "All transfers" },
+  { value: "active", label: "Active" },
+  { value: "attention", label: "Attention" },
+  { value: "completed", label: "Completed" },
+  { value: "stale", label: "Stale" },
+  { value: "checksum_failed", label: "Checksum failed" },
+  { value: "paused", label: "Paused" },
+  { value: "cancelled", label: "Cancelled" },
+] as const;
+
+type TransferPreset = (typeof PRESET_OPTIONS)[number]["value"];
+
+const SORT_OPTIONS = [
+  { value: "updated_desc", label: "Updated" },
+  { value: "created_desc", label: "Created" },
+  { value: "progress_desc", label: "Progress" },
+] as const;
+
+type TransferSort = (typeof SORT_OPTIONS)[number]["value"];
+
 export function ResearchTransfersPage() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === "admin";
@@ -58,14 +80,41 @@ export function ResearchTransfersPage() {
   const machinesQuery = useResearchMachines();
   const [active, setActive] = useState<string[]>([...DEFAULT_FILTER]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [preset, setPreset] = useState<TransferPreset>("active");
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<TransferSort>("updated_desc");
 
   const transfersData = transfersQuery.data?.transfers;
+  const nowMs = transfersQuery.dataUpdatedAt;
   const filtered = useMemo(
-    () =>
-      [...(transfersData ?? [])]
+    () => {
+      const needle = search.trim().toLowerCase();
+      return [...(transfersData ?? [])]
         .filter((t) => active.includes(t.status))
-        .sort((a, b) => b.updated_at - a.updated_at),
-    [transfersData, active],
+        .filter((t) => transferPresetMatches(preset, t, nowMs))
+        .filter((t) => {
+          if (!needle) return true;
+          return [
+            t.id,
+            t.artifact_id,
+            t.status,
+            t.source_machine_id ?? "",
+            t.dest_machine_id ?? "",
+            t.error ?? "",
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(needle);
+        })
+        .sort((a, b) => {
+          if (sortKey === "created_desc") return b.created_at - a.created_at;
+          if (sortKey === "progress_desc") {
+            return transferRatio(b) - transferRatio(a);
+          }
+          return b.updated_at - a.updated_at;
+        });
+    },
+    [transfersData, active, preset, nowMs, search, sortKey],
   );
 
   if (transfersQuery.isLoading) {
@@ -84,16 +133,46 @@ export function ResearchTransfersPage() {
       <SectionCard
         title="All transfers"
         toolbar={
-          <Button
-            size="sm"
-            tone="accent"
-            iconLeft={<Plus size={14} />}
-            onClick={() => setCreateOpen(true)}
-            disabled={!isAdmin}
-            title={isAdmin ? undefined : "Admin role required."}
-          >
-            New transfer
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              aria-label="Transfer preset"
+              value={preset}
+              onChange={(event) =>
+                setPreset(event.currentTarget.value as TransferPreset)
+              }
+              className="border border-border bg-bg px-2 py-1 text-[11px]"
+            >
+              {PRESET_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Transfer sort"
+              value={sortKey}
+              onChange={(event) =>
+                setSortKey(event.currentTarget.value as TransferSort)
+              }
+              className="border border-border bg-bg px-2 py-1 text-[11px]"
+            >
+              {SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  Sort: {opt.label}
+                </option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              tone="accent"
+              iconLeft={<Plus size={14} />}
+              onClick={() => setCreateOpen(true)}
+              disabled={!isAdmin}
+              title={isAdmin ? undefined : "Admin role required."}
+            >
+              New transfer
+            </Button>
+          </div>
         }
       >
         <StatusFilter
@@ -104,6 +183,14 @@ export function ResearchTransfersPage() {
           toneFor={(s) => transferTone(s as TransferStatus)}
           ariaLabel="Transfer status filter"
         />
+        <div className="mb-3 max-w-md">
+          <Input
+            aria-label="Search transfers"
+            value={search}
+            onChange={(event) => setSearch(event.currentTarget.value)}
+            placeholder="Search transfer, artifact, machine"
+          />
+        </div>
         {filtered.length === 0 ? (
           <StateEmpty message="No transfers match the selected filters." />
         ) : (
@@ -203,6 +290,49 @@ export function ResearchTransfersPage() {
       />
     </div>
   );
+}
+
+function transferRatio(transfer: {
+  bytes_total: number | null;
+  bytes_done: number;
+}): number {
+  return transfer.bytes_total && transfer.bytes_total > 0
+    ? transfer.bytes_done / transfer.bytes_total
+    : 0;
+}
+
+function transferPresetMatches(
+  preset: TransferPreset,
+  transfer: {
+    status: TransferStatus;
+    updated_at: number;
+    checksum_status: string | null;
+  },
+  now: number,
+): boolean {
+  const stale =
+    transfer.status === "running" &&
+    transfer.updated_at + TRANSFER_STALE_MS <= now;
+  if (preset === "all") return true;
+  if (preset === "active") {
+    return ["queued", "running", "retryable", "paused"].includes(
+      transfer.status,
+    );
+  }
+  if (preset === "attention") {
+    return (
+      ["retryable", "failed"].includes(transfer.status) ||
+      transfer.checksum_status === "failed" ||
+      stale
+    );
+  }
+  if (preset === "completed") return transfer.status === "completed";
+  if (preset === "stale") return stale;
+  if (preset === "checksum_failed") {
+    return transfer.checksum_status === "failed";
+  }
+  if (preset === "paused") return transfer.status === "paused";
+  return transfer.status === "cancelled";
 }
 
 interface CreateTransferDialogProps {

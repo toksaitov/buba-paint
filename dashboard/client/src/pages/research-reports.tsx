@@ -47,6 +47,9 @@ export function ResearchReportsPage() {
   const [analysisFilter, setAnalysisFilter] = useState<
     "all" | "with" | "missing"
   >("all");
+  const [retentionFilter, setRetentionFilter] = useState<
+    "all" | "archive_candidate" | "archived"
+  >("all");
   const [artifactFilter, setArtifactFilter] = useState("");
   const [sortKey, setSortKey] = useState<ReportSortKey>("net_pnl_desc");
   const [selected, setSelected] = useState<string[]>([]);
@@ -69,12 +72,27 @@ export function ResearchReportsPage() {
           return true;
         })
         .filter((r) => {
+          if (retentionFilter === "archive_candidate") {
+            return r.status === "available";
+          }
+          if (retentionFilter === "archived") return r.status === "archived";
+          return true;
+        })
+        .filter((r) => {
           if (!artifactNeedle) return true;
           return (r.artifact_id ?? "").toLowerCase().includes(artifactNeedle);
         });
       return sortReports(visible, sortKey);
     },
-    [reportsData, active, typeFilter, analysisFilter, artifactFilter, sortKey],
+    [
+      reportsData,
+      active,
+      typeFilter,
+      analysisFilter,
+      retentionFilter,
+      artifactFilter,
+      sortKey,
+    ],
   );
   const visibleSelected = selected.filter((id) =>
     filtered.some((report) => report.id === id),
@@ -111,7 +129,7 @@ export function ResearchReportsPage() {
           </Button>
         }
       >
-        <div className="mb-3 grid gap-2 md:grid-cols-4">
+        <div className="mb-3 grid gap-2 md:grid-cols-5">
           <select
             aria-label="Report job type filter"
             value={typeFilter}
@@ -149,6 +167,18 @@ export function ResearchReportsPage() {
                 Sort: {opt.label}
               </option>
             ))}
+          </select>
+          <select
+            aria-label="Report retention filter"
+            value={retentionFilter}
+            onChange={(e) =>
+              setRetentionFilter(e.currentTarget.value as typeof retentionFilter)
+            }
+            className="border border-border bg-bg px-2 py-1 text-[11px]"
+          >
+            <option value="all">All retention states</option>
+            <option value="archive_candidate">Archive candidates</option>
+            <option value="archived">Archived only</option>
           </select>
           <Input
             aria-label="Artifact filter"

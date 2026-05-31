@@ -18,8 +18,9 @@ use buba_machine_telemetry::{HostIdentity, MachineSample, MachineSamplerHealth};
 use crate::api::auth_routes::AppState;
 use crate::auth::Claims;
 use crate::db::{
-    ArtifactTransferRecord, NullableUpdate, ResearchArtifact, ResearchArtifactRecord, ResearchJob,
-    ResearchJobEvent, ResearchJobStep, ResearchMachine, ResearchMachineDependencyCounts,
+    ArtifactTransfer, ArtifactTransferRecord, NullableUpdate, ResearchArtifact,
+    ResearchArtifactRecord, ResearchJob, ResearchJobEvent, ResearchJobStep, ResearchJobTemplate,
+    ResearchJobTemplateRecord, ResearchMachine, ResearchMachineDependencyCounts,
     ResearchMachineHeartbeatRecord, ResearchMachineRecord, ResearchMachineTelemetryState,
     ResearchMachineTelemetryUpdate, ResearchReport,
 };
@@ -205,6 +206,20 @@ pub struct JobsResponse {
     pub jobs: Vec<ResearchJob>,
 }
 
+/// Response body for `GET /api/research/job-templates`.
+#[derive(serde::Serialize)]
+pub struct JobTemplatesResponse {
+    /// Reusable research job templates.
+    pub templates: Vec<ResearchJobTemplate>,
+}
+
+/// Response body for one template mutation or read.
+#[derive(serde::Serialize)]
+pub struct JobTemplateResponse {
+    /// Durable job template metadata.
+    pub template: ResearchJobTemplate,
+}
+
 /// Full job response returned by create, detail, cancel, and retry routes.
 #[derive(serde::Serialize)]
 pub struct JobDetailResponse {
@@ -243,6 +258,186 @@ pub struct EventsResponse {
 pub struct ReportsResponse {
     /// Generated research reports.
     pub reports: Vec<crate::db::ResearchReport>,
+}
+
+/// Queue cockpit response for Research home.
+#[derive(serde::Serialize)]
+pub struct ResearchQueueResponse {
+    /// Generation time in milliseconds since the Unix epoch.
+    pub generated_at_ms: u64,
+    /// Aggregate queue counts.
+    pub counts: ResearchQueueCounts,
+    /// Job groups needing operator attention or observation.
+    pub jobs: ResearchQueueJobGroups,
+    /// Transfer groups needing operator attention or observation.
+    pub transfers: ResearchQueueTransferGroups,
+    /// Disabled research hosts and their impact.
+    pub disabled_hosts: Vec<ResearchQueueMachineItem>,
+    /// Recent generated reports.
+    pub recent_reports: Vec<ResearchReport>,
+    /// Retention totals that need operator review.
+    pub retention: ResearchRetentionTotals,
+}
+
+/// Aggregate queue cockpit counts.
+#[derive(serde::Serialize)]
+pub struct ResearchQueueCounts {
+    /// Total known jobs.
+    pub jobs_total: usize,
+    /// Jobs that are not terminal.
+    pub jobs_active: usize,
+    /// Queued jobs waiting for a worker.
+    pub jobs_waiting: usize,
+    /// Running jobs.
+    pub jobs_running: usize,
+    /// Retryable jobs.
+    pub jobs_retryable: usize,
+    /// Blocked jobs.
+    pub jobs_blocked: usize,
+    /// Failed jobs.
+    pub jobs_failed: usize,
+    /// Completed jobs.
+    pub jobs_completed: usize,
+    /// Stale job leases.
+    pub stale_leases: usize,
+    /// Non-terminal transfers.
+    pub transfers_active: usize,
+    /// Retryable or failed transfers.
+    pub transfers_attention: usize,
+    /// Disabled research hosts.
+    pub disabled_hosts: usize,
+}
+
+/// Queue job groups used by the operator cockpit.
+#[derive(serde::Serialize)]
+pub struct ResearchQueueJobGroups {
+    /// Running jobs.
+    pub running: Vec<ResearchQueueJobItem>,
+    /// Queued jobs.
+    pub waiting: Vec<ResearchQueueJobItem>,
+    /// Retryable jobs.
+    pub retryable: Vec<ResearchQueueJobItem>,
+    /// Blocked jobs.
+    pub blocked: Vec<ResearchQueueJobItem>,
+    /// Failed jobs.
+    pub failed: Vec<ResearchQueueJobItem>,
+    /// Jobs with expired leases.
+    pub stale_leases: Vec<ResearchQueueJobItem>,
+}
+
+/// One job row in a queue cockpit group.
+#[derive(serde::Serialize)]
+pub struct ResearchQueueJobItem {
+    /// Durable job metadata.
+    pub job: ResearchJob,
+    /// Current active, failed, blocked, or stale step when known.
+    pub step: Option<ResearchJobStep>,
+    /// Whether the selected step has an expired lease.
+    pub stale: bool,
+}
+
+/// Queue transfer groups used by the operator cockpit.
+#[derive(serde::Serialize)]
+pub struct ResearchQueueTransferGroups {
+    /// Non-terminal transfers.
+    pub active: Vec<ResearchQueueTransferItem>,
+    /// Retryable or failed transfers.
+    pub attention: Vec<ResearchQueueTransferItem>,
+    /// Running transfers whose progress timestamp is stale.
+    pub stale: Vec<ResearchQueueTransferItem>,
+}
+
+/// One transfer row in a queue cockpit group.
+#[derive(serde::Serialize)]
+pub struct ResearchQueueTransferItem {
+    /// Durable transfer metadata.
+    pub transfer: ArtifactTransfer,
+    /// Whether the transfer has exceeded the staleness threshold.
+    pub stale: bool,
+}
+
+/// Disabled research host summary.
+#[derive(serde::Serialize)]
+pub struct ResearchQueueMachineItem {
+    /// Durable machine metadata.
+    pub machine: ResearchMachine,
+    /// Durable records that reference this machine.
+    pub dependencies: ResearchMachineDependencyCounts,
+}
+
+/// Retention snapshot response.
+#[derive(serde::Serialize)]
+pub struct ResearchRetentionResponse {
+    /// Generation time in milliseconds since the Unix epoch.
+    pub generated_at_ms: u64,
+    /// Completed jobs whose scratch DBs can be archived or reviewed.
+    pub jobs: Vec<ResearchRetentionJobCandidate>,
+    /// Reports that can be marked archived.
+    pub reports: Vec<ResearchRetentionReportCandidate>,
+    /// Artifacts that can be marked archived.
+    pub artifacts: Vec<ResearchRetentionArtifactCandidate>,
+    /// Aggregate retention totals.
+    pub totals: ResearchRetentionTotals,
+}
+
+/// Retention candidate totals.
+#[derive(serde::Serialize, Clone)]
+pub struct ResearchRetentionTotals {
+    /// Number of scratch archive job candidates.
+    pub jobs: usize,
+    /// Number of report archive candidates.
+    pub reports: usize,
+    /// Number of artifact archive candidates.
+    pub artifacts: usize,
+    /// Estimated scratch bytes that can be released.
+    pub scratch_bytes: u64,
+    /// Estimated report metadata payload bytes.
+    pub report_bytes: u64,
+    /// Estimated artifact payload bytes.
+    pub artifact_bytes: u64,
+}
+
+/// Completed job retention candidate.
+#[derive(serde::Serialize)]
+pub struct ResearchRetentionJobCandidate {
+    /// Durable job metadata.
+    pub job: ResearchJob,
+    /// Existing report that preserves the result.
+    pub report: Option<ResearchReport>,
+    /// Estimated scratch DB bytes currently present.
+    pub scratch_bytes: u64,
+    /// Whether scratch archival is currently allowed.
+    pub eligible: bool,
+    /// Reason the job is skipped when ineligible.
+    pub skipped_reason: Option<String>,
+}
+
+/// Report archive retention candidate.
+#[derive(serde::Serialize)]
+pub struct ResearchRetentionReportCandidate {
+    /// Durable report metadata.
+    pub report: ResearchReport,
+    /// Estimated report file bytes.
+    pub bytes: u64,
+    /// Whether the report can be archived.
+    pub eligible: bool,
+    /// Reason the report is skipped when ineligible.
+    pub skipped_reason: Option<String>,
+}
+
+/// Artifact archive retention candidate.
+#[derive(serde::Serialize)]
+pub struct ResearchRetentionArtifactCandidate {
+    /// Durable artifact metadata.
+    pub artifact: ResearchArtifact,
+    /// Estimated artifact payload bytes.
+    pub bytes: u64,
+    /// Non-terminal dependent jobs or transfers.
+    pub active_dependency_count: usize,
+    /// Whether the artifact can be archived.
+    pub eligible: bool,
+    /// Reason the artifact is skipped when ineligible.
+    pub skipped_reason: Option<String>,
 }
 
 /// Response body returned after report files are regenerated.
@@ -334,6 +529,26 @@ pub struct CreateJobRequest {
     pub priority: i64,
     /// Job-specific parameters persisted as raw structured data.
     pub params: Option<serde_json::Value>,
+    /// Optional template that supplied editable defaults for this job.
+    pub template_id: Option<String>,
+}
+
+/// Request body for creating or updating a reusable job template.
+#[derive(serde::Deserialize)]
+pub struct UpsertJobTemplateRequest {
+    /// Operator-facing template name.
+    pub name: String,
+    /// Optional longer note.
+    pub description: Option<String>,
+    /// Supported job type: `current_params` or `sweep`.
+    pub job_type: String,
+    /// Optional default artifact.
+    pub artifact_id: Option<String>,
+    /// Default queue priority.
+    #[serde(default)]
+    pub priority: i64,
+    /// Default job params object.
+    pub params: serde_json::Value,
 }
 
 /// Request body for updating a queued research job.
@@ -382,6 +597,63 @@ pub struct UpdateReportRequest {
     pub title: Option<String>,
     /// Optional lifecycle status, currently `available` or `archived`.
     pub status: Option<String>,
+}
+
+/// Request body for bulk archive-only retention cleanup.
+#[derive(serde::Deserialize)]
+pub struct RetentionArchiveRequest {
+    /// Completed job IDs whose scratch DBs should be archived.
+    #[serde(default)]
+    pub job_ids: Vec<String>,
+    /// Report IDs that should be marked archived.
+    #[serde(default)]
+    pub report_ids: Vec<String>,
+    /// Artifact IDs that should be marked archived when safe.
+    #[serde(default)]
+    pub artifact_ids: Vec<String>,
+}
+
+/// Response body for bulk archive-only retention cleanup.
+#[derive(serde::Serialize)]
+pub struct RetentionArchiveResponse {
+    /// Per-job scratch archive results.
+    pub jobs: Vec<RetentionArchiveJobResult>,
+    /// Per-report metadata archive results.
+    pub reports: Vec<RetentionArchiveMetadataResult<ResearchReport>>,
+    /// Per-artifact metadata archive results.
+    pub artifacts: Vec<RetentionArchiveMetadataResult<ResearchArtifact>>,
+    /// Aggregate retention totals after the archive pass.
+    pub totals: ResearchRetentionTotals,
+}
+
+/// Per-job scratch archive result.
+#[derive(serde::Serialize)]
+pub struct RetentionArchiveJobResult {
+    /// Requested job ID.
+    pub id: String,
+    /// Archived, skipped, or error.
+    pub status: String,
+    /// Updated job row when archival succeeds.
+    pub job: Option<ResearchJob>,
+    /// Report that preserves the result.
+    pub report: Option<ResearchReport>,
+    /// Deleted and skipped scratch paths when archival succeeds.
+    pub archive: Option<ArchiveSummary>,
+    /// Operator-readable skip or error reason.
+    pub message: Option<String>,
+}
+
+/// Per-metadata archive result for reports and artifacts.
+#[derive(serde::Serialize)]
+pub struct RetentionArchiveMetadataResult<T> {
+    /// Requested metadata ID.
+    pub id: String,
+    /// Archived, skipped, or error.
+    pub status: String,
+    /// Updated metadata row when archival succeeds.
+    pub item: Option<T>,
+    /// Operator-readable skip or error reason.
+    pub message: Option<String>,
 }
 
 /// Query parameters for deleting a report.
@@ -1073,6 +1345,106 @@ pub async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoRespons
     Ok(Json(JobsResponse { jobs }))
 }
 
+/// `GET /api/research/job-templates`
+pub async fn list_job_templates(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let templates = state.db.list_research_job_templates().await?;
+    Ok(Json(JobTemplatesResponse { templates }))
+}
+
+/// `POST /api/research/job-templates`
+pub async fn create_job_template(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(req): Json<UpsertJobTemplateRequest>,
+) -> Result<impl IntoResponse, DashboardError> {
+    require_admin(&claims)?;
+    let params_json = template_params_json(&req.params)?;
+    let template = state
+        .db
+        .create_research_job_template(&ResearchJobTemplateRecord {
+            name: &req.name,
+            description: req.description.as_deref(),
+            job_type: &req.job_type,
+            artifact_id: req.artifact_id.as_deref(),
+            priority: req.priority,
+            params_json: &params_json,
+            operator_id: &claims.sub,
+        })
+        .await?;
+    Ok(Json(JobTemplateResponse { template }))
+}
+
+/// `GET /api/research/job-templates/:id`
+pub async fn get_job_template(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let template = research_job_template_by_id(&state, &id).await?;
+    Ok(Json(JobTemplateResponse { template }))
+}
+
+/// `PATCH /api/research/job-templates/:id`
+pub async fn update_job_template(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<String>,
+    Json(req): Json<UpsertJobTemplateRequest>,
+) -> Result<impl IntoResponse, DashboardError> {
+    require_admin(&claims)?;
+    let params_json = template_params_json(&req.params)?;
+    let template = state
+        .db
+        .update_research_job_template(
+            &id,
+            &ResearchJobTemplateRecord {
+                name: &req.name,
+                description: req.description.as_deref(),
+                job_type: &req.job_type,
+                artifact_id: req.artifact_id.as_deref(),
+                priority: req.priority,
+                params_json: &params_json,
+                operator_id: &claims.sub,
+            },
+        )
+        .await?;
+    Ok(Json(JobTemplateResponse { template }))
+}
+
+/// `POST /api/research/job-templates/:id/archive`
+pub async fn archive_job_template(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    require_admin(&claims)?;
+    let template = state.db.archive_research_job_template(&id).await?;
+    Ok(Json(JobTemplateResponse { template }))
+}
+
+/// `POST /api/research/job-templates/:id/restore`
+pub async fn restore_job_template(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    require_admin(&claims)?;
+    let template = state.db.restore_research_job_template(&id).await?;
+    Ok(Json(JobTemplateResponse { template }))
+}
+
+/// `DELETE /api/research/job-templates/:id`
+pub async fn delete_job_template(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, DashboardError> {
+    require_admin(&claims)?;
+    let template = state.db.delete_research_job_template(&id).await?;
+    Ok(Json(JobTemplateResponse { template }))
+}
+
 /// `POST /api/research/jobs`
 pub async fn create_job(
     State(state): State<AppState>,
@@ -1080,6 +1452,24 @@ pub async fn create_job(
     Json(req): Json<CreateJobRequest>,
 ) -> Result<impl IntoResponse, DashboardError> {
     require_admin(&claims)?;
+    let template = if let Some(template_id) = req.template_id.as_deref() {
+        let template = research_job_template_by_id(&state, template_id).await?;
+        if template.status != "active" {
+            return Err(DashboardError::BadRequest(format!(
+                "research job template '{}' is archived",
+                template.id
+            )));
+        }
+        if template.job_type != req.job_type {
+            return Err(DashboardError::BadRequest(format!(
+                "research job template '{}' is for '{}' jobs, not '{}'",
+                template.id, template.job_type, req.job_type
+            )));
+        }
+        Some(template)
+    } else {
+        None
+    };
     let params_json = req.params.as_ref().map(serde_json::Value::to_string);
     let job = state
         .db
@@ -1091,6 +1481,26 @@ pub async fn create_job(
             params_json.as_deref(),
         )
         .await?;
+    if let Some(template) = template {
+        state
+            .db
+            .record_research_job_template_use(&template.id)
+            .await?;
+        let details = serde_json::json!({
+            "template_id": template.id,
+            "template_name": template.name,
+        });
+        state
+            .db
+            .append_research_job_event(
+                &job.id,
+                None,
+                "info",
+                "created from research job template",
+                Some(&details.to_string()),
+            )
+            .await?;
+    }
     let detail = job_detail(&state, &job.id).await?;
     Ok(Json(detail))
 }
@@ -1408,35 +1818,51 @@ pub async fn archive_job_scratch(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, DashboardError> {
     require_admin(&claims)?;
-    let detail = job_detail(&state, &id).await?;
-    if detail.job.status != "completed" {
-        return Err(DashboardError::BadRequest(format!(
-            "research job '{}' must be completed before scratch DBs can be archived",
-            detail.job.id
-        )));
+    let response = archive_job_scratch_for_id(&state, &id).await?;
+    Ok(Json(response))
+}
+
+/// `GET /api/research/queue`
+pub async fn get_queue(State(state): State<AppState>) -> Result<impl IntoResponse, DashboardError> {
+    let response = build_research_queue_response(&state).await?;
+    Ok(Json(response))
+}
+
+/// `GET /api/research/retention`
+pub async fn get_retention(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, DashboardError> {
+    let response = build_research_retention_response(&state).await?;
+    Ok(Json(response))
+}
+
+/// `POST /api/research/retention/archive`
+pub async fn archive_retention(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(req): Json<RetentionArchiveRequest>,
+) -> Result<impl IntoResponse, DashboardError> {
+    require_admin(&claims)?;
+    let mut job_results = Vec::new();
+    let mut report_results = Vec::new();
+    let mut artifact_results = Vec::new();
+
+    for job_id in req.job_ids {
+        job_results.push(archive_retention_job(&state, &job_id).await);
     }
-    let report = state
-        .db
-        .get_research_report_for_job(&id)
-        .await?
-        .ok_or_else(|| {
-            DashboardError::BadRequest(format!(
-                "research job '{}' has no report to preserve",
-                detail.job.id
-            ))
-        })?;
-    let artifact = research_artifact_for_job(&state, &detail.job).await?;
-    let pipeline = pipeline_for_archive(&state)?;
-    let plan = pipeline.plan_for_job(&detail.job, artifact.as_ref())?;
-    let archive = archive_scratch_dbs(&plan)?;
-    let report = update_report_archive_summary(&state, &detail, &report, &archive).await?;
-    let detail = job_detail(&state, &id).await?;
-    Ok(Json(ArchiveScratchResponse {
-        job: detail.job,
-        steps: detail.steps,
-        events: detail.events,
-        report,
-        archive,
+    for report_id in req.report_ids {
+        report_results.push(archive_retention_report(&state, &report_id).await);
+    }
+    for artifact_id in req.artifact_ids {
+        artifact_results.push(archive_retention_artifact(&state, &artifact_id).await);
+    }
+
+    let totals = build_research_retention_response(&state).await?.totals;
+    Ok(Json(RetentionArchiveResponse {
+        jobs: job_results,
+        reports: report_results,
+        artifacts: artifact_results,
+        totals,
     }))
 }
 
@@ -1543,6 +1969,560 @@ pub async fn get_report_csv_file(
     Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8")], text))
 }
 
+/// Build the Research home queue cockpit response.
+async fn build_research_queue_response(
+    state: &AppState,
+) -> Result<ResearchQueueResponse, DashboardError> {
+    let generated_at_ms = current_epoch_ms();
+    let jobs = state.db.list_research_jobs().await?;
+    let transfers = state.db.list_artifact_transfers().await?;
+    let machines = state.db.list_research_machines().await?;
+    let reports = state.db.list_research_reports().await?;
+    let retention = build_research_retention_response(state).await?.totals;
+
+    let mut running = Vec::new();
+    let mut waiting = Vec::new();
+    let mut retryable = Vec::new();
+    let mut blocked = Vec::new();
+    let mut failed = Vec::new();
+    let mut stale_leases = Vec::new();
+
+    for job in &jobs {
+        let steps = state.db.get_research_job_steps(&job.id).await?;
+        let active_step = queue_step_for_job(job, &steps, generated_at_ms);
+        let stale = active_step.as_ref().is_some_and(|step| {
+            matches!(step.status.as_str(), "leased" | "running")
+                && step
+                    .leased_until_ms
+                    .is_some_and(|leased_until| leased_until <= generated_at_ms)
+        });
+        let item = ResearchQueueJobItem {
+            job: job.clone(),
+            step: active_step,
+            stale,
+        };
+        match job.status.as_str() {
+            "running" => running.push(item),
+            "queued" | "paused" => waiting.push(item),
+            "retryable" => retryable.push(item),
+            "blocked" => blocked.push(item),
+            "failed" => failed.push(item),
+            _ => {}
+        }
+        if stale {
+            stale_leases.push(ResearchQueueJobItem {
+                job: job.clone(),
+                step: queue_step_for_job(job, &steps, generated_at_ms),
+                stale: true,
+            });
+        }
+    }
+
+    let mut active_transfers = Vec::new();
+    let mut attention_transfers = Vec::new();
+    let mut stale_transfers = Vec::new();
+    for transfer in &transfers {
+        let stale = transfer_is_stale(transfer, generated_at_ms);
+        let item = ResearchQueueTransferItem {
+            transfer: transfer.clone(),
+            stale,
+        };
+        if !is_transfer_terminal(&transfer.status) {
+            active_transfers.push(item);
+        }
+        if matches!(transfer.status.as_str(), "retryable" | "failed")
+            || transfer.checksum_status.as_deref() == Some("failed")
+        {
+            attention_transfers.push(ResearchQueueTransferItem {
+                transfer: transfer.clone(),
+                stale,
+            });
+        }
+        if stale {
+            stale_transfers.push(ResearchQueueTransferItem {
+                transfer: transfer.clone(),
+                stale: true,
+            });
+        }
+    }
+
+    let mut disabled_hosts = Vec::new();
+    for machine in machines
+        .into_iter()
+        .filter(|machine| machine.role == "research" && machine.status == "disabled")
+    {
+        let dependencies = state
+            .db
+            .research_machine_dependency_counts(&machine.id)
+            .await?;
+        disabled_hosts.push(ResearchQueueMachineItem {
+            machine,
+            dependencies,
+        });
+    }
+
+    let recent_reports = pick_recent_reports(reports, 5);
+    let counts = ResearchQueueCounts {
+        jobs_total: jobs.len(),
+        jobs_active: jobs
+            .iter()
+            .filter(|job| !is_job_terminal(&job.status))
+            .count(),
+        jobs_waiting: waiting.len(),
+        jobs_running: running.len(),
+        jobs_retryable: retryable.len(),
+        jobs_blocked: blocked.len(),
+        jobs_failed: failed.len(),
+        jobs_completed: jobs.iter().filter(|job| job.status == "completed").count(),
+        stale_leases: stale_leases.len(),
+        transfers_active: active_transfers.len(),
+        transfers_attention: attention_transfers.len(),
+        disabled_hosts: disabled_hosts.len(),
+    };
+
+    Ok(ResearchQueueResponse {
+        generated_at_ms,
+        counts,
+        jobs: ResearchQueueJobGroups {
+            running,
+            waiting,
+            retryable,
+            blocked,
+            failed,
+            stale_leases,
+        },
+        transfers: ResearchQueueTransferGroups {
+            active: active_transfers,
+            attention: attention_transfers,
+            stale: stale_transfers,
+        },
+        disabled_hosts,
+        recent_reports,
+        retention,
+    })
+}
+
+/// Build the retention snapshot response.
+async fn build_research_retention_response(
+    state: &AppState,
+) -> Result<ResearchRetentionResponse, DashboardError> {
+    let generated_at_ms = current_epoch_ms();
+    let jobs = state.db.list_research_jobs().await?;
+    let reports = state.db.list_research_reports().await?;
+    let artifacts = state.db.list_research_artifacts().await?;
+    let transfers = state.db.list_artifact_transfers().await?;
+
+    let job_candidates = build_retention_job_candidates(state, &jobs, &reports).await?;
+    let report_candidates = build_retention_report_candidates(state, &reports);
+    let artifact_candidates = build_retention_artifact_candidates(&artifacts, &jobs, &transfers);
+    let totals = ResearchRetentionTotals {
+        jobs: job_candidates
+            .iter()
+            .filter(|candidate| candidate.eligible)
+            .count(),
+        reports: report_candidates
+            .iter()
+            .filter(|candidate| candidate.eligible)
+            .count(),
+        artifacts: artifact_candidates
+            .iter()
+            .filter(|candidate| candidate.eligible)
+            .count(),
+        scratch_bytes: job_candidates
+            .iter()
+            .filter(|candidate| candidate.eligible)
+            .map(|candidate| candidate.scratch_bytes)
+            .fold(0, u64::saturating_add),
+        report_bytes: report_candidates
+            .iter()
+            .filter(|candidate| candidate.eligible)
+            .map(|candidate| candidate.bytes)
+            .fold(0, u64::saturating_add),
+        artifact_bytes: artifact_candidates
+            .iter()
+            .filter(|candidate| candidate.eligible)
+            .map(|candidate| candidate.bytes)
+            .fold(0, u64::saturating_add),
+    };
+
+    Ok(ResearchRetentionResponse {
+        generated_at_ms,
+        jobs: job_candidates,
+        reports: report_candidates,
+        artifacts: artifact_candidates,
+        totals,
+    })
+}
+
+/// Build completed-job scratch retention candidates.
+async fn build_retention_job_candidates(
+    state: &AppState,
+    jobs: &[ResearchJob],
+    reports: &[ResearchReport],
+) -> Result<Vec<ResearchRetentionJobCandidate>, DashboardError> {
+    let mut candidates = Vec::new();
+    for job in jobs.iter().filter(|job| job.status == "completed") {
+        let report = reports
+            .iter()
+            .find(|report| report.job_id == job.id)
+            .cloned();
+        let (scratch_bytes, eligible, skipped_reason) = match report.as_ref() {
+            None => (
+                0,
+                false,
+                Some("completed job has no report to preserve".to_string()),
+            ),
+            Some(_) => match estimate_job_scratch_bytes(state, job).await {
+                Ok(bytes) => (bytes, true, None),
+                Err(error) => (0, false, Some(error.to_string())),
+            },
+        };
+        candidates.push(ResearchRetentionJobCandidate {
+            job: job.clone(),
+            report,
+            scratch_bytes,
+            eligible,
+            skipped_reason,
+        });
+    }
+    Ok(candidates)
+}
+
+/// Build report archive retention candidates.
+fn build_retention_report_candidates(
+    state: &AppState,
+    reports: &[ResearchReport],
+) -> Vec<ResearchRetentionReportCandidate> {
+    reports
+        .iter()
+        .map(|report| {
+            let bytes = estimate_report_bytes(state, report);
+            let eligible = report.status == "available";
+            ResearchRetentionReportCandidate {
+                report: report.clone(),
+                bytes,
+                eligible,
+                skipped_reason: (!eligible).then(|| "report is already archived".to_string()),
+            }
+        })
+        .collect()
+}
+
+/// Build artifact archive retention candidates.
+fn build_retention_artifact_candidates(
+    artifacts: &[ResearchArtifact],
+    jobs: &[ResearchJob],
+    transfers: &[ArtifactTransfer],
+) -> Vec<ResearchRetentionArtifactCandidate> {
+    artifacts
+        .iter()
+        .map(|artifact| {
+            let active_dependency_count =
+                active_artifact_dependency_count(artifact, jobs, transfers);
+            let eligible = artifact.status == "available" && active_dependency_count == 0;
+            let skipped_reason = if artifact.status != "available" {
+                Some("artifact is already archived".to_string())
+            } else if active_dependency_count > 0 {
+                Some("artifact has active job or transfer dependencies".to_string())
+            } else {
+                None
+            };
+            ResearchRetentionArtifactCandidate {
+                artifact: artifact.clone(),
+                bytes: artifact.bytes.unwrap_or(0),
+                active_dependency_count,
+                eligible,
+                skipped_reason,
+            }
+        })
+        .collect()
+}
+
+/// Archive one completed job scratch set for bulk retention.
+async fn archive_retention_job(state: &AppState, job_id: &str) -> RetentionArchiveJobResult {
+    match archive_job_scratch_for_id(state, job_id).await {
+        Ok(response) => RetentionArchiveJobResult {
+            id: job_id.to_string(),
+            status: "archived".to_string(),
+            job: Some(response.job),
+            report: Some(response.report),
+            archive: Some(response.archive),
+            message: None,
+        },
+        Err(error) => RetentionArchiveJobResult {
+            id: job_id.to_string(),
+            status: "error".to_string(),
+            job: None,
+            report: None,
+            archive: None,
+            message: Some(error.to_string()),
+        },
+    }
+}
+
+/// Archive one report metadata row for bulk retention.
+async fn archive_retention_report(
+    state: &AppState,
+    report_id: &str,
+) -> RetentionArchiveMetadataResult<ResearchReport> {
+    match research_report_by_id(state, report_id).await {
+        Ok(report) if report.status == "archived" => RetentionArchiveMetadataResult {
+            id: report_id.to_string(),
+            status: "skipped".to_string(),
+            item: Some(report),
+            message: Some("report is already archived".to_string()),
+        },
+        Ok(report) => match state
+            .db
+            .update_research_report_metadata(&report.id, &report.title, "archived")
+            .await
+        {
+            Ok(item) => RetentionArchiveMetadataResult {
+                id: report_id.to_string(),
+                status: "archived".to_string(),
+                item: Some(item),
+                message: None,
+            },
+            Err(error) => retention_metadata_error(report_id, error),
+        },
+        Err(error) => retention_metadata_error(report_id, error),
+    }
+}
+
+/// Archive one artifact metadata row for bulk retention.
+async fn archive_retention_artifact(
+    state: &AppState,
+    artifact_id: &str,
+) -> RetentionArchiveMetadataResult<ResearchArtifact> {
+    let artifact = match research_artifact_by_id(state, artifact_id).await {
+        Ok(artifact) => artifact,
+        Err(error) => return retention_metadata_error(artifact_id, error),
+    };
+    if artifact.status == "archived" {
+        return RetentionArchiveMetadataResult {
+            id: artifact_id.to_string(),
+            status: "skipped".to_string(),
+            item: Some(artifact),
+            message: Some("artifact is already archived".to_string()),
+        };
+    }
+    let jobs = match state.db.list_research_jobs().await {
+        Ok(jobs) => jobs,
+        Err(error) => return retention_metadata_error(artifact_id, error),
+    };
+    let transfers = match state.db.list_artifact_transfers().await {
+        Ok(transfers) => transfers,
+        Err(error) => return retention_metadata_error(artifact_id, error),
+    };
+    let active_dependency_count = active_artifact_dependency_count(&artifact, &jobs, &transfers);
+    if active_dependency_count > 0 {
+        return RetentionArchiveMetadataResult {
+            id: artifact_id.to_string(),
+            status: "skipped".to_string(),
+            item: Some(artifact),
+            message: Some("artifact has active job or transfer dependencies".to_string()),
+        };
+    }
+    match state.db.archive_research_artifact(artifact_id).await {
+        Ok(item) => RetentionArchiveMetadataResult {
+            id: artifact_id.to_string(),
+            status: "archived".to_string(),
+            item: Some(item),
+            message: None,
+        },
+        Err(error) => retention_metadata_error(artifact_id, error),
+    }
+}
+
+/// Return an error result for one metadata archive request.
+fn retention_metadata_error<T>(
+    id: &str,
+    error: DashboardError,
+) -> RetentionArchiveMetadataResult<T> {
+    RetentionArchiveMetadataResult {
+        id: id.to_string(),
+        status: "error".to_string(),
+        item: None,
+        message: Some(error.to_string()),
+    }
+}
+
+/// Archive scratch DBs for one completed job.
+async fn archive_job_scratch_for_id(
+    state: &AppState,
+    id: &str,
+) -> Result<ArchiveScratchResponse, DashboardError> {
+    let detail = job_detail(state, id).await?;
+    if detail.job.status != "completed" {
+        return Err(DashboardError::BadRequest(format!(
+            "research job '{}' must be completed before scratch DBs can be archived",
+            detail.job.id
+        )));
+    }
+    let report = state
+        .db
+        .get_research_report_for_job(id)
+        .await?
+        .ok_or_else(|| {
+            DashboardError::BadRequest(format!(
+                "research job '{}' has no report to preserve",
+                detail.job.id
+            ))
+        })?;
+    let artifact = research_artifact_for_job(state, &detail.job).await?;
+    let pipeline = pipeline_for_archive(state)?;
+    let plan = pipeline.plan_for_job(&detail.job, artifact.as_ref())?;
+    let archive = archive_scratch_dbs(&plan)?;
+    let report = update_report_archive_summary(state, &detail, &report, &archive).await?;
+    let detail = job_detail(state, id).await?;
+    Ok(ArchiveScratchResponse {
+        job: detail.job,
+        steps: detail.steps,
+        events: detail.events,
+        report,
+        archive,
+    })
+}
+
+/// Return the most relevant queue step for a job.
+fn queue_step_for_job(
+    job: &ResearchJob,
+    steps: &[ResearchJobStep],
+    now_ms: u64,
+) -> Option<ResearchJobStep> {
+    if let Some(step) = steps.iter().find(|step| {
+        matches!(step.status.as_str(), "leased" | "running")
+            && step
+                .leased_until_ms
+                .is_some_and(|leased_until| leased_until <= now_ms)
+    }) {
+        return Some(step.clone());
+    }
+    let status = match job.status.as_str() {
+        "blocked" => "blocked",
+        "failed" => "failed",
+        "retryable" => "retryable",
+        "running" => "running",
+        _ => "",
+    };
+    if !status.is_empty()
+        && let Some(step) = steps.iter().find(|step| step.status == status)
+    {
+        return Some(step.clone());
+    }
+    steps
+        .iter()
+        .find(|step| !matches!(step.status.as_str(), "completed" | "cancelled"))
+        .cloned()
+}
+
+/// Return whether a job status is terminal.
+fn is_job_terminal(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "cancelled")
+}
+
+/// Return whether a transfer status is terminal.
+fn is_transfer_terminal(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "cancelled")
+}
+
+/// Return whether a transfer has become stale.
+fn transfer_is_stale(transfer: &ArtifactTransfer, now_ms: u64) -> bool {
+    const TRANSFER_STALE_AFTER_MS: u64 = 30 * 60 * 1_000;
+    transfer.status == "running"
+        && transfer.updated_at.saturating_add(TRANSFER_STALE_AFTER_MS) <= now_ms
+}
+
+/// Return recent reports by update time.
+fn pick_recent_reports(mut reports: Vec<ResearchReport>, count: usize) -> Vec<ResearchReport> {
+    reports.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    reports.truncate(count);
+    reports
+}
+
+/// Estimate scratch DB bytes for one completed job.
+async fn estimate_job_scratch_bytes(
+    state: &AppState,
+    job: &ResearchJob,
+) -> Result<u64, DashboardError> {
+    let artifact = research_artifact_for_job(state, job).await?;
+    let pipeline = pipeline_for_archive(state)?;
+    let plan = pipeline.plan_for_job(job, artifact.as_ref())?;
+    let paths = scratch_db_family_paths(&plan.prepared_db_output_path)
+        .into_iter()
+        .chain(scratch_db_family_paths(&plan.backtest_output_path));
+    let mut total = 0_u64;
+    for path in paths {
+        total = total.saturating_add(file_size_if_exists(&path)?);
+    }
+    Ok(total)
+}
+
+/// Return the SQLite DB path and WAL/SHM sidecars.
+fn scratch_db_family_paths(path: &StdPath) -> Vec<PathBuf> {
+    let mut paths = vec![path.to_path_buf()];
+    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        paths.push(path.with_file_name(format!("{name}-wal")));
+        paths.push(path.with_file_name(format!("{name}-shm")));
+    }
+    paths
+}
+
+/// Return file size or zero when absent.
+fn file_size_if_exists(path: &StdPath) -> Result<u64, DashboardError> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
+        Ok(_) => Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(DashboardError::Internal(format!(
+            "reading file metadata: {error}"
+        ))),
+    }
+}
+
+/// Estimate report file bytes for one report row.
+fn estimate_report_bytes(state: &AppState, report: &ResearchReport) -> u64 {
+    let mut total = 0_u64;
+    if let Ok(path) = resolve_report_file_path(state, report.report_path.as_deref(), "report_path")
+        && let Ok(bytes) = file_size_if_exists(&path)
+    {
+        total = total.saturating_add(bytes);
+    }
+    if let Ok(path) = resolve_report_file_path(state, report.csv_path.as_deref(), "csv_path")
+        && let Ok(bytes) = file_size_if_exists(&path)
+    {
+        total = total.saturating_add(bytes);
+    }
+    total
+}
+
+/// Count active durable records that depend on one artifact.
+fn active_artifact_dependency_count(
+    artifact: &ResearchArtifact,
+    jobs: &[ResearchJob],
+    transfers: &[ArtifactTransfer],
+) -> usize {
+    let active_jobs = jobs
+        .iter()
+        .filter(|job| {
+            job.artifact_id.as_deref() == Some(artifact.id.as_str())
+                && !is_job_terminal(&job.status)
+        })
+        .count();
+    let active_transfers = transfers
+        .iter()
+        .filter(|transfer| {
+            transfer.artifact_id == artifact.id && !is_transfer_terminal(&transfer.status)
+        })
+        .count();
+    active_jobs + active_transfers
+}
+
 /// Return one research machine by ID or a route-level not found error.
 async fn research_machine_by_id(
     state: &AppState,
@@ -1553,6 +2533,29 @@ async fn research_machine_by_id(
         .get_research_machine(id)
         .await?
         .ok_or_else(|| DashboardError::NotFound(format!("research machine '{id}' not found")))
+}
+
+/// Return one job template by ID or a route-level not found error.
+async fn research_job_template_by_id(
+    state: &AppState,
+    id: &str,
+) -> Result<ResearchJobTemplate, DashboardError> {
+    state
+        .db
+        .get_research_job_template(id)
+        .await?
+        .ok_or_else(|| DashboardError::NotFound(format!("research job template '{id}' not found")))
+}
+
+/// Serialize template params as an object.
+fn template_params_json(value: &serde_json::Value) -> Result<String, DashboardError> {
+    if !value.is_object() {
+        return Err(DashboardError::BadRequest(
+            "template params must be a JSON object".to_string(),
+        ));
+    }
+    serde_json::to_string(value)
+        .map_err(|error| DashboardError::Internal(format!("serializing template params: {error}")))
 }
 
 /// Serialize an optional JSON value for DB storage.

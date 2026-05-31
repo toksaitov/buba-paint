@@ -63,6 +63,8 @@ export type StepStatus =
 
 export type ReportStatus = "available" | "archived";
 
+export type JobTemplateStatus = "active" | "archived";
+
 export type EventLevel = "info" | "warn" | "error" | "progress" | "debug";
 
 export interface ResearchMachine {
@@ -276,6 +278,150 @@ export interface ResearchReport {
   updated_at: number;
 }
 
+export interface ResearchJobTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  job_type: "current_params" | "sweep";
+  artifact_id: string | null;
+  priority: number;
+  params_json: string;
+  status: JobTemplateStatus;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  last_used_at: number | null;
+  usage_count: number;
+}
+
+export interface UpsertJobTemplateRequest {
+  name: string;
+  description?: string;
+  job_type: "current_params" | "sweep";
+  artifact_id?: string;
+  priority?: number;
+  params: Record<string, unknown>;
+}
+
+export interface ResearchQueueJobItem {
+  job: ResearchJob;
+  step: ResearchJobStep | null;
+  stale: boolean;
+}
+
+export interface ResearchQueueTransferItem {
+  transfer: ArtifactTransfer;
+  stale: boolean;
+}
+
+export interface ResearchQueueMachineItem {
+  machine: ResearchMachine;
+  dependencies: ResearchMachineDependencyCounts;
+}
+
+export interface ResearchRetentionTotals {
+  jobs: number;
+  reports: number;
+  artifacts: number;
+  scratch_bytes: number;
+  report_bytes: number;
+  artifact_bytes: number;
+}
+
+export interface ResearchQueueResponse {
+  generated_at_ms: number;
+  counts: {
+    jobs_total: number;
+    jobs_active: number;
+    jobs_waiting: number;
+    jobs_running: number;
+    jobs_retryable: number;
+    jobs_blocked: number;
+    jobs_failed: number;
+    jobs_completed: number;
+    stale_leases: number;
+    transfers_active: number;
+    transfers_attention: number;
+    disabled_hosts: number;
+  };
+  jobs: {
+    running: ResearchQueueJobItem[];
+    waiting: ResearchQueueJobItem[];
+    retryable: ResearchQueueJobItem[];
+    blocked: ResearchQueueJobItem[];
+    failed: ResearchQueueJobItem[];
+    stale_leases: ResearchQueueJobItem[];
+  };
+  transfers: {
+    active: ResearchQueueTransferItem[];
+    attention: ResearchQueueTransferItem[];
+    stale: ResearchQueueTransferItem[];
+  };
+  disabled_hosts: ResearchQueueMachineItem[];
+  recent_reports: ResearchReport[];
+  retention: ResearchRetentionTotals;
+}
+
+export interface ResearchRetentionJobCandidate {
+  job: ResearchJob;
+  report: ResearchReport | null;
+  scratch_bytes: number;
+  eligible: boolean;
+  skipped_reason: string | null;
+}
+
+export interface ResearchRetentionReportCandidate {
+  report: ResearchReport;
+  bytes: number;
+  eligible: boolean;
+  skipped_reason: string | null;
+}
+
+export interface ResearchRetentionArtifactCandidate {
+  artifact: ResearchArtifact;
+  bytes: number;
+  active_dependency_count: number;
+  eligible: boolean;
+  skipped_reason: string | null;
+}
+
+export interface ResearchRetentionResponse {
+  generated_at_ms: number;
+  jobs: ResearchRetentionJobCandidate[];
+  reports: ResearchRetentionReportCandidate[];
+  artifacts: ResearchRetentionArtifactCandidate[];
+  totals: ResearchRetentionTotals;
+}
+
+export interface RetentionArchiveRequest {
+  job_ids?: string[];
+  report_ids?: string[];
+  artifact_ids?: string[];
+}
+
+export interface RetentionArchiveJobResult {
+  id: string;
+  status: "archived" | "skipped" | "error";
+  job: ResearchJob | null;
+  report: ResearchReport | null;
+  archive: ArchiveScratchSummary | null;
+  message: string | null;
+}
+
+export interface RetentionArchiveMetadataResult<T> {
+  id: string;
+  status: "archived" | "skipped" | "error";
+  item: T | null;
+  message: string | null;
+}
+
+export interface RetentionArchiveResponse {
+  jobs: RetentionArchiveJobResult[];
+  reports: RetentionArchiveMetadataResult<ResearchReport>[];
+  artifacts: RetentionArchiveMetadataResult<ResearchArtifact>[];
+  totals: ResearchRetentionTotals;
+}
+
 export interface RegenerateReportResponse {
   report: ResearchReport;
   report_path: string;
@@ -345,6 +491,7 @@ export interface CreateJobRequest {
   artifact_id?: string;
   priority?: number;
   params?: Record<string, unknown>;
+  template_id?: string;
 }
 
 export interface UpdateJobRequest {

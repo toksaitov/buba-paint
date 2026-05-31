@@ -326,6 +326,56 @@ impl<T> Default for NullableUpdate<T> {
     }
 }
 
+/// Durable reusable research job template.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResearchJobTemplate {
+    /// Stable template ID.
+    pub id: String,
+    /// Operator-facing template name.
+    pub name: String,
+    /// Optional longer operator note.
+    pub description: Option<String>,
+    /// Supported job type: `current_params` or `sweep`.
+    pub job_type: String,
+    /// Optional default artifact for the template.
+    pub artifact_id: Option<String>,
+    /// Default queue priority.
+    pub priority: i64,
+    /// Serialized default job parameters.
+    pub params_json: String,
+    /// Template lifecycle status.
+    pub status: String,
+    /// User ID that created the template.
+    pub created_by: String,
+    /// Creation time in milliseconds since the Unix epoch.
+    pub created_at: u64,
+    /// Last update time in milliseconds since the Unix epoch.
+    pub updated_at: u64,
+    /// Last time this template created a job.
+    pub last_used_at: Option<u64>,
+    /// Number of jobs created from this template.
+    pub usage_count: u64,
+}
+
+/// Borrowed input record for creating or replacing a research job template.
+#[derive(Debug, Clone)]
+pub struct ResearchJobTemplateRecord<'a> {
+    /// Operator-facing template name.
+    pub name: &'a str,
+    /// Optional longer operator note.
+    pub description: Option<&'a str>,
+    /// Supported job type: `current_params` or `sweep`.
+    pub job_type: &'a str,
+    /// Optional default artifact.
+    pub artifact_id: Option<&'a str>,
+    /// Default queue priority.
+    pub priority: i64,
+    /// Serialized default params object.
+    pub params_json: &'a str,
+    /// User ID that owns the create or update request.
+    pub operator_id: &'a str,
+}
+
 /// Durable research job requested from the dashboard.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ResearchJob {
@@ -609,6 +659,24 @@ CREATE TABLE IF NOT EXISTS research_reports (
     updated_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_research_reports_job ON research_reports(job_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_job_templates (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    job_type      TEXT NOT NULL CHECK(job_type IN ('current_params','sweep')),
+    artifact_id   TEXT REFERENCES run_artifacts(id),
+    priority      INTEGER NOT NULL DEFAULT 0,
+    params_json   TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK(status IN ('active','archived')),
+    created_by    TEXT NOT NULL REFERENCES users(id),
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    last_used_at  INTEGER,
+    usage_count   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_research_job_templates_status ON research_job_templates(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_research_job_templates_type ON research_job_templates(job_type, updated_at);
 ";
 
 /// Default number of telemetry samples returned by API queries.
@@ -1422,6 +1490,179 @@ impl DashboardDb {
             research_job_from_row,
         )
         .map_err(DashboardError::from)
+    }
+
+    /// Create one reusable research job template.
+    pub async fn create_research_job_template(
+        &self,
+        record: &ResearchJobTemplateRecord<'_>,
+    ) -> Result<ResearchJobTemplate, DashboardError> {
+        let conn = self.conn.lock().await;
+        validate_research_job_template_record(&conn, record)?;
+        let now = now_ms();
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO research_job_templates (
+                id, name, description, job_type, artifact_id, priority, params_json, status,
+                created_by, created_at, updated_at, last_used_at, usage_count
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?9, ?10, NULL, 0)",
+            params![
+                id,
+                record.name.trim(),
+                trim_optional_text(record.description),
+                record.job_type,
+                record.artifact_id,
+                record.priority,
+                record.params_json,
+                record.operator_id,
+                now,
+                now
+            ],
+        )?;
+        query_research_job_template(&conn, &id)
+    }
+
+    /// List reusable research job templates.
+    pub async fn list_research_job_templates(
+        &self,
+    ) -> Result<Vec<ResearchJobTemplate>, DashboardError> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, job_type, artifact_id, priority, params_json, status,
+                    created_by, created_at, updated_at, last_used_at, usage_count
+             FROM research_job_templates
+             ORDER BY status, updated_at DESC, name, id",
+        )?;
+        let rows = stmt
+            .query_map([], research_job_template_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Return one research job template by ID.
+    pub async fn get_research_job_template(
+        &self,
+        id: &str,
+    ) -> Result<Option<ResearchJobTemplate>, DashboardError> {
+        let conn = self.conn.lock().await;
+        let template = conn
+            .query_row(
+                "SELECT id, name, description, job_type, artifact_id, priority, params_json,
+                        status, created_by, created_at, updated_at, last_used_at, usage_count
+                 FROM research_job_templates
+                 WHERE id = ?1",
+                params![id],
+                research_job_template_from_row,
+            )
+            .optional()?;
+        Ok(template)
+    }
+
+    /// Update one reusable research job template.
+    pub async fn update_research_job_template(
+        &self,
+        id: &str,
+        record: &ResearchJobTemplateRecord<'_>,
+    ) -> Result<ResearchJobTemplate, DashboardError> {
+        let conn = self.conn.lock().await;
+        validate_research_job_template_record(&conn, record)?;
+        let now = now_ms();
+        let changed = conn.execute(
+            "UPDATE research_job_templates
+             SET name = ?2, description = ?3, job_type = ?4, artifact_id = ?5, priority = ?6,
+                 params_json = ?7, updated_at = ?8
+             WHERE id = ?1",
+            params![
+                id,
+                record.name.trim(),
+                trim_optional_text(record.description),
+                record.job_type,
+                record.artifact_id,
+                record.priority,
+                record.params_json,
+                now
+            ],
+        )?;
+        if changed == 0 {
+            return Err(DashboardError::NotFound(format!(
+                "research job template '{id}' not found"
+            )));
+        }
+        query_research_job_template(&conn, id)
+    }
+
+    /// Mark one research job template archived.
+    pub async fn archive_research_job_template(
+        &self,
+        id: &str,
+    ) -> Result<ResearchJobTemplate, DashboardError> {
+        self.set_research_job_template_status(id, "archived").await
+    }
+
+    /// Restore one archived research job template.
+    pub async fn restore_research_job_template(
+        &self,
+        id: &str,
+    ) -> Result<ResearchJobTemplate, DashboardError> {
+        self.set_research_job_template_status(id, "active").await
+    }
+
+    /// Delete one research job template metadata row.
+    pub async fn delete_research_job_template(
+        &self,
+        id: &str,
+    ) -> Result<ResearchJobTemplate, DashboardError> {
+        let conn = self.conn.lock().await;
+        let template = query_research_job_template(&conn, id)?;
+        conn.execute(
+            "DELETE FROM research_job_templates WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(template)
+    }
+
+    /// Record one successful job creation from a template.
+    pub async fn record_research_job_template_use(
+        &self,
+        id: &str,
+    ) -> Result<ResearchJobTemplate, DashboardError> {
+        let conn = self.conn.lock().await;
+        let now = now_ms();
+        let changed = conn.execute(
+            "UPDATE research_job_templates
+             SET last_used_at = ?2, usage_count = usage_count + 1, updated_at = ?2
+             WHERE id = ?1 AND status = 'active'",
+            params![id, now],
+        )?;
+        if changed == 0 {
+            return Err(DashboardError::NotFound(format!(
+                "active research job template '{id}' not found"
+            )));
+        }
+        query_research_job_template(&conn, id)
+    }
+
+    /// Update one template lifecycle status.
+    async fn set_research_job_template_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> Result<ResearchJobTemplate, DashboardError> {
+        validate_research_job_template_status(status)?;
+        let conn = self.conn.lock().await;
+        let now = now_ms();
+        let changed = conn.execute(
+            "UPDATE research_job_templates
+             SET status = ?2, updated_at = ?3
+             WHERE id = ?1",
+            params![id, status, now],
+        )?;
+        if changed == 0 {
+            return Err(DashboardError::NotFound(format!(
+                "research job template '{id}' not found"
+            )));
+        }
+        query_research_job_template(&conn, id)
     }
 
     /// List artifact transfers.
@@ -3569,6 +3810,25 @@ fn query_research_job(conn: &Connection, job_id: &str) -> Result<ResearchJob, Da
     .ok_or_else(|| DashboardError::NotFound(format!("research job '{job_id}' not found")))
 }
 
+/// Return one research job template by ID.
+fn query_research_job_template(
+    conn: &Connection,
+    template_id: &str,
+) -> Result<ResearchJobTemplate, DashboardError> {
+    conn.query_row(
+        "SELECT id, name, description, job_type, artifact_id, priority, params_json, status,
+                created_by, created_at, updated_at, last_used_at, usage_count
+         FROM research_job_templates
+         WHERE id = ?1",
+        params![template_id],
+        research_job_template_from_row,
+    )
+    .optional()?
+    .ok_or_else(|| {
+        DashboardError::NotFound(format!("research job template '{template_id}' not found"))
+    })
+}
+
 /// Verify that one research machine exists.
 fn ensure_research_machine_exists(
     conn: &Connection,
@@ -3628,6 +3888,111 @@ fn validate_research_report_status(status: &str) -> Result<(), DashboardError> {
             "research report status must be available or archived".to_string(),
         ))
     }
+}
+
+/// Validate a complete research job template record.
+fn validate_research_job_template_record(
+    conn: &Connection,
+    record: &ResearchJobTemplateRecord<'_>,
+) -> Result<(), DashboardError> {
+    if record.name.trim().is_empty() {
+        return Err(DashboardError::BadRequest(
+            "research job template name must not be empty".to_string(),
+        ));
+    }
+    validate_research_job_template_job_type(record.job_type)?;
+    validate_research_job_template_params(record.params_json)?;
+    ensure_user_exists(conn, record.operator_id)?;
+    if let Some(artifact_id) = record.artifact_id {
+        if artifact_id.trim().is_empty() {
+            return Err(DashboardError::BadRequest(
+                "artifact_id must not be empty when provided".to_string(),
+            ));
+        }
+        ensure_artifact_exists(conn, artifact_id)?;
+    }
+    Ok(())
+}
+
+/// Validate a template-supported job type.
+fn validate_research_job_template_job_type(job_type: &str) -> Result<(), DashboardError> {
+    if matches!(job_type, "current_params" | "sweep") {
+        Ok(())
+    } else {
+        Err(DashboardError::BadRequest(
+            "research job templates support current_params and sweep jobs".to_string(),
+        ))
+    }
+}
+
+/// Validate a template lifecycle status.
+fn validate_research_job_template_status(status: &str) -> Result<(), DashboardError> {
+    if matches!(status, "active" | "archived") {
+        Ok(())
+    } else {
+        Err(DashboardError::BadRequest(
+            "research job template status must be active or archived".to_string(),
+        ))
+    }
+}
+
+/// Validate serialized template params.
+fn validate_research_job_template_params(params_json: &str) -> Result<(), DashboardError> {
+    let parsed: serde_json::Value = serde_json::from_str(params_json).map_err(|error| {
+        DashboardError::BadRequest(format!(
+            "research job template params must be JSON: {error}"
+        ))
+    })?;
+    if parsed.is_object() {
+        Ok(())
+    } else {
+        Err(DashboardError::BadRequest(
+            "research job template params must be a JSON object".to_string(),
+        ))
+    }
+}
+
+/// Verify that one user exists.
+fn ensure_user_exists(conn: &Connection, user_id: &str) -> Result<(), DashboardError> {
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM users WHERE id = ?1",
+            params![user_id],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Err(DashboardError::NotFound(format!(
+            "user '{user_id}' not found"
+        )));
+    }
+    Ok(())
+}
+
+/// Trim optional text and convert empty strings to `NULL`.
+fn trim_optional_text(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Map one research job template row.
+fn research_job_template_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ResearchJobTemplate> {
+    Ok(ResearchJobTemplate {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        job_type: row.get(3)?,
+        artifact_id: row.get(4)?,
+        priority: row.get(5)?,
+        params_json: row.get(6)?,
+        status: row.get(7)?,
+        created_by: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+        last_used_at: row.get(11)?,
+        usage_count: row.get(12)?,
+    })
 }
 
 /// Map one research job row.

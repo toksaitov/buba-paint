@@ -730,6 +730,124 @@ async fn create_research_job_rejects_invalid_type_and_missing_artifact() {
     assert!(missing_artifact.is_err());
 }
 
+/// Verifies reusable research job templates can be managed and marked used.
+#[tokio::test]
+async fn research_job_templates_crud_and_usage() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let artifact = db
+        .create_research_artifact(
+            Some("live"),
+            "readonly_run",
+            "available",
+            Some("live_readonly"),
+            Some("/tmp/artifact/manifest.json"),
+        )
+        .await
+        .unwrap();
+
+    let template = db
+        .create_research_job_template(&ResearchJobTemplateRecord {
+            name: "Two minute backtest",
+            description: Some("bounded smoke"),
+            job_type: "current_params",
+            artifact_id: Some(&artifact.id),
+            priority: 3,
+            params_json: r#"{"start_ms":1,"end_ms":2}"#,
+            operator_id: &user.id,
+        })
+        .await
+        .unwrap();
+    let listed = db.list_research_job_templates().await.unwrap();
+    let updated = db
+        .update_research_job_template(
+            &template.id,
+            &ResearchJobTemplateRecord {
+                name: "Narrow sweep",
+                description: None,
+                job_type: "sweep",
+                artifact_id: Some(&artifact.id),
+                priority: 5,
+                params_json: r#"{"sweeps":["A=1,2"],"start_ms":1,"end_ms":2}"#,
+                operator_id: &user.id,
+            },
+        )
+        .await
+        .unwrap();
+    let archived = db
+        .archive_research_job_template(&template.id)
+        .await
+        .unwrap();
+    let restored = db
+        .restore_research_job_template(&template.id)
+        .await
+        .unwrap();
+    let used = db
+        .record_research_job_template_use(&template.id)
+        .await
+        .unwrap();
+    let deleted = db.delete_research_job_template(&template.id).await.unwrap();
+    let missing = db.get_research_job_template(&template.id).await.unwrap();
+
+    assert_eq!(listed.len(), 1);
+    assert_eq!(template.status, "active");
+    assert_eq!(updated.name, "Narrow sweep");
+    assert_eq!(updated.description, None);
+    assert_eq!(updated.priority, 5);
+    assert_eq!(archived.status, "archived");
+    assert_eq!(restored.status, "active");
+    assert_eq!(used.usage_count, 1);
+    assert!(used.last_used_at.is_some());
+    assert_eq!(deleted.id, template.id);
+    assert!(missing.is_none());
+}
+
+/// Verifies reusable research job templates validate type, params, artifact, and name.
+#[tokio::test]
+async fn research_job_templates_validate_inputs() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let base = ResearchJobTemplateRecord {
+        name: "Valid",
+        description: None,
+        job_type: "current_params",
+        artifact_id: None,
+        priority: 0,
+        params_json: "{}",
+        operator_id: &user.id,
+    };
+
+    let empty_name = db
+        .create_research_job_template(&ResearchJobTemplateRecord {
+            name: "",
+            ..base.clone()
+        })
+        .await;
+    let invalid_type = db
+        .create_research_job_template(&ResearchJobTemplateRecord {
+            job_type: "export",
+            ..base.clone()
+        })
+        .await;
+    let invalid_params = db
+        .create_research_job_template(&ResearchJobTemplateRecord {
+            params_json: "[]",
+            ..base.clone()
+        })
+        .await;
+    let missing_artifact = db
+        .create_research_job_template(&ResearchJobTemplateRecord {
+            artifact_id: Some("missing-artifact"),
+            ..base
+        })
+        .await;
+
+    assert!(empty_name.is_err());
+    assert!(invalid_type.is_err());
+    assert!(invalid_params.is_err());
+    assert!(missing_artifact.is_err());
+}
+
 /// Verifies that research jobs can be cancelled and retried.
 #[tokio::test]
 async fn research_job_cancel_and_retry_updates_status() {

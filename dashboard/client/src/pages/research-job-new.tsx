@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Banner,
+  FormField,
   SectionCard,
 } from "../components/ui/dashboard-primitives";
 import { Loading } from "../components/common/loading";
 import { JobCreateForm } from "../components/research/job-create-form";
+import { initialValuesFromTemplate } from "../components/research/job-form-values";
 import { RoleGate } from "../components/research/role-gate";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
+import { useResearchJobTemplates } from "../hooks/use-research-templates";
 import { useAuthStore } from "../stores/auth-store";
 import { createResearchJob } from "../lib/research-api";
 import type {
@@ -33,7 +36,19 @@ export function ResearchJobNewPage() {
   const role = user?.role;
 
   const artifactsQuery = useResearchArtifacts();
+  const templatesQuery = useResearchJobTemplates();
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const templates = useMemo(
+    () =>
+      (templatesQuery.data?.templates ?? []).filter(
+        (template) => template.status === "active",
+      ),
+    [templatesQuery.data],
+  );
+  const selectedTemplate = templates.find(
+    (template) => template.id === selectedTemplateId,
+  );
 
   const mutation = useMutation({
     mutationFn: (req: CreateJobRequest) => createResearchJob(req),
@@ -68,17 +83,62 @@ export function ResearchJobNewPage() {
               {(artifactsQuery.error as Error)?.message ?? "Unknown error"}
             </Banner>
           ) : (
-            <JobCreateForm
-              artifacts={artifactsQuery.data?.artifacts ?? []}
-              initialType={parseType(params.get("type")) ?? "current_params"}
-              pending={mutation.isPending}
-              error={error}
-              onSubmit={(req) => {
-                setError(null);
-                mutation.mutate(req);
-              }}
-              onCancel={() => navigate("/research/jobs")}
-            />
+            <div className="space-y-3">
+              <FormField label="Template" hint="Optional shared defaults">
+                {({ id }) => (
+                  <select
+                    id={id}
+                    value={selectedTemplateId}
+                    onChange={(event) =>
+                      setSelectedTemplateId(event.currentTarget.value)
+                    }
+                    className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
+                    disabled={templatesQuery.isLoading}
+                  >
+                    <option value="">No template</option>
+                    {templates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </FormField>
+              {templatesQuery.isError && (
+                <Banner tone="warning" title="Could not load templates">
+                  {(templatesQuery.error as Error)?.message ?? "Unknown error"}
+                </Banner>
+              )}
+              <JobCreateForm
+                key={selectedTemplate?.id ?? "manual"}
+                artifacts={artifactsQuery.data?.artifacts ?? []}
+                initialType={
+                  selectedTemplate?.job_type ??
+                  parseType(params.get("type")) ??
+                  "current_params"
+                }
+                initialValues={
+                  selectedTemplate
+                    ? initialValuesFromTemplate(selectedTemplate)
+                    : undefined
+                }
+                typeLocked={selectedTemplate != null}
+                showPriority
+                submitLabel={
+                  selectedTemplate ? "Create from template" : "Create job"
+                }
+                pending={mutation.isPending}
+                error={error}
+                onSubmit={(req: CreateJobRequest) => {
+                  setError(null);
+                  mutation.mutate({
+                    ...req,
+                    template_id: selectedTemplate?.id,
+                  });
+                }}
+                onCancel={() => navigate("/research/jobs")}
+              />
+            </div>
           )}
         </SectionCard>
       </RoleGate>

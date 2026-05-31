@@ -16,12 +16,12 @@ Use this file to answer:
 
 ## Current Status
 
-Status: phases 1-8 are implemented and smoke-tested on `testing`.
+Status: phases 1-9 are implemented and smoke-tested on `testing`.
 
 There is no active implementation phase at the moment. The completed historical
-work remains phases 1-7T plus canonical Phase 8. The remaining roadmap is
-finite: phases 9-11 are required before calling the Research section ready for
-the next paper-run research/backtesting cycle. Anything outside those three
+work remains phases 1-7T plus canonical phases 8-9. The remaining roadmap is
+finite: phases 10-11 are required before calling the Research section ready for
+the next paper-run research/backtesting cycle. Anything outside those two
 phases is explicitly later work.
 
 The system can now:
@@ -38,6 +38,11 @@ The system can now:
 * Rank, inspect, and compare reports from the dashboard.
 * Diagnose blocked/failed jobs.
 * Clone blocked/failed jobs with edited params and guarded intervals.
+* Inspect queue, attention, retention, and disabled-host state from Research
+  home.
+* Create shared current-params and sweep job templates.
+* Archive completed scratch DBs, reports, and eligible artifacts from guarded
+  bulk retention controls without deleting durable files.
 
 ## Research-Ready Finish Line
 
@@ -123,9 +128,9 @@ ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'curl -sf http://localhost:3002/hea
 Current deployed digest refs in `ops/research-images.lock.json`:
 
 * Dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:e1b858fa24b57985516a23ea0f40eaa4c9613b19bf481e038921f44b49c6bfa7`
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
 * Research worker:
-  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:ae7d295389afd633a01bd7607cdc176863b51be3f4b096025b9586e8116597ad`
+  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
 
 Publish/deploy path:
 
@@ -152,6 +157,7 @@ Implemented:
 * Job steps.
 * Job events.
 * Reports.
+* Shared job templates.
 * Typed research machine telemetry state.
 * Typed research machine telemetry sample history.
 
@@ -244,6 +250,31 @@ Scratch archive deletes only prepared/backtest SQLite families under the job
 root. It preserves report JSON, report CSV, report metadata, artifact files,
 manifests, and checksums.
 
+### Queue, Templates, And Retention
+
+Implemented:
+
+* Research home queue cockpit.
+* Queue endpoint:
+  `GET /api/research/queue`
+* Queue counts for active, waiting, retryable, blocked, failed, stale-lease,
+  transfer, disabled-host, and retention attention states.
+* Shared current-params and sweep job templates.
+* Template APIs for list, create, read, update, archive, restore, and delete.
+* Job creation from an active template with usage count and job event recording.
+* New Job template loading.
+* Job detail Save as template action.
+* Retention endpoint:
+  `GET /api/research/retention`
+* Bulk archive endpoint:
+  `POST /api/research/retention/archive`
+* Bulk retention can archive completed job scratch DBs, report metadata, and
+  artifact metadata when no active dependencies block it.
+* Bulk retention does not permanently delete report files, artifact files,
+  manifests, or checksums.
+* Jobs, transfers, artifacts, and reports have operator presets for active,
+  attention, completed, stale, archived, and cleanup-oriented states.
+
 ### Machine Observability
 
 Implemented:
@@ -304,6 +335,89 @@ Implemented:
 * Observers can inspect diagnosis and clone params, but cannot submit mutations.
 
 ## Latest End-To-End Evidence
+
+### Browser Queue, Templates, And Retention Smoke
+
+Target: `testing` through `http://127.0.0.1:3302`.
+
+Deployed image refs:
+
+* dashboard:
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
+* research worker:
+  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
+
+Verified from API before browser smoke:
+
+* queue endpoint returned 11 jobs, 2 blocked jobs, 0 stale leases, and 5 recent
+  reports.
+* retention endpoint returned 6 scratch candidates, 6 report candidates, 2
+  artifact candidates, and about 73.5 MiB of cleanup candidates.
+* machine telemetry for `research` was fresh, idle, not stale, and returned 60
+  samples.
+
+Browser-created template:
+
+* name: `p9`
+* template: `e936c682-4a71-4023-845f-8fe9338f32a9`
+* job type: current params
+* artifact: `live-readonly-20260514-184119-finalized-20260517-075706Z`
+
+Template-created bounded jobs:
+
+* job: `b9bbbf44-49c0-4e1d-becb-97b1f0e3e43a`
+* report: `b6dcf1d4-dd5f-4b48-98ed-eacc13c22e4a`
+* persisted params:
+  * `start_ms=1779003540000`
+  * `end_ms=1779003660000`
+  * `balance=100`
+* job event included `created from research job template`.
+* all six steps completed.
+* report JSON loaded in browser.
+* report CSV loaded in browser.
+* report detail showed schema v2 metrics, provenance, worker image, top
+  rejection reasons, no-trade/no-signal diagnostics, and charts.
+* job created directly through New Job template selector:
+  `16802ef8-8fad-4a79-b577-cbbda882373c`
+* New Job UI prefilled the artifact, priority, `start_ms`, `end_ms`, and balance
+  from template `p9`.
+* direct UI-created job report:
+  `e4995d3b-fdd6-4e07-9ff7-6e8d925bfc3c`
+* direct UI-created job completed all six steps.
+
+Retention archive smoke:
+
+* job scratch archived:
+  `b9bbbf44-49c0-4e1d-becb-97b1f0e3e43a`
+* report metadata archived:
+  `b6dcf1d4-dd5f-4b48-98ed-eacc13c22e4a`
+* artifact metadata archived:
+  `register-smoke-20260517105413`
+* browser result: `Archived 3 items; 0 errors.`
+* deleted scratch paths included:
+  * `prepared-backtest.db`
+  * `backtest.db`
+  * `backtest.db-wal`
+  * `backtest.db-shm`
+* preserved files verified on `testing`:
+  * `prepared-backtest.db.manifest.json`
+  * `report.json`
+  * `report.csv`
+* archived report JSON and CSV still loaded in the browser.
+
+Filter and observability smoke:
+
+* Jobs exposed active, attention, completed, cancelled, stale lease, and delete
+  eligible presets.
+* Transfers exposed active, attention, completed, stale, checksum failed,
+  paused, and cancelled presets.
+* Artifacts exposed available, archived, active dependencies, archive eligible,
+  and missing readiness presets.
+* Reports exposed analysis and retention presets, including archive candidates
+  and archived only.
+* Research > Machines > research returned to idle with fresh telemetry after the
+  smoke.
+* `buba-paint` container IDs stayed unchanged before and after deploy and smoke.
 
 ### Browser Recovery Smoke
 
@@ -455,8 +569,14 @@ Frontend:
 * `dashboard/client/src/pages/research-job-detail.tsx`
 * `dashboard/client/src/components/research/job-create-form.tsx`
 * `dashboard/client/src/components/research/job-clone-dialog.tsx`
+* `dashboard/client/src/components/research/job-form-values.ts`
 * `dashboard/client/src/components/research/job-recovery-diagnosis.tsx`
+* `dashboard/client/src/hooks/use-research-templates.ts`
+* `dashboard/client/src/pages/research-overview.tsx`
+* `dashboard/client/src/pages/research-jobs.tsx`
 * `dashboard/client/src/pages/research-machine-detail.tsx`
+* `dashboard/client/src/pages/research-artifacts.tsx`
+* `dashboard/client/src/pages/research-transfers.tsx`
 * `dashboard/client/src/pages/research-reports.tsx`
 * `dashboard/client/src/pages/research-report-detail.tsx`
 * `dashboard/client/src/pages/research-report-compare.tsx`
@@ -479,6 +599,8 @@ Fixtures and tests:
 * `dashboard/client/src/pages/__tests__/research-report-compare.test.tsx`
 * `dashboard/client/src/lib/__tests__/research-report-analysis.test.ts`
 * `dashboard/client/src/components/research/__tests__/job-create-form.test.tsx`
+* `dashboard/client/src/pages/__tests__/research-job-new.test.tsx`
+* `dashboard/client/src/pages/__tests__/research-overview.test.tsx`
 * `dashboard/server/src/tests/api_research_tests.rs`
 * `dashboard/server/src/tests/db_tests.rs`
 * `dashboard/server/src/tests/research_worker_tests.rs`
@@ -486,7 +608,7 @@ Fixtures and tests:
 ## Remaining Phases
 
 Do not create new lettered phases. Continue from the completed 1-7T history and
-use phases 9-11 until the research-ready finish line is reached.
+use phases 10-11 until the research-ready finish line is reached.
 
 ### Phase 8: Results And Comparison
 
@@ -514,6 +636,8 @@ Stop condition:
 
 ### Phase 9: Operator Queue, Templates, And Retention
 
+Status: complete.
+
 Goal: make day-to-day operation of research history and queue state complete.
 
 Required deliverables:
@@ -531,9 +655,11 @@ Required deliverables:
 
 Stop condition:
 
-* A browser smoke on `testing` can create from a template, recover or classify
-  blocked work, archive completed scratch/report history safely, and leave the
-  dashboard in a clear state.
+* Complete. Browser smoke on `testing` created a current-params template,
+  created a bounded job from it, verified the template event, completed all six
+  steps, loaded report JSON and CSV, archived scratch/report/artifact candidates,
+  preserved report files, verified list presets, and returned Research >
+  Machines to idle fresh telemetry.
 
 ### Phase 10: Deployment, Backup, Rollback, And Diagnostics
 

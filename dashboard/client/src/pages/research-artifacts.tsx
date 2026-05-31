@@ -16,37 +16,89 @@ import { Loading } from "../components/common/loading";
 import { Dialog } from "../components/ui/dialog";
 import { StatusFilter } from "../components/research/status-filter";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
+import { useResearchJobs } from "../hooks/use-research-jobs";
 import { useResearchMachines } from "../hooks/use-research-machines";
+import { useResearchReports } from "../hooks/use-research-reports";
+import { useResearchTransfers } from "../hooks/use-research-transfers";
 import { useAuthStore } from "../stores/auth-store";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   importResearchArtifact,
   registerResearchArtifact,
 } from "../lib/research-api";
-import { artifactTone } from "../lib/research-permissions";
+import {
+  artifactTone,
+  isJobTerminal,
+  isTransferTerminal,
+} from "../lib/research-permissions";
 import type {
   ArtifactStatus,
   ImportArtifactRequest,
+  JobStatus,
   RegisterArtifactRequest,
+  TransferStatus,
 } from "../lib/research-types";
 import { formatBytes, formatDateTime, humanize } from "../lib/utils";
 
 const ALL_STATUSES: ArtifactStatus[] = ["available", "archived"];
+
+const PRESET_OPTIONS = [
+  { value: "all", label: "All artifacts" },
+  { value: "available", label: "Available" },
+  { value: "archived", label: "Archived" },
+  { value: "active_dependencies", label: "Active dependencies" },
+  { value: "archive_eligible", label: "Archive eligible" },
+  { value: "missing_readiness", label: "Missing readiness" },
+] as const;
+
+type ArtifactPreset = (typeof PRESET_OPTIONS)[number]["value"];
 
 export function ResearchArtifactsPage() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === "admin";
   const artifactsQuery = useResearchArtifacts();
   const machinesQuery = useResearchMachines();
+  const jobsQuery = useResearchJobs();
+  const transfersQuery = useResearchTransfers();
+  const reportsQuery = useResearchReports();
   const [active, setActive] = useState<string[]>(["available"]);
   const [importOpen, setImportOpen] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [preset, setPreset] = useState<ArtifactPreset>("available");
+  const [search, setSearch] = useState("");
 
   const artifactsData = artifactsQuery.data?.artifacts;
   const machines = machinesQuery.data?.machines ?? [];
+  const jobsData = jobsQuery.data?.jobs;
+  const transfersData = transfersQuery.data?.transfers;
+  const reportsData = reportsQuery.data?.reports;
   const filtered = useMemo(
-    () => (artifactsData ?? []).filter((a) => active.includes(a.status)),
-    [artifactsData, active],
+    () => {
+      const needle = search.trim().toLowerCase();
+      const jobs = jobsData ?? [];
+      const transfers = transfersData ?? [];
+      const reports = reportsData ?? [];
+      return (artifactsData ?? [])
+        .filter((a) => active.includes(a.status))
+        .filter((a) =>
+          artifactPresetMatches(preset, a, jobs, transfers, reports),
+        )
+        .filter((a) => {
+          if (!needle) return true;
+          return [
+            a.id,
+            a.kind,
+            a.status,
+            a.run_mode ?? "",
+            a.source_machine_id ?? "",
+            a.checksum ?? "",
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(needle);
+        });
+    },
+    [artifactsData, active, preset, jobsData, transfersData, reportsData, search],
   );
 
   if (artifactsQuery.isLoading) {
@@ -66,6 +118,20 @@ export function ResearchArtifactsPage() {
         title="All artifacts"
         toolbar={
           <div className="flex gap-2">
+            <select
+              aria-label="Artifact preset"
+              value={preset}
+              onChange={(event) =>
+                setPreset(event.currentTarget.value as ArtifactPreset)
+              }
+              className="border border-border bg-bg px-2 py-1 text-[11px]"
+            >
+              {PRESET_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
             <Button
               size="sm"
               iconLeft={<Plus size={14} />}
@@ -95,6 +161,14 @@ export function ResearchArtifactsPage() {
           toneFor={(s) => artifactTone(s as ArtifactStatus)}
           ariaLabel="Artifact status filter"
         />
+        <div className="mb-3 max-w-md">
+          <Input
+            aria-label="Search artifacts"
+            value={search}
+            onChange={(event) => setSearch(event.currentTarget.value)}
+            placeholder="Search artifact, mode, source"
+          />
+        </div>
         {filtered.length === 0 ? (
           <StateEmpty message="No artifacts match the selected filters. Create an export job or import an artifact directory to populate this list." />
         ) : (
@@ -171,6 +245,58 @@ export function ResearchArtifactsPage() {
           : "—"}
       </div>
     </div>
+  );
+}
+
+function artifactPresetMatches(
+  preset: ArtifactPreset,
+  artifact: {
+    id: string;
+    status: ArtifactStatus;
+    replay_quality_class: string | null;
+    backtest_ready_class: string | null;
+    live_fidelity_class: string | null;
+  },
+  jobs: { artifact_id: string | null; status: string }[],
+  transfers: { artifact_id: string; status: string }[],
+  reports: { artifact_id: string | null }[],
+): boolean {
+  const activeDependencies = activeArtifactDependencies(
+    artifact.id,
+    jobs,
+    transfers,
+  );
+  if (preset === "all") return true;
+  if (preset === "available") return artifact.status === "available";
+  if (preset === "archived") return artifact.status === "archived";
+  if (preset === "active_dependencies") return activeDependencies > 0;
+  if (preset === "archive_eligible") {
+    return artifact.status === "available" && activeDependencies === 0;
+  }
+  return (
+    artifact.replay_quality_class == null ||
+    artifact.backtest_ready_class == null ||
+    artifact.live_fidelity_class == null ||
+    !reports.some((report) => report.artifact_id === artifact.id)
+  );
+}
+
+function activeArtifactDependencies(
+  artifactId: string,
+  jobs: { artifact_id: string | null; status: string }[],
+  transfers: { artifact_id: string; status: string }[],
+): number {
+  return (
+    jobs.filter(
+      (job) =>
+        job.artifact_id === artifactId &&
+        !isJobTerminal(job.status as JobStatus),
+    ).length +
+    transfers.filter(
+      (transfer) =>
+        transfer.artifact_id === artifactId &&
+        !isTransferTerminal(transfer.status as TransferStatus),
+    ).length
   );
 }
 

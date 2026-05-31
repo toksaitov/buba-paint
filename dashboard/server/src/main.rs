@@ -144,7 +144,20 @@ fn research_routes() -> Router<AppState> {
         .merge(research_artifact_routes())
         .merge(research_transfer_routes())
         .merge(research_job_routes())
+        .merge(research_template_routes())
+        .merge(research_queue_routes())
         .merge(research_report_routes())
+}
+
+/// Builds queue and retention research routes.
+fn research_queue_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/research/queue", get(research::get_queue))
+        .route("/api/research/retention", get(research::get_retention))
+        .route(
+            "/api/research/retention/archive",
+            post(research::archive_retention),
+        )
 }
 
 /// Builds artifact research routes.
@@ -273,6 +286,29 @@ fn research_job_routes() -> Router<AppState> {
         .route(
             "/api/research/jobs/{id}/events",
             post(research::append_job_event),
+        )
+}
+
+/// Builds reusable job template research routes.
+fn research_template_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/research/job-templates",
+            get(research::list_job_templates).post(research::create_job_template),
+        )
+        .route(
+            "/api/research/job-templates/{id}",
+            get(research::get_job_template)
+                .patch(research::update_job_template)
+                .delete(research::delete_job_template),
+        )
+        .route(
+            "/api/research/job-templates/{id}/archive",
+            post(research::archive_job_template),
+        )
+        .route(
+            "/api/research/job-templates/{id}/restore",
+            post(research::restore_job_template),
         )
 }
 
