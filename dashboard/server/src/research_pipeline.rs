@@ -17,6 +17,7 @@ use tokio::io::AsyncReadExt;
 use crate::db::{DashboardDb, ResearchArtifact, ResearchJob, ResearchJobStep};
 use crate::error::DashboardError;
 use crate::research_artifacts;
+use crate::research_reports;
 
 /// Static configuration required to plan and run local research jobs.
 #[derive(Debug, Clone)]
@@ -532,26 +533,12 @@ pub fn write_report_files(
 ) -> Result<String, DashboardError> {
     create_parent_dir(&plan.report_json_path)?;
     create_parent_dir(&plan.report_csv_path)?;
-    let summary = serde_json::json!({
-        "schema_version": 1,
-        "job_id": plan.job_id,
-        "job_type": plan.job_type,
-        "artifact_id": plan.artifact_id,
-        "data_db_path": path_to_string(&plan.data_db_path),
-        "prepared_db_output_path": path_to_string(&plan.prepared_db_output_path),
-        "backtest_output_path": path_to_string(&plan.backtest_output_path),
-        "sweep_output_path": path_to_string(&plan.sweep_output_path),
-        "report_json_path": path_to_string(&plan.report_json_path),
-        "report_csv_path": path_to_string(&plan.report_csv_path),
-        "steps": steps.iter().map(step_summary).collect::<Vec<_>>(),
-    });
-    let summary_json = serde_json::to_string_pretty(&summary)
-        .map_err(|e| DashboardError::Internal(format!("serializing research report: {e}")))?;
-    std::fs::write(&plan.report_json_path, &summary_json)
+    let documents = research_reports::build_report_documents(plan, steps)?;
+    std::fs::write(&plan.report_json_path, &documents.full_json)
         .map_err(|e| DashboardError::Internal(format!("writing research report JSON: {e}")))?;
-    std::fs::write(&plan.report_csv_path, step_csv(steps))
+    std::fs::write(&plan.report_csv_path, &documents.csv)
         .map_err(|e| DashboardError::Internal(format!("writing research report CSV: {e}")))?;
-    Ok(summary_json)
+    Ok(documents.summary_json)
 }
 
 /// Delete scratch `SQLite` outputs after reports are preserved.
@@ -791,42 +778,6 @@ fn create_parent_dir(path: &Path) -> Result<(), DashboardError> {
             .map_err(|e| DashboardError::Internal(format!("creating report directory: {e}")))?;
     }
     Ok(())
-}
-
-/// Return the JSON step summary for one report row.
-fn step_summary(step: &ResearchJobStep) -> serde_json::Value {
-    serde_json::json!({
-        "index": step.step_index,
-        "name": step.name,
-        "status": step.status,
-        "attempts": step.attempts,
-        "error": step.error,
-    })
-}
-
-/// Return CSV text describing the step states for a report.
-fn step_csv(steps: &[ResearchJobStep]) -> String {
-    let mut rows = vec!["step_index,name,status,attempts,error\n".to_string()];
-    for step in steps {
-        rows.push(format!(
-            "{},{},{},{},{}\n",
-            step.step_index,
-            csv_cell(&step.name),
-            csv_cell(&step.status),
-            step.attempts,
-            csv_cell(step.error.as_deref().unwrap_or(""))
-        ));
-    }
-    rows.concat()
-}
-
-/// Escape one CSV cell.
-fn csv_cell(value: &str) -> String {
-    if value.contains([',', '"', '\n']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
 }
 
 /// Archive one `SQLite` file and its sidecars after path safety checks.

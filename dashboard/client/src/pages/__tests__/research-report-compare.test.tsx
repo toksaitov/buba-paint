@@ -1,0 +1,92 @@
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
+import { ResearchReportComparePage } from "../research-report-compare";
+import type { ResearchReport } from "../../lib/research-types";
+
+vi.mock("../../lib/research-api", () => ({
+  getResearchReport: vi.fn(),
+  getResearchReportJson: vi.fn(),
+}));
+
+import {
+  getResearchReport,
+  getResearchReportJson,
+} from "../../lib/research-api";
+
+const mockGetReport = vi.mocked(getResearchReport);
+const mockGetJson = vi.mocked(getResearchReportJson);
+
+function wrapper({ children }: { children: ReactNode }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={["/research/reports/compare?ids=a,b"]}>
+        {children}
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
+function report(id: string): ResearchReport {
+  return {
+    id,
+    job_id: `job-${id}`,
+    artifact_id: "artifact-a",
+    title: `Report ${id}`,
+    status: "available",
+    summary_json: null,
+    report_path: `/reports/${id}.json`,
+    csv_path: `/reports/${id}.csv`,
+    created_at: 1,
+    updated_at: 2,
+  };
+}
+
+function payload(id: string, pnl: number, artifact = "artifact-a") {
+  return {
+    schema_version: 2,
+    provenance: {
+      job_id: `job-${id}`,
+      job_type: "current_params",
+      artifact_id: artifact,
+      start: "2026-05-17T06:39:00.000Z",
+      end: "2026-05-17T06:41:00.000Z",
+      start_ms: 1,
+      end_ms: 2,
+      balance: 200,
+    },
+    metrics: {
+      net_pnl: pnl,
+      max_drawdown: -1,
+      win_rate: 0.5,
+      trade_count: 2,
+    },
+    diagnostics: [],
+  };
+}
+
+beforeEach(() => {
+  mockGetReport.mockReset();
+  mockGetJson.mockReset();
+  mockGetReport.mockImplementation(async (id: string) => report(id));
+  mockGetJson.mockImplementation(async (id: string) =>
+    id === "a" ? payload(id, 1, "artifact-b") : payload(id, 5),
+  );
+});
+
+describe("ResearchReportComparePage", () => {
+  it("ranks reports by Net PnL and warns about incompatible provenance", async () => {
+    render(<ResearchReportComparePage />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByText(/best by net pnl: report b/i)).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/different artifacts/i)).toBeInTheDocument();
+    expect(screen.getByText("1. Report b")).toBeInTheDocument();
+    expect(screen.getByText("+$5.00")).toBeInTheDocument();
+  });
+});

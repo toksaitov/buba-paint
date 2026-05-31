@@ -19,6 +19,7 @@ use crate::research_pipeline::{
     BubaPaintCommandKind, CommandCancellation, CommandOutput, CommandSpec, ResearchCommandExecutor,
     ResearchPipelineConfig, ResearchPipelinePlan, archive_scratch_dbs, write_report_files,
 };
+use crate::research_reports::append_report_json_field;
 
 /// Durable research step names understood by the local worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -490,22 +491,24 @@ impl LocalResearchWorker {
             match archive_scratch_dbs(&plan) {
                 Ok(summary) => {
                     summary_json = report_summary_with_field(&summary_json, "archive", &summary)?;
-                    write_report_json_file(&plan, &summary_json)?;
+                    append_report_json_field(&plan.report_json_path, "archive", &summary)?;
                     report_id =
                         persist_research_report_metadata(db, lease, &plan, &summary_json).await?;
                     Some(summary)
                 }
                 Err(error) => {
                     let reason = error.to_string();
-                    summary_json = report_summary_with_field(
-                        &summary_json,
+                    let archive_error = serde_json::json!({
+                        "status": "failed",
+                        "error": reason,
+                    });
+                    summary_json =
+                        report_summary_with_field(&summary_json, "archive_error", &archive_error)?;
+                    append_report_json_field(
+                        &plan.report_json_path,
                         "archive_error",
-                        &serde_json::json!({
-                            "status": "failed",
-                            "error": reason,
-                        }),
+                        &archive_error,
                     )?;
-                    write_report_json_file(&plan, &summary_json)?;
                     persist_research_report_metadata(db, lease, &plan, &summary_json).await?;
                     return Err(error);
                 }
@@ -657,15 +660,6 @@ fn report_summary_with_field<T: serde::Serialize>(
         .map_err(|e| DashboardError::Internal(format!("serializing report field: {e}")))?;
     serde_json::to_string_pretty(&value)
         .map_err(|e| DashboardError::Internal(format!("serializing research report: {e}")))
-}
-
-/// Rewrite the JSON report file after adding post-report metadata.
-fn write_report_json_file(
-    plan: &ResearchPipelinePlan,
-    summary_json: &str,
-) -> Result<(), DashboardError> {
-    std::fs::write(&plan.report_json_path, summary_json)
-        .map_err(|e| DashboardError::Internal(format!("writing research report JSON: {e}")))
 }
 
 /// Complete a step when a local action succeeds, otherwise block it.

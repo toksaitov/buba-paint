@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -49,61 +49,15 @@ import {
   permissionHint,
   reportTone,
 } from "../lib/research-permissions";
+import {
+  parseReportPayload,
+  parseReportSummary,
+} from "../lib/research-report-analysis";
 import type {
   ResearchAction,
   UpdateReportRequest,
 } from "../lib/research-types";
 import { formatDateTime, formatSignedUsd, humanize } from "../lib/utils";
-
-interface EquityPoint {
-  ts: number;
-  equity: number;
-}
-
-interface SummaryShape {
-  net_pnl?: number;
-  max_drawdown?: number;
-  win_rate?: number;
-  trade_count?: number;
-}
-
-function parseSummary(value: string | null): SummaryShape | null {
-  if (!value) return null;
-  try {
-    return JSON.parse(value) as SummaryShape;
-  } catch {
-    return null;
-  }
-}
-
-function extractEquityCurve(payload: unknown): EquityPoint[] {
-  if (typeof payload !== "object" || payload === null) return [];
-  const record = payload as { equity_curve?: unknown };
-  const arr = record.equity_curve;
-  if (!Array.isArray(arr)) return [];
-  return arr
-    .map((entry): EquityPoint | null => {
-      if (typeof entry !== "object" || entry === null) return null;
-      const e = entry as { ts?: unknown; equity?: unknown };
-      const ts = typeof e.ts === "number" ? e.ts : null;
-      const equity = typeof e.equity === "number" ? e.equity : null;
-      if (ts == null || equity == null) return null;
-      return { ts, equity };
-    })
-    .filter((point): point is EquityPoint => point !== null);
-}
-
-function extractSweepPoints(
-  payload: unknown,
-): Array<Record<string, unknown>> | null {
-  if (typeof payload !== "object" || payload === null) return null;
-  const record = payload as { sweep_points?: unknown };
-  if (!Array.isArray(record.sweep_points)) return null;
-  return record.sweep_points.filter(
-    (row): row is Record<string, unknown> =>
-      typeof row === "object" && row !== null,
-  );
-}
 
 export function ResearchReportDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -117,7 +71,7 @@ export function ResearchReportDetailPage() {
   const reportQuery = useResearchReport(id);
   const [showJson, setShowJson] = useState(false);
   const [showCsv, setShowCsv] = useState(false);
-  const jsonQuery = useResearchReportJson(id, showJson);
+  const jsonQuery = useResearchReportJson(id, true);
   const csvQuery = useResearchReportCsv(id, showCsv);
 
   const [editTitle, setEditTitle] = useState<string | null>(null);
@@ -193,19 +147,6 @@ export function ResearchReportDetailPage() {
     onError: (err: Error) => setActionError(err.message),
   });
 
-  const summary = useMemo(
-    () => parseSummary(reportQuery.data?.summary_json ?? null),
-    [reportQuery.data],
-  );
-  const equity = useMemo(
-    () => extractEquityCurve(jsonQuery.data),
-    [jsonQuery.data],
-  );
-  const sweepPoints = useMemo(
-    () => extractSweepPoints(jsonQuery.data),
-    [jsonQuery.data],
-  );
-
   if (reportQuery.isLoading) {
     return <Loading label="Loading report" />;
   }
@@ -218,10 +159,19 @@ export function ResearchReportDetailPage() {
   }
 
   const report = reportQuery.data;
+  const parsedSummary = parseReportSummary(report);
+  const parsedPayload = jsonQuery.data
+    ? parseReportPayload(jsonQuery.data, report)
+    : null;
+  const analysis = parsedPayload ?? parsedSummary;
+  const metrics = analysis.metrics;
+  const equity = parsedPayload?.equity_curve ?? [];
+  const drawdown = parsedPayload?.drawdown_curve ?? [];
+  const sweep = parsedPayload?.sweep ?? null;
+  const rejectionReasons = parsedPayload?.rejection_reasons ?? [];
   const allowed = getAllowedActions("report", report.status);
   const canEditTitle = role ? canPerform(role, "update") : false;
-  const filesAppearMissing =
-    showJson && jsonQuery.isError && report.report_path != null;
+  const filesAppearMissing = jsonQuery.isError && report.report_path != null;
 
   return (
     <div className="space-y-3">
@@ -287,6 +237,19 @@ export function ResearchReportDetailPage() {
           {actionError}
         </Banner>
       )}
+      {!analysis.has_analysis && (
+        <Banner tone="warning" title="Analysis metrics unavailable">
+          This report was generated before schema v2 analysis, or the source
+          output files were archived before regeneration. Raw JSON and CSV remain
+          available when the files exist.
+        </Banner>
+      )}
+      {analysis.diagnostics.includes("no_trades") && (
+        <Banner tone="warning" title="No trades in this result">
+          The run completed but produced no trades, so Net PnL comparison is not
+          enough to choose a better configuration.
+        </Banner>
+      )}
 
       <SectionCard title="Provenance">
         <KeyValueList
@@ -317,6 +280,26 @@ export function ResearchReportDetailPage() {
               ),
             },
             {
+              label: "Job type",
+              value: analysis.provenance.job_type
+                ? humanize(analysis.provenance.job_type)
+                : "—",
+            },
+            {
+              label: "Interval",
+              value:
+                analysis.provenance.start && analysis.provenance.end
+                  ? `${analysis.provenance.start} → ${analysis.provenance.end}`
+                  : "—",
+            },
+            {
+              label: "Starting balance",
+              value:
+                analysis.provenance.balance != null
+                  ? formatSignedUsd(analysis.provenance.balance).replace("+", "")
+                  : "—",
+            },
+            {
               label: "Report path",
               value: report.report_path ? (
                 <span className="font-mono text-[11px]">
@@ -330,6 +313,16 @@ export function ResearchReportDetailPage() {
               label: "CSV path",
               value: report.csv_path ? (
                 <span className="font-mono text-[11px]">{report.csv_path}</span>
+              ) : (
+                "—"
+              ),
+            },
+            {
+              label: "Worker image",
+              value: analysis.provenance.research_worker_image_ref ? (
+                <span className="font-mono text-[11px]">
+                  {analysis.provenance.research_worker_image_ref}
+                </span>
               ) : (
                 "—"
               ),
@@ -350,36 +343,135 @@ export function ResearchReportDetailPage() {
         />
       </SectionCard>
 
-      {summary && (
-        <SectionCard title="Summary metrics">
-          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
-            {summary.net_pnl != null && (
-              <MetricCard
-                label="Net PnL"
-                value={formatSignedUsd(summary.net_pnl)}
-                tone={summary.net_pnl >= 0 ? "success" : "danger"}
-              />
-            )}
-            {summary.max_drawdown != null && (
-              <MetricCard
-                label="Max drawdown"
-                value={formatSignedUsd(-Math.abs(summary.max_drawdown))}
-                tone="warning"
-              />
-            )}
-            {summary.win_rate != null && (
-              <MetricCard
-                label="Win rate"
-                value={`${(summary.win_rate * 100).toFixed(1)}%`}
-              />
-            )}
-            {summary.trade_count != null && (
-              <MetricCard
-                label="Trades"
-                value={summary.trade_count.toLocaleString()}
-              />
-            )}
+      <SectionCard title="Summary metrics">
+        <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
+          <MetricCard
+            label="Net PnL"
+            value={formatMetricUsd(metrics.net_pnl)}
+            tone={
+              metrics.net_pnl == null
+                ? "neutral"
+                : metrics.net_pnl >= 0
+                  ? "success"
+                  : "danger"
+            }
+          />
+          <MetricCard
+            label="Max drawdown"
+            value={formatMetricUsd(metrics.max_drawdown)}
+            tone="warning"
+          />
+          <MetricCard label="Win rate" value={formatPercent(metrics.win_rate)} />
+          <MetricCard label="Trades" value={formatInteger(metrics.trade_count)} />
+          <MetricCard
+            label="Final balance"
+            value={formatUsd(metrics.final_balance)}
+          />
+          <MetricCard
+            label="Signals"
+            value={formatInteger(metrics.signal_count)}
+          />
+          <MetricCard label="Wins" value={formatInteger(metrics.wins)} />
+          <MetricCard label="Losses" value={formatInteger(metrics.losses)} />
+        </div>
+      </SectionCard>
+
+      {rejectionReasons.length > 0 && (
+        <SectionCard title="Top rejection reasons">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-[12px]">
+              <thead className="border-b border-border bg-surface text-left text-[11px] uppercase text-muted">
+                <tr>
+                  <th className="px-2 py-1.5 font-semibold">Reason</th>
+                  <th className="px-2 py-1.5 font-semibold">Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rejectionReasons.map((reason) => (
+                  <tr key={reason.reason} className="border-b border-border">
+                    <td className="px-2 py-1.5 font-mono text-[11px]">
+                      {reason.reason}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums">
+                      {reason.count.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+        </SectionCard>
+      )}
+
+      <SectionCard title="Equity and drawdown">
+        {jsonQuery.isLoading ? (
+          <Loading label="Loading report analysis" />
+        ) : jsonQuery.isError ? (
+          <Banner tone="danger" title="Could not load report JSON">
+            {(jsonQuery.error as Error)?.message ?? "Unknown error"}
+          </Banner>
+        ) : equity.length > 0 ? (
+          <div className="grid gap-3 lg:grid-cols-2">
+            <MetricLineChart
+              title="Equity curve"
+              data={equity}
+              dataKey="equity"
+              colors={colors}
+            />
+            <MetricLineChart
+              title="Drawdown"
+              data={drawdown}
+              dataKey="drawdown"
+              colors={colors}
+            />
+          </div>
+        ) : (
+          <StateEmpty message="No equity or drawdown series is available for this report." />
+        )}
+      </SectionCard>
+
+      {sweep && (
+        <SectionCard title="Sweep ranking">
+          {sweep.rows.length === 0 ? (
+            <StateEmpty message="No sweep rows are available." />
+          ) : (
+            <div className="overflow-x-auto border border-border">
+              <table className="w-full border-collapse text-[11px]">
+                <thead className="border-b border-border bg-surface text-left text-[10px] uppercase text-muted">
+                  <tr>
+                    <th className="px-2 py-1 font-semibold">Rank</th>
+                    {[...sweep.parameter_columns, ...sweep.metric_columns].map(
+                      (column) => (
+                        <th key={column} className="px-2 py-1 font-semibold">
+                          {column}
+                        </th>
+                      ),
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sweep.rows.slice(0, 50).map((row) => (
+                    <tr
+                      key={row.rank ?? JSON.stringify(row.params)}
+                      className="border-b border-border last:border-b-0"
+                    >
+                      <td className="px-2 py-1 tabular-nums">{row.rank}</td>
+                      {sweep.parameter_columns.map((column) => (
+                        <td key={column} className="px-2 py-1 tabular-nums">
+                          {String(row.params[column] ?? "")}
+                        </td>
+                      ))}
+                      {sweep.metric_columns.map((column) => (
+                        <td key={column} className="px-2 py-1 tabular-nums">
+                          {String(row.metrics[column] ?? "")}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </SectionCard>
       )}
 
@@ -387,12 +479,12 @@ export function ResearchReportDetailPage() {
         title="Report JSON"
         toolbar={
           <Button size="sm" onClick={() => setShowJson((s) => !s)}>
-            {showJson ? "Hide" : "Load JSON"}
+            {showJson ? "Hide raw" : "Show raw"}
           </Button>
         }
       >
         {!showJson ? (
-          <StateEmpty message="Click 'Load JSON' to fetch the report JSON. Equity and sweep visualizations will render after the load." />
+          <StateEmpty message="Raw JSON is hidden." />
         ) : jsonQuery.isLoading ? (
           <Loading label="Loading report JSON" />
         ) : jsonQuery.isError ? (
@@ -400,96 +492,7 @@ export function ResearchReportDetailPage() {
             {(jsonQuery.error as Error)?.message ?? "Unknown error"}
           </Banner>
         ) : (
-          <div className="space-y-3">
-            {equity.length > 0 && (
-              <div>
-                <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">
-                  Equity curve
-                </h3>
-                <div style={{ width: "100%", height: 200 }} className="mt-2">
-                  <ResponsiveContainer>
-                    <LineChart
-                      data={equity}
-                      margin={{ top: 4, right: 8, bottom: 4, left: 0 }}
-                    >
-                      <CartesianGrid
-                        stroke={colors.gridColor}
-                        strokeDasharray="3 3"
-                      />
-                      <XAxis
-                        dataKey="ts"
-                        type="number"
-                        domain={["dataMin", "dataMax"]}
-                        tick={{ fill: colors.textColor, fontSize: 10 }}
-                        tickFormatter={(value: number) =>
-                          new Date(value).toLocaleTimeString()
-                        }
-                      />
-                      <YAxis
-                        tick={{ fill: colors.textColor, fontSize: 10 }}
-                        width={56}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          background: colors.tooltipBg,
-                          border: `1px solid ${colors.borderColor}`,
-                          color: colors.textColor,
-                          fontSize: 11,
-                        }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="equity"
-                        stroke={colors.lineColor}
-                        strokeWidth={1.5}
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            )}
-            {sweepPoints && sweepPoints.length > 0 && (
-              <div>
-                <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">
-                  Sweep points
-                </h3>
-                <div className="mt-2 overflow-x-auto border border-border">
-                  <table className="w-full border-collapse text-[11px]">
-                    <thead className="border-b border-border bg-surface text-left text-[10px] uppercase text-muted">
-                      <tr>
-                        {Object.keys(sweepPoints[0]).map((k) => (
-                          <th key={k} className="px-2 py-1 font-semibold">
-                            {k}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sweepPoints.slice(0, 50).map((row, idx) => (
-                        <tr
-                          key={idx}
-                          className="border-b border-border last:border-b-0"
-                        >
-                          {Object.keys(sweepPoints[0]).map((k) => (
-                            <td key={k} className="px-2 py-1 tabular-nums">
-                              {String(row[k] ?? "")}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-            <JsonViewer
-              value={jsonQuery.data}
-              label="Raw payload"
-              maxHeight={300}
-            />
-          </div>
+          <JsonViewer value={jsonQuery.data} label="Raw payload" maxHeight={300} />
         )}
       </SectionCard>
 
@@ -599,4 +602,73 @@ export function ResearchReportDetailPage() {
       />
     </div>
   );
+}
+
+function MetricLineChart({
+  title,
+  data,
+  dataKey,
+  colors,
+}: {
+  title: string;
+  data: unknown[];
+  dataKey: string;
+  colors: ReturnType<typeof getChartColors>;
+}) {
+  return (
+    <div>
+      <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">
+        {title}
+      </h3>
+      <div style={{ width: "100%", height: 220 }} className="mt-2">
+        <ResponsiveContainer>
+          <LineChart data={data} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
+            <CartesianGrid stroke={colors.gridColor} strokeDasharray="3 3" />
+            <XAxis
+              dataKey="ts"
+              type="number"
+              domain={["dataMin", "dataMax"]}
+              tick={{ fill: colors.textColor, fontSize: 10 }}
+              tickFormatter={(value: number) => new Date(value).toLocaleTimeString()}
+            />
+            <YAxis tick={{ fill: colors.textColor, fontSize: 10 }} width={64} />
+            <Tooltip
+              contentStyle={{
+                background: colors.tooltipBg,
+                border: `1px solid ${colors.borderColor}`,
+                color: colors.textColor,
+                fontSize: 11,
+              }}
+            />
+            <Line
+              type="monotone"
+              dataKey={dataKey}
+              stroke={colors.lineColor}
+              strokeWidth={1.5}
+              dot={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function formatMetricUsd(value: number | null | undefined): string {
+  return typeof value === "number" ? formatSignedUsd(value) : "n/a";
+}
+
+function formatUsd(value: number | null | undefined): string {
+  return typeof value === "number"
+    ? formatSignedUsd(value).replace("+", "")
+    : "n/a";
+}
+
+function formatPercent(value: number | null | undefined): string {
+  return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "n/a";
+}
+
+function formatInteger(value: number | null | undefined): string {
+  return typeof value === "number" ? value.toLocaleString() : "n/a";
 }

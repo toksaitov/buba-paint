@@ -500,7 +500,7 @@ fn archive_scratch_dbs_rejects_non_db_outputs() {
     assert!(result.is_err());
 }
 
-/// Verifies that report writing escapes CSV cells and creates output files.
+/// Verifies that report writing preserves step errors and creates v2 outputs.
 #[test]
 fn write_report_files_escapes_csv_cells_and_creates_outputs() {
     let work_dir = tempfile::tempdir().unwrap();
@@ -518,10 +518,17 @@ fn write_report_files_escapes_csv_cells_and_creates_outputs() {
 
     let summary = write_report_files(&plan, &steps).unwrap();
     let csv = std::fs::read_to_string(&plan.report_csv_path).unwrap();
+    let report_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&plan.report_json_path).unwrap()).unwrap();
 
     assert!(plan.report_json_path.exists());
     assert!(summary.contains("\"job_id\": \"job-1\""));
-    assert!(csv.contains("\"bad \"\"quote\"\", line\nnext\""));
+    assert_eq!(report_json["schema_version"], 2);
+    assert_eq!(
+        report_json["steps"][1]["error"],
+        "bad \"quote\", line\nnext"
+    );
+    assert!(csv.contains("section,name,value"));
 }
 
 /// Verifies that the process executor captures status, stdout, and stderr.

@@ -23,6 +23,7 @@ import { ResearchJobsPage } from "./pages/research-jobs";
 import { ResearchJobNewPage } from "./pages/research-job-new";
 import { ResearchJobDetailPage } from "./pages/research-job-detail";
 import { ResearchReportsPage } from "./pages/research-reports";
+import { ResearchReportComparePage } from "./pages/research-report-compare";
 import { ResearchReportDetailPage } from "./pages/research-report-detail";
 
 const queryClient = new QueryClient({
@@ -71,6 +72,7 @@ export default function App() {
             <Route path="/research/jobs/new" element={<ResearchJobNewPage />} />
             <Route path="/research/jobs/:id" element={<ResearchJobDetailPage />} />
             <Route path="/research/reports" element={<ResearchReportsPage />} />
+            <Route path="/research/reports/compare" element={<ResearchReportComparePage />} />
             <Route path="/research/reports/:id" element={<ResearchReportDetailPage />} />
           </Route>
         </Routes>

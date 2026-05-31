@@ -7,5 +7,6 @@ pub mod proxy;
 pub mod research_artifacts;
 pub mod research_export;
 pub mod research_pipeline;
+pub mod research_reports;
 pub mod research_transfer;
 pub mod research_worker;

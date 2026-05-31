@@ -25,7 +25,10 @@ use crate::db::{
 };
 use crate::error::DashboardError;
 use crate::research_artifacts;
-use crate::research_pipeline::{ArchiveSummary, ResearchPipelineConfig, archive_scratch_dbs};
+use crate::research_pipeline::{
+    ArchiveSummary, ResearchPipelineConfig, archive_scratch_dbs, write_report_files,
+};
+use crate::research_reports::{append_report_json_field, report_analysis_source_exists};
 
 /// Response body for `GET /api/research/machines`.
 #[derive(serde::Serialize)]
@@ -1349,7 +1352,20 @@ pub async fn regenerate_job_report(
         )));
     }
     let report_paths = resolve_regenerated_report_paths(&state, &detail.job.id, existing.as_ref())?;
-    let summary_json = write_regenerated_report_files(&detail, existing.as_ref(), &report_paths)?;
+    let summary_json = if supports_analysis_regeneration(&detail.job.job_type) {
+        let artifact = research_artifact_for_job(&state, &detail.job).await?;
+        let pipeline = pipeline_for_archive(&state)?;
+        let mut plan = pipeline.plan_for_job(&detail.job, artifact.as_ref())?;
+        plan.report_json_path = report_paths.report_path.clone();
+        plan.report_csv_path = report_paths.csv_path.clone();
+        if report_analysis_source_exists(&plan) {
+            write_report_files(&plan, &detail.steps)?
+        } else {
+            write_regenerated_report_files(&detail, existing.as_ref(), &report_paths)?
+        }
+    } else {
+        write_regenerated_report_files(&detail, existing.as_ref(), &report_paths)?
+    };
     let default_title = format!("Research job {}", detail.job.id);
     let title = existing
         .as_ref()
@@ -1378,6 +1394,11 @@ pub async fn regenerate_job_report(
         report_path: path_to_string(&report_paths.report_path),
         csv_path: path_to_string(&report_paths.csv_path),
     }))
+}
+
+/// Return whether a research job type can regenerate analysis outputs.
+fn supports_analysis_regeneration(job_type: &str) -> bool {
+    matches!(job_type, "current_params" | "sweep")
 }
 
 /// `POST /api/research/jobs/:id/archive-scratch`
@@ -1732,6 +1753,7 @@ fn write_regenerated_report_files(
     let summary = serde_json::json!({
         "schema_version": 1,
         "regenerated": true,
+        "analysis_warning": "analysis source output is missing; regenerated report contains durable step state only",
         "job": &detail.job,
         "steps": &detail.steps,
         "events": &detail.events,
@@ -1878,8 +1900,7 @@ async fn update_report_archive_summary(
     if report.report_path.is_some() {
         let report_path =
             resolve_report_file_path(state, report.report_path.as_deref(), "report_path")?;
-        std::fs::write(&report_path, &summary_json)
-            .map_err(|error| DashboardError::Internal(format!("writing report JSON: {error}")))?;
+        append_report_json_field(&report_path, "archive", archive)?;
     }
 
     state
