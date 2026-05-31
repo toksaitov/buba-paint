@@ -15,6 +15,9 @@ Root-level scripts are active automation or setup entry points. Manual charting 
 * `live-low-latency-local.py`: runs hot-path audit, targeted writer/feed tests, and Compose config checks, then writes an evidence bundle under `/tmp` by default. Run through `make live-low-latency-local`; use `LIVE_LOW_LATENCY_ARGS="--dry-run"` to inspect commands only.
 * `live-docker-smoke.py`: runs the local no-Caddy Docker `live_readonly` stack for 10 minutes on a Docker-native runtime volume, copies DB/log evidence to `/tmp`, and checks logs, restart counts, SQLite integrity, replay validation, feed classes, and zero live venue rows. Run through `make live-docker-smoke`; use `LIVE_DOCKER_SMOKE_ARGS="--dry-run"` to inspect the manifest only.
 * `profile-live-runtime.py`: runs a standalone latency-only paper runtime profile against a `/tmp` DB, samples process CPU, and captures Linux `perf` output when available. Run through `make live-runtime-profile`; use `LIVE_RUNTIME_PROFILE_ARGS="--dry-run"` to inspect the evidence path only.
+* `publish-research-images.py`: builds and pushes the registry-pinned research dashboard and worker images, then writes `ops/research-images.lock.json` with digest refs.
+* `deploy-machine.py`: deploys inventory-defined Compose stacks. Non-dry-run deploys are currently restricted to the `research` machine.
+* `research-maintenance.py`: JSON-output operator utility for research status, DB backup, DB restore, diagnostics bundle collection, digest-lock rollback, and live safety snapshots.
 * `ts_comment_audit.mjs`: enforces the TypeScript comment policy used by `make lint` and `make comment-audit`.
 
 ## Setup

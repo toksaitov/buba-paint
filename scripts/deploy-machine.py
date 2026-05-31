@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-sync", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--image-lock-override", type=Path)
+    parser.add_argument("--allow-stale-image-lock", action="store_true")
     return parser.parse_args()
 
 
@@ -42,7 +44,13 @@ def load_inventory(path: Path) -> dict[str, Any]:
         return tomllib.load(handle)
 
 
-def machine_plan(inventory: dict[str, Any], machine_id: str) -> dict[str, Any]:
+def machine_plan(
+    inventory: dict[str, Any],
+    machine_id: str,
+    *,
+    image_lock_override: Path | None = None,
+    allow_stale_image_lock: bool = False,
+) -> dict[str, Any]:
     machines = inventory.get("machines", {})
     if machine_id not in machines:
         raise KeyError(f"unknown machine '{machine_id}'")
@@ -52,8 +60,14 @@ def machine_plan(inventory: dict[str, Any], machine_id: str) -> dict[str, Any]:
     registry = machine.get("registry", defaults.get("registry", ""))
     image_tag = defaults.get("image_tag", "local")
     registry_pinned = bool(machine.get("registry_pinned", False))
-    image_lock_file = machine.get("image_lock_file")
-    image_lock = load_image_lock(image_lock_file) if registry_pinned else None
+    if image_lock_override and not registry_pinned:
+        raise ValueError("image lock override is supported only for registry-pinned machines")
+    image_lock_file = str(image_lock_override) if image_lock_override else machine.get("image_lock_file")
+    image_lock = (
+        load_image_lock(image_lock_file, allow_stale=allow_stale_image_lock)
+        if registry_pinned
+        else None
+    )
     return {
         "machine": machine_id,
         "role": machine["role"],
@@ -70,6 +84,8 @@ def machine_plan(inventory: dict[str, Any], machine_id: str) -> dict[str, Any]:
         "image_tag": image_tag,
         "images": images,
         "image_lock_file": image_lock_file,
+        "image_lock_override": str(image_lock_override) if image_lock_override else None,
+        "allow_stale_image_lock": allow_stale_image_lock,
         "locked_images": locked_images_from_lock(image_lock) if image_lock else {},
         "registry_namespace": image_lock.get("namespace") if image_lock else None,
         "deferred": bool(machine.get("deferred", False)),
@@ -78,7 +94,7 @@ def machine_plan(inventory: dict[str, Any], machine_id: str) -> dict[str, Any]:
     }
 
 
-def load_image_lock(path_value: str | None) -> dict[str, Any]:
+def load_image_lock(path_value: str | None, *, allow_stale: bool = False) -> dict[str, Any]:
     if not path_value:
         raise ValueError("registry-pinned machines require image_lock_file")
     path = Path(path_value)
@@ -86,11 +102,11 @@ def load_image_lock(path_value: str | None) -> dict[str, Any]:
         path = REPO_ROOT / path
     with path.open("rb") as handle:
         lock = json.load(handle)
-    validate_image_lock(lock, path)
+    validate_image_lock(lock, path, allow_stale=allow_stale)
     return lock
 
 
-def validate_image_lock(lock: dict[str, Any], path: Path) -> None:
+def validate_image_lock(lock: dict[str, Any], path: Path, *, allow_stale: bool = False) -> None:
     images = lock.get("images")
     if not isinstance(images, dict):
         raise ValueError(f"{path} missing images object")
@@ -99,7 +115,7 @@ def validate_image_lock(lock: dict[str, Any], path: Path) -> None:
         raise ValueError(f"{path} missing image refs for: {', '.join(missing)}")
     current_hashes = all_image_input_hashes(REPO_ROOT)
     locked_hashes = lock.get("input_hashes")
-    if locked_hashes != current_hashes:
+    if locked_hashes != current_hashes and not allow_stale:
         raise ValueError(f"{path} is stale; run scripts/publish-research-images.py")
     for key in RESEARCH_LOCK_IMAGE_ENVS:
         image = images.get(key)
@@ -443,16 +459,62 @@ def verify_research(plan: dict[str, Any]) -> dict[str, Any]:
         [
             "set -euo pipefail",
             f"cd {quote(root)}",
-            "docker compose -f docker-compose.research.yml ps --format json",
-            "printf '\\n--- health ---\\n'",
-            "curl -sf http://localhost:3002/health",
-            "printf '\\n--- worker-log ---\\n'",
-            "tail -n 20 .docker/research/runtime/research-worker.log 2>/dev/null || true",
-            "printf '\\n--- dashboard-log ---\\n'",
-            "tail -n 20 .docker/research/runtime/dashboard.log 2>/dev/null || true",
+            "python3 - <<'PY'",
+            "import json, subprocess, urllib.request",
+            "def run(args):",
+            "    return subprocess.run(args, capture_output=True, text=True, check=False)",
+            "def tail(path):",
+            "    result = run(['tail', '-n', '20', path])",
+            "    return result.stdout if result.returncode == 0 else ''",
+            "ps = run(['docker', 'compose', '-f', 'docker-compose.research.yml', 'ps', '--format', 'json'])",
+            "rows = []",
+            "for line in ps.stdout.splitlines():",
+            "    if not line.strip():",
+            "        continue",
+            "    row = json.loads(line)",
+            "    rows.append({key: row.get(key) for key in ('Service', 'Name', 'ID', 'Image', 'State', 'Status', 'Health', 'RunningFor') if key in row})",
+            "with urllib.request.urlopen('http://localhost:3002/health', timeout=10) as response:",
+            "    health = json.loads(response.read())",
+            "print(json.dumps({",
+            "    'compose_ps': {'returncode': ps.returncode, 'services': rows, 'stderr': ps.stderr},",
+            "    'health': health,",
+            "    'worker_log_tail': tail('.docker/research/runtime/research-worker.log'),",
+            "    'dashboard_log_tail': tail('.docker/research/runtime/dashboard.log'),",
+            "}, indent=2, sort_keys=True))",
+            "PY",
         ]
     )
-    return {"verification": remote_output(plan, script)}
+    output = remote_output(plan, script)
+    try:
+        return {"verification": json.loads(output)}
+    except json.JSONDecodeError:
+        return {"verification": output}
+
+
+def collect_failure_diagnostics(plan: dict[str, Any]) -> dict[str, Any]:
+    script = "\n".join(
+        [
+            "set +e",
+            f"cd {quote(plan['remote_root'])} 2>/dev/null || true",
+            "python3 - <<'PY'",
+            "import json, subprocess",
+            "def capture(cmd):",
+            "    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)",
+            "    return {'returncode': result.returncode, 'stdout': result.stdout[-12000:], 'stderr': result.stderr[-4000:]}",
+            "payload = {",
+            "    'compose_ps': capture('docker compose -f docker-compose.research.yml ps --format json'),",
+            "    'health': capture('curl -sf http://localhost:3002/health'),",
+            "    'worker_log_tail': capture('tail -n 80 .docker/research/runtime/research-worker.log 2>/dev/null'),",
+            "    'dashboard_log_tail': capture('tail -n 80 .docker/research/runtime/dashboard.log 2>/dev/null'),",
+            "}",
+            "print(json.dumps(payload, indent=2, sort_keys=True))",
+            "PY",
+        ]
+    )
+    try:
+        return {"ok": True, "diagnostics": json.loads(remote_output(plan, script))}
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def deploy(plan: dict[str, Any], *, skip_sync: bool, skip_build: bool) -> dict[str, Any]:
@@ -479,7 +541,12 @@ def main() -> int:
     args = parse_args()
     try:
         inventory = load_inventory(args.inventory)
-        plan = machine_plan(inventory, args.machine)
+        plan = machine_plan(
+            inventory,
+            args.machine,
+            image_lock_override=args.image_lock_override,
+            allow_stale_image_lock=args.allow_stale_image_lock,
+        )
     except (OSError, KeyError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -492,6 +559,9 @@ def main() -> int:
         result = deploy(plan, skip_sync=args.skip_sync, skip_build=args.skip_build)
     except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
+        if plan.get("machine") == "research" and plan.get("will_connect"):
+            diagnostics = collect_failure_diagnostics(plan)
+            print(json.dumps({"failure_diagnostics": diagnostics}, indent=2, sort_keys=True), file=sys.stderr)
         return 2
     print(json.dumps({"plan": plan, "result": result}, indent=2, sort_keys=True))
     return 0

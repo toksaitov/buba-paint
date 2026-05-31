@@ -16,13 +16,13 @@ Use this file to answer:
 
 ## Current Status
 
-Status: phases 1-9 are implemented and smoke-tested on `testing`.
+Status: phases 1-10 are implemented and smoke-tested on `testing`.
 
 There is no active implementation phase at the moment. The completed historical
-work remains phases 1-7T plus canonical phases 8-9. The remaining roadmap is
-finite: phases 10-11 are required before calling the Research section ready for
-the next paper-run research/backtesting cycle. Anything outside those two
-phases is explicitly later work.
+work remains phases 1-7T plus canonical phases 8-10. The remaining roadmap is
+finite: phase 11 is the last required phase before calling the Research section
+ready for the next paper-run research/backtesting cycle. Anything outside that
+phase is explicitly later work.
 
 The system can now:
 
@@ -43,6 +43,9 @@ The system can now:
 * Create shared current-params and sweep job templates.
 * Archive completed scratch DBs, reports, and eligible artifacts from guarded
   bulk retention controls without deleting durable files.
+* Back up and restore the research dashboard DB on `testing`.
+* Collect redacted research diagnostics bundles on `testing`.
+* Roll back and roll forward digest-pinned research deployments.
 
 ## Research-Ready Finish Line
 
@@ -336,6 +339,86 @@ Implemented:
 
 ## Latest End-To-End Evidence
 
+### Deployment, Backup, Rollback, And Diagnostics Smoke
+
+Target: `testing`.
+
+Implemented script entry point:
+
+* `scripts/research-maintenance.py`
+
+Validated commands:
+
+```bash
+python3 scripts/research-maintenance.py status --machine research
+python3 scripts/research-maintenance.py backup-db --machine research
+python3 scripts/research-maintenance.py restore-db --machine research --backup dashboard-db-20260531-085911 --confirm
+python3 scripts/research-maintenance.py collect-diagnostics --machine research
+python3 scripts/research-maintenance.py rollback --machine research --to-ref HEAD~1 --confirm
+python3 scripts/research-maintenance.py live-safety --machine live
+```
+
+Diagnostics bundle:
+
+* `/tmp/buba-research-diagnostics-20260531-085838.tar.gz`
+* contained compose status/config, redacted `.env`, health, queue, retention,
+  templates, jobs, transfers, artifacts, reports, telemetry, log tails, disk
+  state, and Docker inspect summaries.
+* verified `ADMIN_PASSWORD` and `BUBA_RESEARCH_WORKER_TOKEN` were redacted.
+
+DB backup and restore:
+
+* backup: `dashboard-db-20260531-085911`
+* backup DB size: `1781760` bytes
+* backup SHA-256:
+  `7e3bf7c517ca2d7a00a6115e7fee03d20014f6c337e09c4bc7f5660bc8c14491`
+* backup `PRAGMA quick_check`: `ok`
+* pre-restore safety backups:
+  * `pre-restore-20260531-085916`
+  * `pre-restore-20260531-090125`
+* restored DB `PRAGMA quick_check`: `ok`
+* restore restarted only `research-dashboard` and `research-worker` on
+  `testing`.
+* restore preserved the digest-pinned image refs from the backup manifest:
+  * dashboard:
+    `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
+  * research worker:
+    `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
+* post-restore verification read health, queue, reports, templates, retention,
+  and telemetry successfully.
+
+Rollback rehearsal:
+
+* rollback source: `HEAD~1`
+* rollback dashboard image:
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:e1b858fa24b57985516a23ea0f40eaa4c9613b19bf481e038921f44b49c6bfa7`
+* rollback worker image:
+  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:ae7d295389afd633a01bd7607cdc176863b51be3f4b096025b9586e8116597ad`
+* rollback health passed.
+* roll-forward returned `testing` to the current lock:
+  * dashboard:
+    `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
+  * research worker:
+    `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
+* temporary GHCR auth directories under `.docker/ghcr-auth.*` were absent after
+  deploy cleanup.
+
+Final remote state:
+
+* `research-dashboard`: `e965fd0e9ed8`, healthy, current dashboard digest.
+* `research-worker`: `6435a68327fc`, running, current worker digest.
+* Research telemetry: `stale=false`, worker status `idle`, sample count `60`,
+  sampler error `null`.
+* Research DB counts: 13 jobs, 8 reports, 3 artifacts, 3 transfers, 1 template.
+
+Live safety evidence:
+
+* `buba-paint-agent-1`: `50003527ee0e`
+* `buba-paint-caddy-1`: `2deb6c87a582`
+* `buba-paint-dashboard-1`: `773286fe7eb7`
+* IDs and two-week uptime stayed unchanged before and after the `testing`
+  restore/rollback rehearsal.
+
 ### Browser Queue, Templates, And Retention Smoke
 
 Target: `testing` through `http://127.0.0.1:3302`.
@@ -589,6 +672,7 @@ Deployment and inventory:
 * `ops/research-images.lock.json`
 * `scripts/publish-research-images.py`
 * `scripts/deploy-machine.py`
+* `scripts/research-maintenance.py`
 
 Fixtures and tests:
 
@@ -604,6 +688,7 @@ Fixtures and tests:
 * `dashboard/server/src/tests/api_research_tests.rs`
 * `dashboard/server/src/tests/db_tests.rs`
 * `dashboard/server/src/tests/research_worker_tests.rs`
+* `scripts/tests/test_research_maintenance.py`
 
 ## Remaining Phases
 
@@ -663,6 +748,8 @@ Stop condition:
 
 ### Phase 10: Deployment, Backup, Rollback, And Diagnostics
 
+Status: complete.
+
 Goal: make research deployment and incident handling boring enough for repeated
 use.
 
@@ -679,8 +766,9 @@ Required deliverables:
 
 Stop condition:
 
-* A controlled deploy, rollback, log-bundle, backup, and restore rehearsal passes
-  on `testing` without touching live containers.
+* Complete. A controlled diagnostics bundle, DB backup, DB restore, rollback to
+  `HEAD~1`, and roll-forward to the current image lock passed on `testing`.
+  Live `buba-paint` container IDs stayed unchanged.
 
 ### Phase 11: Paper-Run Readiness Rehearsal
 

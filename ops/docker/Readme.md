@@ -84,6 +84,24 @@ ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-resear
 ssh testing "curl.exe -s http://localhost:3002/health"
 ```
 
+Research maintenance operations:
+
+```bash
+python3 scripts/research-maintenance.py status --machine research
+python3 scripts/research-maintenance.py backup-db --machine research
+python3 scripts/research-maintenance.py restore-db --machine research --backup <backup-id> --confirm
+python3 scripts/research-maintenance.py collect-diagnostics --machine research
+python3 scripts/research-maintenance.py rollback --machine research --to-ref HEAD~1 --confirm
+python3 scripts/research-maintenance.py live-safety --machine live
+```
+
+Backups stay on `testing` under
+`/home/testing/buba-paint-research/.docker/research/runtime/backups`.
+Diagnostics bundles are redacted tarballs under `/tmp` on `testing`. Rollback
+deploys an explicit previous image lock and then rolls forward to the current
+tracked lock during rehearsal, leaving the final `testing` state on the latest
+research images.
+
 ## Operations
 
 Inspect services:
