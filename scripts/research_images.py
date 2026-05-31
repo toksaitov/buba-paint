@@ -1,4 +1,4 @@
-"""Shared research image metadata and input hashing."""
+"""Shared deployment image metadata and input hashing."""
 
 from __future__ import annotations
 
@@ -27,6 +27,38 @@ RESEARCH_IMAGE_INPUTS: dict[str, tuple[str, ...]] = {
         "agent/Cargo.toml",
     ),
 }
+LIVE_IMAGE_INPUTS: dict[str, tuple[str, ...]] = {
+    "dashboard": RESEARCH_IMAGE_INPUTS["dashboard"],
+    "agent": (
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/buba-machine-telemetry",
+        "agent/Dockerfile",
+        "agent",
+        "bots/paint/Cargo.toml",
+        "dashboard/server/Cargo.toml",
+    ),
+    "paint": (
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/buba-machine-telemetry",
+        "bots/paint/Dockerfile",
+        "bots/paint",
+        "agent/Cargo.toml",
+        "dashboard/server/Cargo.toml",
+    ),
+    "sidecar": (
+        "polymarket-sidecar/Dockerfile",
+        "polymarket-sidecar/package.json",
+        "polymarket-sidecar/package-lock.json",
+        "polymarket-sidecar/src",
+        "polymarket-sidecar/tsconfig.json",
+    ),
+}
+IMAGE_INPUTS: dict[str, tuple[str, ...]] = {
+    **RESEARCH_IMAGE_INPUTS,
+    **LIVE_IMAGE_INPUTS,
+}
 
 SKIP_DIRS = {
     ".git",
@@ -43,21 +75,26 @@ SKIP_DIRS = {
 
 
 def image_input_hash(repo_root: Path, image_key: str) -> str:
-    """Return a stable hash for the files that affect one research image."""
-    if image_key not in RESEARCH_IMAGE_INPUTS:
-        raise KeyError(f"unknown research image key: {image_key}")
+    """Return a stable hash for the files that affect one image."""
+    if image_key not in IMAGE_INPUTS:
+        raise KeyError(f"unknown image key: {image_key}")
     digest = hashlib.sha256()
-    for rel_path in RESEARCH_IMAGE_INPUTS[image_key]:
+    for rel_path in IMAGE_INPUTS[image_key]:
         add_path_to_hash(digest, repo_root, Path(rel_path))
     return digest.hexdigest()
 
 
-def all_image_input_hashes(repo_root: Path) -> dict[str, str]:
-    """Return input hashes for every research image."""
-    return {
-        key: image_input_hash(repo_root, key)
-        for key in sorted(RESEARCH_IMAGE_INPUTS)
-    }
+def all_image_input_hashes(
+    repo_root: Path,
+    image_keys: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, str]:
+    """Return input hashes for the requested images."""
+    keys = (
+        tuple(image_keys)
+        if image_keys is not None
+        else tuple(sorted(RESEARCH_IMAGE_INPUTS))
+    )
+    return {key: image_input_hash(repo_root, key) for key in sorted(keys)}
 
 
 def add_path_to_hash(digest: "hashlib._Hash", repo_root: Path, rel_path: Path) -> None:

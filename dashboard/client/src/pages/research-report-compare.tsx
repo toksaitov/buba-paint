@@ -8,6 +8,7 @@ import {
   StateEmpty,
 } from "../components/ui/dashboard-primitives";
 import { Loading } from "../components/common/loading";
+import { useResearchReturnTo } from "../hooks/use-research-return-to";
 import {
   getResearchReport,
   getResearchReportJson,
@@ -21,6 +22,7 @@ import { formatDateTime, formatSignedUsd, humanize } from "../lib/utils";
 
 export function ResearchReportComparePage() {
   const [params] = useSearchParams();
+  const returnToReports = useResearchReturnTo("reports", "/research/reports");
   const ids = (params.get("ids") ?? "")
     .split(",")
     .map((id) => id.trim())
@@ -68,7 +70,7 @@ export function ResearchReportComparePage() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Link
-          to="/research/reports"
+          to={returnToReports}
           className="text-[12px] text-muted hover:underline"
         >
           ← Reports

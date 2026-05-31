@@ -467,6 +467,7 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
     }
 }
 
+/// Terminate a running research child process after durable cancellation.
 async fn terminate_cancelled_child(
     child: &mut tokio::process::Child,
 ) -> Result<ExitStatus, DashboardError> {
@@ -492,6 +493,7 @@ async fn terminate_cancelled_child(
     })
 }
 
+/// Send one signal to a Unix process group by child process ID.
 #[cfg(unix)]
 fn send_process_group_signal(pid: u32, signal: &str) -> Result<(), DashboardError> {
     let status = std::process::Command::new("kill")
@@ -509,6 +511,7 @@ fn send_process_group_signal(pid: u32, signal: &str) -> Result<(), DashboardErro
     }
 }
 
+/// Read one child output stream into a lossy UTF-8 string.
 async fn read_child_output<R>(mut reader: R) -> Result<String, std::io::Error>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -518,6 +521,7 @@ where
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
+/// Join one child output task and convert stream or join failures.
 async fn join_child_output(
     task: tokio::task::JoinHandle<Result<String, std::io::Error>>,
 ) -> Result<String, DashboardError> {

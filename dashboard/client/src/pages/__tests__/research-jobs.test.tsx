@@ -3,8 +3,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { createElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 
-vi.mock("react-router-dom", () => ({
+vi.mock("react-router-dom", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
   Link: ({ children, to }: { children: ReactNode; to: string }) =>
     createElement("a", { href: to }, children),
@@ -26,7 +28,11 @@ const mockUseJobs = vi.mocked(useResearchJobs);
 
 function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return createElement(QueryClientProvider, { client: qc }, children);
+  return createElement(
+    QueryClientProvider,
+    { client: qc },
+    createElement(MemoryRouter, null, children),
+  );
 }
 
 beforeEach(() => {
@@ -65,6 +71,44 @@ describe("ResearchJobsPage - states", () => {
   it("renders empty state when no jobs", () => {
     render(<ResearchJobsPage />, { wrapper });
     expect(screen.getByText(/no jobs yet/i)).toBeInTheDocument();
+  });
+
+  it("renders filtered empty state when jobs do not match selected filters", () => {
+    mockUseJobs.mockReturnValue({
+      data: {
+        jobs: [
+          {
+            id: "job-1",
+            job_type: "current_params",
+            artifact_id: "artifact-1",
+            status: "completed",
+            priority: 1,
+            requested_by: "admin",
+            params_json: null,
+            created_at: 1,
+            updated_at: 2,
+            cancelled_at: null,
+            completed_at: 2,
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJobs>);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/research/jobs?q=missing"]}>
+          <ResearchJobsPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(
+      screen.getByText(/no jobs match the selected filters/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/no jobs yet/i)).not.toBeInTheDocument();
   });
 
   it("renders Loading on fetch", () => {

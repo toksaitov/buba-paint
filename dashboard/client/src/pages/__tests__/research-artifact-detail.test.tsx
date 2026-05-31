@@ -8,6 +8,11 @@ import { createElement } from "react";
 vi.mock("react-router-dom", () => ({
   useParams: () => ({ id: "fixture-artifact-bad-checksum" }),
   useNavigate: () => vi.fn(),
+  useLocation: () => ({
+    pathname: "/research/artifacts/fixture-artifact-bad-checksum",
+    search: "",
+    state: null,
+  }),
   Link: ({ children, to }: { children: ReactNode; to: string }) =>
     createElement("a", { href: to }, children),
 }));

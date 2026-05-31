@@ -1,0 +1,12 @@
+services:
+  sidecar:
+    image: ${BUBA_SIDECAR_IMAGE:-buba-polymarket-sidecar:local}
+
+  paint:
+    image: ${BUBA_PAINT_IMAGE:-buba-paint-bot:local}
+
+  agent:
+    image: ${BUBA_AGENT_IMAGE:-buba-agent:local}
+
+  dashboard:
+    image: ${BUBA_DASHBOARD_IMAGE:-buba-dashboard:local}

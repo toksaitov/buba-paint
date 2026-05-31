@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 import {
   Banner,
   Button,
@@ -12,6 +17,7 @@ import {
 import { Loading } from "../components/common/loading";
 import { StatusFilter } from "../components/research/status-filter";
 import { useResearchReports } from "../hooks/use-research-reports";
+import { useRememberResearchListReturn } from "../hooks/use-research-return-to";
 import {
   parseReportSummary,
   sortReports,
@@ -19,6 +25,15 @@ import {
 } from "../lib/research-report-analysis";
 import { reportTone } from "../lib/research-permissions";
 import type { JobType, ReportStatus } from "../lib/research-types";
+import {
+  readEnumListParam,
+  readEnumParam,
+  readTextParam,
+  setQueryListParam,
+  setQueryParam,
+  updateQueryListParam,
+  updateQueryParam,
+} from "../lib/research-list-url-state";
 import { formatSignedUsd, humanize } from "../lib/utils";
 
 const ALL_STATUSES: ReportStatus[] = ["available", "archived"];
@@ -36,22 +51,44 @@ const SORT_OPTIONS: Array<{ value: ReportSortKey; label: string }> = [
   { value: "win_rate_desc", label: "Win rate" },
   { value: "trades_desc", label: "Trades" },
 ];
+const DEFAULT_STATUSES: ReportStatus[] = ["available"];
+const DEFAULT_SORT: ReportSortKey = "net_pnl_desc";
+const ANALYSIS_FILTERS = ["all", "with", "missing"] as const;
+const RETENTION_FILTERS = ["all", "archive_candidate", "archived"] as const;
 
 export function ResearchReportsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  useRememberResearchListReturn("reports", "/research/reports");
+  const returnToReports = `${location.pathname}${location.search}`;
   const reportsQuery = useResearchReports();
-  const [active, setActive] = useState<string[]>(["available"]);
-  const [typeFilter, setTypeFilter] = useState<"all" | JobType | "unknown">(
+  const typeFilter = readEnumParam(searchParams, "type", JOB_TYPES, "all");
+  const analysisFilter = readEnumParam(
+    searchParams,
+    "analysis",
+    ANALYSIS_FILTERS,
     "all",
   );
-  const [analysisFilter, setAnalysisFilter] = useState<
-    "all" | "with" | "missing"
-  >("all");
-  const [retentionFilter, setRetentionFilter] = useState<
-    "all" | "archive_candidate" | "archived"
-  >("all");
-  const [artifactFilter, setArtifactFilter] = useState("");
-  const [sortKey, setSortKey] = useState<ReportSortKey>("net_pnl_desc");
+  const retentionFilter = readEnumParam(
+    searchParams,
+    "retention",
+    RETENTION_FILTERS,
+    "all",
+  );
+  const active = readEnumListParam(
+    searchParams,
+    "status",
+    ALL_STATUSES,
+    reportRetentionStatuses(retentionFilter),
+  );
+  const artifactFilter = readTextParam(searchParams, "artifact");
+  const sortKey = readEnumParam(
+    searchParams,
+    "sort",
+    SORT_OPTIONS.map((option) => option.value),
+    DEFAULT_SORT,
+  );
   const [selected, setSelected] = useState<string[]>([]);
 
   const reportsData = reportsQuery.data?.reports;
@@ -134,7 +171,13 @@ export function ResearchReportsPage() {
             aria-label="Report job type filter"
             value={typeFilter}
             onChange={(e) =>
-              setTypeFilter(e.currentTarget.value as typeof typeFilter)
+              updateQueryParam(
+                searchParams,
+                setSearchParams,
+                "type",
+                e.currentTarget.value,
+                "all",
+              )
             }
             className="border border-border bg-bg px-2 py-1 text-[11px]"
           >
@@ -148,7 +191,13 @@ export function ResearchReportsPage() {
             aria-label="Report analysis filter"
             value={analysisFilter}
             onChange={(e) =>
-              setAnalysisFilter(e.currentTarget.value as typeof analysisFilter)
+              updateQueryParam(
+                searchParams,
+                setSearchParams,
+                "analysis",
+                e.currentTarget.value,
+                "all",
+              )
             }
             className="border border-border bg-bg px-2 py-1 text-[11px]"
           >
@@ -159,7 +208,15 @@ export function ResearchReportsPage() {
           <select
             aria-label="Report sort"
             value={sortKey}
-            onChange={(e) => setSortKey(e.currentTarget.value as ReportSortKey)}
+            onChange={(e) =>
+              updateQueryParam(
+                searchParams,
+                setSearchParams,
+                "sort",
+                e.currentTarget.value,
+                DEFAULT_SORT,
+              )
+            }
             className="border border-border bg-bg px-2 py-1 text-[11px]"
           >
             {SORT_OPTIONS.map((opt) => (
@@ -171,9 +228,19 @@ export function ResearchReportsPage() {
           <select
             aria-label="Report retention filter"
             value={retentionFilter}
-            onChange={(e) =>
-              setRetentionFilter(e.currentTarget.value as typeof retentionFilter)
-            }
+            onChange={(e) => {
+              const nextRetention = e.currentTarget
+                .value as (typeof RETENTION_FILTERS)[number];
+              const next = new URLSearchParams(searchParams);
+              setQueryParam(next, "retention", nextRetention, "all");
+              setQueryListParam(
+                next,
+                "status",
+                reportRetentionStatuses(nextRetention),
+                reportRetentionStatuses(nextRetention),
+              );
+              setSearchParams(next, { replace: true });
+            }}
             className="border border-border bg-bg px-2 py-1 text-[11px]"
           >
             <option value="all">All retention states</option>
@@ -183,7 +250,15 @@ export function ResearchReportsPage() {
           <Input
             aria-label="Artifact filter"
             value={artifactFilter}
-            onChange={(e) => setArtifactFilter(e.currentTarget.value)}
+            onChange={(e) =>
+              updateQueryParam(
+                searchParams,
+                setSearchParams,
+                "artifact",
+                e.currentTarget.value,
+                "",
+              )
+            }
             placeholder="Filter artifact"
           />
         </div>
@@ -191,12 +266,26 @@ export function ResearchReportsPage() {
           label="Status"
           statuses={ALL_STATUSES}
           active={active}
-          onChange={setActive}
+          onChange={(next) =>
+            updateQueryListParam(
+              searchParams,
+              setSearchParams,
+              "status",
+              next,
+              reportRetentionStatuses(retentionFilter),
+            )
+          }
           toneFor={(s) => reportTone(s as ReportStatus)}
           ariaLabel="Report status filter"
         />
         {filtered.length === 0 ? (
-          <StateEmpty message="No reports yet — they appear after a backtest or sweep job completes." />
+          <StateEmpty
+            message={
+              (reportsQuery.data?.reports ?? []).length === 0
+                ? "No reports yet — they appear after a backtest or sweep job completes."
+                : "No reports match the selected filters."
+            }
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-[12px]">
@@ -238,6 +327,7 @@ export function ResearchReportsPage() {
                       <td className="px-2 py-1.5">
                         <Link
                           to={`/research/reports/${encodeURIComponent(report.id)}`}
+                          state={{ returnTo: returnToReports }}
                           className="font-semibold hover:underline"
                         >
                           {report.title}
@@ -310,6 +400,13 @@ export function ResearchReportsPage() {
       </SectionCard>
     </div>
   );
+}
+
+function reportRetentionStatuses(
+  retention: (typeof RETENTION_FILTERS)[number],
+): ReportStatus[] {
+  if (retention === "archived") return ["archived"];
+  return DEFAULT_STATUSES;
 }
 
 function formatMetricUsd(value: number | null | undefined): string {

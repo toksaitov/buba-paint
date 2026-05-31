@@ -3,7 +3,7 @@ SIDECAR_DIR := polymarket-sidecar
 COMMENT_POLICY := cargo run --quiet --manifest-path tools/rust-comment-policy/Cargo.toml --
 TS_COMMENT_AUDIT := node scripts/ts_comment_audit.mjs
 
-.PHONY: lint comment-audit docs-audit hot-path-audit live-low-latency-local live-docker-smoke live-runtime-profile live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run deploy-machine-dry-run publish-research-images sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
+.PHONY: lint comment-audit docs-audit hot-path-audit live-low-latency-local live-docker-smoke live-runtime-profile live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run deploy-stopped-live-dry-run deploy-machine-dry-run publish-live-images publish-research-images sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
 
 lint:
 	cargo fmt --all --check
@@ -62,9 +62,17 @@ docker-deploy:
 docker-deploy-dry-run:
 	python3 scripts/deploy-docker.py $(DOCKER_DEPLOY_ARGS) --dry-run
 
+DEPLOY_STOPPED_LIVE_ARGS ?=
+deploy-stopped-live-dry-run:
+	python3 scripts/deploy-stopped-live.py $(DEPLOY_STOPPED_LIVE_ARGS) --dry-run
+
 DEPLOY_MACHINE_ARGS ?= --machine research
 deploy-machine-dry-run:
 	python3 scripts/deploy-machine.py $(DEPLOY_MACHINE_ARGS) --dry-run
+
+PUBLISH_LIVE_IMAGES_ARGS ?=
+publish-live-images:
+	python3 scripts/publish-live-images.py $(PUBLISH_LIVE_IMAGES_ARGS)
 
 PUBLISH_RESEARCH_IMAGES_ARGS ?=
 publish-research-images:

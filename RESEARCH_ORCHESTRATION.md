@@ -1,113 +1,116 @@
 # Research Orchestration Tracker
 
-This is the active handoff and implementation tracker for dashboard-centered
-research orchestration. It is no longer a chronological phase ledger. The old
-phase labels were useful while building the first version, but they became
-confusing after UI handoff, remote deployment, telemetry, recovery, and browser
-smokes were completed in overlapping tracks.
-
-Use this file to answer:
-
-* What exists now.
-* Which machines are involved.
-* What was verified.
-* What must not be disturbed.
-* What the finite research-ready finish line is.
+This is the active tracker for dashboard-centered research orchestration. It is
+the current source for what exists, what was verified, which machines are
+involved, and what still gates readiness.
 
 ## Current Status
 
-Status: phases 1-11 are implemented and smoke-tested on `testing`.
+Status: Phase 12 readiness is complete. Phase 13 local cleanup is complete.
 
-There is no active implementation phase at the moment. The completed historical
-work remains phases 1-7T plus canonical phases 8-11. Phase 11 was the last
-required phase before calling the Research section ready for the next paper-run
-research/backtesting cycle. Anything outside that phase is explicitly later
-work.
+Phases 1 through 12 are implemented. Phase 12 was the stopped-live deployment
+and exhaustive Research QA pass. It started at `2026-05-31T10:55:17Z`, crossed
+the required 3-hour floor, continued through the user-requested extended QA
+hour, and completed after final evidence at `2026-05-31T14:55:10Z`.
 
-The system can now:
+Phase 13 was local-only cleanup. It did not deploy, publish, delete evidence,
+or change the readiness finish line. It added ignore coverage for generated
+manual QA evidence, tightened Research list and dialog behavior tests, cleaned
+comment-policy gaps, and kept publish/deploy defaults strict.
+
+Completion evidence:
+
+* latest research images are deployed on `testing`.
+* latest stopped-live observability images are deployed on `buba-paint`.
+* `paint` and `sidecar` stayed stopped on `buba-paint`.
+* browser-controlled Research QA found no remaining critical or major defects.
+* local gates and remote safety evidence are recorded.
+
+Current local caveat:
+
+* Phase 13 touched image inputs after the last Phase 12 publish. The image lock
+  files below are still the deployed Phase 12 locks, but deploy dry-runs now
+  correctly report them as stale until the next publish from committed source.
+
+The current implementation can:
 
 * Deploy the research stack to `testing` with digest-pinned GHCR images.
+* Deploy stopped-live observability on `buba-paint` without starting bot
+  services.
 * Observe the research host from Research > Machines.
-* Register/import artifacts.
-* Transfer artifacts.
-* Create current-params and sweep jobs.
-* Run real backtests on the research host.
-* Cancel active child commands.
-* Archive scratch DBs while preserving reports.
-* Generate schema v2 report JSON and CSV for current-params and sweep jobs.
-* Rank, inspect, and compare reports from the dashboard.
-* Diagnose blocked/failed jobs.
-* Clone blocked/failed jobs with edited params and guarded intervals.
-* Inspect queue, attention, retention, and disabled-host state from Research
-  home.
-* Create shared current-params and sweep job templates.
-* Archive completed scratch DBs, reports, and eligible artifacts from guarded
-  bulk retention controls without deleting durable files.
+* Register, import, verify, archive, restore, and delete eligible artifacts.
+* Create, inspect, pause, resume, retry, cancel, verify, and delete transfer
+  records.
+* Create current-params and sweep jobs from forms or shared templates.
+* Run real backtests and sweeps on the research host.
+* Cancel active research child commands.
+* Retry, continue, clear stale leases, resolve blockers, and clone jobs with
+  edited params.
+* Archive scratch DBs while preserving report JSON, report CSV, artifact files,
+  manifests, and checksums.
+* Generate schema v2 current-params and sweep reports.
+* Rank, inspect, filter, and compare reports from the dashboard.
+* Inspect queue, attention, retention, templates, machine telemetry, and
+  recovery state from the dashboard.
 * Back up and restore the research dashboard DB on `testing`.
-* Collect redacted research diagnostics bundles on `testing`.
+* Collect redacted diagnostics bundles on `testing`.
 * Roll back and roll forward digest-pinned research deployments.
-* Run the next paper-run research/backtesting cycle from the dashboard without
-  known critical shell workarounds.
 
-## Research-Ready Finish Line
+## Finish Line
 
-Research is ready for the next paper-run research/backtesting cycle because an
+Phase 12 is the last planned readiness phase. The finish line is a
+production-like rehearsal, not infinite feature work.
+
+Research is ready for the next paper-run research/backtesting cycle when an
 operator can complete this workflow without shell workarounds:
 
-1. Finalize or select a live/paper run artifact.
-2. Transfer or register that artifact on `testing`.
-3. Create bounded current-params and sweep jobs with explicit intervals.
-4. Observe job, transfer, worker, and host state from the dashboard.
-5. Cancel, retry, continue, clear stale leases, resolve blockers, or clone with
-   edited params when a run fails.
-6. Inspect generated report JSON/CSV and dashboard summaries.
-7. Compare completed runs well enough to decide which result is better.
-8. Archive bulky scratch DBs while preserving durable reports and provenance.
-9. Redeploy, roll back, collect logs, and restore the research dashboard DB if a
-   deployment or host problem occurs.
-10. Prove the whole workflow in a browser-controlled smoke on `testing` while
-    confirming `buba-paint` live containers stay unchanged.
+1. Use the latest live observability dashboard on `buba-paint` while the bot
+   remains stopped.
+2. Confirm the finalized live-readonly DB and artifact are preserved.
+3. Use `testing` as the research host.
+4. Create bounded current-params and sweep jobs from the dashboard.
+5. Observe job, transfer, worker, and host state from the dashboard.
+6. Recover or clone failed work with explicit operator confirmation.
+7. Read report JSON and CSV.
+8. Compare completed reports and understand ties, no-trade outcomes, and
+   compatibility warnings.
+9. Archive bulky scratch DBs without deleting durable reports or artifact data.
+10. Back up, diagnose, and redeploy the research stack safely.
 
-The finish line is not "all possible research tooling forever." It is the
-minimum professional system needed to run the next paper-run research cycle
-reliably, understand the result, recover from common failures, and avoid
-disturbing the live bot.
-
-Phase 11 completed this finish-line rehearsal. Later work may extend the system,
-but it is no longer required before the next paper-run research/backtesting
-cycle.
-
-## Operating Rules
-
-* Keep the live `buba-paint` machine safe. Do not restart or redeploy the live
-  bot unless the user explicitly asks for a live-machine phase.
-* `testing` is the research host. It runs Ubuntu WSL and Docker.
-* Use Docker Compose plus inventory-driven scripts for deployment.
-* Use registry-pinned GHCR images for the `testing` research deploy.
-* Keep the live deploy on the existing non-registry path until a separate
-  live-specific rollout is planned.
-* Treat machine identity, telemetry, and management as separate concerns:
-  * DB and `ops/research-machines.toml` define identity.
-  * Worker/agent telemetry defines observed host state.
-  * Compose proves deployment and container health.
-* Research > Machines is observability for research hosts, not machine CRUD.
-* Machine CRUD/lifecycle APIs remain available for scripts and recovery.
+Later work may add more orchestration, scheduling, or visualization, but it is
+not required for the next paper-run research/backtesting cycle unless a new
+critical gap is found.
 
 ## Machines
 
 ### `buba-paint`
 
-Purpose: live bot host.
+Purpose: stopped live observability against the finalized live-readonly runtime.
 
-Dashboard surface: Monitor > Machine.
+Dashboard surface: Monitor pages, including Monitor > Machine.
 
-Safety baseline from the latest research deploy smoke:
+Phase 12 rules:
 
-* `buba-paint-agent-1`: `50003527ee0e`
-* `buba-paint-caddy-1`: `2deb6c87a582`
-* `buba-paint-dashboard-1`: `773286fe7eb7`
+* `dashboard`, `agent`, and `caddy` may run.
+* `paint` and `sidecar` must stay stopped.
+* The finalized DB must keep the expected checksum.
 
-These IDs stayed unchanged during the latest research deploy and browser smoke.
+Finalized DB:
+
+* path:
+  `/home/ubuntu/buba-paint-live/runtime/live-readonly-20260514-184119/paint.db`
+* size: `6342098944`
+* SHA-256:
+  `2f3a778d9955117f7468bec6e459742f7d17417ce8287c7681b61231fba75a81`
+
+Latest Phase 12 stopped-live evidence:
+
+* `buba-paint-dashboard-1`: `edfa53b48405`, running, healthy.
+* `buba-paint-agent-1`: `bc71ba1a64e9`, running, healthy.
+* `buba-paint-caddy-1`: `2deb6c87a582`, running.
+* `buba-paint-paint-1`: `1e408676cf2a`, exited.
+* `buba-paint-sidecar-1`: `b587808b24b9`, exited.
+* public health endpoint returned `{"ok":true}`.
 
 ### `testing`
 
@@ -119,29 +122,47 @@ Environment:
 * WSL distro: `Ubuntu-24.04`
 * Remote root: `/home/testing/buba-paint-research`
 * Compose file: `docker-compose.research.yml`
-* Browser tunnel used for smoke: `127.0.0.1:3302 -> testing:localhost:3002`
+* Browser tunnel: `127.0.0.1:3302 -> testing:localhost:3002`
 
-Running services:
+Latest Phase 12 research evidence:
 
-* `research-dashboard`
-* `research-worker`
+* `research-dashboard`: `ba99467851a3`, healthy.
+* `research-worker`: `459dcfdfbfa5`, running.
+* telemetry: `stale=false`, worker status `idle`, sample count `60`.
+* DB counts after the post-fix smoke: 18 jobs, 13 reports, 3 artifacts,
+  3 transfers, 1 template.
 
-Research dashboard health:
+## Current Image Locks
 
-```bash
-ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'curl -sf http://localhost:3002/health'"
-```
+These locks identify the latest deployed Phase 12 images. They are stale
+relative to the uncommitted Phase 13 cleanup worktree and must be refreshed by
+publishing images after the next commit before another real deploy.
 
-## Current Research Images
+### Research Images
 
-Current deployed digest refs in `ops/research-images.lock.json`:
+`ops/research-images.lock.json`:
 
-* Dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
-* Research worker:
-  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
+* dashboard:
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:da214be1035526e3c9714b0f02135222407216f0d7f896a254b8fdc750477b51`
+* research worker:
+  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:562363b07bf42aa79d421763d164aa5c853e9255acdb4fd90f1985d6fba86a38`
 
-Publish/deploy path:
+### Stopped-Live Images
+
+`ops/live-images.lock.json`:
+
+* dashboard:
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:efc0b1a3294b94cc66d66924e29c29f7632e776eaec85cf3ce3c264ef6faf3e6`
+* agent:
+  `ghcr.io/toksaitov/buba-paint-agent@sha256:1b546bd65a1f24aff6eca2a2ab1ae5a1f9a18a2b94f4889525cc01b42f4321f1`
+* paint image published but not running:
+  `ghcr.io/toksaitov/buba-paint-bot@sha256:69d8232deeb026d91f89852ca080dff07e2e11bfe446155bed00995cfddf4ae3`
+* sidecar image published but not running:
+  `ghcr.io/toksaitov/buba-paint-sidecar@sha256:0afc95de0967ff26fddb1abf4469cfe4c0056b9ad1a4f242cb6afa4f130adeec`
+
+## Deployment Commands
+
+Research publish and deploy:
 
 ```bash
 python3 scripts/publish-research-images.py --dry-run
@@ -150,210 +171,29 @@ python3 scripts/deploy-machine.py --machine research --dry-run
 python3 scripts/deploy-machine.py --machine research
 ```
 
-Do not run the non-dry-run deploy command for `live` unless a live-machine phase
-has been explicitly approved.
+Stopped-live publish and deploy:
 
-## Implemented Capability Areas
+```bash
+python3 scripts/publish-live-images.py --dry-run
+python3 scripts/publish-live-images.py
+python3 scripts/deploy-stopped-live.py --dry-run --expected-db-sha256 2f3a778d9955117f7468bec6e459742f7d17417ce8287c7681b61231fba75a81
+python3 scripts/deploy-stopped-live.py --expected-db-sha256 2f3a778d9955117f7468bec6e459742f7d17417ce8287c7681b61231fba75a81
+```
 
-### Control-Plane Data Model
+Do not use the normal live deploy path to start `paint` or `sidecar` during
+Phase 12.
 
-Implemented:
+## Phase 12 Browser QA Evidence
 
-* Research machines.
-* Artifacts.
-* Transfers.
-* Jobs.
-* Job steps.
-* Job events.
-* Reports.
-* Shared job templates.
-* Typed research machine telemetry state.
-* Typed research machine telemetry sample history.
+Evidence workspace:
 
-Admin users can mutate research entities. Observers can read operational state
-but cannot perform recovery, lifecycle, delete, or create operations.
-
-### Artifacts And Transfers
-
-Implemented:
-
-* Artifact manifest and checksum handling.
-* Safe artifact path handling under configured research roots.
-* Artifact import and remote manifest registration.
-* Artifact verify, metadata update, archive, restore, and guarded delete.
-* Transfer create, pause, resume, retry, verify, cancel, and delete.
-* Worker transfer execution with resumable local copies and remote `rsync`.
-* Stale running transfer recovery.
-
-Known finalized artifact used for smoke:
-
-* `live-readonly-20260514-184119-finalized-20260517-075706Z`
-
-Research-machine artifact root:
-
-* `/home/testing/buba-paint-research/.docker/research/work/artifacts/live-readonly-20260514-184119-finalized-20260517-075706Z`
-
-### Job Execution
-
-Implemented:
-
-* Local research worker and remote research worker boundary.
-* Deterministic job step creation.
-* Step leasing and recovery.
-* Current-params backtest pipeline.
-* Sweep pipeline.
-* Command-backed execution through an allowlisted executor boundary.
-* Active child command supervision.
-* Cancellation of running child commands.
-* Retry, continue, step retry, stale lease clear, and blocker resolution.
-
-Backtest/sweep interval behavior:
-
-* Explicit Start/End submit as `start_ms` and `end_ms`.
-* Artifact fallback is available but visible.
-* Invalid, missing, reversed, large, or fallback-derived intervals are guarded.
-* Large interval threshold is 6 hours.
-
-### Reports And Scratch Cleanup
-
-Implemented:
-
-* Report metadata rows.
-* Report JSON and CSV file reads.
-* Report rename, archive, restore, delete record, and delete with files.
-* Report regeneration from durable job/step/event/report metadata.
-* Schema v2 report generation for current-params jobs.
-* Schema v2 report generation for sweep jobs.
-* Current-params metrics:
-  * net PnL
-  * gross PnL
-  * fees
-  * final balance
-  * trade count
-  * wins and losses
-  * win rate
-  * max drawdown
-  * signal count
-  * fill/no-fill counts when present
-  * equity curve
-  * drawdown curve
-  * rejection summaries
-  * no-trade and no-signal diagnostics
-* Sweep analysis:
-  * parameter column detection
-  * metric column preservation
-  * ranking by `pnl`
-  * malformed row diagnostics
-* Report list filtering and sorting by job type, artifact, status, analysis
-  availability, Net PnL, drawdown, win rate, trades, and updated time.
-* Report detail metrics, provenance, equity/drawdown charts, diagnostics, raw
-  JSON, CSV preview, and sweep ranked rows.
-* Report comparison route:
-  `/research/reports/compare?ids=<id>,<id>`
-* Comparison warnings for different job types, artifacts, intervals, and
-  balances.
-* Manual job scratch archive:
-  `POST /api/research/jobs/:id/archive-scratch`
-
-Scratch archive deletes only prepared/backtest SQLite families under the job
-root. It preserves report JSON, report CSV, report metadata, artifact files,
-manifests, and checksums.
-
-### Queue, Templates, And Retention
-
-Implemented:
-
-* Research home queue cockpit.
-* Queue endpoint:
-  `GET /api/research/queue`
-* Queue counts for active, waiting, retryable, blocked, failed, stale-lease,
-  transfer, disabled-host, and retention attention states.
-* Shared current-params and sweep job templates.
-* Template APIs for list, create, read, update, archive, restore, and delete.
-* Job creation from an active template with usage count and job event recording.
-* New Job template loading.
-* Job detail Save as template action.
-* Retention endpoint:
-  `GET /api/research/retention`
-* Bulk archive endpoint:
-  `POST /api/research/retention/archive`
-* Bulk retention can archive completed job scratch DBs, report metadata, and
-  artifact metadata when no active dependencies block it.
-* Bulk retention does not permanently delete report files, artifact files,
-  manifests, or checksums.
-* Jobs, transfers, artifacts, and reports have operator presets for active,
-  attention, completed, stale, archived, and cleanup-oriented states.
-
-### Machine Observability
-
-Implemented:
-
-* Shared Rust host telemetry contract in `crates/buba-machine-telemetry`.
-* Existing bot Machine page remains response-compatible.
-* Research worker samples CPU, per-core CPU, load, memory, swap, work-root disk,
-  host identity, sampler health, worker status, and activity.
-* Research telemetry persistence:
-  * latest state row per machine
-  * sample history with bounded retention
-* Authenticated telemetry endpoint:
-  `GET /api/research/machines/:id/telemetry`
-* Research > Machines is read-only and research-host-only.
-
-Latest smoke telemetry for `research` showed:
-
-* worker status: `idle`
-* stale: `false`
-* sample count: `60`
-* disk mount: `/research`
-* sampler error: `null`
-
-### Recovery UX
-
-Implemented:
-
-* Job detail recovery diagnosis panel for blocked, failed, retryable, and stale
-  active lease states.
-* Diagnosis extracts:
-  * step
-  * attempts
-  * started/completed timing
-  * lease owner and lease expiration
-  * command program
-  * command args
-  * command working directory
-  * status code
-  * stdout
-  * stderr
-  * raw event JSON
-  * raw step JSON
-* Guidance distinguishes:
-  * stale running lease
-  * transient retry candidate
-  * deterministic blocker where retrying same inputs may repeat failure
-  * `prepare_backtest_input` missing open/close boundary prices
-* Job detail Clone now opens an edit/confirm dialog.
-* Clone dialog pre-fills:
-  * job type
-  * artifact
-  * priority
-  * Start/End
-  * balance
-  * `--set`
-  * sweep dimensions
-  * additional unknown params JSON
-* Observers can inspect diagnosis and clone params, but cannot submit mutations.
-
-## Latest End-To-End Evidence
-
-### Paper-Run Readiness Rehearsal
-
-Target: `testing` through `http://127.0.0.1:3302`.
+* `data/experiments/research-manual-qa-20260531-105517`
 
 Representative artifact:
 
 * `live-readonly-20260514-184119-finalized-20260517-075706Z`
 
-Bounded interval:
+Known-good interval:
 
 * local: `2026-05-17 13:39` to `2026-05-17 13:41`
 * UTC: `2026-05-17T07:39:00.000Z` to `2026-05-17T07:41:00.000Z`
@@ -361,643 +201,99 @@ Bounded interval:
   * `start_ms=1779003540000`
   * `end_ms=1779003660000`
 
-Preflight:
+Phase 12 browser-created or reused jobs:
 
-* git worktree was clean before the browser rehearsal.
-* Phase 10 commit was present:
-  `709d3da Add research maintenance recovery tooling`
-* local gates passed:
-  * `cd dashboard/client && npm run lint`
-  * `cd dashboard/client && npm test`
-  * `cd dashboard/client && npm run build`
-  * direct stable-toolchain `cargo test -p buba-dashboard`
-  * `python3 scripts/audit-docs.py`
-  * `docker compose -f docker-compose.research.yml config --quiet`
-  * `python3 scripts/publish-research-images.py --dry-run`
-  * `python3 scripts/deploy-machine.py --machine research --dry-run`
-  * `python3 scripts/research-maintenance.py status --machine research --dry-run`
-  * `python3 scripts/research-maintenance.py backup-db --machine research --dry-run`
-  * `git diff --check`
-* image publish/deploy was not needed because code was unchanged and the
-  digest lock input hashes matched the current tree.
+* current-params job: `e0d1c900-fe26-4a17-a427-0bedf1fca140`
+* current-params report: `c9b54b3d-8b2a-432a-923e-fcca76879ca0`
+* minimal sweep job: `f9816a48-7320-46ac-adcf-499b624e1e82`
+* minimal sweep report: `0389a082-b309-45a4-98c7-a4a44618d449`
+* post-fix current-params job:
+  `93b44630-0e6d-4d7a-b4fd-68a7d124a104`
+* post-fix current-params report:
+  `cf04e6f8-15a7-4d3e-a75f-e80860a719bc`
 
-Pre-rehearsal backup:
+Detailed click-by-click QA chronology, screenshots, command outputs, and issue
+notes live in:
 
-* backup: `dashboard-db-20260531-094350`
-* backup DB size: `1781760` bytes
-* backup SHA-256:
-  `657d875a0f9ea8dda4868112bde8e338dd5579edf4a779c24d1986a46e738c00`
+* `data/experiments/research-manual-qa-20260531-105517/notes.md`
+
+Final QA coverage summary:
+
+* Research home, Machines, Artifacts, Transfers, Jobs, Reports, Templates,
+  Retention, and comparison routes were exercised through the browser.
+* Current-params and minimal sweep workflows completed on `testing`.
+* Report JSON, report CSV, schema v2 metrics, scratch archive, recovery
+  diagnosis, and comparison workflows were verified.
+* Browser back, forward, reload, detail return links, and direct query URLs were
+  verified for list-state preservation.
+* Defects found during QA were fixed and covered with focused tests where
+  practical.
+
+## Latest Verification Gates
+
+Passed after Phase 13 local cleanup:
+
+* `cd dashboard/client && npm run lint`
+* `cd dashboard/client && npm test`
+* `cd dashboard/client && npm run build`
+* `node scripts/ts_comment_audit.mjs`
+* stable-toolchain Rust comment policy check
+* stable-toolchain `cargo fmt --all --check`
+* stable-toolchain `cargo test -p buba-dashboard`
+* stable-toolchain `cargo test --workspace`
+* `cd polymarket-sidecar && npm test`
+* `cd polymarket-sidecar && npm run build`
+* `python3 scripts/tests/test_research_maintenance.py`
+* `python3 scripts/audit-docs.py`
+* `git diff --check`
+* `docker compose -f docker-compose.research.yml config --quiet`
+* `python3 scripts/publish-research-images.py --dry-run`
+* `python3 scripts/publish-live-images.py --dry-run`
+
+Expected local cleanup caveats:
+
+* `python3 -m pytest scripts/tests` is unavailable in the local Python
+  environment because `pytest` is not installed. The direct script test above
+  passed.
+* `python3 scripts/deploy-machine.py --machine research --dry-run` refuses the
+  stale research image lock after Phase 13 cleanup edits.
+* `python3 scripts/deploy-stopped-live.py --dry-run --expected-db-sha256
+  2f3a778d9955117f7468bec6e459742f7d17417ce8287c7681b61231fba75a81` reports
+  the stale live image lock after Phase 13 cleanup edits.
+
+Latest Phase 12 deploy checks:
+
+* live stopped deploy completed with `paint` and `sidecar` still exited.
+* research deploy completed with current digest-pinned images.
+* research DB backup created:
+  `dashboard-db-20260531-131638`
 * backup `PRAGMA quick_check`: `ok`
-
-Current digest-pinned images during rehearsal:
-
-* dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
-* research worker:
-  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
-
-Browser reachability:
-
-* Research home loaded queue cockpit, templates, and retention sections.
-* Research > Machines > research loaded host, worker, CPU, memory, swap, disk,
-  and telemetry state without load errors.
-* Research > Reports, Artifacts, Transfers, and Jobs loaded without load
-  errors.
-* The finalized artifact appeared in Research > Artifacts.
-
-Current-params rehearsal job:
-
-* job: `88a7d07c-d4f6-4eb6-b7f1-9e1b3573c36d`
-* report: `5664be32-ebc7-47bb-8ed3-21af61e0a60c`
-* created through the browser from template `p9`:
-  `e936c682-4a71-4023-845f-8fe9338f32a9`
-* persisted params:
-  * `start_ms=1779003540000`
-  * `end_ms=1779003660000`
-  * `balance=100`
-* all six steps completed:
-  * `verify_artifact`
-  * `validate_replay_data`
-  * `validate_backtest_input`
-  * `prepare_backtest_input`
-  * `run_backtest`
-  * `write_report`
-* report JSON loaded in the browser and showed schema v2 metrics, provenance,
-  dashboard image ref, worker image ref, no-trade diagnostics, and no-signal
-  diagnostics.
-* report CSV loaded in the browser.
-
-Minimal sweep rehearsal job:
-
-* job: `4b2ac078-1042-4f82-8e1d-adad10933b57`
-* report: `e4c0772f-6fca-4d01-be3d-d9fca9e50dfe`
-* sweep dimension: `LATENCY_ARB_MIN_ASK=0.30,0.35`
-* persisted params:
-  * `start_ms=1779003540000`
-  * `end_ms=1779003660000`
-  * `balance=200`
-  * `sweeps=["LATENCY_ARB_MIN_ASK=0.30,0.35"]`
-* all six steps completed:
-  * `verify_artifact`
-  * `validate_replay_data`
-  * `validate_backtest_input`
-  * `prepare_backtest_input`
-  * `run_sweep`
-  * `write_report`
-* report JSON loaded in the browser and showed schema v2 provenance, image
-  refs, the sweep dimension, and ranked sweep rows.
-* report CSV loaded in the browser with two ranked rows.
-
-Comparison:
-
-* route:
-  `/research/reports/compare?ids=5664be32-ebc7-47bb-8ed3-21af61e0a60c,e4c0772f-6fca-4d01-be3d-d9fca9e50dfe`
-* comparison loaded both new reports.
-* comparison showed compatibility warnings for different job types and starting
-  balances.
-* comparison showed an explicit no-winner state because top Net PnL was tied at
-  zero.
-
-Recovery and cancellation evidence:
-
-* blocked job `7c8e48df-bb5e-4323-9f50-63d06a0db5e7` still showed:
-  * failed step: `prepare_backtest_input`
-  * status code: `1`
-  * stderr:
-    `missing_open_prices=1,missing_close_prices=1`
-  * raw command details
-  * raw step state
-  * guidance to prefer Clone with adjusted Start and End.
-* existing cancelled job `1e0b42ea-fdb3-4776-8655-23ec10df4530` still showed:
-  * status: `Cancelled`
-  * cancelled steps
-  * event `local command worker observed cancellation`
-  * event `research command terminated after cancellation`
-
-Scratch archive and retention:
-
-* job scratch archived:
-  `88a7d07c-d4f6-4eb6-b7f1-9e1b3573c36d`
-* browser result:
-  `Deleted 4 scratch files; skipped 2 already-absent files.`
-* deleted files verified on `testing`:
-  * `prepared-backtest.db`
-  * `prepared-backtest.db-wal`
-  * `prepared-backtest.db-shm`
-  * `backtest.db`
-  * `backtest.db-wal`
-  * `backtest.db-shm`
-* preserved files verified on `testing`:
-  * `report.json`
-  * `report.csv`
-* report JSON and CSV remained readable in the browser after scratch archive.
-* final retention totals reported 10 job candidates, 9 report candidates, 1
-  artifact candidate, and about 101 MiB of scratch candidates remaining.
-
-Final `testing` state:
-
-* `research-dashboard`: `e965fd0e9ed8`, healthy, current dashboard digest.
-* `research-worker`: `6435a68327fc`, running, current worker digest.
-* DB counts: 15 jobs, 10 reports, 3 artifacts, 3 transfers, 1 template.
-* Research telemetry: `stale=false`, worker status `idle`, sample count `60`,
-  sampler error `null`.
-
-Live safety evidence:
-
-* `buba-paint-agent-1`: `50003527ee0e`
-* `buba-paint-caddy-1`: `2deb6c87a582`
-* `buba-paint-dashboard-1`: `773286fe7eb7`
-* IDs and two-week uptime stayed unchanged before and after the Phase 11
-  browser rehearsal.
-
-### Deployment, Backup, Rollback, And Diagnostics Smoke
-
-Target: `testing`.
-
-Implemented script entry point:
-
-* `scripts/research-maintenance.py`
-
-Validated commands:
-
-```bash
-python3 scripts/research-maintenance.py status --machine research
-python3 scripts/research-maintenance.py backup-db --machine research
-python3 scripts/research-maintenance.py restore-db --machine research --backup dashboard-db-20260531-085911 --confirm
-python3 scripts/research-maintenance.py collect-diagnostics --machine research
-python3 scripts/research-maintenance.py rollback --machine research --to-ref HEAD~1 --confirm
-python3 scripts/research-maintenance.py live-safety --machine live
-```
-
-Diagnostics bundle:
-
-* `/tmp/buba-research-diagnostics-20260531-085838.tar.gz`
-* contained compose status/config, redacted `.env`, health, queue, retention,
-  templates, jobs, transfers, artifacts, reports, telemetry, log tails, disk
-  state, and Docker inspect summaries.
-* verified `ADMIN_PASSWORD` and `BUBA_RESEARCH_WORKER_TOKEN` were redacted.
-
-DB backup and restore:
-
-* backup: `dashboard-db-20260531-085911`
-* backup DB size: `1781760` bytes
 * backup SHA-256:
-  `7e3bf7c517ca2d7a00a6115e7fee03d20014f6c337e09c4bc7f5660bc8c14491`
-* backup `PRAGMA quick_check`: `ok`
-* pre-restore safety backups:
-  * `pre-restore-20260531-085916`
-  * `pre-restore-20260531-090125`
-* restored DB `PRAGMA quick_check`: `ok`
-* restore restarted only `research-dashboard` and `research-worker` on
-  `testing`.
-* restore preserved the digest-pinned image refs from the backup manifest:
-  * dashboard:
-    `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
-  * research worker:
-    `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
-* post-restore verification read health, queue, reports, templates, retention,
-  and telemetry successfully.
-
-Rollback rehearsal:
-
-* rollback source: `HEAD~1`
-* rollback dashboard image:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:e1b858fa24b57985516a23ea0f40eaa4c9613b19bf481e038921f44b49c6bfa7`
-* rollback worker image:
-  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:ae7d295389afd633a01bd7607cdc176863b51be3f4b096025b9586e8116597ad`
-* rollback health passed.
-* roll-forward returned `testing` to the current lock:
-  * dashboard:
-    `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
-  * research worker:
-    `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
-* temporary GHCR auth directories under `.docker/ghcr-auth.*` were absent after
-  deploy cleanup.
-
-Final remote state:
-
-* `research-dashboard`: `e965fd0e9ed8`, healthy, current dashboard digest.
-* `research-worker`: `6435a68327fc`, running, current worker digest.
-* Research telemetry: `stale=false`, worker status `idle`, sample count `60`,
-  sampler error `null`.
-* Research DB counts: 13 jobs, 8 reports, 3 artifacts, 3 transfers, 1 template.
-
-Live safety evidence:
-
-* `buba-paint-agent-1`: `50003527ee0e`
-* `buba-paint-caddy-1`: `2deb6c87a582`
-* `buba-paint-dashboard-1`: `773286fe7eb7`
-* IDs and two-week uptime stayed unchanged before and after the `testing`
-  restore/rollback rehearsal.
-
-### Browser Queue, Templates, And Retention Smoke
-
-Target: `testing` through `http://127.0.0.1:3302`.
-
-Deployed image refs:
-
-* dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
-* research worker:
-  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
-
-Verified from API before browser smoke:
-
-* queue endpoint returned 11 jobs, 2 blocked jobs, 0 stale leases, and 5 recent
-  reports.
-* retention endpoint returned 6 scratch candidates, 6 report candidates, 2
-  artifact candidates, and about 73.5 MiB of cleanup candidates.
-* machine telemetry for `research` was fresh, idle, not stale, and returned 60
-  samples.
-
-Browser-created template:
-
-* name: `p9`
-* template: `e936c682-4a71-4023-845f-8fe9338f32a9`
-* job type: current params
-* artifact: `live-readonly-20260514-184119-finalized-20260517-075706Z`
-
-Template-created bounded jobs:
-
-* job: `b9bbbf44-49c0-4e1d-becb-97b1f0e3e43a`
-* report: `b6dcf1d4-dd5f-4b48-98ed-eacc13c22e4a`
-* persisted params:
-  * `start_ms=1779003540000`
-  * `end_ms=1779003660000`
-  * `balance=100`
-* job event included `created from research job template`.
-* all six steps completed.
-* report JSON loaded in browser.
-* report CSV loaded in browser.
-* report detail showed schema v2 metrics, provenance, worker image, top
-  rejection reasons, no-trade/no-signal diagnostics, and charts.
-* job created directly through New Job template selector:
-  `16802ef8-8fad-4a79-b577-cbbda882373c`
-* New Job UI prefilled the artifact, priority, `start_ms`, `end_ms`, and balance
-  from template `p9`.
-* direct UI-created job report:
-  `e4995d3b-fdd6-4e07-9ff7-6e8d925bfc3c`
-* direct UI-created job completed all six steps.
-
-Retention archive smoke:
-
-* job scratch archived:
-  `b9bbbf44-49c0-4e1d-becb-97b1f0e3e43a`
-* report metadata archived:
-  `b6dcf1d4-dd5f-4b48-98ed-eacc13c22e4a`
-* artifact metadata archived:
-  `register-smoke-20260517105413`
-* browser result: `Archived 3 items; 0 errors.`
-* deleted scratch paths included:
-  * `prepared-backtest.db`
-  * `backtest.db`
-  * `backtest.db-wal`
-  * `backtest.db-shm`
-* preserved files verified on `testing`:
-  * `prepared-backtest.db.manifest.json`
-  * `report.json`
-  * `report.csv`
-* archived report JSON and CSV still loaded in the browser.
-
-Filter and observability smoke:
-
-* Jobs exposed active, attention, completed, cancelled, stale lease, and delete
-  eligible presets.
-* Transfers exposed active, attention, completed, stale, checksum failed,
-  paused, and cancelled presets.
-* Artifacts exposed available, archived, active dependencies, archive eligible,
-  and missing readiness presets.
-* Reports exposed analysis and retention presets, including archive candidates
-  and archived only.
-* Research > Machines > research returned to idle with fresh telemetry after the
-  smoke.
-* `buba-paint` container IDs stayed unchanged before and after deploy and smoke.
-
-### Browser Recovery Smoke
-
-Target: `testing` through `http://127.0.0.1:3302`.
-
-Source blocked job:
-
-* `7c8e48df-bb5e-4323-9f50-63d06a0db5e7`
-
-Observed diagnosis:
-
-* failed step: `prepare_backtest_input`
-* status code: `1`
-* stderr included:
-  `missing_open_prices=1,missing_close_prices=1`
-
-Browser-created clone:
-
-* job: `dfd84955-5944-4db1-9f45-83e43eb8e7ad`
-* report: `21022f09-95e1-4842-9598-4b41e29c1e3e`
-* local interval: `2026-05-17 13:39` to `2026-05-17 13:41`
-* persisted params:
-  * `start_ms=1779003540000`
-  * `end_ms=1779003660000`
-* all six steps completed
-* report JSON loaded in browser
-* report CSV loaded in browser
-* Research > Machines > research returned to idle with fresh telemetry
-* `testing` worker process list showed only `buba-research-worker`
-* `buba-paint` container IDs stayed unchanged
-
-### Browser Results And Comparison Smoke
-
-Target: `testing` through `http://127.0.0.1:3302`.
-
-Deployed image refs:
-
-* dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:e1b858fa24b57985516a23ea0f40eaa4c9613b19bf481e038921f44b49c6bfa7`
-* research worker:
-  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:ae7d295389afd633a01bd7607cdc176863b51be3f4b096025b9586e8116597ad`
-
-Reports verified in the browser:
-
-* current-params report:
-  `21022f09-95e1-4842-9598-4b41e29c1e3e`
-* current-params report:
-  `565561ba-05d6-4dd0-9dce-963399084018`
-* sweep report:
-  `bbda6818-ca1d-4058-b12a-49892d115df1`
-
-Observed:
-
-* Reports list sorted schema v2 reports by Net PnL first.
-* Legacy schema v1 reports rendered as analysis unavailable.
-* Current-params detail showed Net PnL, final balance, trades, win rate,
-  drawdown, signals, wins, losses, provenance, worker image, rejection reasons,
-  no-trade/no-signal diagnostics, equity chart, drawdown chart, JSON, and CSV.
-* Sweep detail showed two ranked `LATENCY_ARB_MIN_ASK` rows and preserved the
-  sweep metric columns.
-* Comparison loaded the two current-params reports and the sweep report.
-* Comparison showed a job-type compatibility warning.
-* Comparison showed an explicit no-winner state because top Net PnL was tied.
-* Research > Machines > research returned to idle with fresh telemetry.
-* `buba-paint` container IDs stayed unchanged before and after deploy and smoke.
-
-### Prior Workflow Smoke
-
-Successful bounded current-params job:
-
-* job: `f8b4e4a5-5055-4345-9f2a-e89843ea4b2f`
-* report: `4d330f43-2b3d-4be2-8c3c-ca49f8fed1b1`
-* interval: `2026-05-17 13:39` to `2026-05-17 13:41` local
-* persisted params:
-  * `start_ms=1779003540000`
-  * `end_ms=1779003660000`
-
-Scratch archive smoke:
-
-* `prepared-backtest.db` and `backtest.db` deleted
-* `report.json` and `report.csv` preserved
-
-Cancellation smoke:
-
-* job: `1e0b42ea-fdb3-4776-8655-23ec10df4530`
-* active child command was terminated
-* job/steps stayed cancelled
-* no lingering `buba-paint` child process remained
-
-## Verification Commands
-
-Normal local gates:
-
-```bash
-cd dashboard/client && npm run lint
-cd dashboard/client && npm test
-cd dashboard/client && npm run build
-python3 scripts/audit-docs.py
-docker compose -f docker-compose.research.yml config --quiet
-python3 scripts/publish-research-images.py --dry-run
-python3 scripts/deploy-machine.py --machine research --dry-run
-git diff --check
-```
-
-Rust gate:
-
-```bash
-cargo test -p buba-dashboard
-```
-
-Local note: the operator machine has previously had a broken Cargo proxy
-invocation. If plain `cargo` fails with unexpected proxy arguments, run the
-stable toolchain binary directly:
-
-```bash
-RUSTC=/Users/toksaitov/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc \
-RUSTDOC=/Users/toksaitov/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustdoc \
-/Users/toksaitov/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p buba-dashboard
-```
-
-Remote research deploy gate:
-
-```bash
-python3 scripts/publish-research-images.py
-python3 scripts/deploy-machine.py --machine research
-ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-research && docker compose -f docker-compose.research.yml ps'"
-```
-
-Live safety check:
-
-```bash
-ssh buba-paint "docker ps --format 'table {{.Names}}\t{{.ID}}\t{{.Status}}\t{{.Image}}' | sed -n '1,20p'"
-```
-
-## Important Files
-
-Backend and worker:
-
-* `dashboard/server/src/api/research.rs`
-* `dashboard/server/src/db.rs`
-* `dashboard/server/src/research_worker.rs`
-* `dashboard/server/src/research_pipeline.rs`
-* `dashboard/server/src/research_reports.rs`
-* `dashboard/server/src/research_transfer.rs`
-* `crates/buba-machine-telemetry`
-
-Frontend:
-
-* `dashboard/client/src/pages/research-job-detail.tsx`
-* `dashboard/client/src/components/research/job-create-form.tsx`
-* `dashboard/client/src/components/research/job-clone-dialog.tsx`
-* `dashboard/client/src/components/research/job-form-values.ts`
-* `dashboard/client/src/components/research/job-recovery-diagnosis.tsx`
-* `dashboard/client/src/hooks/use-research-templates.ts`
-* `dashboard/client/src/pages/research-overview.tsx`
-* `dashboard/client/src/pages/research-jobs.tsx`
-* `dashboard/client/src/pages/research-machine-detail.tsx`
-* `dashboard/client/src/pages/research-artifacts.tsx`
-* `dashboard/client/src/pages/research-transfers.tsx`
-* `dashboard/client/src/pages/research-reports.tsx`
-* `dashboard/client/src/pages/research-report-detail.tsx`
-* `dashboard/client/src/pages/research-report-compare.tsx`
-* `dashboard/client/src/lib/research-report-analysis.ts`
-
-Deployment and inventory:
-
-* `docker-compose.research.yml`
-* `ops/research-machines.toml`
-* `ops/research-images.lock.json`
-* `scripts/publish-research-images.py`
-* `scripts/deploy-machine.py`
-* `scripts/research-maintenance.py`
-
-Fixtures and tests:
-
-* `dashboard/client/src/lib/research-fixtures.ts`
-* `dashboard/client/src/pages/__tests__/research-job-detail.test.tsx`
-* `dashboard/client/src/pages/__tests__/research-reports.test.tsx`
-* `dashboard/client/src/pages/__tests__/research-report-detail.test.tsx`
-* `dashboard/client/src/pages/__tests__/research-report-compare.test.tsx`
-* `dashboard/client/src/lib/__tests__/research-report-analysis.test.ts`
-* `dashboard/client/src/components/research/__tests__/job-create-form.test.tsx`
-* `dashboard/client/src/pages/__tests__/research-job-new.test.tsx`
-* `dashboard/client/src/pages/__tests__/research-overview.test.tsx`
-* `dashboard/server/src/tests/api_research_tests.rs`
-* `dashboard/server/src/tests/db_tests.rs`
-* `dashboard/server/src/tests/research_worker_tests.rs`
-* `scripts/tests/test_research_maintenance.py`
-
-## Completed Finish-Line Phases
-
-Do not create new lettered phases. The completed 1-7T history plus canonical
-phases 8-11 reached the research-ready finish line.
-
-### Phase 8: Results And Comparison
-
-Status: complete.
-
-Goal: make completed runs useful to inspect and compare.
-
-Required deliverables:
-
-* Report detail shows the key metrics needed to judge a backtest result.
-* Equity, drawdown, and profit/loss series are readable from the dashboard.
-* Report list supports practical filtering, sorting, and status scanning.
-* Completed current-params runs can be compared side by side.
-* Sweep results can be browsed by parameter set and ranked by chosen metrics.
-* Parameter, interval, artifact, code/image digest, and source-job provenance are
-  visible from report and comparison views.
-* Report JSON/CSV loading, missing data, malformed data, empty runs, and chart
-  edge cases are covered by tests.
-
-Stop condition:
-
-* Complete. Browser smoke on `testing` opened two completed current-params
-  reports and one sweep report, compared them, showed a compatibility warning,
-  and showed the correct no-winner state for tied Net PnL.
-
-### Phase 9: Operator Queue, Templates, And Retention
-
-Status: complete.
-
-Goal: make day-to-day operation of research history and queue state complete.
-
-Required deliverables:
-
-* Jobs, transfers, artifacts, and reports have practical filters for active,
-  failed, blocked, stale, completed, archived, and deleted states.
-* Queue state is easy to inspect: running work, waiting work, retryable work,
-  blocked work, and disabled-host impact.
-* Job creation supports saved/reusable templates for common current-params and
-  sweep shapes.
-* Bulk cleanup/archive flows exist for completed old jobs and reports, with
-  guarded confirmation and clear skipped/deleted summaries.
-* Destructive actions remain admin-only and are tested for observers.
-* Retention status makes bulky scratch DB usage visible before cleanup.
-
-Stop condition:
-
-* Complete. Browser smoke on `testing` created a current-params template,
-  created a bounded job from it, verified the template event, completed all six
-  steps, loaded report JSON and CSV, archived scratch/report/artifact candidates,
-  preserved report files, verified list presets, and returned Research >
-  Machines to idle fresh telemetry.
-
-### Phase 10: Deployment, Backup, Rollback, And Diagnostics
-
-Status: complete.
-
-Goal: make research deployment and incident handling boring enough for repeated
-use.
-
-Required deliverables:
-
-* Registry-pinned deploy has a tested rollback path to the previous image lock.
-* Research dashboard DB backup and restore commands exist and are documented.
-* Remote log bundle collection captures compose status, dashboard logs, worker
-  logs, image refs, health, telemetry, and recent job/transfer failures.
-* Deploy health gates fail before replacing containers when required inputs are
-  missing or registry auth fails.
-* Failed deploys and failed health checks produce actionable diagnostics.
-* `buba-paint` safety checks are part of every research deploy smoke.
-
-Stop condition:
-
-* Complete. A controlled diagnostics bundle, DB backup, DB restore, rollback to
-  `HEAD~1`, and roll-forward to the current image lock passed on `testing`.
-  Live `buba-paint` container IDs stayed unchanged.
-
-### Phase 11: Paper-Run Readiness Rehearsal
-
-Status: complete.
-
-Goal: prove the whole Research section is ready for the next real paper-run
-research/backtesting cycle.
-
-Required deliverables:
-
-* Use a finalized paper/live artifact representative of the next real run.
-* Run one bounded current-params backtest.
-* Run one bounded sweep or the smallest representative sweep agreed for the
-  cycle.
-* Verify telemetry, queue state, cancellation/recovery controls, report loading,
-  comparison, scratch archive, and retention state.
-* Verify deployment rollback and DB backup artifacts exist before the rehearsal.
-* Record the exact artifact, job IDs, report IDs, image digests, machine state,
-  and live-container safety evidence in this file.
-
-Stop condition:
-
-* Complete. The Phase 11 browser rehearsal on `testing` created and completed
-  one current-params job and one minimal sweep job against the finalized
-  artifact, loaded both reports, compared them, verified recovery and
-  cancellation evidence, archived scratch DBs while preserving report files,
-  confirmed fresh idle telemetry, and confirmed live `buba-paint` container IDs
-  stayed unchanged.
-
-## Later Work, Not Required For The Finish Line
-
-These are useful, but they must not expand the current finish line unless the
-user explicitly changes priorities:
-
-* Multiple research hosts and capacity-based routing.
-* Prometheus/Grafana or a separate telemetry service.
-* Live-machine registry-pinned deploy.
-* Automatic retry or automatic interval edits.
-* Advanced portfolio analytics beyond the first comparison/reporting pass.
-
-## Retired Historical Phase Map
-
-This section exists only to explain old references in commits or chat history.
-Do not use these labels for new planning.
-
-* Phases 1-6: local contracts, schema, worker, artifact format, command-backed
-  pipeline, export integration, and local Compose/deploy prep. Complete.
-* Phase 7 and lettered 7B-7T work: remote integration, operator APIs, transfer
-  executor, scratch archive, lifecycle APIs, report regeneration, host
-  observability, lint cleanup, registry-pinned deploy, workflow gap fixes, and
-  blocked-run recovery UX. Complete.
-* Temporary UI handoff track: this was previously called `Phase 8` in the old
-  tracker, but it was parallel UI handoff work, not the canonical next backend
-  roadmap phase. It is retired after merge.
-* Temporary fixture-seeding track: this was previously called `Phase 8A`.
-  Complete locally and retired.
-
-The old file had `Phase 8` before the last lettered `7*` sections because UI
-handoff work happened on a parallel track. That temporary numbering no longer
-describes the current roadmap. In this tracker, canonical Phase 8 is Results And
-Comparison.
+  `d8787b5c2965000ae16bb73de0c87de6e3bf3894ed20b45011793001cfe771e4`
+* diagnostics bundle created:
+  `buba-research-diagnostics-20260531-131638`
+
+Final closeout evidence:
+
+* user-requested extended QA hour completed at `2026-05-31T14:55:10Z`.
+* final docs audit passed.
+* final `git diff --check` passed.
+* final `testing` status:
+  `data/experiments/research-manual-qa-20260531-105517/research-status-final-1455.json`
+* final `buba-paint` safety status:
+  `data/experiments/research-manual-qa-20260531-105517/live-safety-final-1455.json`
+
+## Operating Rules
+
+* Keep `buba-paint` safe. Do not start `paint` or `sidecar` unless the user
+  explicitly approves a live bot run.
+* `testing` is the research host for backtesting and sweeps.
+* Use Docker Compose plus scripts, not ad hoc remote commands, for deploys.
+* Use digest-pinned GHCR images for research deploys.
+* Keep stopped-live observability separate from real bot execution.
+* Treat machine identity, telemetry, and deployment evidence as separate:
+  * DB and inventory define identity.
+  * Worker and agent telemetry define observed host state.
+  * Compose proves container deployment and health.
+* Research > Machines is research-host observability, not machine CRUD.
+* Machine CRUD and lifecycle APIs remain script/API surfaces.

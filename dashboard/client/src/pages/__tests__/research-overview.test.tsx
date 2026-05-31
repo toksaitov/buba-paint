@@ -313,9 +313,21 @@ describe("ResearchOverviewPage", () => {
       ),
     );
 
-    await user.click(screen.getAllByRole("button", { name: /^archive$/i })[0]);
-    await user.click(screen.getAllByRole("button", { name: /^restore$/i })[0]);
-    await user.click(screen.getAllByRole("button", { name: /^delete$/i })[0]);
+    await user.click(
+      screen.getByRole("button", { name: /archive template short backtest/i }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /restore template archived sweep/i }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /delete template short backtest/i }),
+    );
+    expect(mockDeleteTemplate).not.toHaveBeenCalled();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: /delete template/i,
+      }),
+    );
 
     expect(mockArchiveTemplate).toHaveBeenCalledWith("template-current");
     expect(mockRestoreTemplate).toHaveBeenCalledWith("template-archived");

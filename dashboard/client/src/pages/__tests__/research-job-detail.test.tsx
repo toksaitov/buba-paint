@@ -16,6 +16,7 @@ const mockNavigate = vi.fn();
 vi.mock("react-router-dom", () => ({
   useParams: () => ({ id: "fixture-job-blocked" }),
   useNavigate: () => mockNavigate,
+  useLocation: () => ({ pathname: "/research/jobs/fixture-job-blocked", search: "", state: null }),
   Link: ({ children, to }: { children: ReactNode; to: string }) =>
     createElement("a", { href: to }, children),
 }));
@@ -42,6 +43,7 @@ vi.mock("../../lib/research-api", async () => {
   );
   return {
     ...actual,
+    appendResearchJobEvent: vi.fn(),
     cloneResearchJob: vi.fn(),
   };
 });
@@ -51,7 +53,7 @@ import { useResearchArtifacts } from "../../hooks/use-research-artifacts";
 import { useResearchJob } from "../../hooks/use-research-jobs";
 import { useResearchReports } from "../../hooks/use-research-reports";
 import { useAuthStore } from "../../stores/auth-store";
-import { cloneResearchJob } from "../../lib/research-api";
+import { appendResearchJobEvent, cloneResearchJob } from "../../lib/research-api";
 import {
   fixtureArtifactAvailable,
   fixtureJobBlocked,
@@ -64,6 +66,7 @@ const mockUseResearchArtifacts = vi.mocked(useResearchArtifacts);
 const mockUseResearchJob = vi.mocked(useResearchJob);
 const mockUseResearchReports = vi.mocked(useResearchReports);
 const mockCloneResearchJob = vi.mocked(cloneResearchJob);
+const mockAppendResearchJobEvent = vi.mocked(appendResearchJobEvent);
 
 function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -85,6 +88,7 @@ beforeEach(() => {
   mockUseResearchReports.mockReturnValue({
     data: { reports: [] },
   } as ReturnType<typeof useResearchReports>);
+  mockAppendResearchJobEvent.mockResolvedValue(undefined);
 });
 
 describe("ResearchJobDetailPage - blocked", () => {
@@ -367,6 +371,34 @@ describe("ResearchJobDetailPage - completed", () => {
     expect(
       screen.queryByRole("button", { name: /delete record/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("closes the operator note dialog after a note is saved", async () => {
+    const user = userEvent.setup();
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    await user.click(screen.getByRole("button", { name: /add note/i }));
+    const dialog = screen.getByRole("dialog", { name: /add operator note/i });
+    await user.type(within(dialog).getByLabelText(/message/i), "QA note");
+    await user.click(within(dialog).getByRole("button", { name: /save note/i }));
+
+    await waitFor(() =>
+      expect(mockAppendResearchJobEvent).toHaveBeenCalledWith(
+        "fixture-job-blocked",
+        { level: "info", message: "QA note" },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /add operator note/i }),
+      ).not.toBeInTheDocument(),
+    );
   });
 });
 

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { Plus } from "lucide-react";
 import {
   Banner,
@@ -17,6 +17,7 @@ import { Dialog } from "../components/ui/dialog";
 import { StatusFilter } from "../components/research/status-filter";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
 import { useResearchMachines } from "../hooks/use-research-machines";
+import { useRememberResearchListReturn } from "../hooks/use-research-return-to";
 import { useResearchTransfers } from "../hooks/use-research-transfers";
 import { useAuthStore } from "../stores/auth-store";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -31,6 +32,15 @@ import type {
   TransferStatus,
 } from "../lib/research-types";
 import { TRANSFER_STALE_MS } from "../lib/research-types";
+import {
+  readEnumListParam,
+  readEnumParam,
+  readTextParam,
+  setQueryListParam,
+  setQueryParam,
+  updateQueryListParam,
+  updateQueryParam,
+} from "../lib/research-list-url-state";
 import { formatBytes, humanize } from "../lib/utils";
 
 const ALL_STATUSES: TransferStatus[] = [
@@ -48,7 +58,6 @@ const DEFAULT_FILTER: TransferStatus[] = [
   "running",
   "retryable",
   "paused",
-  "failed",
 ];
 
 const PRESET_OPTIONS = [
@@ -71,18 +80,39 @@ const SORT_OPTIONS = [
 ] as const;
 
 type TransferSort = (typeof SORT_OPTIONS)[number]["value"];
+const DEFAULT_PRESET: TransferPreset = "active";
+const DEFAULT_SORT: TransferSort = "updated_desc";
 
 export function ResearchTransfersPage() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === "admin";
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  useRememberResearchListReturn("transfers", "/research/transfers");
+  const returnToTransfers = `${location.pathname}${location.search}`;
   const transfersQuery = useResearchTransfers();
   const artifactsQuery = useResearchArtifacts();
   const machinesQuery = useResearchMachines();
-  const [active, setActive] = useState<string[]>([...DEFAULT_FILTER]);
   const [createOpen, setCreateOpen] = useState(false);
-  const [preset, setPreset] = useState<TransferPreset>("active");
-  const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<TransferSort>("updated_desc");
+  const preset = readEnumParam(
+    searchParams,
+    "preset",
+    PRESET_OPTIONS.map((option) => option.value),
+    DEFAULT_PRESET,
+  );
+  const active = readEnumListParam(
+    searchParams,
+    "status",
+    ALL_STATUSES,
+    transferPresetStatuses(preset),
+  );
+  const search = readTextParam(searchParams, "q");
+  const sortKey = readEnumParam(
+    searchParams,
+    "sort",
+    SORT_OPTIONS.map((option) => option.value),
+    DEFAULT_SORT,
+  );
 
   const transfersData = transfersQuery.data?.transfers;
   const nowMs = transfersQuery.dataUpdatedAt;
@@ -137,9 +167,18 @@ export function ResearchTransfersPage() {
             <select
               aria-label="Transfer preset"
               value={preset}
-              onChange={(event) =>
-                setPreset(event.currentTarget.value as TransferPreset)
-              }
+              onChange={(event) => {
+                const nextPreset = event.currentTarget.value as TransferPreset;
+                const next = new URLSearchParams(searchParams);
+                setQueryParam(next, "preset", nextPreset, DEFAULT_PRESET);
+                setQueryListParam(
+                  next,
+                  "status",
+                  transferPresetStatuses(nextPreset),
+                  transferPresetStatuses(nextPreset),
+                );
+                setSearchParams(next, { replace: true });
+              }}
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               {PRESET_OPTIONS.map((opt) => (
@@ -152,7 +191,13 @@ export function ResearchTransfersPage() {
               aria-label="Transfer sort"
               value={sortKey}
               onChange={(event) =>
-                setSortKey(event.currentTarget.value as TransferSort)
+                updateQueryParam(
+                  searchParams,
+                  setSearchParams,
+                  "sort",
+                  event.currentTarget.value,
+                  DEFAULT_SORT,
+                )
               }
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
@@ -179,7 +224,15 @@ export function ResearchTransfersPage() {
           label="Status"
           statuses={ALL_STATUSES}
           active={active}
-          onChange={setActive}
+          onChange={(next) =>
+            updateQueryListParam(
+              searchParams,
+              setSearchParams,
+              "status",
+              next,
+              transferPresetStatuses(preset),
+            )
+          }
           toneFor={(s) => transferTone(s as TransferStatus)}
           ariaLabel="Transfer status filter"
         />
@@ -187,7 +240,15 @@ export function ResearchTransfersPage() {
           <Input
             aria-label="Search transfers"
             value={search}
-            onChange={(event) => setSearch(event.currentTarget.value)}
+            onChange={(event) =>
+              updateQueryParam(
+                searchParams,
+                setSearchParams,
+                "q",
+                event.currentTarget.value,
+                "",
+              )
+            }
             placeholder="Search transfer, artifact, machine"
           />
         </div>
@@ -221,6 +282,7 @@ export function ResearchTransfersPage() {
                       <td className="px-2 py-1.5">
                         <Link
                           to={`/research/transfers/${encodeURIComponent(transfer.id)}`}
+                          state={{ returnTo: returnToTransfers }}
                           className="font-mono text-[11px] hover:underline"
                         >
                           {transfer.id}
@@ -333,6 +395,17 @@ function transferPresetMatches(
   }
   if (preset === "paused") return transfer.status === "paused";
   return transfer.status === "cancelled";
+}
+
+function transferPresetStatuses(preset: TransferPreset): TransferStatus[] {
+  if (preset === "all") return ALL_STATUSES;
+  if (preset === "attention") return ["retryable", "failed"];
+  if (preset === "completed") return ["completed"];
+  if (preset === "stale") return ["running"];
+  if (preset === "checksum_failed") return ALL_STATUSES;
+  if (preset === "paused") return ["paused"];
+  if (preset === "cancelled") return ["cancelled"];
+  return DEFAULT_FILTER;
 }
 
 interface CreateTransferDialogProps {

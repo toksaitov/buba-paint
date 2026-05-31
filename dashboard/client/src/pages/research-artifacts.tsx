@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { Plus } from "lucide-react";
 import {
   Banner,
@@ -19,6 +19,7 @@ import { useResearchArtifacts } from "../hooks/use-research-artifacts";
 import { useResearchJobs } from "../hooks/use-research-jobs";
 import { useResearchMachines } from "../hooks/use-research-machines";
 import { useResearchReports } from "../hooks/use-research-reports";
+import { useRememberResearchListReturn } from "../hooks/use-research-return-to";
 import { useResearchTransfers } from "../hooks/use-research-transfers";
 import { useAuthStore } from "../stores/auth-store";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -38,6 +39,15 @@ import type {
   RegisterArtifactRequest,
   TransferStatus,
 } from "../lib/research-types";
+import {
+  readEnumListParam,
+  readEnumParam,
+  readTextParam,
+  setQueryListParam,
+  setQueryParam,
+  updateQueryListParam,
+  updateQueryParam,
+} from "../lib/research-list-url-state";
 import { formatBytes, formatDateTime, humanize } from "../lib/utils";
 
 const ALL_STATUSES: ArtifactStatus[] = ["available", "archived"];
@@ -52,20 +62,36 @@ const PRESET_OPTIONS = [
 ] as const;
 
 type ArtifactPreset = (typeof PRESET_OPTIONS)[number]["value"];
+const DEFAULT_STATUSES: ArtifactStatus[] = ["available"];
+const DEFAULT_PRESET: ArtifactPreset = "available";
 
 export function ResearchArtifactsPage() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === "admin";
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  useRememberResearchListReturn("artifacts", "/research/artifacts");
+  const returnToArtifacts = `${location.pathname}${location.search}`;
   const artifactsQuery = useResearchArtifacts();
   const machinesQuery = useResearchMachines();
   const jobsQuery = useResearchJobs();
   const transfersQuery = useResearchTransfers();
   const reportsQuery = useResearchReports();
-  const [active, setActive] = useState<string[]>(["available"]);
   const [importOpen, setImportOpen] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
-  const [preset, setPreset] = useState<ArtifactPreset>("available");
-  const [search, setSearch] = useState("");
+  const preset = readEnumParam(
+    searchParams,
+    "preset",
+    PRESET_OPTIONS.map((option) => option.value),
+    DEFAULT_PRESET,
+  );
+  const active = readEnumListParam(
+    searchParams,
+    "status",
+    ALL_STATUSES,
+    artifactPresetStatuses(preset),
+  );
+  const search = readTextParam(searchParams, "q");
 
   const artifactsData = artifactsQuery.data?.artifacts;
   const machines = machinesQuery.data?.machines ?? [];
@@ -121,9 +147,18 @@ export function ResearchArtifactsPage() {
             <select
               aria-label="Artifact preset"
               value={preset}
-              onChange={(event) =>
-                setPreset(event.currentTarget.value as ArtifactPreset)
-              }
+              onChange={(event) => {
+                const nextPreset = event.currentTarget.value as ArtifactPreset;
+                const next = new URLSearchParams(searchParams);
+                setQueryParam(next, "preset", nextPreset, DEFAULT_PRESET);
+                setQueryListParam(
+                  next,
+                  "status",
+                  artifactPresetStatuses(nextPreset),
+                  artifactPresetStatuses(nextPreset),
+                );
+                setSearchParams(next, { replace: true });
+              }}
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               {PRESET_OPTIONS.map((opt) => (
@@ -157,7 +192,15 @@ export function ResearchArtifactsPage() {
           label="Status"
           statuses={ALL_STATUSES}
           active={active}
-          onChange={setActive}
+          onChange={(next) =>
+            updateQueryListParam(
+              searchParams,
+              setSearchParams,
+              "status",
+              next,
+              artifactPresetStatuses(preset),
+            )
+          }
           toneFor={(s) => artifactTone(s as ArtifactStatus)}
           ariaLabel="Artifact status filter"
         />
@@ -165,7 +208,15 @@ export function ResearchArtifactsPage() {
           <Input
             aria-label="Search artifacts"
             value={search}
-            onChange={(event) => setSearch(event.currentTarget.value)}
+            onChange={(event) =>
+              updateQueryParam(
+                searchParams,
+                setSearchParams,
+                "q",
+                event.currentTarget.value,
+                "",
+              )
+            }
             placeholder="Search artifact, mode, source"
           />
         </div>
@@ -194,6 +245,7 @@ export function ResearchArtifactsPage() {
                     <td className="px-2 py-1.5">
                       <Link
                         to={`/research/artifacts/${encodeURIComponent(artifact.id)}`}
+                        state={{ returnTo: returnToArtifacts }}
                         className="font-mono text-[11px] hover:underline"
                       >
                         {artifact.id}
@@ -246,6 +298,12 @@ export function ResearchArtifactsPage() {
       </div>
     </div>
   );
+}
+
+function artifactPresetStatuses(preset: ArtifactPreset): ArtifactStatus[] {
+  if (preset === "all") return ALL_STATUSES;
+  if (preset === "archived") return ["archived"];
+  return DEFAULT_STATUSES;
 }
 
 function artifactPresetMatches(

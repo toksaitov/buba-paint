@@ -11,9 +11,11 @@ import {
   StatusChip,
 } from "../components/ui/dashboard-primitives";
 import { Loading } from "../components/common/loading";
+import { ConfirmDialog } from "../components/research/confirm-dialog";
 import { MachineReference } from "../components/research/machine-reference";
 import { StaleTransferBanner } from "../components/research/stale-transfer-banner";
 import { useResearchMachines } from "../hooks/use-research-machines";
+import { useResearchReturnTo } from "../hooks/use-research-return-to";
 import { useResearchTransfer } from "../hooks/use-research-transfers";
 import { useAuthStore } from "../stores/auth-store";
 import {
@@ -45,6 +47,10 @@ export function ResearchTransferDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
+  const returnToTransfers = useResearchReturnTo(
+    "transfers",
+    "/research/transfers",
+  );
   const role = user?.role;
 
   const transferQuery = useResearchTransfer(id);
@@ -58,6 +64,7 @@ export function ResearchTransferDetailPage() {
     | { ok: false; message: string }
     | null
   >(null);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["research", "transfers"] });
@@ -89,7 +96,7 @@ export function ResearchTransferDetailPage() {
     mutationFn: () => deleteArtifactTransfer(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "transfers"] });
-      navigate("/research/transfers");
+      navigate(returnToTransfers);
     },
     onError: (err: Error) => setActionError(err.message),
   });
@@ -146,7 +153,7 @@ export function ResearchTransferDetailPage() {
       case "verify":
         return verifyMutation.mutate();
       case "delete":
-        return deleteMutation.mutate();
+        return setConfirmDeleteOpen(true);
       default:
         return undefined;
     }
@@ -156,7 +163,7 @@ export function ResearchTransferDetailPage() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Link
-          to="/research/transfers"
+          to={returnToTransfers}
           className="text-[12px] text-muted hover:underline"
         >
           ← Transfers
@@ -325,6 +332,22 @@ export function ResearchTransferDetailPage() {
           })}
         </div>
       </SectionCard>
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        title="Delete transfer record"
+        description="Removes only this transfer metadata record. Artifact files and reports are not touched."
+        confirmLabel="Delete record"
+        destructive
+        pending={deleteMutation.isPending}
+        errorMessage={
+          deleteMutation.isError
+            ? (deleteMutation.error as Error)?.message
+            : undefined
+        }
+        onConfirm={() => deleteMutation.mutate()}
+        onClose={() => setConfirmDeleteOpen(false)}
+      />
     </div>
   );
 }

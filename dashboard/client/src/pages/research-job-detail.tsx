@@ -24,6 +24,7 @@ import { Dialog } from "../components/ui/dialog";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
 import { useResearchJob } from "../hooks/use-research-jobs";
 import { useResearchReports } from "../hooks/use-research-reports";
+import { useResearchReturnTo } from "../hooks/use-research-return-to";
 import { useAuthStore } from "../stores/auth-store";
 import {
   appendResearchJobEvent,
@@ -67,6 +68,7 @@ export function ResearchJobDetailPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const role = user?.role;
+  const returnToJobs = useResearchReturnTo("jobs", "/research/jobs");
 
   const jobQuery = useResearchJob(id);
   const reportsQuery = useResearchReports();
@@ -201,7 +203,7 @@ export function ResearchJobDetailPage() {
     mutationFn: () => deleteResearchJob(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "jobs"] });
-      navigate("/research/jobs");
+      navigate(returnToJobs);
     },
     onError: (err: Error) => setActionError(err.message),
   });
@@ -269,7 +271,7 @@ export function ResearchJobDetailPage() {
   const handleAppendEvent = (req: AppendEventRequest) => {
     setIsAppending(true);
     setAppendError(null);
-    appendResearchJobEvent(id, req)
+    return appendResearchJobEvent(id, req)
       .then(() => {
         setIsAppending(false);
         queryClient.invalidateQueries({ queryKey: ["research", "job", id] });
@@ -277,6 +279,7 @@ export function ResearchJobDetailPage() {
       .catch((err: Error) => {
         setIsAppending(false);
         setAppendError(err.message);
+        throw err;
       });
   };
 
@@ -314,7 +317,7 @@ export function ResearchJobDetailPage() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Link
-          to="/research/jobs"
+          to={returnToJobs}
           className="text-[12px] text-muted hover:underline"
         >
           ← Jobs

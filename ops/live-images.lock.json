@@ -1,6 +1,6 @@
 {
   "commit": "ada0200d36d12a31c0af820ee542ee99853067a6",
-  "created_at": "2026-05-31T14:46:36+00:00",
+  "created_at": "2026-05-31T14:47:09+00:00",
   "dirty_source_allowed": true,
   "dirty_source_files": [
     "M Makefile",
@@ -45,32 +45,56 @@
     "?? scripts/publish-live-images.py"
   ],
   "images": {
+    "agent": {
+      "description": "Read-only live bot monitor and machine telemetry service.",
+      "digest": "sha256:1b546bd65a1f24aff6eca2a2ab1ae5a1f9a18a2b94f4889525cc01b42f4321f1",
+      "dockerfile": "agent/Dockerfile",
+      "key": "agent",
+      "platform": "linux/arm64",
+      "ref": "ghcr.io/toksaitov/buba-paint-agent@sha256:1b546bd65a1f24aff6eca2a2ab1ae5a1f9a18a2b94f4889525cc01b42f4321f1",
+      "repository": "ghcr.io/toksaitov/buba-paint-agent",
+      "tag": "phase12-qa-jobs-empty-20260531-1448",
+      "title": "Buba Paint agent"
+    },
     "dashboard": {
-      "description": "Dashboard and static frontend for Buba research orchestration.",
-      "digest": "sha256:da214be1035526e3c9714b0f02135222407216f0d7f896a254b8fdc750477b51",
+      "description": "Dashboard and static frontend for Buba live observability.",
+      "digest": "sha256:efc0b1a3294b94cc66d66924e29c29f7632e776eaec85cf3ce3c264ef6faf3e6",
       "dockerfile": "dashboard/Dockerfile",
       "key": "dashboard",
-      "platform": "linux/amd64",
-      "ref": "ghcr.io/toksaitov/buba-paint-dashboard@sha256:da214be1035526e3c9714b0f02135222407216f0d7f896a254b8fdc750477b51",
+      "platform": "linux/arm64",
+      "ref": "ghcr.io/toksaitov/buba-paint-dashboard@sha256:efc0b1a3294b94cc66d66924e29c29f7632e776eaec85cf3ce3c264ef6faf3e6",
       "repository": "ghcr.io/toksaitov/buba-paint-dashboard",
       "tag": "phase12-qa-jobs-empty-20260531-1448",
-      "title": "Buba Paint research dashboard"
+      "title": "Buba Paint dashboard"
     },
-    "research_worker": {
-      "description": "Research worker with backtest, transfer, and telemetry tooling.",
-      "digest": "sha256:562363b07bf42aa79d421763d164aa5c853e9255acdb4fd90f1985d6fba86a38",
-      "dockerfile": "dashboard/Dockerfile.research-worker",
-      "key": "research_worker",
-      "platform": "linux/amd64",
-      "ref": "ghcr.io/toksaitov/buba-paint-research-worker@sha256:562363b07bf42aa79d421763d164aa5c853e9255acdb4fd90f1985d6fba86a38",
-      "repository": "ghcr.io/toksaitov/buba-paint-research-worker",
+    "paint": {
+      "description": "Buba Paint trading, replay, backtest, and sweep runtime.",
+      "digest": "sha256:69d8232deeb026d91f89852ca080dff07e2e11bfe446155bed00995cfddf4ae3",
+      "dockerfile": "bots/paint/Dockerfile",
+      "key": "paint",
+      "platform": "linux/arm64",
+      "ref": "ghcr.io/toksaitov/buba-paint-bot@sha256:69d8232deeb026d91f89852ca080dff07e2e11bfe446155bed00995cfddf4ae3",
+      "repository": "ghcr.io/toksaitov/buba-paint-bot",
       "tag": "phase12-qa-jobs-empty-20260531-1448",
-      "title": "Buba Paint research worker"
+      "title": "Buba Paint bot"
+    },
+    "sidecar": {
+      "description": "Authenticated Polymarket boundary service.",
+      "digest": "sha256:0afc95de0967ff26fddb1abf4469cfe4c0056b9ad1a4f242cb6afa4f130adeec",
+      "dockerfile": "polymarket-sidecar/Dockerfile",
+      "key": "sidecar",
+      "platform": "linux/arm64",
+      "ref": "ghcr.io/toksaitov/buba-paint-sidecar@sha256:0afc95de0967ff26fddb1abf4469cfe4c0056b9ad1a4f242cb6afa4f130adeec",
+      "repository": "ghcr.io/toksaitov/buba-paint-sidecar",
+      "tag": "phase12-qa-jobs-empty-20260531-1448",
+      "title": "Buba Paint Polymarket sidecar"
     }
   },
   "input_hashes": {
+    "agent": "d9520bf1ec718fc6535d8f10da690b9ee0078fbc2476d7e03b94dee174e75c65",
     "dashboard": "ca8e31d0d767733bfb5b9dddaef723ff95f429c3f2cc9fedc7ff057b087e4a2b",
-    "research_worker": "73584284b0aebda64d51cb345155e70206cd1c3e526075fff07e3a3e6adf3d72"
+    "paint": "458ae92d8e22dc809f5809def08d8d7812a09afdaa08a5d94604ada00c13a2a4",
+    "sidecar": "0f30560446add6747bfbb5691955f848b4298f47c3c89558a1ac817ad31717ef"
   },
   "namespace": "toksaitov",
   "registry": "ghcr.io",

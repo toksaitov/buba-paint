@@ -27,6 +27,7 @@ import { useResearchMachines } from "../hooks/use-research-machines";
 import { useResearchTransfers } from "../hooks/use-research-transfers";
 import { useResearchJobs } from "../hooks/use-research-jobs";
 import { useResearchReports } from "../hooks/use-research-reports";
+import { useResearchReturnTo } from "../hooks/use-research-return-to";
 import { useAuthStore } from "../stores/auth-store";
 import {
   archiveResearchArtifact,
@@ -57,6 +58,10 @@ export function ResearchArtifactDetailPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const role = user?.role;
+  const returnToArtifacts = useResearchReturnTo(
+    "artifacts",
+    "/research/artifacts",
+  );
 
   const artifactQuery = useResearchArtifact(id);
   const [showManifest, setShowManifest] = useState(false);
@@ -144,7 +149,7 @@ export function ResearchArtifactDetailPage() {
     mutationFn: () => deleteResearchArtifact(id, false),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "artifacts"] });
-      navigate("/research/artifacts");
+      navigate(returnToArtifacts);
     },
     onError: (err: Error) => setActionError(err.message),
   });
@@ -153,7 +158,7 @@ export function ResearchArtifactDetailPage() {
     mutationFn: () => deleteResearchArtifact(id, true),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "artifacts"] });
-      navigate("/research/artifacts");
+      navigate(returnToArtifacts);
     },
     onError: (err: Error) => setActionError(err.message),
   });
@@ -191,7 +196,7 @@ export function ResearchArtifactDetailPage() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Link
-          to="/research/artifacts"
+          to={returnToArtifacts}
           className="text-[12px] text-muted hover:underline"
         >
           ← Artifacts

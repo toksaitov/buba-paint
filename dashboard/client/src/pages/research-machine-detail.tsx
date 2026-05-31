@@ -23,6 +23,7 @@ import {
   type MachineTelemetryWarning,
 } from "../components/dashboard/machine-telemetry-utils";
 import { useResearchMachineTelemetry } from "../hooks/use-research-machines";
+import { useResearchReturnTo } from "../hooks/use-research-return-to";
 import { useTheme } from "../hooks/use-theme";
 import { getChartColors } from "../lib/chart-colors";
 import { machineTone } from "../lib/research-permissions";
@@ -162,9 +163,10 @@ export function ResearchMachineDetailPage() {
 }
 
 function BackLink() {
+  const returnToMachines = useResearchReturnTo("machines", "/research/machines");
   return (
     <Link
-      to="/research/machines"
+      to={returnToMachines}
       className="text-[12px] text-muted hover:underline"
     >
       Research hosts

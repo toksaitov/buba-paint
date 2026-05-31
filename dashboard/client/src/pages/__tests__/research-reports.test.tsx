@@ -1,16 +1,14 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
-import { createElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import type { ResearchReport } from "../../lib/research-types";
 
 const navigate = vi.fn();
 
-vi.mock("react-router-dom", () => ({
+vi.mock("react-router-dom", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => navigate,
-  Link: ({ children, to }: { children: ReactNode; to: string }) =>
-    createElement("a", { href: to }, children),
 }));
 
 vi.mock("../../hooks/use-research-reports", () => ({
@@ -72,8 +70,16 @@ beforeEach(() => {
 });
 
 describe("ResearchReportsPage", () => {
+  function renderReports(route = "/research/reports") {
+    return render(
+      <MemoryRouter initialEntries={[route]}>
+        <ResearchReportsPage />
+      </MemoryRouter>,
+    );
+  }
+
   it("sorts by Net PnL and renders analysis metrics", () => {
-    render(<ResearchReportsPage />);
+    renderReports();
 
     const rows = screen.getAllByRole("row");
     expect(rows[1]).toHaveTextContent("Report b");
@@ -82,7 +88,7 @@ describe("ResearchReportsPage", () => {
   });
 
   it("filters by job type and analysis availability", async () => {
-    render(<ResearchReportsPage />);
+    renderReports();
     await userEvent.selectOptions(
       screen.getByLabelText(/report job type filter/i),
       "sweep",
@@ -96,11 +102,32 @@ describe("ResearchReportsPage", () => {
       "missing",
     );
 
-    expect(screen.getByText(/no reports yet/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no reports match the selected filters/i),
+    ).toBeInTheDocument();
+  });
+
+  it("retention archived filter includes archived reports", async () => {
+    renderReports();
+
+    await userEvent.selectOptions(
+      screen.getByLabelText(/report retention filter/i),
+      "archived",
+    );
+
+    expect(screen.getByText("Report legacy")).toBeInTheDocument();
+    expect(screen.queryByText("Report a")).not.toBeInTheDocument();
+  });
+
+  it("retention archived direct URLs derive archived status", () => {
+    renderReports("/research/reports?retention=archived");
+
+    expect(screen.getByText("Report legacy")).toBeInTheDocument();
+    expect(screen.queryByText("Report a")).not.toBeInTheDocument();
   });
 
   it("navigates to comparison for two selected reports", async () => {
-    render(<ResearchReportsPage />);
+    renderReports();
 
     await userEvent.click(screen.getByLabelText(/compare report a/i));
     await userEvent.click(screen.getByLabelText(/compare report b/i));

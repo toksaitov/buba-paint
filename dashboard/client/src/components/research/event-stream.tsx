@@ -40,7 +40,7 @@ function levelTone(level: EventLevel): ChipTone {
 interface EventStreamProps {
   events: ResearchJobEvent[];
   role: "admin" | "observer" | undefined;
-  onAppend?: (req: AppendEventRequest) => void;
+  onAppend?: (req: AppendEventRequest) => Promise<void> | void;
   isAppending?: boolean;
   appendError?: string | null;
 }
@@ -68,11 +68,17 @@ export function EventStream({
 
   const canAddNote = role ? canPerform(role, "append_event") : false;
 
-  const submitNote = () => {
+  const submitNote = async () => {
     if (!onAppend) return;
     const message = noteMessage.trim();
     if (!message) return;
-    onAppend({ level: noteLevel, message });
+    try {
+      await onAppend({ level: noteLevel, message });
+      setNoteMessage("");
+      setNoteOpen(false);
+    } catch {
+      return;
+    }
   };
 
   return (
@@ -188,7 +194,7 @@ export function EventStream({
               tone="accent"
               disabled={!noteMessage.trim() || isAppending}
               state={isAppending ? "pending" : "idle"}
-              onClick={submitNote}
+              onClick={() => void submitNote()}
             >
               Save note
             </Button>

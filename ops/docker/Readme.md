@@ -84,6 +84,17 @@ ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-resear
 ssh testing "curl.exe -s http://localhost:3002/health"
 ```
 
+Stopped-live observability refresh on `buba-paint`:
+
+```bash
+gh auth refresh -s write:packages
+python3 scripts/publish-live-images.py
+python3 scripts/deploy-stopped-live.py --dry-run
+python3 scripts/deploy-stopped-live.py --expected-db-sha256 <finalized-db-sha256>
+```
+
+The stopped-live deploy uses `ops/live-images.lock.json`, pulls dashboard, agent, paint, and sidecar images by digest, and starts only `agent`, `dashboard`, and `caddy` against the existing finalized runtime from `~/buba-paint-live/current/.env`. It refuses non-dry-run deployment unless the current runtime name matches the expected finalized run, the live DB checksum matches the supplied SHA-256, and no `paint` or `sidecar` container is running. The paint and sidecar images are pulled for provenance and rollback readiness but are not started.
+
 Research maintenance operations:
 
 ```bash

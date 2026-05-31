@@ -14,9 +14,15 @@ const BACKTEST_KNOWN_KEYS = new Set([
   "end_ms",
   "balance",
   "set",
+  "set_overrides",
 ]);
 
-const SWEEP_KNOWN_KEYS = new Set([...BACKTEST_KNOWN_KEYS, "sweeps"]);
+const SWEEP_KNOWN_KEYS = new Set([
+  ...BACKTEST_KNOWN_KEYS,
+  "sweep",
+  "sweep_dimensions",
+  "sweeps",
+]);
 
 const EXPORT_KNOWN_KEYS = new Set([
   "source_db_path",
@@ -92,6 +98,10 @@ function keyValueRows(value: unknown): KeyValueRow[] {
     }));
   }
   return [];
+}
+
+function firstDefined(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
 }
 
 function additionalJson(
@@ -174,7 +184,9 @@ function initialValuesFromBacktestParams(
     start_iso: datetimeLocalFromMs(params.start_ms ?? params.start),
     end_iso: datetimeLocalFromMs(params.end_ms ?? params.end),
     balance: stringValue(params.balance) || "200",
-    setOverrides: keyValueRows(params.set),
+    setOverrides: keyValueRows(
+      firstDefined(params.set, params.set_overrides),
+    ),
   };
 
   if (type === "sweep") {
@@ -184,7 +196,9 @@ function initialValuesFromBacktestParams(
       additionalParamsJson: additionalJson(params, SWEEP_KNOWN_KEYS),
       sweep: {
         ...base,
-        sweeps: keyValueRows(params.sweeps),
+        sweeps: keyValueRows(
+          firstDefined(params.sweeps, params.sweep, params.sweep_dimensions),
+        ),
       },
     };
   }

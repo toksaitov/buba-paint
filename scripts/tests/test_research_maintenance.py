@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = str(REPO_ROOT / "scripts")
@@ -28,6 +29,15 @@ def load_script(name: str, path: Path):
 
 MAINTENANCE = load_script("research_maintenance", REPO_ROOT / "scripts" / "research-maintenance.py")
 DEPLOY = load_script("deploy_machine_for_tests", REPO_ROOT / "scripts" / "deploy-machine.py")
+STOPPED_LIVE = load_script("deploy_stopped_live_for_tests", REPO_ROOT / "scripts" / "deploy-stopped-live.py")
+PUBLISH_RESEARCH = load_script(
+    "publish_research_images_for_tests",
+    REPO_ROOT / "scripts" / "publish-research-images.py",
+)
+PUBLISH_LIVE = load_script(
+    "publish_live_images_for_tests",
+    REPO_ROOT / "scripts" / "publish-live-images.py",
+)
 
 
 def sample_lock(input_hashes: dict[str, str] | None = None) -> dict:
@@ -43,6 +53,38 @@ def sample_lock(input_hashes: dict[str, str] | None = None) -> dict:
             "research_worker": {
                 "ref": "ghcr.io/toksaitov/buba-paint-research-worker@sha256:" + "b" * 64,
                 "digest": "sha256:" + "b" * 64,
+            },
+        },
+    }
+
+
+def sample_live_lock(input_hashes: dict[str, str] | None = None) -> dict:
+    """Return a valid stopped-live image lock fixture."""
+    return {
+        "schema": 1,
+        "input_hashes": input_hashes
+        or {
+            "agent": "stale",
+            "dashboard": "stale",
+            "paint": "stale",
+            "sidecar": "stale",
+        },
+        "images": {
+            "agent": {
+                "ref": "ghcr.io/toksaitov/buba-paint-agent@sha256:" + "a" * 64,
+                "digest": "sha256:" + "a" * 64,
+            },
+            "dashboard": {
+                "ref": "ghcr.io/toksaitov/buba-paint-dashboard@sha256:" + "b" * 64,
+                "digest": "sha256:" + "b" * 64,
+            },
+            "paint": {
+                "ref": "ghcr.io/toksaitov/buba-paint-bot@sha256:" + "c" * 64,
+                "digest": "sha256:" + "c" * 64,
+            },
+            "sidecar": {
+                "ref": "ghcr.io/toksaitov/buba-paint-sidecar@sha256:" + "d" * 64,
+                "digest": "sha256:" + "d" * 64,
             },
         },
     }
@@ -109,6 +151,62 @@ class ResearchMaintenanceTests(unittest.TestCase):
             DEPLOY.validate_image_lock(lock, path, allow_stale=True)
             with self.assertRaises(ValueError):
                 DEPLOY.validate_image_lock(lock, path, allow_stale=False)
+
+    def test_stopped_live_lock_requires_all_digest_refs(self) -> None:
+        """Rejects stopped-live locks with missing or mutable images."""
+        lock = sample_live_lock(STOPPED_LIVE.all_image_input_hashes(REPO_ROOT, tuple(STOPPED_LIVE.LIVE_IMAGE_ENVS)))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "lock.json"
+            STOPPED_LIVE.validate_image_lock(lock, path)
+            del lock["images"]["sidecar"]
+            with self.assertRaises(ValueError):
+                STOPPED_LIVE.validate_image_lock(lock, path)
+
+    def test_stopped_live_deploy_exports_only_digest_pinned_images(self) -> None:
+        """Builds live image exports from the lock without mutable tags."""
+        lock = sample_live_lock(STOPPED_LIVE.all_image_input_hashes(REPO_ROOT, tuple(STOPPED_LIVE.LIVE_IMAGE_ENVS)))
+        exports = STOPPED_LIVE.locked_image_exports(lock)
+        self.assertIn("export BUBA_AGENT_IMAGE=", exports)
+        self.assertIn("@sha256:" + "a" * 64, exports)
+        self.assertNotIn(":latest", exports)
+
+    def test_stopped_live_preflight_requires_checksum_and_stopped_bot(self) -> None:
+        """Preflight script validates the runtime, checksum, and stopped bot services."""
+        script = STOPPED_LIVE.preflight_remote_script(
+            "/home/ubuntu/buba-paint-live",
+            "live-readonly-20260514-184119",
+            "2f" * 32,
+        )
+        self.assertIn("sha256sum \"$BUBA_RUNTIME_DIR/paint.db\"", script)
+        self.assertIn("buba-paint-(paint|sidecar)-1", script)
+        self.assertIn("test -z \"$running_bot\"", script)
+
+    def test_publishers_reject_all_dirty_paths_by_default(self) -> None:
+        """Publishers treat every visible dirty path as provenance-affecting."""
+        status = "\n".join(
+            [
+                " M data/experiments/manual-note.txt",
+                " M dashboard/client/src/App.tsx",
+            ]
+        )
+        for publisher in (PUBLISH_RESEARCH, PUBLISH_LIVE):
+            with mock.patch.object(publisher, "output", return_value=status):
+                self.assertEqual(
+                    publisher.dirty_source_files(),
+                    [
+                        " M data/experiments/manual-note.txt",
+                        " M dashboard/client/src/App.tsx",
+                    ],
+                )
+                with self.assertRaises(RuntimeError):
+                    publisher.ensure_clean_source(allow_dirty=False)
+                self.assertEqual(
+                    publisher.ensure_clean_source(allow_dirty=True),
+                    [
+                        " M data/experiments/manual-note.txt",
+                        " M dashboard/client/src/App.tsx",
+                    ],
+                )
 
     def test_remote_python_script_quotes_untrusted_values(self) -> None:
         """Quotes root and extra values before embedding remote shell commands."""

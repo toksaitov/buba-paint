@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and publish digest-locked research images to GHCR."""
+"""Build and publish digest-locked stopped-live images to GHCR."""
 
 from __future__ import annotations
 
@@ -16,21 +16,33 @@ from typing import Any
 from research_images import all_image_input_hashes
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LOCK_FILE = REPO_ROOT / "ops" / "research-images.lock.json"
+DEFAULT_LOCK_FILE = REPO_ROOT / "ops" / "live-images.lock.json"
 DEFAULT_SOURCE = "https://github.com/toksaitov/buba-paint"
-TARGET_PLATFORM = "linux/amd64"
+DEFAULT_TARGET_PLATFORM = "linux/arm64"
 IMAGE_DEFINITIONS = {
     "dashboard": {
         "repository": "ghcr.io/toksaitov/buba-paint-dashboard",
         "dockerfile": "dashboard/Dockerfile",
-        "title": "Buba Paint research dashboard",
-        "description": "Dashboard and static frontend for Buba research orchestration.",
+        "title": "Buba Paint dashboard",
+        "description": "Dashboard and static frontend for Buba live observability.",
     },
-    "research_worker": {
-        "repository": "ghcr.io/toksaitov/buba-paint-research-worker",
-        "dockerfile": "dashboard/Dockerfile.research-worker",
-        "title": "Buba Paint research worker",
-        "description": "Research worker with backtest, transfer, and telemetry tooling.",
+    "agent": {
+        "repository": "ghcr.io/toksaitov/buba-paint-agent",
+        "dockerfile": "agent/Dockerfile",
+        "title": "Buba Paint agent",
+        "description": "Read-only live bot monitor and machine telemetry service.",
+    },
+    "paint": {
+        "repository": "ghcr.io/toksaitov/buba-paint-bot",
+        "dockerfile": "bots/paint/Dockerfile",
+        "title": "Buba Paint bot",
+        "description": "Buba Paint trading, replay, backtest, and sweep runtime.",
+    },
+    "sidecar": {
+        "repository": "ghcr.io/toksaitov/buba-paint-sidecar",
+        "dockerfile": "polymarket-sidecar/Dockerfile",
+        "title": "Buba Paint Polymarket sidecar",
+        "description": "Authenticated Polymarket boundary service.",
     },
 }
 
@@ -43,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK_FILE)
     parser.add_argument("--source", default=DEFAULT_SOURCE)
     parser.add_argument("--namespace", default="toksaitov")
+    parser.add_argument("--platform", default=DEFAULT_TARGET_PLATFORM)
     parser.add_argument("--allow-dirty-source", action="store_true")
     return parser.parse_args()
 
@@ -79,7 +92,7 @@ def git_commit() -> str:
 def default_tag(commit: str) -> str:
     """Return the default publish tag."""
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
-    return f"research-{stamp}-{commit[:12]}"
+    return f"live-stopped-{stamp}-{commit[:12]}"
 
 
 def gh_scopes() -> set[str]:
@@ -118,7 +131,7 @@ def ensure_clean_source(*, allow_dirty: bool) -> list[str]:
     """Fail when the source tree is dirty before image build."""
     dirty = dirty_source_files()
     if dirty and not allow_dirty:
-        raise RuntimeError("refusing to publish research images from dirty source files")
+        raise RuntimeError("refusing to publish live images from dirty source files")
     return dirty
 
 
@@ -140,6 +153,7 @@ def build_and_push(
     source: str,
     created_at: str,
     env: dict[str, str],
+    platform: str,
 ) -> dict[str, str]:
     """Build, push, and return lock metadata for one image."""
     image = f"{definition['repository']}:{tag}"
@@ -150,14 +164,14 @@ def build_and_push(
         "org.opencontainers.image.title": definition["title"],
         "org.opencontainers.image.description": definition["description"],
     }
-    with tempfile.TemporaryDirectory(prefix=f"buba-{key}-metadata-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix=f"buba-live-{key}-metadata-") as tmp_dir:
         metadata_file = Path(tmp_dir) / "metadata.json"
         build_cmd = [
             "docker",
             "buildx",
             "build",
             "--platform",
-            TARGET_PLATFORM,
+            platform,
             "--file",
             definition["dockerfile"],
             "--tag",
@@ -177,7 +191,7 @@ def build_and_push(
         "ref": f"{definition['repository']}@{digest}",
         "digest": digest,
         "dockerfile": definition["dockerfile"],
-        "platform": TARGET_PLATFORM,
+        "platform": platform,
         "title": definition["title"],
         "description": definition["description"],
         "key": key,
@@ -194,7 +208,7 @@ def read_metadata_digest(path: Path) -> str:
 
 
 def write_lock(path: Path, lock: dict[str, Any]) -> None:
-    """Write the research image lock file."""
+    """Write the live image lock file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -208,12 +222,12 @@ def dry_run_payload(args: argparse.Namespace, commit: str, tag: str, scopes: set
             key: {
                 "repository": definition["repository"],
                 "dockerfile": definition["dockerfile"],
-                "platform": TARGET_PLATFORM,
+                "platform": args.platform,
                 "tag": tag,
             }
             for key, definition in definitions.items()
         },
-        "input_hashes": all_image_input_hashes(REPO_ROOT),
+        "input_hashes": all_image_input_hashes(REPO_ROOT, tuple(definitions)),
         "lock_file": str(args.lock_file),
         "source": args.source,
         "dirty_source_files": dirty_source_files(),
@@ -251,6 +265,7 @@ def main() -> int:
                 source=args.source,
                 created_at=created_at,
                 env=env,
+                platform=args.platform,
             )
             for key, definition in definitions.items()
         }
@@ -262,7 +277,7 @@ def main() -> int:
             "tag": tag,
             "registry": "ghcr.io",
             "namespace": args.namespace,
-            "input_hashes": all_image_input_hashes(REPO_ROOT),
+            "input_hashes": all_image_input_hashes(REPO_ROOT, tuple(definitions)),
             "dirty_source_files": dirty_source,
             "dirty_source_allowed": args.allow_dirty_source,
             "images": images,

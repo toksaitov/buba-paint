@@ -11,6 +11,7 @@ import { JobCreateForm } from "../components/research/job-create-form";
 import { initialValuesFromTemplate } from "../components/research/job-form-values";
 import { RoleGate } from "../components/research/role-gate";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
+import { useResearchReturnTo } from "../hooks/use-research-return-to";
 import { useResearchJobTemplates } from "../hooks/use-research-templates";
 import { useAuthStore } from "../stores/auth-store";
 import { createResearchJob } from "../lib/research-api";
@@ -34,6 +35,7 @@ export function ResearchJobNewPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const role = user?.role;
+  const returnToJobs = useResearchReturnTo("jobs", "/research/jobs");
 
   const artifactsQuery = useResearchArtifacts();
   const templatesQuery = useResearchJobTemplates();
@@ -63,7 +65,7 @@ export function ResearchJobNewPage() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Link
-          to="/research/jobs"
+          to={returnToJobs}
           className="text-[12px] text-muted hover:underline"
         >
           ← Jobs
@@ -136,7 +138,7 @@ export function ResearchJobNewPage() {
                     template_id: selectedTemplate?.id,
                   });
                 }}
-                onCancel={() => navigate("/research/jobs")}
+                onCancel={() => navigate(returnToJobs)}
               />
             </div>
           )}

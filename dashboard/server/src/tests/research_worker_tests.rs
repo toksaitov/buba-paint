@@ -26,6 +26,7 @@ struct CancellingExecutor {
 }
 
 impl CancellingExecutor {
+    /// Build a fake executor that records commands and cancels the active job.
     fn new() -> Self {
         Self {
             commands: Mutex::new(Vec::new()),
@@ -61,11 +62,13 @@ impl ResearchCommandExecutor for FakeExecutor {
 }
 
 impl ResearchCommandExecutor for CancellingExecutor {
+    /// Capture one command and return a cancelled command output.
     fn execute(&self, command: &CommandSpec) -> Result<CommandOutput, DashboardError> {
         self.commands.lock().unwrap().push(command.clone());
         Ok(cancelled_output("operator cancelled"))
     }
 
+    /// Capture one supervised command and mark the owning job cancelled.
     fn execute_supervised<'a>(
         &'a self,
         command: &'a CommandSpec,

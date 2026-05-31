@@ -17,6 +17,11 @@ vi.mock("react-router-dom", () => ({
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
     <a href={to}>{children}</a>
   ),
+  useLocation: () => ({
+    pathname: `/research/machines/${routeId}`,
+    search: "",
+    state: null,
+  }),
   useParams: () => ({ id: routeId }),
 }));
 

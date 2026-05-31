@@ -35,3 +35,6 @@ data/market-data.db
 dashboard/client/coverage/
 dashboard/client/playwright-report/
 dashboard/client/test-results/
+
+# Generated local manual QA evidence. Keep on disk, do not commit.
+data/experiments/research-manual-qa-*/

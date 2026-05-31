@@ -76,6 +76,30 @@ function templateFixture(): ResearchJobTemplate {
   };
 }
 
+function sweepTemplateFixture(): ResearchJobTemplate {
+  return {
+    id: "template-sweep",
+    name: "Short sweep",
+    description: null,
+    job_type: "sweep",
+    artifact_id: "fixture-artifact-available",
+    priority: 4,
+    params_json: JSON.stringify({
+      start_ms: 1_779_003_540_000,
+      end_ms: 1_779_003_660_000,
+      balance: 100,
+      sweep: ["LATENCY_ARB_MIN_ASK=0.30,0.35"],
+      set_overrides: ["RISK=low"],
+    }),
+    status: "active",
+    created_by: "fixture-user",
+    created_at: FIXTURE_TIMESTAMP_MS,
+    updated_at: FIXTURE_TIMESTAMP_MS,
+    last_used_at: null,
+    usage_count: 0,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockNavigate.mockReset();
@@ -118,6 +142,39 @@ describe("ResearchJobNewPage", () => {
     );
     expect(mockNavigate).toHaveBeenCalledWith(
       "/research/jobs/fixture-job-completed",
+    );
+  });
+
+  it("loads backend alias params from sweep templates", async () => {
+    const user = userEvent.setup();
+    mockUseTemplates.mockReturnValue({
+      data: { templates: [sweepTemplateFixture()] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJobTemplates>);
+
+    renderWithProviders(<ResearchJobNewPage />);
+
+    await user.selectOptions(screen.getByLabelText(/^template/i), "template-sweep");
+    expect(
+      screen.getByRole("button", { name: /create from template/i }),
+    ).toBeEnabled();
+
+    await user.click(
+      screen.getByRole("button", { name: /create from template/i }),
+    );
+
+    await waitFor(() =>
+      expect(mockCreateJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          job_type: "sweep",
+          template_id: "template-sweep",
+          params: expect.objectContaining({
+            set: ["RISK=low"],
+            sweeps: ["LATENCY_ARB_MIN_ASK=0.30,0.35"],
+          }),
+        }),
+      ),
     );
   });
 });

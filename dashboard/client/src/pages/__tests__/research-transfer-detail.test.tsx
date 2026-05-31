@@ -1,12 +1,18 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { createElement } from "react";
 
 vi.mock("react-router-dom", () => ({
   useParams: () => ({ id: "fixture-transfer-running" }),
   useNavigate: () => vi.fn(),
+  useLocation: () => ({
+    pathname: "/research/transfers/fixture-transfer-running",
+    search: "",
+    state: null,
+  }),
   Link: ({ children, to }: { children: ReactNode; to: string }) =>
     createElement("a", { href: to }, children),
 }));
@@ -101,6 +107,28 @@ describe("ResearchTransferDetailPage", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /delete record/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("confirms completed transfer deletion before mutating", async () => {
+    const user = userEvent.setup();
+    mockUseTransfer.mockReturnValue({
+      data: fixtureTransferCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchTransfer>);
+
+    render(<ResearchTransferDetailPage />, { wrapper });
+    await user.click(screen.getByRole("button", { name: /delete record/i }));
+
+    expect(
+      screen.getByRole("heading", { name: "Delete transfer record" }),
+    ).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", {
+      name: "Delete transfer record",
+    });
+    expect(
+      within(dialog).getByRole("button", { name: /^delete record$/i }),
     ).toBeInTheDocument();
   });
 

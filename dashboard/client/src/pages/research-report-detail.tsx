@@ -32,6 +32,7 @@ import {
   useResearchReportCsv,
   useResearchReportJson,
 } from "../hooks/use-research-reports";
+import { useResearchReturnTo } from "../hooks/use-research-return-to";
 import { useAuthStore } from "../stores/auth-store";
 import { useTheme } from "../hooks/use-theme";
 import { getChartColors } from "../lib/chart-colors";
@@ -65,6 +66,7 @@ export function ResearchReportDetailPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const role = user?.role;
+  const returnToReports = useResearchReturnTo("reports", "/research/reports");
   const { theme } = useTheme();
   const colors = getChartColors(theme);
 
@@ -133,7 +135,7 @@ export function ResearchReportDetailPage() {
     mutationFn: () => deleteResearchReport(id, false),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "reports"] });
-      navigate("/research/reports");
+      navigate(returnToReports);
     },
     onError: (err: Error) => setActionError(err.message),
   });
@@ -142,7 +144,7 @@ export function ResearchReportDetailPage() {
     mutationFn: () => deleteResearchReport(id, true),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "reports"] });
-      navigate("/research/reports");
+      navigate(returnToReports);
     },
     onError: (err: Error) => setActionError(err.message),
   });
@@ -177,7 +179,7 @@ export function ResearchReportDetailPage() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Link
-          to="/research/reports"
+          to={returnToReports}
           className="text-[12px] text-muted hover:underline"
         >
           ← Reports

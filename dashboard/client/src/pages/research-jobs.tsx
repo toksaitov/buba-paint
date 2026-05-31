@@ -1,5 +1,10 @@
-import { useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useMemo } from "react";
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 import { Plus } from "lucide-react";
 import {
   Banner,
@@ -14,6 +19,7 @@ import { Loading } from "../components/common/loading";
 import { StatusFilter } from "../components/research/status-filter";
 import { useResearchJobs } from "../hooks/use-research-jobs";
 import { useResearchReports } from "../hooks/use-research-reports";
+import { useRememberResearchListReturn } from "../hooks/use-research-return-to";
 import { useResearchQueue } from "../hooks/use-research-templates";
 import { useAuthStore } from "../stores/auth-store";
 import {
@@ -22,6 +28,13 @@ import {
   jobTypeLabel,
 } from "../lib/research-permissions";
 import type { JobStatus, JobType } from "../lib/research-types";
+import {
+  readEnumListParam,
+  readEnumParam,
+  readTextParam,
+  updateQueryListParam,
+  updateQueryParam,
+} from "../lib/research-list-url-state";
 import { humanize } from "../lib/utils";
 
 const ALL_STATUSES: JobStatus[] = [
@@ -61,19 +74,44 @@ const SORT_OPTIONS = [
 ] as const;
 
 type JobSort = (typeof SORT_OPTIONS)[number]["value"];
+const DEFAULT_SORT: JobSort = "updated_desc";
 
 export function ResearchJobsPage() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === "admin";
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  useRememberResearchListReturn("jobs", "/research/jobs");
+  const returnToJobs = `${location.pathname}${location.search}`;
   const jobsQuery = useResearchJobs();
   const reportsQuery = useResearchReports();
   const queueQuery = useResearchQueue();
-  const [active, setActive] = useState<string[]>([...ALL_STATUSES]);
-  const [typeFilter, setTypeFilter] = useState<"all" | JobType>("all");
-  const [preset, setPreset] = useState<JobPreset>("all");
-  const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<JobSort>("updated_desc");
+  const active = readEnumListParam(
+    searchParams,
+    "status",
+    ALL_STATUSES,
+    ALL_STATUSES,
+  );
+  const typeFilter = readEnumParam(
+    searchParams,
+    "type",
+    TYPE_OPTIONS.map((option) => option.value),
+    "all",
+  );
+  const preset = readEnumParam(
+    searchParams,
+    "preset",
+    PRESET_OPTIONS.map((option) => option.value),
+    "all",
+  );
+  const search = readTextParam(searchParams, "q");
+  const sortKey = readEnumParam(
+    searchParams,
+    "sort",
+    SORT_OPTIONS.map((option) => option.value),
+    DEFAULT_SORT,
+  );
 
   const jobsData = jobsQuery.data?.jobs;
   const reportJobIds = useMemo(
@@ -141,7 +179,13 @@ export function ResearchJobsPage() {
               aria-label="Job preset"
               value={preset}
               onChange={(e) =>
-                setPreset(e.currentTarget.value as JobPreset)
+                updateQueryParam(
+                  searchParams,
+                  setSearchParams,
+                  "preset",
+                  e.currentTarget.value,
+                  "all",
+                )
               }
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
@@ -155,7 +199,13 @@ export function ResearchJobsPage() {
               aria-label="Job type filter"
               value={typeFilter}
               onChange={(e) =>
-                setTypeFilter(e.currentTarget.value as "all" | JobType)
+                updateQueryParam(
+                  searchParams,
+                  setSearchParams,
+                  "type",
+                  e.currentTarget.value,
+                  "all",
+                )
               }
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
@@ -168,7 +218,15 @@ export function ResearchJobsPage() {
             <select
               aria-label="Job sort"
               value={sortKey}
-              onChange={(e) => setSortKey(e.currentTarget.value as JobSort)}
+              onChange={(e) =>
+                updateQueryParam(
+                  searchParams,
+                  setSearchParams,
+                  "sort",
+                  e.currentTarget.value,
+                  DEFAULT_SORT,
+                )
+              }
               className="border border-border bg-bg px-2 py-1 text-[11px]"
             >
               {SORT_OPTIONS.map((opt) => (
@@ -194,7 +252,15 @@ export function ResearchJobsPage() {
           label="Status"
           statuses={ALL_STATUSES}
           active={active}
-          onChange={setActive}
+          onChange={(next) =>
+            updateQueryListParam(
+              searchParams,
+              setSearchParams,
+              "status",
+              next,
+              ALL_STATUSES,
+            )
+          }
           toneFor={(s) => jobTone(s as JobStatus)}
           ariaLabel="Job status filter"
         />
@@ -202,12 +268,26 @@ export function ResearchJobsPage() {
           <Input
             aria-label="Search jobs"
             value={search}
-            onChange={(event) => setSearch(event.currentTarget.value)}
+            onChange={(event) =>
+              updateQueryParam(
+                searchParams,
+                setSearchParams,
+                "q",
+                event.currentTarget.value,
+                "",
+              )
+            }
             placeholder="Search job, artifact, requester"
           />
         </div>
         {filtered.length === 0 ? (
-          <StateEmpty message="No jobs yet — create an export, backtest, or sweep job." />
+          <StateEmpty
+            message={
+              (jobsData ?? []).length === 0
+                ? "No jobs yet — create an export, backtest, or sweep job."
+                : "No jobs match the selected filters."
+            }
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-[12px]">
@@ -231,6 +311,7 @@ export function ResearchJobsPage() {
                     <td className="px-2 py-1.5">
                       <Link
                         to={`/research/jobs/${encodeURIComponent(job.id)}`}
+                        state={{ returnTo: returnToJobs }}
                         className="font-mono text-[11px] hover:underline"
                       >
                         {job.id}

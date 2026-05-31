@@ -7,6 +7,11 @@ import { createElement } from "react";
 vi.mock("react-router-dom", () => ({
   useParams: () => ({ id: "fixture-report-missing-file" }),
   useNavigate: () => vi.fn(),
+  useLocation: () => ({
+    pathname: "/research/reports/fixture-report-missing-file",
+    search: "",
+    state: null,
+  }),
   Link: ({ children, to }: { children: ReactNode; to: string }) =>
     createElement("a", { href: to }, children),
 }));

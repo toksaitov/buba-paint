@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useMemo } from "react";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import {
   Banner,
   RelativeTime,
@@ -13,12 +13,17 @@ import {
   useResearchMachines,
   useResearchMachineTelemetry,
 } from "../hooks/use-research-machines";
+import { useRememberResearchListReturn } from "../hooks/use-research-return-to";
 import { machineTone } from "../lib/research-permissions";
 import { humanize } from "../lib/utils";
 import type {
   MachineStatus,
   ResearchMachine,
 } from "../lib/research-types";
+import {
+  readEnumListParam,
+  updateQueryListParam,
+} from "../lib/research-list-url-state";
 
 const ALL_STATUSES: MachineStatus[] = [
   "not_configured",
@@ -35,7 +40,16 @@ const ALL_STATUSES: MachineStatus[] = [
 
 export function ResearchMachinesPage() {
   const machinesQuery = useResearchMachines();
-  const [active, setActive] = useState<string[]>([...ALL_STATUSES]);
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  useRememberResearchListReturn("machines", "/research/machines");
+  const returnToMachines = `${location.pathname}${location.search}`;
+  const active = readEnumListParam(
+    searchParams,
+    "status",
+    ALL_STATUSES,
+    ALL_STATUSES,
+  );
 
   const filtered = useMemo(
     () =>
@@ -63,7 +77,15 @@ export function ResearchMachinesPage() {
           label="Status"
           statuses={ALL_STATUSES}
           active={active}
-          onChange={setActive}
+          onChange={(next) =>
+            updateQueryListParam(
+              searchParams,
+              setSearchParams,
+              "status",
+              next,
+              ALL_STATUSES,
+            )
+          }
           toneFor={(s) => machineTone(s as MachineStatus)}
           ariaLabel="Research host status filter"
         />
@@ -84,7 +106,11 @@ export function ResearchMachinesPage() {
               </thead>
               <tbody>
                 {filtered.map((machine) => (
-                  <ResearchHostRow key={machine.id} machine={machine} />
+                  <ResearchHostRow
+                    key={machine.id}
+                    machine={machine}
+                    returnTo={returnToMachines}
+                  />
                 ))}
               </tbody>
             </table>
@@ -95,7 +121,13 @@ export function ResearchMachinesPage() {
   );
 }
 
-function ResearchHostRow({ machine }: { machine: ResearchMachine }) {
+function ResearchHostRow({
+  machine,
+  returnTo,
+}: {
+  machine: ResearchMachine;
+  returnTo: string;
+}) {
   const telemetryQuery = useResearchMachineTelemetry(machine.id);
   const telemetry = telemetryQuery.data;
   const state = telemetry?.telemetry;
@@ -133,6 +165,7 @@ function ResearchHostRow({ machine }: { machine: ResearchMachine }) {
       <td className="px-2 py-1.5">
         <Link
           to={`/research/machines/${encodeURIComponent(machine.id)}`}
+          state={{ returnTo }}
           className="font-mono text-[11px] hover:underline"
         >
           {machine.id}

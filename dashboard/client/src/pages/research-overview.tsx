@@ -79,6 +79,8 @@ export function ResearchOverviewPage() {
   const artifactsQuery = useResearchArtifacts();
   const [templateDialog, setTemplateDialog] =
     useState<TemplateDialogState | null>(null);
+  const [confirmTemplateDelete, setConfirmTemplateDelete] =
+    useState<ResearchJobTemplate | null>(null);
   const [retentionSelection, setRetentionSelection] =
     useState<RetentionSelection>(EMPTY_SELECTION);
   const [confirmRetentionOpen, setConfirmRetentionOpen] = useState(false);
@@ -300,10 +302,12 @@ export function ResearchOverviewPage() {
                     setTemplateDialog({ mode: "edit", template })
                   }
                   onAction={(action) =>
-                    templateActionMutation.mutate({
-                      action,
-                      id: template.id,
-                    })
+                    action === "delete"
+                      ? setConfirmTemplateDelete(template)
+                      : templateActionMutation.mutate({
+                          action,
+                          id: template.id,
+                        })
                   }
                 />
               ))}
@@ -404,6 +408,29 @@ export function ResearchOverviewPage() {
         onClose={() => {
           setTemplateDialog(null);
           templateMutation.reset();
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmTemplateDelete != null}
+        title="Delete job template"
+        description={`Deletes template "${confirmTemplateDelete?.name ?? ""}" from the shared template list. Existing jobs and reports remain unchanged.`}
+        confirmLabel="Delete template"
+        pending={templateActionMutation.isPending}
+        errorMessage={
+          templateActionMutation.isError
+            ? (templateActionMutation.error as Error)?.message
+            : undefined
+        }
+        onConfirm={() => {
+          if (!confirmTemplateDelete) return;
+          templateActionMutation.mutate(
+            { action: "delete", id: confirmTemplateDelete.id },
+            { onSuccess: () => setConfirmTemplateDelete(null) },
+          );
+        }}
+        onClose={() => {
+          if (!templateActionMutation.isPending) setConfirmTemplateDelete(null);
         }}
       />
 
@@ -570,11 +597,17 @@ function TemplateRow({
           )}
         </div>
         <div className="flex flex-wrap gap-1">
-          <Button size="sm" disabled={!isAdmin || pending} onClick={onEdit}>
+          <Button
+            size="sm"
+            aria-label={`Edit template ${template.name}`}
+            disabled={!isAdmin || pending}
+            onClick={onEdit}
+          >
             Edit
           </Button>
           <Button
             size="sm"
+            aria-label={`${template.status === "active" ? "Archive" : "Restore"} template ${template.name}`}
             disabled={!isAdmin || pending}
             onClick={() =>
               onAction(template.status === "active" ? "archive" : "restore")
@@ -585,6 +618,7 @@ function TemplateRow({
           <Button
             size="sm"
             tone="danger"
+            aria-label={`Delete template ${template.name}`}
             disabled={!isAdmin || pending}
             onClick={() => onAction("delete")}
           >
