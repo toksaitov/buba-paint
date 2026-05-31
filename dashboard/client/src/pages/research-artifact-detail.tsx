@@ -557,19 +557,21 @@ export function ResearchArtifactDetailPage() {
         </div>
       </SectionCard>
 
-      <EditArtifactDialog
-        open={editOpen}
-        onClose={() => setEditOpen(false)}
-        artifactId={artifact.id}
-        initial={{
-          source_machine_id: artifact.source_machine_id ?? "",
-          run_mode: artifact.run_mode ?? "",
-          replay_quality_class: artifact.replay_quality_class ?? "",
-          backtest_ready_class: artifact.backtest_ready_class ?? "",
-          live_fidelity_class: artifact.live_fidelity_class ?? "",
-        }}
-        onSaved={invalidate}
-      />
+      {editOpen && (
+        <EditArtifactDialog
+          open={editOpen}
+          onClose={() => setEditOpen(false)}
+          artifactId={artifact.id}
+          initial={{
+            source_machine_id: artifact.source_machine_id ?? "",
+            run_mode: artifact.run_mode ?? "",
+            replay_quality_class: artifact.replay_quality_class ?? "",
+            backtest_ready_class: artifact.backtest_ready_class ?? "",
+            live_fidelity_class: artifact.live_fidelity_class ?? "",
+          }}
+          onSaved={invalidate}
+        />
+      )}
 
       <ConfirmDialog
         open={confirmDeleteRecordOpen}

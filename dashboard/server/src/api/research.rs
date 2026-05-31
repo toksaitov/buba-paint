@@ -1186,6 +1186,12 @@ pub async fn create_transfer(
         .ok_or_else(|| {
             DashboardError::NotFound(format!("artifact '{}' not found", req.artifact_id))
         })?;
+    if artifact.status != "available" {
+        return Err(DashboardError::BadRequest(format!(
+            "artifact '{}' must be available before it can be transferred",
+            artifact.id
+        )));
+    }
     let source_machine_id = req
         .source_machine_id
         .as_deref()

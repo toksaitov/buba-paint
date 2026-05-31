@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   Link,
   useLocation,
@@ -29,9 +29,9 @@ import {
   readEnumListParam,
   readEnumParam,
   readTextParam,
+  sameEnumSet,
   setQueryListParam,
   setQueryParam,
-  updateQueryListParam,
   updateQueryParam,
 } from "../lib/research-list-url-state";
 import { formatSignedUsd, humanize } from "../lib/utils";
@@ -70,7 +70,7 @@ export function ResearchReportsPage() {
     ANALYSIS_FILTERS,
     "all",
   );
-  const retentionFilter = readEnumParam(
+  const rawRetentionFilter = readEnumParam(
     searchParams,
     "retention",
     RETENTION_FILTERS,
@@ -80,8 +80,13 @@ export function ResearchReportsPage() {
     searchParams,
     "status",
     ALL_STATUSES,
-    reportRetentionStatuses(retentionFilter),
+    reportRetentionStatuses(rawRetentionFilter),
   );
+  const retentionFilter =
+    searchParams.has("status") &&
+    !sameEnumSet(active, reportRetentionStatuses(rawRetentionFilter))
+      ? "all"
+      : rawRetentionFilter;
   const artifactFilter = readTextParam(searchParams, "artifact");
   const sortKey = readEnumParam(
     searchParams,
@@ -89,7 +94,10 @@ export function ResearchReportsPage() {
     SORT_OPTIONS.map((option) => option.value),
     DEFAULT_SORT,
   );
-  const [selected, setSelected] = useState<string[]>([]);
+  const selected = useMemo(
+    () => readSelectedReportIds(searchParams),
+    [searchParams],
+  );
 
   const reportsData = reportsQuery.data?.reports;
   const filtered = useMemo(
@@ -266,15 +274,17 @@ export function ResearchReportsPage() {
           label="Status"
           statuses={ALL_STATUSES}
           active={active}
-          onChange={(next) =>
-            updateQueryListParam(
-              searchParams,
-              setSearchParams,
+          onChange={(next) => {
+            const params = new URLSearchParams(searchParams);
+            setQueryParam(params, "retention", "all", "all");
+            setQueryListParam(
+              params,
               "status",
               next,
-              reportRetentionStatuses(retentionFilter),
-            )
-          }
+              reportRetentionStatuses("all"),
+            );
+            setSearchParams(params, { replace: true });
+          }}
           toneFor={(s) => reportTone(s as ReportStatus)}
           ariaLabel="Report status filter"
         />
@@ -316,11 +326,12 @@ export function ResearchReportsPage() {
                           checked={checked}
                           onChange={(e) => {
                             const nextChecked = e.currentTarget.checked;
-                            setSelected((current) =>
-                              nextChecked
-                                ? [...current, report.id]
-                                : current.filter((id) => id !== report.id),
-                            );
+                            const nextSelected = nextChecked
+                              ? [...selected, report.id]
+                              : selected.filter((id) => id !== report.id);
+                            const next = new URLSearchParams(searchParams);
+                            setSelectedReportIds(next, nextSelected);
+                            setSearchParams(next, { replace: true });
                           }}
                         />
                       </td>
@@ -407,6 +418,23 @@ function reportRetentionStatuses(
 ): ReportStatus[] {
   if (retention === "archived") return ["archived"];
   return DEFAULT_STATUSES;
+}
+
+function readSelectedReportIds(params: URLSearchParams): string[] {
+  const value = params.get("selected");
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+function setSelectedReportIds(params: URLSearchParams, ids: readonly string[]) {
+  if (ids.length === 0) {
+    params.delete("selected");
+  } else {
+    params.set("selected", [...new Set(ids)].join(","));
+  }
 }
 
 function formatMetricUsd(value: number | null | undefined): string {

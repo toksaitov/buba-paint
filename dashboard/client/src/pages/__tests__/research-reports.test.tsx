@@ -126,11 +126,48 @@ describe("ResearchReportsPage", () => {
     expect(screen.queryByText("Report a")).not.toBeInTheDocument();
   });
 
+  it("treats conflicting explicit statuses as custom filters instead of applying the old retention filter", () => {
+    renderReports("/research/reports?retention=archived&status=available");
+
+    expect(screen.getByLabelText(/report retention filter/i)).toHaveValue(
+      "all",
+    );
+    expect(screen.getByText("Report a")).toBeInTheDocument();
+    expect(screen.queryByText("Report legacy")).not.toBeInTheDocument();
+  });
+
+  it("manual status changes clear retention-specific filtering", async () => {
+    renderReports("/research/reports?retention=archived");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /report status filter/i }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "clear" }));
+    await userEvent.click(screen.getByRole("button", { name: "Available" }));
+
+    expect(screen.getByLabelText(/report retention filter/i)).toHaveValue(
+      "all",
+    );
+    expect(screen.getByText("Report a")).toBeInTheDocument();
+    expect(screen.queryByText("Report legacy")).not.toBeInTheDocument();
+  });
+
   it("navigates to comparison for two selected reports", async () => {
     renderReports();
 
     await userEvent.click(screen.getByLabelText(/compare report a/i));
     await userEvent.click(screen.getByLabelText(/compare report b/i));
+    await userEvent.click(screen.getByRole("button", { name: /compare selected/i }));
+
+    expect(navigate).toHaveBeenCalledWith("/research/reports/compare?ids=a,b");
+  });
+
+  it("hydrates comparison selections from the URL", async () => {
+    renderReports("/research/reports?selected=a,b");
+
+    expect(screen.getByLabelText(/compare report a/i)).toBeChecked();
+    expect(screen.getByLabelText(/compare report b/i)).toBeChecked();
+
     await userEvent.click(screen.getByRole("button", { name: /compare selected/i }));
 
     expect(navigate).toHaveBeenCalledWith("/research/reports/compare?ids=a,b");

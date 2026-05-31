@@ -1,5 +1,5 @@
-import { useEffect, useMemo } from "react";
-import { useLocation } from "react-router-dom";
+import { useEffect, useMemo, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 const STORAGE_PREFIX = "buba.research.return.";
 
@@ -15,7 +15,7 @@ function sanitizeReturnTo(value: unknown, fallbackPath: string) {
   if (suffix && !suffix.startsWith("?") && !suffix.startsWith("#")) {
     return null;
   }
-  if (value.startsWith("//") || value.includes("://")) {
+  if (value.startsWith("//")) {
     return null;
   }
   return value;
@@ -26,18 +26,33 @@ export function useRememberResearchListReturn(
   listPath: string,
 ) {
   const location = useLocation();
+  const navigate = useNavigate();
+  const mountedOnListRef = useRef(false);
   useEffect(() => {
     if (location.pathname !== listPath) return;
+    const current = `${location.pathname}${location.search}`;
     if (typeof window === "undefined") return;
     try {
-      window.sessionStorage.setItem(
-        storageKey(scope),
-        `${location.pathname}${location.search}`,
+      const stored = sanitizeReturnTo(
+        window.sessionStorage.getItem(storageKey(scope)),
+        listPath,
       );
+      if (
+        !mountedOnListRef.current &&
+        location.search === "" &&
+        stored != null &&
+        stored !== listPath
+      ) {
+        mountedOnListRef.current = true;
+        navigate(stored, { replace: true });
+        return;
+      }
+      mountedOnListRef.current = true;
+      window.sessionStorage.setItem(storageKey(scope), current);
     } catch {
       return;
     }
-  }, [listPath, location.pathname, location.search, scope]);
+  }, [listPath, location.pathname, location.search, navigate, scope]);
 }
 
 export function useResearchReturnTo(scope: string, fallbackPath: string) {

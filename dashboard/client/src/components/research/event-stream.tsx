@@ -67,6 +67,12 @@ export function EventStream({
   );
 
   const canAddNote = role ? canPerform(role, "append_event") : false;
+  const closeNote = () => {
+    if (isAppending) return;
+    setNoteLevel("info");
+    setNoteMessage("");
+    setNoteOpen(false);
+  };
 
   const submitNote = async () => {
     if (!onAppend) return;
@@ -151,7 +157,7 @@ export function EventStream({
       )}
       <Dialog
         open={noteOpen}
-        onClose={() => setNoteOpen(false)}
+        onClose={closeNote}
         title="Add operator note"
         description="Records an event on the job timeline."
         width="sm"
@@ -187,7 +193,7 @@ export function EventStream({
             <div className="text-[12px] text-accent-red">{appendError}</div>
           )}
           <div className="flex justify-end gap-2">
-            <Button onClick={() => setNoteOpen(false)} disabled={isAppending}>
+            <Button onClick={closeNote} disabled={isAppending}>
               Cancel
             </Button>
             <Button

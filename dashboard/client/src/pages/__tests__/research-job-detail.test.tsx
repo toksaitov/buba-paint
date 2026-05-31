@@ -400,6 +400,56 @@ describe("ResearchJobDetailPage - completed", () => {
       ).not.toBeInTheDocument(),
     );
   });
+
+  it("resets unsaved operator note text after cancelling", async () => {
+    const user = userEvent.setup();
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    await user.click(screen.getByRole("button", { name: /add note/i }));
+    let dialog = screen.getByRole("dialog", { name: /add operator note/i });
+    await user.type(within(dialog).getByLabelText(/message/i), "draft note");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await user.click(screen.getByRole("button", { name: /add note/i }));
+    dialog = screen.getByRole("dialog", { name: /add operator note/i });
+
+    expect(within(dialog).getByLabelText(/message/i)).toHaveValue("");
+  });
+
+  it("resets unsaved save-template edits after cancelling", async () => {
+    const user = userEvent.setup();
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    await user.click(
+      screen.getByRole("button", { name: /save as template/i }),
+    );
+    let dialog = screen.getByRole("dialog", { name: /save job as template/i });
+    await user.type(within(dialog).getByLabelText(/name/i), " draft");
+    await user.type(within(dialog).getByLabelText(/description/i), "draft");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await user.click(
+      screen.getByRole("button", { name: /save as template/i }),
+    );
+    dialog = screen.getByRole("dialog", { name: /save job as template/i });
+
+    expect(within(dialog).getByLabelText(/name/i)).toHaveValue(
+      "Template from fixture-",
+    );
+    expect(within(dialog).getByLabelText(/description/i)).toHaveValue("");
+  });
 });
 
 describe("ResearchJobDetailPage - loading and error states", () => {

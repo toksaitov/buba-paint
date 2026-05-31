@@ -28,6 +28,7 @@ import {
   transferTone,
 } from "../lib/research-permissions";
 import type {
+  ArtifactStatus,
   CreateTransferRequest,
   TransferStatus,
 } from "../lib/research-types";
@@ -36,9 +37,9 @@ import {
   readEnumListParam,
   readEnumParam,
   readTextParam,
+  sameEnumSet,
   setQueryListParam,
   setQueryParam,
-  updateQueryListParam,
   updateQueryParam,
 } from "../lib/research-list-url-state";
 import { formatBytes, humanize } from "../lib/utils";
@@ -94,7 +95,7 @@ export function ResearchTransfersPage() {
   const artifactsQuery = useResearchArtifacts();
   const machinesQuery = useResearchMachines();
   const [createOpen, setCreateOpen] = useState(false);
-  const preset = readEnumParam(
+  const rawPreset = readEnumParam(
     searchParams,
     "preset",
     PRESET_OPTIONS.map((option) => option.value),
@@ -104,8 +105,13 @@ export function ResearchTransfersPage() {
     searchParams,
     "status",
     ALL_STATUSES,
-    transferPresetStatuses(preset),
+    transferPresetStatuses(rawPreset),
   );
+  const preset =
+    searchParams.has("status") &&
+    !sameEnumSet(active, transferPresetStatuses(rawPreset))
+      ? "all"
+      : rawPreset;
   const search = readTextParam(searchParams, "q");
   const sortKey = readEnumParam(
     searchParams,
@@ -224,15 +230,17 @@ export function ResearchTransfersPage() {
           label="Status"
           statuses={ALL_STATUSES}
           active={active}
-          onChange={(next) =>
-            updateQueryListParam(
-              searchParams,
-              setSearchParams,
+          onChange={(next) => {
+            const params = new URLSearchParams(searchParams);
+            setQueryParam(params, "preset", "all", DEFAULT_PRESET);
+            setQueryListParam(
+              params,
               "status",
               next,
-              transferPresetStatuses(preset),
-            )
-          }
+              transferPresetStatuses("all"),
+            );
+            setSearchParams(params, { replace: true });
+          }}
           toneFor={(s) => transferTone(s as TransferStatus)}
           ariaLabel="Transfer status filter"
         />
@@ -411,7 +419,7 @@ function transferPresetStatuses(preset: TransferPreset): TransferStatus[] {
 interface CreateTransferDialogProps {
   open: boolean;
   onClose: () => void;
-  artifacts: { id: string; status: string }[];
+  artifacts: { id: string; status: ArtifactStatus }[];
   machines: { id: string; role: string }[];
 }
 
@@ -427,27 +435,56 @@ function CreateTransferDialog({
   const [dest, setDest] = useState("");
   const [bytesTotal, setBytesTotal] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const availableArtifacts = artifacts.filter(
+    (artifact) => artifact.status === "available",
+  );
+  const artifactAvailable = availableArtifacts.some(
+    (artifact) => artifact.id === artifactId,
+  );
+  const artifactError =
+    artifactId && !artifactAvailable
+      ? "Artifact must be available before it can be transferred."
+      : null;
+  const destMachine = machines.find((machine) => machine.id === dest);
+  const destinationError =
+    dest && destMachine?.role !== "research"
+      ? "Destination must be blank or a research host."
+      : null;
+  const bytes = bytesTotal.trim() ? Number(bytesTotal) : undefined;
+  const bytesError =
+    bytes != null &&
+    (!Number.isFinite(bytes) || bytes <= 0 || !Number.isInteger(bytes))
+      ? "Bytes total must be a positive whole number."
+      : null;
+  const validationError = artifactError ?? destinationError ?? bytesError;
+
+  const resetForm = () => {
+    setArtifactId("");
+    setSource("");
+    setDest("");
+    setBytesTotal("");
+    setError(null);
+  };
 
   const mutation = useMutation({
     mutationFn: (req: CreateTransferRequest) => createArtifactTransfer(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "transfers"] });
-      setArtifactId("");
-      setSource("");
-      setDest("");
-      setBytesTotal("");
-      setError(null);
+      resetForm();
       onClose();
     },
     onError: (err: Error) => setError(err.message),
   });
 
+  const close = () => {
+    if (mutation.isPending) return;
+    resetForm();
+    onClose();
+  };
+
   const submit = () => {
-    const bytes = bytesTotal.trim()
-      ? Number(bytesTotal)
-      : undefined;
-    if (bytes != null && !Number.isFinite(bytes)) {
-      setError("Bytes total must be a number.");
+    if (validationError) {
+      setError(validationError);
       return;
     }
     mutation.mutate({
@@ -461,7 +498,7 @@ function CreateTransferDialog({
   return (
     <Dialog
       open={open}
-      onClose={mutation.isPending ? () => undefined : onClose}
+      onClose={mutation.isPending ? () => undefined : close}
       title="Create transfer"
       description="Queues a transfer record. The destination worker claims it on its next tick."
     >
@@ -471,11 +508,14 @@ function CreateTransferDialog({
             <select
               id={id}
               value={artifactId}
-              onChange={(e) => setArtifactId(e.currentTarget.value)}
+              onChange={(e) => {
+                setArtifactId(e.currentTarget.value);
+                setError(null);
+              }}
               className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
             >
               <option value="">Select artifact</option>
-              {artifacts.map((a) => (
+              {availableArtifacts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.id}
                 </option>
@@ -483,13 +523,21 @@ function CreateTransferDialog({
             </select>
           )}
         </FormField>
+        {availableArtifacts.length === 0 && (
+          <Banner tone="warning" title="No transferable artifacts">
+            Only available artifacts can be queued for transfer.
+          </Banner>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           <FormField label="Source machine">
             {({ id }) => (
               <select
                 id={id}
                 value={source}
-                onChange={(e) => setSource(e.currentTarget.value)}
+                onChange={(e) => {
+                  setSource(e.currentTarget.value);
+                  setError(null);
+                }}
                 className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
               >
                 <option value="">—</option>
@@ -506,7 +554,10 @@ function CreateTransferDialog({
               <select
                 id={id}
                 value={dest}
-                onChange={(e) => setDest(e.currentTarget.value)}
+                onChange={(e) => {
+                  setDest(e.currentTarget.value);
+                  setError(null);
+                }}
                 className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
               >
                 <option value="">—</option>
@@ -525,23 +576,31 @@ function CreateTransferDialog({
               id={id}
               inputMode="numeric"
               value={bytesTotal}
-              onChange={(e) => setBytesTotal(e.currentTarget.value)}
+              onChange={(e) => {
+                setBytesTotal(e.currentTarget.value);
+                setError(null);
+              }}
             />
           )}
         </FormField>
+        {validationError && (
+          <Banner tone="warning" title="Transfer validation">
+            {validationError}
+          </Banner>
+        )}
         {error && (
           <Banner tone="danger" title="Could not create transfer">
             {error}
           </Banner>
         )}
         <div className="flex justify-end gap-2">
-          <Button onClick={onClose} disabled={mutation.isPending}>
+          <Button onClick={close} disabled={mutation.isPending}>
             Cancel
           </Button>
           <Button
             tone="accent"
             onClick={submit}
-            disabled={!artifactId || mutation.isPending}
+            disabled={!artifactId || validationError != null || mutation.isPending}
             state={mutation.isPending ? "pending" : "idle"}
           >
             Create transfer

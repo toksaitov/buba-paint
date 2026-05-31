@@ -574,22 +574,24 @@ export function ResearchJobDetailPage() {
           cloneMutation.reset();
         }}
       />
-      <SaveTemplateDialog
-        open={saveTemplateOpen}
-        job={job}
-        pending={saveTemplateMutation.isPending}
-        error={
-          saveTemplateMutation.isError
-            ? ((saveTemplateMutation.error as Error)?.message ??
-              "Could not save template")
-            : null
-        }
-        onSubmit={(req) => saveTemplateMutation.mutate(req)}
-        onClose={() => {
-          setSaveTemplateOpen(false);
-          saveTemplateMutation.reset();
-        }}
-      />
+      {saveTemplateOpen && (
+        <SaveTemplateDialog
+          open={saveTemplateOpen}
+          job={job}
+          pending={saveTemplateMutation.isPending}
+          error={
+            saveTemplateMutation.isError
+              ? ((saveTemplateMutation.error as Error)?.message ??
+                "Could not save template")
+              : null
+          }
+          onSubmit={(req) => saveTemplateMutation.mutate(req)}
+          onClose={() => {
+            setSaveTemplateOpen(false);
+            saveTemplateMutation.reset();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -143,4 +143,23 @@ describe("ResearchArtifactDetailPage - bad checksum", () => {
 
     expect(source.closest("a")).toBeNull();
   });
+
+  it("resets unsaved metadata edits after cancelling", async () => {
+    render(<ResearchArtifactDetailPage />, { wrapper });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /edit metadata/i }),
+    );
+    await screen.findByRole("dialog");
+    await userEvent.type(screen.getByLabelText(/source machine id/i), "-draft");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /edit metadata/i }),
+    );
+
+    expect(screen.getByLabelText(/source machine id/i)).toHaveValue(
+      "fixture-live",
+    );
+  });
 });

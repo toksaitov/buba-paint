@@ -3062,6 +3062,25 @@ async fn transfer_api_rejects_invalid_requests() {
         ))
         .await
         .unwrap();
+    let archived_artifact = db
+        .create_research_artifact(
+            Some("live"),
+            "readonly_run",
+            "archived",
+            Some("live_readonly"),
+            Some("/tmp/archived-artifact/manifest.json"),
+        )
+        .await
+        .unwrap();
+    let archived_transfer = app
+        .clone()
+        .oneshot(auth_json_post(
+            "/api/research/transfers",
+            &token,
+            &serde_json::json!({"artifact_id": archived_artifact.id}),
+        ))
+        .await
+        .unwrap();
     let transfer = db
         .create_artifact_transfer(&crate::db::ArtifactTransferRecord {
             artifact_id: &artifact.id,
@@ -3114,6 +3133,7 @@ async fn transfer_api_rejects_invalid_requests() {
         .unwrap();
 
     assert_eq!(missing_artifact.status(), StatusCode::NOT_FOUND);
+    assert_eq!(archived_transfer.status(), StatusCode::BAD_REQUEST);
     assert_eq!(invalid_progress.status(), StatusCode::BAD_REQUEST);
     assert_eq!(invalid_resume.status(), StatusCode::BAD_REQUEST);
     assert_eq!(invalid_delete.status(), StatusCode::BAD_REQUEST);

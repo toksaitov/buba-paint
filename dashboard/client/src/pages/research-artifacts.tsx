@@ -43,9 +43,9 @@ import {
   readEnumListParam,
   readEnumParam,
   readTextParam,
+  sameEnumSet,
   setQueryListParam,
   setQueryParam,
-  updateQueryListParam,
   updateQueryParam,
 } from "../lib/research-list-url-state";
 import { formatBytes, formatDateTime, humanize } from "../lib/utils";
@@ -79,7 +79,7 @@ export function ResearchArtifactsPage() {
   const reportsQuery = useResearchReports();
   const [importOpen, setImportOpen] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
-  const preset = readEnumParam(
+  const rawPreset = readEnumParam(
     searchParams,
     "preset",
     PRESET_OPTIONS.map((option) => option.value),
@@ -89,8 +89,13 @@ export function ResearchArtifactsPage() {
     searchParams,
     "status",
     ALL_STATUSES,
-    artifactPresetStatuses(preset),
+    artifactPresetStatuses(rawPreset),
   );
+  const preset =
+    searchParams.has("status") &&
+    !sameEnumSet(active, artifactPresetStatuses(rawPreset))
+      ? "all"
+      : rawPreset;
   const search = readTextParam(searchParams, "q");
 
   const artifactsData = artifactsQuery.data?.artifacts;
@@ -192,15 +197,17 @@ export function ResearchArtifactsPage() {
           label="Status"
           statuses={ALL_STATUSES}
           active={active}
-          onChange={(next) =>
-            updateQueryListParam(
-              searchParams,
-              setSearchParams,
+          onChange={(next) => {
+            const params = new URLSearchParams(searchParams);
+            setQueryParam(params, "preset", "all", DEFAULT_PRESET);
+            setQueryListParam(
+              params,
               "status",
               next,
-              artifactPresetStatuses(preset),
-            )
-          }
+              artifactPresetStatuses("all"),
+            );
+            setSearchParams(params, { replace: true });
+          }}
           toneFor={(s) => artifactTone(s as ArtifactStatus)}
           ariaLabel="Artifact status filter"
         />
@@ -375,23 +382,33 @@ function ImportArtifactDialog({
   const [sourceMachineId, setSourceMachineId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const resetForm = () => {
+    setRoot("");
+    setId("");
+    setSourceMachineId("");
+    setError(null);
+  };
+
   const mutation = useMutation({
     mutationFn: (req: ImportArtifactRequest) => importResearchArtifact(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "artifacts"] });
-      setRoot("");
-      setId("");
-      setSourceMachineId("");
-      setError(null);
+      resetForm();
       onClose();
     },
     onError: (err: Error) => setError(err.message),
   });
 
+  const close = () => {
+    if (mutation.isPending) return;
+    resetForm();
+    onClose();
+  };
+
   return (
     <Dialog
       open={open}
-      onClose={mutation.isPending ? () => undefined : onClose}
+      onClose={mutation.isPending ? () => undefined : close}
       title="Import local artifact"
       description="Verify and register an artifact directory that already lives under the research work root."
     >
@@ -401,7 +418,10 @@ function ImportArtifactDialog({
             <Input
               id={fieldId}
               value={root}
-              onChange={(e) => setRoot(e.currentTarget.value)}
+              onChange={(e) => {
+                setRoot(e.currentTarget.value);
+                setError(null);
+              }}
               placeholder="/research/artifacts/my-artifact"
             />
           )}
@@ -411,7 +431,10 @@ function ImportArtifactDialog({
             <Input
               id={fieldId}
               value={id}
-              onChange={(e) => setId(e.currentTarget.value)}
+              onChange={(e) => {
+                setId(e.currentTarget.value);
+                setError(null);
+              }}
             />
           )}
         </FormField>
@@ -420,7 +443,10 @@ function ImportArtifactDialog({
             <select
               id={fieldId}
               value={sourceMachineId}
-              onChange={(e) => setSourceMachineId(e.currentTarget.value)}
+              onChange={(e) => {
+                setSourceMachineId(e.currentTarget.value);
+                setError(null);
+              }}
               className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
             >
               <option value="">—</option>
@@ -438,7 +464,7 @@ function ImportArtifactDialog({
           </Banner>
         )}
         <div className="flex justify-end gap-2">
-          <Button onClick={onClose} disabled={mutation.isPending}>
+          <Button onClick={close} disabled={mutation.isPending}>
             Cancel
           </Button>
           <Button
@@ -478,18 +504,28 @@ function RegisterArtifactDialog({
   const [sourceMachineId, setSourceMachineId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const resetForm = () => {
+    setRoot("");
+    setManifestText("");
+    setSourceMachineId("");
+    setError(null);
+  };
+
   const mutation = useMutation({
     mutationFn: (req: RegisterArtifactRequest) => registerResearchArtifact(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["research", "artifacts"] });
-      setRoot("");
-      setManifestText("");
-      setSourceMachineId("");
-      setError(null);
+      resetForm();
       onClose();
     },
     onError: (err: Error) => setError(err.message),
   });
+
+  const close = () => {
+    if (mutation.isPending) return;
+    resetForm();
+    onClose();
+  };
 
   const submit = () => {
     setError(null);
@@ -510,7 +546,7 @@ function RegisterArtifactDialog({
   return (
     <Dialog
       open={open}
-      onClose={mutation.isPending ? () => undefined : onClose}
+      onClose={mutation.isPending ? () => undefined : close}
       title="Register remote artifact"
       description="Record manifest metadata for an artifact that lives on another machine. Files are verified after transfer."
       width="lg"
@@ -521,7 +557,10 @@ function RegisterArtifactDialog({
             <Input
               id={fieldId}
               value={root}
-              onChange={(e) => setRoot(e.currentTarget.value)}
+              onChange={(e) => {
+                setRoot(e.currentTarget.value);
+                setError(null);
+              }}
               placeholder="/absolute/path/on/remote/host"
             />
           )}
@@ -531,7 +570,10 @@ function RegisterArtifactDialog({
             <Textarea
               id={fieldId}
               value={manifestText}
-              onChange={(e) => setManifestText(e.currentTarget.value)}
+              onChange={(e) => {
+                setManifestText(e.currentTarget.value);
+                setError(null);
+              }}
               minRows={8}
               placeholder='{"schema_version":1,"artifact_id":"..."}'
             />
@@ -542,7 +584,10 @@ function RegisterArtifactDialog({
             <select
               id={fieldId}
               value={sourceMachineId}
-              onChange={(e) => setSourceMachineId(e.currentTarget.value)}
+              onChange={(e) => {
+                setSourceMachineId(e.currentTarget.value);
+                setError(null);
+              }}
               className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
             >
               <option value="">—</option>
@@ -560,7 +605,7 @@ function RegisterArtifactDialog({
           </Banner>
         )}
         <div className="flex justify-end gap-2">
-          <Button onClick={onClose} disabled={mutation.isPending}>
+          <Button onClick={close} disabled={mutation.isPending}>
             Cancel
           </Button>
           <Button

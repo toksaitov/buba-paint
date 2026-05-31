@@ -27,8 +27,11 @@ vi.mock("../../hooks/use-research-reports", () => ({
 
 import { ResearchArtifactsPage } from "../research-artifacts";
 import { useResearchArtifacts } from "../../hooks/use-research-artifacts";
+import { useResearchMachines } from "../../hooks/use-research-machines";
+import { useAuthStore } from "../../stores/auth-store";
 
 const mockUseArtifacts = vi.mocked(useResearchArtifacts);
+const mockUseMachines = vi.mocked(useResearchMachines);
 
 function makeArtifact(
   id: string,
@@ -58,6 +61,10 @@ function makeArtifact(
 }
 
 beforeEach(() => {
+  useAuthStore.setState({
+    token: "token",
+    user: { id: "1", username: "admin", role: "admin" },
+  });
   mockUseArtifacts.mockReturnValue({
     data: {
       artifacts: [
@@ -69,6 +76,22 @@ beforeEach(() => {
     isLoading: false,
     isError: false,
   } as ReturnType<typeof useResearchArtifacts>);
+  mockUseMachines.mockReturnValue({
+    data: {
+      machines: [
+        {
+          id: "live",
+          name: "Live",
+          role: "live",
+          ssh_alias: null,
+          status: "idle",
+          details_json: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+    },
+  } as ReturnType<typeof useResearchMachines>);
 });
 
 describe("ResearchArtifactsPage", () => {
@@ -116,5 +139,78 @@ describe("ResearchArtifactsPage", () => {
 
     expect(screen.getByText("archived-artifact")).toBeInTheDocument();
     expect(screen.queryByText("available-artifact")).not.toBeInTheDocument();
+  });
+
+  it("treats conflicting explicit statuses as custom filters instead of applying the old preset", () => {
+    renderArtifacts("/research/artifacts?preset=archived&status=available");
+
+    expect(screen.getByLabelText(/artifact preset/i)).toHaveValue("all");
+    expect(screen.getByText("available-artifact")).toBeInTheDocument();
+    expect(screen.queryByText("archived-artifact")).not.toBeInTheDocument();
+  });
+
+  it("manual status changes clear preset-specific filtering", async () => {
+    renderArtifacts("/research/artifacts?preset=archived");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /artifact status filter/i }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "clear" }));
+    await userEvent.click(screen.getByRole("button", { name: "Available" }));
+
+    expect(screen.getByLabelText(/artifact preset/i)).toHaveValue("all");
+    expect(screen.getByText("available-artifact")).toBeInTheDocument();
+    expect(screen.queryByText("archived-artifact")).not.toBeInTheDocument();
+  });
+
+  it("resets unsaved local import form state after cancelling", async () => {
+    renderArtifacts();
+
+    await userEvent.click(screen.getByRole("button", { name: /import local/i }));
+    await screen.findByRole("dialog");
+    await userEvent.type(
+      screen.getByLabelText(/artifact root/i),
+      "/research/artifacts/draft",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/artifact id override/i),
+      "draft-id",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await userEvent.click(screen.getByRole("button", { name: /import local/i }));
+
+    expect(screen.getByLabelText(/artifact root/i)).toHaveValue("");
+    expect(screen.getByLabelText(/artifact id override/i)).toHaveValue("");
+  });
+
+  it("resets unsaved remote register form state after cancelling", async () => {
+    renderArtifacts();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /register remote/i }),
+    );
+    await screen.findByRole("dialog");
+    await userEvent.type(
+      screen.getByLabelText(/remote artifact root/i),
+      "/remote/artifact",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/manifest json/i),
+      "draft manifest",
+    );
+    await userEvent.selectOptions(
+      screen.getByLabelText(/source machine/i),
+      "live",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /register remote/i }),
+    );
+
+    expect(screen.getByLabelText(/remote artifact root/i)).toHaveValue("");
+    expect(screen.getByLabelText(/manifest json/i)).toHaveValue("");
+    expect(screen.getByLabelText(/source machine/i)).toHaveValue("");
   });
 });

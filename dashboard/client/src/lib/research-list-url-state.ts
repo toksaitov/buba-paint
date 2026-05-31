@@ -85,6 +85,15 @@ export function setQueryListParam<T extends string>(
   }
 }
 
+export function sameEnumSet<T extends string>(
+  left: readonly T[],
+  right: readonly T[],
+): boolean {
+  return (
+    left.length === right.length && right.every((value) => left.includes(value))
+  );
+}
+
 function sameList<T extends string>(left: readonly T[], right: readonly T[]) {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
