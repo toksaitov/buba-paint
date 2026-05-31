@@ -16,13 +16,13 @@ Use this file to answer:
 
 ## Current Status
 
-Status: phases 1-10 are implemented and smoke-tested on `testing`.
+Status: phases 1-11 are implemented and smoke-tested on `testing`.
 
 There is no active implementation phase at the moment. The completed historical
-work remains phases 1-7T plus canonical phases 8-10. The remaining roadmap is
-finite: phase 11 is the last required phase before calling the Research section
-ready for the next paper-run research/backtesting cycle. Anything outside that
-phase is explicitly later work.
+work remains phases 1-7T plus canonical phases 8-11. Phase 11 was the last
+required phase before calling the Research section ready for the next paper-run
+research/backtesting cycle. Anything outside that phase is explicitly later
+work.
 
 The system can now:
 
@@ -46,10 +46,12 @@ The system can now:
 * Back up and restore the research dashboard DB on `testing`.
 * Collect redacted research diagnostics bundles on `testing`.
 * Roll back and roll forward digest-pinned research deployments.
+* Run the next paper-run research/backtesting cycle from the dashboard without
+  known critical shell workarounds.
 
 ## Research-Ready Finish Line
 
-Research is ready for the next paper-run research/backtesting cycle when an
+Research is ready for the next paper-run research/backtesting cycle because an
 operator can complete this workflow without shell workarounds:
 
 1. Finalize or select a live/paper run artifact.
@@ -70,6 +72,10 @@ The finish line is not "all possible research tooling forever." It is the
 minimum professional system needed to run the next paper-run research cycle
 reliably, understand the result, recover from common failures, and avoid
 disturbing the live bot.
+
+Phase 11 completed this finish-line rehearsal. Later work may extend the system,
+but it is no longer required before the next paper-run research/backtesting
+cycle.
 
 ## Operating Rules
 
@@ -338,6 +344,171 @@ Implemented:
 * Observers can inspect diagnosis and clone params, but cannot submit mutations.
 
 ## Latest End-To-End Evidence
+
+### Paper-Run Readiness Rehearsal
+
+Target: `testing` through `http://127.0.0.1:3302`.
+
+Representative artifact:
+
+* `live-readonly-20260514-184119-finalized-20260517-075706Z`
+
+Bounded interval:
+
+* local: `2026-05-17 13:39` to `2026-05-17 13:41`
+* UTC: `2026-05-17T07:39:00.000Z` to `2026-05-17T07:41:00.000Z`
+* persisted:
+  * `start_ms=1779003540000`
+  * `end_ms=1779003660000`
+
+Preflight:
+
+* git worktree was clean before the browser rehearsal.
+* Phase 10 commit was present:
+  `709d3da Add research maintenance recovery tooling`
+* local gates passed:
+  * `cd dashboard/client && npm run lint`
+  * `cd dashboard/client && npm test`
+  * `cd dashboard/client && npm run build`
+  * direct stable-toolchain `cargo test -p buba-dashboard`
+  * `python3 scripts/audit-docs.py`
+  * `docker compose -f docker-compose.research.yml config --quiet`
+  * `python3 scripts/publish-research-images.py --dry-run`
+  * `python3 scripts/deploy-machine.py --machine research --dry-run`
+  * `python3 scripts/research-maintenance.py status --machine research --dry-run`
+  * `python3 scripts/research-maintenance.py backup-db --machine research --dry-run`
+  * `git diff --check`
+* image publish/deploy was not needed because code was unchanged and the
+  digest lock input hashes matched the current tree.
+
+Pre-rehearsal backup:
+
+* backup: `dashboard-db-20260531-094350`
+* backup DB size: `1781760` bytes
+* backup SHA-256:
+  `657d875a0f9ea8dda4868112bde8e338dd5579edf4a779c24d1986a46e738c00`
+* backup `PRAGMA quick_check`: `ok`
+
+Current digest-pinned images during rehearsal:
+
+* dashboard:
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:bbd721e7de5a4336c5d1cd552870e2d347c20d8877232a7657b748f08caa8520`
+* research worker:
+  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:66f64624dc34b4d83a6556b351cfc371aa6de53b8bf5c86f55b40a16e501e677`
+
+Browser reachability:
+
+* Research home loaded queue cockpit, templates, and retention sections.
+* Research > Machines > research loaded host, worker, CPU, memory, swap, disk,
+  and telemetry state without load errors.
+* Research > Reports, Artifacts, Transfers, and Jobs loaded without load
+  errors.
+* The finalized artifact appeared in Research > Artifacts.
+
+Current-params rehearsal job:
+
+* job: `88a7d07c-d4f6-4eb6-b7f1-9e1b3573c36d`
+* report: `5664be32-ebc7-47bb-8ed3-21af61e0a60c`
+* created through the browser from template `p9`:
+  `e936c682-4a71-4023-845f-8fe9338f32a9`
+* persisted params:
+  * `start_ms=1779003540000`
+  * `end_ms=1779003660000`
+  * `balance=100`
+* all six steps completed:
+  * `verify_artifact`
+  * `validate_replay_data`
+  * `validate_backtest_input`
+  * `prepare_backtest_input`
+  * `run_backtest`
+  * `write_report`
+* report JSON loaded in the browser and showed schema v2 metrics, provenance,
+  dashboard image ref, worker image ref, no-trade diagnostics, and no-signal
+  diagnostics.
+* report CSV loaded in the browser.
+
+Minimal sweep rehearsal job:
+
+* job: `4b2ac078-1042-4f82-8e1d-adad10933b57`
+* report: `e4c0772f-6fca-4d01-be3d-d9fca9e50dfe`
+* sweep dimension: `LATENCY_ARB_MIN_ASK=0.30,0.35`
+* persisted params:
+  * `start_ms=1779003540000`
+  * `end_ms=1779003660000`
+  * `balance=200`
+  * `sweeps=["LATENCY_ARB_MIN_ASK=0.30,0.35"]`
+* all six steps completed:
+  * `verify_artifact`
+  * `validate_replay_data`
+  * `validate_backtest_input`
+  * `prepare_backtest_input`
+  * `run_sweep`
+  * `write_report`
+* report JSON loaded in the browser and showed schema v2 provenance, image
+  refs, the sweep dimension, and ranked sweep rows.
+* report CSV loaded in the browser with two ranked rows.
+
+Comparison:
+
+* route:
+  `/research/reports/compare?ids=5664be32-ebc7-47bb-8ed3-21af61e0a60c,e4c0772f-6fca-4d01-be3d-d9fca9e50dfe`
+* comparison loaded both new reports.
+* comparison showed compatibility warnings for different job types and starting
+  balances.
+* comparison showed an explicit no-winner state because top Net PnL was tied at
+  zero.
+
+Recovery and cancellation evidence:
+
+* blocked job `7c8e48df-bb5e-4323-9f50-63d06a0db5e7` still showed:
+  * failed step: `prepare_backtest_input`
+  * status code: `1`
+  * stderr:
+    `missing_open_prices=1,missing_close_prices=1`
+  * raw command details
+  * raw step state
+  * guidance to prefer Clone with adjusted Start and End.
+* existing cancelled job `1e0b42ea-fdb3-4776-8655-23ec10df4530` still showed:
+  * status: `Cancelled`
+  * cancelled steps
+  * event `local command worker observed cancellation`
+  * event `research command terminated after cancellation`
+
+Scratch archive and retention:
+
+* job scratch archived:
+  `88a7d07c-d4f6-4eb6-b7f1-9e1b3573c36d`
+* browser result:
+  `Deleted 4 scratch files; skipped 2 already-absent files.`
+* deleted files verified on `testing`:
+  * `prepared-backtest.db`
+  * `prepared-backtest.db-wal`
+  * `prepared-backtest.db-shm`
+  * `backtest.db`
+  * `backtest.db-wal`
+  * `backtest.db-shm`
+* preserved files verified on `testing`:
+  * `report.json`
+  * `report.csv`
+* report JSON and CSV remained readable in the browser after scratch archive.
+* final retention totals reported 10 job candidates, 9 report candidates, 1
+  artifact candidate, and about 101 MiB of scratch candidates remaining.
+
+Final `testing` state:
+
+* `research-dashboard`: `e965fd0e9ed8`, healthy, current dashboard digest.
+* `research-worker`: `6435a68327fc`, running, current worker digest.
+* DB counts: 15 jobs, 10 reports, 3 artifacts, 3 transfers, 1 template.
+* Research telemetry: `stale=false`, worker status `idle`, sample count `60`,
+  sampler error `null`.
+
+Live safety evidence:
+
+* `buba-paint-agent-1`: `50003527ee0e`
+* `buba-paint-caddy-1`: `2deb6c87a582`
+* `buba-paint-dashboard-1`: `773286fe7eb7`
+* IDs and two-week uptime stayed unchanged before and after the Phase 11
+  browser rehearsal.
 
 ### Deployment, Backup, Rollback, And Diagnostics Smoke
 
@@ -690,10 +861,10 @@ Fixtures and tests:
 * `dashboard/server/src/tests/research_worker_tests.rs`
 * `scripts/tests/test_research_maintenance.py`
 
-## Remaining Phases
+## Completed Finish-Line Phases
 
-Do not create new lettered phases. Continue from the completed 1-7T history and
-use phases 10-11 until the research-ready finish line is reached.
+Do not create new lettered phases. The completed 1-7T history plus canonical
+phases 8-11 reached the research-ready finish line.
 
 ### Phase 8: Results And Comparison
 
@@ -772,6 +943,8 @@ Stop condition:
 
 ### Phase 11: Paper-Run Readiness Rehearsal
 
+Status: complete.
+
 Goal: prove the whole Research section is ready for the next real paper-run
 research/backtesting cycle.
 
@@ -789,8 +962,12 @@ Required deliverables:
 
 Stop condition:
 
-* The user can start the next paper-run research/backtesting cycle from the
-  dashboard with no known critical workflow gaps.
+* Complete. The Phase 11 browser rehearsal on `testing` created and completed
+  one current-params job and one minimal sweep job against the finalized
+  artifact, loaded both reports, compared them, verified recovery and
+  cancellation evidence, archived scratch DBs while preserving report files,
+  confirmed fresh idle telemetry, and confirmed live `buba-paint` container IDs
+  stayed unchanged.
 
 ## Later Work, Not Required For The Finish Line
 
