@@ -55,7 +55,7 @@ trades = conn.execute("""
     ORDER BY st.id
 """).fetchall()
 
-# Balance log — use if available, otherwise synthesize from trades
+# Balance log - use if available, otherwise synthesize from trades
 has_balance_log = table_exists("balance_log")
 
 if has_balance_log:
@@ -148,17 +148,17 @@ print(f"Run {RUN_NAME} Summary")
 print(f"  Duration:     {duration_h:.1f} hours")
 print(f"  Balance:      ${starting_bal:.2f} → ${current_bal:.2f}")
 print(f"  P&L:          ${total_pnl:+.2f} ({pnl_pct:+.1f}%)")
-print(f"  Trades:       {n_trades} ({wins}W / {losses}L) — {win_rate:.0f}% win rate")
+print(f"  Trades:       {n_trades} ({wins}W / {losses}L) - {win_rate:.0f}% win rate")
 print(f"  Max Drawdown: {max_dd*100:.1f}%")
 print(f"  Signals:      {n_signals}")
 if btc_prices:
-    print(f"  BTC Range:    ${min(btc_prices):,.2f} – ${max(btc_prices):,.2f}")
+    print(f"  BTC Range:    ${min(btc_prices):,.2f} - ${max(btc_prices):,.2f}")
 print()
 
 # ── 2. CHART: 4-panel dashboard ─────────────────────────────────────────
 fig, axes = plt.subplots(4, 1, figsize=(16, 20), gridspec_kw={"height_ratios": [3, 3, 2, 2]})
 fig.suptitle(
-    f"Run {RUN_NAME}  —  {run_start.strftime('%b %d %H:%M')} → {run_end.strftime('%b %d %H:%M UTC')}  "
+    f"Run {RUN_NAME}  -  {run_start.strftime('%b %d %H:%M')} → {run_end.strftime('%b %d %H:%M UTC')}  "
     f"({duration_h:.1f}h)    P&L: ${total_pnl:+.2f} ({pnl_pct:+.1f}%)",
     fontsize=15, fontweight="bold", y=0.98
 )
@@ -309,7 +309,7 @@ plt.close(fig)
 # ── 3. CHART: Trade Detail ──────────────────────────────────────────────
 if trade_pnls:
     fig2, axes2 = plt.subplots(2, 2, figsize=(14, 10))
-    fig2.suptitle(f"Run {RUN_NAME} — Trade Details", fontsize=14, fontweight="bold")
+    fig2.suptitle(f"Run {RUN_NAME} - Trade Details", fontsize=14, fontweight="bold")
 
     # P&L at different fee tiers
     ax = axes2[0, 0]

@@ -175,6 +175,53 @@ fn insert_feed_event(
     .unwrap();
 }
 
+/// Insert source audit rows used by replay calibration.
+fn insert_source_audit_rows(conn: &Connection) {
+    conn.execute(
+        "INSERT INTO signals (id, timestamp, strategy, direction, metadata)
+         VALUES
+         (10, 1200, 'latency_arb', 'UP', '{}'),
+         (11, 2600, 'latency_arb', 'DOWN', '{}')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO signal_metrics
+         (signal_id, generated_at_ms, features_json)
+         VALUES (10, 1200, '{}'), (11, 2600, '{}')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO simulated_trades
+         (id, timestamp, market_id, strategy, side, token_id, entry_price, size, status)
+         VALUES
+         (20, 1300, 'm1', 'latency_arb', 'UP', 'up-1', 0.45, 10.0, 'closed'),
+         (21, 2600, 'm1', 'latency_arb', 'DOWN', 'down-1', 0.55, 10.0, 'closed')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO trade_results
+         (trade_id, settlement_price, pnl_0pct, pnl_1pct, pnl_2pct, pnl_3pct, pnl_net, fee_amount, resolved_at)
+         VALUES
+         (20, 1.0, 5.0, 5.0, 5.0, 5.0, 4.8, 0.2, 1800),
+         (21, 0.0, -5.0, -5.0, -5.0, -5.0, -5.1, 0.1, 1900)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO balance_log (timestamp, event, trade_id, amount, balance)
+         VALUES
+         (1000, 'init', NULL, 0.0, 100.0),
+         (1800, 'trade_settled', 20, 4.8, 104.8),
+         (1900, 'trade_settled', 21, -5.1, 99.7),
+         (2600, 'trade_settled', NULL, 1.0, 100.7)",
+        [],
+    )
+    .unwrap();
+}
+
 /// Insert one source compact CLOB replay row.
 fn insert_compact_clob_event(conn: &Connection, timestamp: i64, source: &str) {
     conn.execute(
@@ -298,6 +345,40 @@ fn prepare_backtest_input_builds_compact_indexed_output() {
     assert_eq!(compact_clob_rows, 2);
     assert!(crate::db::schema::has_replay_indexes(&conn).unwrap());
     assert!(std::path::Path::new(&report.manifest_path).exists());
+}
+
+/// Verifies that preparation keeps source audit rows for replay calibration.
+#[test]
+fn prepare_backtest_input_preserves_source_audit_rows() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_path = temp.path().join("source.db");
+    let output_path = temp.path().join("prepared.db");
+    create_source_db(&source_path);
+    let source = Connection::open(&source_path).unwrap();
+    insert_source_audit_rows(&source);
+    drop(source);
+
+    let report = prepare_backtest_input(&PrepareBacktestInputOptions {
+        data_path: source_path.to_string_lossy().to_string(),
+        output_path: output_path.to_string_lossy().to_string(),
+        start_time: 1000,
+        end_time: 2000,
+    })
+    .unwrap();
+
+    let conn = Connection::open(&output_path).unwrap();
+    let signal_metrics: i64 = conn
+        .query_row("SELECT COUNT(*) FROM signal_metrics", [], |row| row.get(0))
+        .unwrap();
+    let balance_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM balance_log", [], |row| row.get(0))
+        .unwrap();
+
+    assert_eq!(report.source_signal_rows, 1);
+    assert_eq!(report.source_trade_rows, 2);
+    assert_eq!(report.source_trade_result_rows, 2);
+    assert_eq!(signal_metrics, 1);
+    assert_eq!(balance_rows, 3);
 }
 
 /// Verifies that mixed legacy and compact CLOB sources do not conflict on row IDs.

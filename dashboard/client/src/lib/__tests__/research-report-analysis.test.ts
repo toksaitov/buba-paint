@@ -3,6 +3,7 @@ import type { ResearchReport } from "../research-types";
 import {
   bestReportLabel,
   comparisonWarnings,
+  netPnlMetricLabel,
   parseReportPayload,
   parseReportSummary,
   sortReports,
@@ -87,5 +88,25 @@ describe("research report analysis helpers", () => {
     ];
 
     expect(bestReportLabel(parsed)).toMatch(/tied/i);
+  });
+
+  it("labels calibrated sweep metrics distinctly", () => {
+    const base = report("sweep", 32, {
+      provenance: { job_type: "sweep" },
+    });
+    const summary = JSON.parse(base.summary_json ?? "{}");
+    const calibrated = {
+      ...base,
+      summary_json: JSON.stringify({
+        ...summary,
+        sweep_summary: { ranked_by: "calibrated_pnl" },
+      }),
+    };
+    const parsed = parseReportPayload(JSON.parse(calibrated.summary_json!), calibrated);
+
+    expect(netPnlMetricLabel(parsed)).toBe("Calibrated Net PnL");
+    expect(comparisonWarnings([{ report: calibrated, parsed }])).toContain(
+      "One or more sweep reports are ranked by calibrated PnL.",
+    );
   });
 });

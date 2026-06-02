@@ -232,7 +232,7 @@ test("shows em-dash for load average when null", () => {
     error: null,
   } as ReturnType<typeof useMachine>);
   render(<MachinePage />);
-  expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(1);
 });
 
 test("does not render forbidden secret substrings", () => {

@@ -19,7 +19,9 @@ import { StatusFilter } from "../components/research/status-filter";
 import { useResearchReports } from "../hooks/use-research-reports";
 import { useRememberResearchListReturn } from "../hooks/use-research-return-to";
 import {
+  netPnlMetricLabel,
   parseReportSummary,
+  reportHasSourceMismatch,
   sortReports,
   type ReportSortKey,
 } from "../lib/research-report-analysis";
@@ -45,7 +47,7 @@ const JOB_TYPES: Array<"all" | JobType | "unknown"> = [
   "unknown",
 ];
 const SORT_OPTIONS: Array<{ value: ReportSortKey; label: string }> = [
-  { value: "net_pnl_desc", label: "Net PnL" },
+  { value: "net_pnl_desc", label: "Report PnL" },
   { value: "updated_desc", label: "Updated" },
   { value: "drawdown_best", label: "Max drawdown" },
   { value: "win_rate_desc", label: "Win rate" },
@@ -87,7 +89,9 @@ export function ResearchReportsPage() {
     !sameEnumSet(active, reportRetentionStatuses(rawRetentionFilter))
       ? "all"
       : rawRetentionFilter;
-  const artifactFilter = readTextParam(searchParams, "artifact");
+  const legacyArtifactFilter = readTextParam(searchParams, "artifact");
+  const textFilter =
+    readTextParam(searchParams, "q") || legacyArtifactFilter;
   const sortKey = readEnumParam(
     searchParams,
     "sort",
@@ -102,7 +106,7 @@ export function ResearchReportsPage() {
   const reportsData = reportsQuery.data?.reports;
   const filtered = useMemo(
     () => {
-      const artifactNeedle = artifactFilter.trim().toLowerCase();
+      const searchNeedle = textFilter.trim().toLowerCase();
       const visible = [...(reportsData ?? [])]
         .filter((r) => active.includes(r.status))
         .filter((r) => {
@@ -124,8 +128,18 @@ export function ResearchReportsPage() {
           return true;
         })
         .filter((r) => {
-          if (!artifactNeedle) return true;
-          return (r.artifact_id ?? "").toLowerCase().includes(artifactNeedle);
+          if (!searchNeedle) return true;
+          const parsed = parseReportSummary(r);
+          return [
+            r.title,
+            r.id,
+            r.job_id,
+            r.artifact_id ?? "",
+            parsed.provenance.job_type ? humanize(parsed.provenance.job_type) : "",
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(searchNeedle);
         });
       return sortReports(visible, sortKey);
     },
@@ -135,7 +149,7 @@ export function ResearchReportsPage() {
       typeFilter,
       analysisFilter,
       retentionFilter,
-      artifactFilter,
+      textFilter,
       sortKey,
     ],
   );
@@ -256,18 +270,15 @@ export function ResearchReportsPage() {
             <option value="archived">Archived only</option>
           </select>
           <Input
-            aria-label="Artifact filter"
-            value={artifactFilter}
-            onChange={(e) =>
-              updateQueryParam(
-                searchParams,
-                setSearchParams,
-                "artifact",
-                e.currentTarget.value,
-                "",
-              )
-            }
-            placeholder="Filter artifact"
+            aria-label="Search reports"
+            value={textFilter}
+            onChange={(e) => {
+              const next = new URLSearchParams(searchParams);
+              setQueryParam(next, "q", e.currentTarget.value, "");
+              next.delete("artifact");
+              setSearchParams(next, { replace: true });
+            }}
+            placeholder="Search report, job, artifact"
           />
         </div>
         <StatusFilter
@@ -292,7 +303,7 @@ export function ResearchReportsPage() {
           <StateEmpty
             message={
               (reportsQuery.data?.reports ?? []).length === 0
-                ? "No reports yet — they appear after a backtest or sweep job completes."
+                ? "No reports yet. They appear after a backtest or sweep job completes."
                 : "No reports match the selected filters."
             }
           />
@@ -356,7 +367,7 @@ export function ResearchReportsPage() {
                         {parsed.has_analysis ? (
                           <div className="space-y-0.5">
                             <div>
-                              Net PnL{" "}
+                              {netPnlMetricLabel(parsed)}{" "}
                               <span className="font-semibold">
                                 {formatMetricUsd(parsed.metrics.net_pnl)}
                               </span>
@@ -366,6 +377,25 @@ export function ResearchReportsPage() {
                               WR {formatPercent(parsed.metrics.win_rate)} ·
                               Trades {formatInteger(parsed.metrics.trade_count)}
                             </div>
+                            {reportHasSourceMismatch(parsed) && (
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <StatusChip
+                                  label="Source mismatch"
+                                  tone="warning"
+                                  compact
+                                />
+                                <span className="text-muted">
+                                  Source run{" "}
+                                  {formatMetricUsd(
+                                    parsed.source_comparison?.source.net_pnl,
+                                  )}{" "}
+                                  Delta{" "}
+                                  {formatMetricUsd(
+                                    parsed.source_comparison?.delta.net_pnl,
+                                  )}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <span className="text-muted">Analysis unavailable</span>
@@ -388,7 +418,7 @@ export function ResearchReportsPage() {
                             {report.artifact_id}
                           </Link>
                         ) : (
-                          <span className="text-muted">—</span>
+                          <span className="text-muted">-</span>
                         )}
                       </td>
                       <td className="px-2 py-1.5">

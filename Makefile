@@ -1,16 +1,21 @@
 CLIENT_DIR := dashboard/client
 SIDECAR_DIR := polymarket-sidecar
-COMMENT_POLICY := cargo run --quiet --manifest-path tools/rust-comment-policy/Cargo.toml --
+RUSTUP_TOOLCHAIN ?= stable
+CARGO ?= $(shell rustup which cargo --toolchain $(RUSTUP_TOOLCHAIN) 2>/dev/null || command -v cargo)
+export PATH := $(dir $(CARGO)):$(PATH)
+COMMENT_POLICY := $(CARGO) run --quiet --manifest-path tools/rust-comment-policy/Cargo.toml --
 TS_COMMENT_AUDIT := node scripts/ts_comment_audit.mjs
+USER_FACING_TEXT_AUDIT := python3 scripts/audit-user-facing-text.py
 
 .PHONY: lint comment-audit docs-audit hot-path-audit live-low-latency-local live-docker-smoke live-runtime-profile live-readiness-local live-readiness-host-soak docker-deploy docker-deploy-dry-run deploy-stopped-live-dry-run deploy-machine-dry-run publish-live-images publish-research-images sidecar-lint sidecar-test sidecar-build sidecar-audit test-fast test-integration test-slow test-e2e test-all coverage coverage-gate
 
 lint:
-	cargo fmt --all --check
+	$(CARGO) fmt --all --check
 	python3 scripts/audit-hot-path.py
-	cargo clippy --workspace -- -D warnings
+	$(CARGO) clippy --workspace -- -D warnings
 	$(COMMENT_POLICY) check
 	$(TS_COMMENT_AUDIT) check
+	$(USER_FACING_TEXT_AUDIT)
 	cd $(SIDECAR_DIR) && npm run lint
 
 sidecar-lint:
@@ -79,21 +84,21 @@ publish-research-images:
 	python3 scripts/publish-research-images.py $(PUBLISH_RESEARCH_IMAGES_ARGS)
 
 test-fast:
-	cargo test --workspace --lib
+	$(CARGO) test --workspace --lib
 	cd $(CLIENT_DIR) && npm test
 	cd $(SIDECAR_DIR) && npm test
 
 test-integration:
-	cargo test -p buba-agent --test integration_test
-	cargo test -p buba-dashboard --test integration_test
-	cargo test -p buba-paint --test backtest_test
-	cargo test -p buba-paint --test build_data_test
-	cargo test -p buba-paint --test cli_test
-	cargo test -p buba-paint --test discovery_test
-	cargo test -p buba-paint --test feeds_test
+	$(CARGO) test -p buba-agent --test integration_test
+	$(CARGO) test -p buba-dashboard --test integration_test
+	$(CARGO) test -p buba-paint --test backtest_test
+	$(CARGO) test -p buba-paint --test build_data_test
+	$(CARGO) test -p buba-paint --test cli_test
+	$(CARGO) test -p buba-paint --test discovery_test
+	$(CARGO) test -p buba-paint --test feeds_test
 
 test-slow:
-	cargo test -p buba-paint --test live_system_test
+	$(CARGO) test -p buba-paint --test live_system_test
 
 test-e2e:
 	cd $(CLIENT_DIR) && npm run test:e2e
@@ -101,9 +106,9 @@ test-e2e:
 test-all: test-fast test-integration test-slow test-e2e
 
 coverage:
-	cargo llvm-cov --summary-only -p buba-paint --lib --tests --ignore-filename-regex 'main\.rs$$'
-	cargo llvm-cov --summary-only -p buba-agent --lib --tests --ignore-filename-regex 'main\.rs$$'
-	cargo llvm-cov --summary-only -p buba-dashboard --lib --tests --ignore-filename-regex 'main\.rs$$'
+	$(CARGO) llvm-cov --summary-only -p buba-paint --lib --tests --ignore-filename-regex 'main\.rs$$'
+	$(CARGO) llvm-cov --summary-only -p buba-agent --lib --tests --ignore-filename-regex 'main\.rs$$'
+	$(CARGO) llvm-cov --summary-only -p buba-dashboard --lib --tests --ignore-filename-regex 'main\.rs$$'
 	cd $(CLIENT_DIR) && npm run test:coverage
 
 coverage-gate:

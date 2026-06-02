@@ -41,9 +41,9 @@ pub struct ScopedTrendTracker {
 impl TrendTracker {
     /// Create a new trend tracker.
     ///
-    /// * `window_size`       – maximum number of recent outcomes to keep.
-    /// * `filter_enabled`    – whether `should_suppress` actually suppresses.
-    /// * `filter_threshold`  – bias magnitude above which suppression fires.
+    /// * `window_size`       - maximum number of recent outcomes to keep.
+    /// * `filter_enabled`    - whether `should_suppress` actually suppresses.
+    /// * `filter_threshold`  - bias magnitude above which suppression fires.
     pub fn new(window_size: usize, filter_enabled: bool, filter_threshold: f64) -> Self {
         Self {
             recent_outcomes: Vec::new(),

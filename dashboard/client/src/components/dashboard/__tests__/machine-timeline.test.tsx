@@ -8,10 +8,24 @@ vi.mock("recharts", async () => {
     ...actual,
     ResponsiveContainer: ({
       children,
+      width,
+      height,
+      minWidth,
     }: {
       children: React.ReactElement;
-    }) =>
-      React.cloneElement(children, { width: 600, height: 160 }),
+      width?: string | number;
+      height?: string | number;
+      minWidth?: string | number;
+    }) => (
+      <div
+        data-testid="responsive-container"
+        data-width={width}
+        data-height={height}
+        data-min-width={minWidth}
+      >
+        {React.cloneElement(children, { width: 600, height: Number(height) })}
+      </div>
+    ),
   };
 });
 
@@ -78,9 +92,17 @@ test("renders without throwing when a series has no points", () => {
 });
 
 test("respects a custom height prop", () => {
-  const { getByLabelText } = render(
+  const { getByLabelText, getByTestId } = render(
     <MachineTimeline series={makeSeries()} height={240} ariaLabel="tall chart" />,
   );
   const wrapper = getByLabelText("tall chart");
   expect(wrapper.getAttribute("style") ?? "").toContain("height: 240");
+  expect(getByTestId("responsive-container")).toHaveAttribute(
+    "data-height",
+    "240",
+  );
+  expect(getByTestId("responsive-container")).toHaveAttribute(
+    "data-min-width",
+    "280",
+  );
 });

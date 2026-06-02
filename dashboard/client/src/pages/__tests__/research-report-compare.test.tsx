@@ -45,7 +45,12 @@ function report(id: string): ResearchReport {
   };
 }
 
-function payload(id: string, pnl: number, artifact = "artifact-a") {
+function payload(
+  id: string,
+  pnl: number,
+  artifact = "artifact-a",
+  sourceMismatch = false,
+) {
   return {
     schema_version: 2,
     provenance: {
@@ -64,6 +69,14 @@ function payload(id: string, pnl: number, artifact = "artifact-a") {
       win_rate: 0.5,
       trade_count: 2,
     },
+    source_comparison: sourceMismatch
+      ? {
+          status: "mismatch",
+          source: { net_pnl: pnl - 2 },
+          replay: { net_pnl: pnl },
+          delta: { net_pnl: 2 },
+        }
+      : null,
     diagnostics: [],
   };
 }
@@ -73,7 +86,7 @@ beforeEach(() => {
   mockGetJson.mockReset();
   mockGetReport.mockImplementation(async (id: string) => report(id));
   mockGetJson.mockImplementation(async (id: string) =>
-    id === "a" ? payload(id, 1, "artifact-b") : payload(id, 5),
+    id === "a" ? payload(id, 1, "artifact-b", true) : payload(id, 5),
   );
 });
 
@@ -82,11 +95,16 @@ describe("ResearchReportComparePage", () => {
     render(<ResearchReportComparePage />, { wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText(/best by net pnl: report b/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/best by replay net pnl: report b/i),
+      ).toBeInTheDocument();
     });
 
     expect(screen.getByText(/different artifacts/i)).toBeInTheDocument();
+    expect(screen.getByText(/differ from source-run metrics/i)).toBeInTheDocument();
     expect(screen.getByText("1. Report b")).toBeInTheDocument();
     expect(screen.getByText("+$5.00")).toBeInTheDocument();
+    expect(screen.getByText(/source run net pnl/i)).toBeInTheDocument();
+    expect(screen.getByText(/replay delta/i)).toBeInTheDocument();
   });
 });

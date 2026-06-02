@@ -22,7 +22,7 @@ type ChipTone = "neutral" | "muted" | "success" | "warning" | "danger";
 const GIB = 1024 * 1024 * 1024;
 
 function formatPercent(used: number, total: number): string {
-  if (total <= 0) return "—";
+  if (total <= 0) return "-";
   return `${((used / total) * 100).toFixed(1)} %`;
 }
 
@@ -206,7 +206,7 @@ export function CpuCard({
       label: "Load 1m",
       value: (
         <span className="tabular-nums">
-          {current.load_one == null ? "—" : current.load_one.toFixed(2)}
+          {current.load_one == null ? "-" : current.load_one.toFixed(2)}
         </span>
       ),
     },
@@ -214,7 +214,7 @@ export function CpuCard({
       label: "Load 5m",
       value: (
         <span className="tabular-nums">
-          {current.load_five == null ? "—" : current.load_five.toFixed(2)}
+          {current.load_five == null ? "-" : current.load_five.toFixed(2)}
         </span>
       ),
     },
@@ -222,7 +222,7 @@ export function CpuCard({
       label: "Load 15m",
       value: (
         <span className="tabular-nums">
-          {current.load_fifteen == null ? "—" : current.load_fifteen.toFixed(2)}
+          {current.load_fifteen == null ? "-" : current.load_fifteen.toFixed(2)}
         </span>
       ),
     },

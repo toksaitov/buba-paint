@@ -1204,6 +1204,17 @@ async fn register_artifact_rejects_bad_remote_metadata() {
     unsafe_manifest["artifact_id"] = serde_json::json!("../bad");
     let mut no_source_manifest = manifest.clone();
     no_source_manifest["source_machine_id"] = serde_json::Value::Null;
+    let mut wal_manifest = manifest.clone();
+    wal_manifest["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "logical_name": "runtime_db_wal",
+            "kind": "sqlite_wal",
+            "relative_path": "paint.db-wal",
+            "bytes": 1,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }));
 
     for body in [
         serde_json::json!({
@@ -1223,6 +1234,10 @@ async fn register_artifact_rejects_bad_remote_metadata() {
             "artifact_root": "/tmp/remote",
             "source_machine_id": "missing-machine",
             "manifest": no_source_manifest
+        }),
+        serde_json::json!({
+            "artifact_root": "/tmp/remote",
+            "manifest": wal_manifest
         }),
     ] {
         let resp = app

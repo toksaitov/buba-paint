@@ -168,7 +168,7 @@ pub async fn run_chainlink_feed(
                                 }
                             }
                             () = &mut stale_sleep => {
-                                warn!(feed = "chainlink", "no update in {stale_ms}ms — stale");
+                                warn!(feed = "chainlink", "no update in {stale_ms}ms - stale");
                                 let stale_report = FeedDisconnectReport {
                                     connection_id: Some(connection_id.clone()),
                                     cause: FeedDisconnectCause::StaleTimeout,

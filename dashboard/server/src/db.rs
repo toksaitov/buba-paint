@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::error::DashboardError;
 
-/// Dashboard database — manages users and sessions.
+/// Dashboard database - manages users and sessions.
 pub struct DashboardDb {
     conn: Arc<Mutex<Connection>>,
 }
@@ -154,7 +154,7 @@ pub struct ResearchMachineHeartbeatRecord<'a> {
     pub telemetry: ResearchMachineTelemetryUpdate<'a>,
 }
 
-impl<'a> ResearchMachineTelemetryUpdate<'a> {
+impl ResearchMachineTelemetryUpdate<'_> {
     /// Return an empty telemetry update for legacy heartbeat callers.
     #[must_use]
     pub fn empty() -> Self {
@@ -2785,6 +2785,47 @@ impl DashboardDb {
         query_research_step(&conn, step_id)
     }
 
+    /// Extend an active research step lease for a still-running worker command.
+    pub async fn refresh_research_step_lease(
+        &self,
+        step_id: &str,
+        worker_id: &str,
+        lease_duration_ms: u64,
+    ) -> Result<ResearchJobStep, DashboardError> {
+        self.refresh_research_step_lease_at(step_id, worker_id, now_ms(), lease_duration_ms)
+            .await
+    }
+
+    /// Extend an active research step lease at a deterministic timestamp.
+    pub async fn refresh_research_step_lease_at(
+        &self,
+        step_id: &str,
+        worker_id: &str,
+        now: u64,
+        lease_duration_ms: u64,
+    ) -> Result<ResearchJobStep, DashboardError> {
+        if lease_duration_ms == 0 {
+            return Err(DashboardError::BadRequest(
+                "lease_duration_ms must be positive".to_string(),
+            ));
+        }
+        let conn = self.conn.lock().await;
+        let lease_until = now.saturating_add(lease_duration_ms);
+        let updated = conn.execute(
+            "UPDATE research_job_steps
+             SET leased_until_ms = ?3, updated_at = ?4
+             WHERE id = ?1 AND lease_owner = ?2 AND status IN ('leased','running')",
+            params![step_id, worker_id, lease_until, now],
+        )?;
+        if updated == 0 {
+            ensure_step_exists(&conn, step_id)?;
+            return Err(DashboardError::BadRequest(format!(
+                "step '{step_id}' is not active for worker '{worker_id}'"
+            )));
+        }
+        query_research_step(&conn, step_id)
+    }
+
     /// Mark a research step as completed.
     pub async fn complete_research_step(
         &self,
@@ -3227,7 +3268,8 @@ fn query_research_machine_telemetry_samples(
     limit: Option<usize>,
     since_ms: Option<i64>,
 ) -> Result<Vec<MachineSample>, DashboardError> {
-    let limit = clamp_telemetry_limit(limit) as i64;
+    let limit = i64::try_from(clamp_telemetry_limit(limit))
+        .map_err(|_| DashboardError::Internal("telemetry limit overflow".to_string()))?;
     let mut stmt = conn.prepare(
         "SELECT sampled_at_ms, cpu_percent, per_core_cpu_json, load_one, load_five, load_fifteen,
                 mem_used_bytes, mem_total_bytes, mem_available_bytes, swap_used_bytes,
@@ -3592,7 +3634,7 @@ fn optional_f64_to_f32(value: Option<f64>) -> Option<f32> {
     value.map(f64_to_f32)
 }
 
-/// Convert a `u64` timestamp to SQLite's signed integer range.
+/// Convert a `u64` timestamp to `SQLite`'s signed integer range.
 fn u64_to_i64_saturating(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }

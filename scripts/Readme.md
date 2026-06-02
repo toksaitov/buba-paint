@@ -21,6 +21,7 @@ Root-level scripts are active automation or setup entry points. Manual charting 
 * `deploy-machine.py`: deploys inventory-defined Compose stacks. Non-dry-run deploys are currently restricted to the `research` machine.
 * `research-maintenance.py`: JSON-output operator utility for research status, DB backup, DB restore, diagnostics bundle collection, digest-lock rollback, and live safety snapshots.
 * `ts_comment_audit.mjs`: enforces the TypeScript comment policy used by `make lint` and `make comment-audit`.
+* `audit-user-facing-text.py`: rejects non-ASCII dash punctuation in user-facing source text. It is part of `make lint`.
 
 ## Setup
 

@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-/// Bot status summary — aggregated from `balance_log`, `simulated_trades`, `trade_results`, `markets`.
+/// Bot status summary - aggregated from `balance_log`, `simulated_trades`, `trade_results`, `markets`.
 #[derive(Debug, Clone, Serialize)]
 pub struct BotStatus {
     pub balance: f64,

@@ -39,6 +39,8 @@ export function JobCloneDialog({
   onClose,
 }: JobCloneDialogProps) {
   const initialValues = useMemo(() => initialValuesFromJob(job), [job]);
+  const hasAdditionalParams =
+    (initialValues.additionalParamsJson?.trim().length ?? 0) > 0;
   const canSubmit = role === "admin";
   const submitClone = (req: CreateJobRequest) => {
     onSubmit({
@@ -63,8 +65,9 @@ export function JobCloneDialog({
             <span className="font-mono text-text">{job.id}</span>
           </div>
           <div>
-            Clone keeps the original job type. Known fields are editable below;
-            unknown source params remain in Additional params JSON.
+            {hasAdditionalParams
+              ? "Clone keeps the original job type. Known fields are editable below; unknown source params remain in Additional params JSON."
+              : "Clone keeps the original job type. Known fields are editable below."}
           </div>
         </div>
         {loadingArtifacts ? (
@@ -80,7 +83,7 @@ export function JobCloneDialog({
             initialValues={initialValues}
             typeLocked
             showPriority
-            showAdditionalParams
+            showAdditionalParams={hasAdditionalParams}
             submitLabel="Create clone"
             submitDisabled={!canSubmit}
             submitDisabledReason={

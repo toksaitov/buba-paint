@@ -114,7 +114,7 @@ axes[1].grid(True, alpha=0.3)
 # Panel 3: Histogram + KDE with stats annotation
 axes[2].hist(merged["delta"], bins=80, edgecolor="black", alpha=0.7,
              color="#009688", density=True, label="Histogram")
-# KDE overlay (optional — requires scipy)
+# KDE overlay (optional - requires scipy)
 try:
     from scipy import stats as sp_stats
     kde_x = np.linspace(merged["delta"].min(), merged["delta"].max(), 300)

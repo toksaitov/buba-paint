@@ -190,7 +190,7 @@ export function ResearchArtifactDetailPage() {
   const intervalLabel =
     artifact.interval_start_ms && artifact.interval_end_ms
       ? `${formatDateTime(artifact.interval_start_ms)} → ${formatDateTime(artifact.interval_end_ms)}`
-      : "—";
+      : "-";
 
   return (
     <div className="space-y-3">
@@ -232,7 +232,7 @@ export function ResearchArtifactDetailPage() {
             { label: "Kind", value: humanize(artifact.kind) },
             {
               label: "Run mode",
-              value: artifact.run_mode ? humanize(artifact.run_mode) : "—",
+              value: artifact.run_mode ? humanize(artifact.run_mode) : "-",
             },
             {
               label: "Source machine",
@@ -263,19 +263,19 @@ export function ResearchArtifactDetailPage() {
               label: "Replay quality",
               value: artifact.replay_quality_class
                 ? humanize(artifact.replay_quality_class)
-                : "—",
+                : "-",
             },
             {
               label: "Backtest readiness",
               value: artifact.backtest_ready_class
                 ? humanize(artifact.backtest_ready_class)
-                : "—",
+                : "-",
             },
             {
               label: "Live fidelity",
               value: artifact.live_fidelity_class
                 ? humanize(artifact.live_fidelity_class)
-                : "—",
+                : "-",
             },
             {
               label: "Manifest path",
@@ -284,7 +284,7 @@ export function ResearchArtifactDetailPage() {
                   {artifact.manifest_path}
                 </span>
               ) : (
-                "—"
+                "-"
               ),
             },
             {
@@ -294,7 +294,7 @@ export function ResearchArtifactDetailPage() {
                   {artifact.bundle_path}
                 </span>
               ) : (
-                "—"
+                "-"
               ),
             },
             {
@@ -304,7 +304,7 @@ export function ResearchArtifactDetailPage() {
                   {artifact.source_db_path}
                 </span>
               ) : (
-                "—"
+                "-"
               ),
             },
             {
@@ -320,7 +320,7 @@ export function ResearchArtifactDetailPage() {
               value: artifact.archived_at ? (
                 <RelativeTime epochMs={artifact.archived_at} />
               ) : (
-                "—"
+                "-"
               ),
             },
           ]}
@@ -412,7 +412,7 @@ export function ResearchArtifactDetailPage() {
         title="Checksums"
         toolbar={
           <Button size="sm" onClick={() => setShowChecksums((s) => !s)}>
-            {showChecksums ? "Hide" : "Load checksums.sha256"}
+            {showChecksums ? "Hide checksums.sha256" : "Load checksums.sha256"}
           </Button>
         }
       >
@@ -445,7 +445,7 @@ export function ResearchArtifactDetailPage() {
                   {t.id}
                 </Link>
                 <span className="ml-2 text-muted">
-                  {t.source_machine_id ?? "—"} → {t.dest_machine_id ?? "—"}
+                  {t.source_machine_id ?? "-"} → {t.dest_machine_id ?? "-"}
                 </span>
                 <span className="ml-2 text-muted">{t.status}</span>
               </li>
@@ -576,8 +576,9 @@ export function ResearchArtifactDetailPage() {
       <ConfirmDialog
         open={confirmDeleteRecordOpen}
         title="Delete artifact record"
-        description="Removes the artifact metadata only. Files on disk are not touched."
+        description="Type the artifact ID to confirm. Removes the artifact metadata only. Files on disk are not touched."
         confirmLabel="Delete record"
+        phrase={artifact.id}
         destructive
         pending={deleteRecordMutation.isPending}
         errorMessage={

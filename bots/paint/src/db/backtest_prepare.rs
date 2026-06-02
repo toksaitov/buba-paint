@@ -23,7 +23,20 @@ pub struct PrepareBacktestInputReport {
     pub output_bytes: u64,
     pub generic_feed_rows: i64,
     pub compact_clob_rows: i64,
+    pub source_signal_rows: i64,
+    pub source_trade_rows: i64,
+    pub source_trade_result_rows: i64,
     pub readiness: BacktestInputReport,
+}
+
+/// Row counts for prepared replay and source-audit data.
+#[derive(Debug, Clone, Copy)]
+struct PreparedCounts {
+    generic_feed_rows: i64,
+    compact_clob_rows: i64,
+    source_signal_rows: i64,
+    source_trade_rows: i64,
+    source_trade_result_rows: i64,
 }
 
 /// Build a derived indexed DB for large backtests and sweeps.
@@ -52,6 +65,7 @@ pub fn prepare_backtest_input(
     copy_clob_replay_blocks(&output, options.start_time, options.end_time)?;
     copy_table_intersection(&output, "run_metadata", None)?;
     copy_small_live_tables(&output)?;
+    copy_source_audit_tables(&output, options.start_time, options.end_time)?;
     crate::db::schema::create_replay_indexes(&output)?;
     output.execute("DETACH DATABASE src", [])?;
     drop(output);
@@ -78,8 +92,11 @@ pub fn prepare_backtest_input(
         manifest_path: manifest_path.to_string_lossy().to_string(),
         source_bytes,
         output_bytes,
-        generic_feed_rows: counts.0,
-        compact_clob_rows: counts.1,
+        generic_feed_rows: counts.generic_feed_rows,
+        compact_clob_rows: counts.compact_clob_rows,
+        source_signal_rows: counts.source_signal_rows,
+        source_trade_rows: counts.source_trade_rows,
+        source_trade_result_rows: counts.source_trade_result_rows,
         readiness,
     })
 }
@@ -300,6 +317,177 @@ fn copy_small_live_tables(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Copy source audit rows needed for replay calibration.
+fn copy_source_audit_tables(
+    conn: &Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<()> {
+    copy_time_window_table(conn, "signals", "timestamp", start_time, end_time)?;
+    copy_signal_metrics_for_copied_signals(conn)?;
+    copy_source_trades(conn, start_time, end_time)?;
+    copy_trade_results_for_copied_trades(conn, start_time, end_time)?;
+    copy_balance_log(conn, start_time, end_time)?;
+    Ok(())
+}
+
+/// Copy one table by a timestamp window.
+fn copy_time_window_table(
+    conn: &Connection,
+    table: &str,
+    time_column: &str,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<()> {
+    if !source_table_exists(conn, table)? || !source_column_exists(conn, table, time_column)? {
+        return Ok(());
+    }
+    let columns = common_columns(conn, table)?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let column_list = columns.join(", ");
+    conn.execute(
+        &format!(
+            "INSERT INTO {table} ({column_list})
+             SELECT {column_list}
+             FROM src.{table}
+             WHERE {time_column} >= ?1 AND {time_column} <= ?2"
+        ),
+        params![
+            sqlite_timestamp(start_time, "start_time")?,
+            sqlite_timestamp(end_time, "end_time")?
+        ],
+    )
+    .with_context(|| format!("copying source table {table}"))?;
+    Ok(())
+}
+
+/// Copy source signal metrics for the source signals already retained.
+fn copy_signal_metrics_for_copied_signals(conn: &Connection) -> anyhow::Result<()> {
+    if !source_table_exists(conn, "signal_metrics")? {
+        return Ok(());
+    }
+    let columns = common_columns(conn, "signal_metrics")?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let column_list = columns.join(", ");
+    conn.execute(
+        &format!(
+            "INSERT INTO signal_metrics ({column_list})
+             SELECT {column_list}
+             FROM src.signal_metrics
+             WHERE signal_id IN (SELECT id FROM signals)"
+        ),
+        [],
+    )
+    .context("copying source signal_metrics")?;
+    Ok(())
+}
+
+/// Copy source trades that opened or settled in the selected interval.
+fn copy_source_trades(conn: &Connection, start_time: u64, end_time: u64) -> anyhow::Result<()> {
+    if !source_table_exists(conn, "simulated_trades")? {
+        return Ok(());
+    }
+    let columns = common_columns(conn, "simulated_trades")?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let column_list = columns.join(", ");
+    let settled_clause = if source_table_exists(conn, "trade_results")?
+        && source_column_exists(conn, "trade_results", "resolved_at")?
+    {
+        " OR id IN (
+                   SELECT trade_id
+                   FROM src.trade_results
+                   WHERE resolved_at >= ?1 AND resolved_at <= ?2
+               )"
+    } else {
+        ""
+    };
+    conn.execute(
+        &format!(
+            "INSERT INTO simulated_trades ({column_list})
+             SELECT {column_list}
+             FROM src.simulated_trades
+             WHERE (timestamp >= ?1 AND timestamp <= ?2){settled_clause}"
+        ),
+        params![
+            sqlite_timestamp(start_time, "start_time")?,
+            sqlite_timestamp(end_time, "end_time")?
+        ],
+    )
+    .context("copying source simulated_trades")?;
+    Ok(())
+}
+
+/// Copy source trade results for retained trades and in-window settlements.
+fn copy_trade_results_for_copied_trades(
+    conn: &Connection,
+    start_time: u64,
+    end_time: u64,
+) -> anyhow::Result<()> {
+    if !source_table_exists(conn, "trade_results")? {
+        return Ok(());
+    }
+    let columns = common_columns(conn, "trade_results")?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let column_list = columns.join(", ");
+    let resolved_clause = if source_column_exists(conn, "trade_results", "resolved_at")? {
+        " OR (resolved_at >= ?1 AND resolved_at <= ?2)"
+    } else {
+        ""
+    };
+    conn.execute(
+        &format!(
+            "INSERT OR IGNORE INTO trade_results ({column_list})
+             SELECT {column_list}
+             FROM src.trade_results
+             WHERE trade_id IN (SELECT id FROM simulated_trades){resolved_clause}"
+        ),
+        params![
+            sqlite_timestamp(start_time, "start_time")?,
+            sqlite_timestamp(end_time, "end_time")?
+        ],
+    )
+    .context("copying source trade_results")?;
+    Ok(())
+}
+
+/// Copy source balance events needed to audit source-run equity.
+fn copy_balance_log(conn: &Connection, start_time: u64, end_time: u64) -> anyhow::Result<()> {
+    if !source_table_exists(conn, "balance_log")?
+        || !source_column_exists(conn, "balance_log", "timestamp")?
+    {
+        return Ok(());
+    }
+    let columns = common_columns(conn, "balance_log")?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let column_list = columns.join(", ");
+    conn.execute(
+        &format!(
+            "INSERT INTO balance_log ({column_list})
+             SELECT {column_list}
+             FROM src.balance_log
+             WHERE timestamp >= ?1 AND timestamp <= ?2
+                OR trade_id IN (SELECT id FROM simulated_trades)
+                OR event = 'init'"
+        ),
+        params![
+            sqlite_timestamp(start_time, "start_time")?,
+            sqlite_timestamp(end_time, "end_time")?
+        ],
+    )
+    .context("copying source balance_log")?;
+    Ok(())
+}
+
 /// Copy one source table into the destination using shared column names.
 fn copy_table_intersection(
     conn: &Connection,
@@ -358,8 +546,14 @@ fn source_table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
     Ok(count > 0)
 }
 
+/// Return whether the attached source database has one column.
+fn source_column_exists(conn: &Connection, table: &str, column: &str) -> anyhow::Result<bool> {
+    let columns = table_columns(conn, "src", table)?;
+    Ok(columns.iter().any(|candidate| candidate == column))
+}
+
 /// Return row counts from a prepared output DB.
-fn prepared_counts(output_path: &str) -> anyhow::Result<(i64, i64)> {
+fn prepared_counts(output_path: &str) -> anyhow::Result<PreparedCounts> {
     let conn = Connection::open_with_flags(output_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let generic_feed_rows =
         conn.query_row("SELECT COUNT(*) FROM feed_events", [], |row| row.get(0))?;
@@ -372,10 +566,24 @@ fn prepared_counts(output_path: &str) -> anyhow::Result<(i64, i64)> {
         [],
         |row| row.get(0),
     )?;
-    Ok((
+    let source_signal_rows = table_count(&conn, "signals")?;
+    let source_trade_rows = table_count(&conn, "simulated_trades")?;
+    let source_trade_result_rows = table_count(&conn, "trade_results")?;
+    Ok(PreparedCounts {
         generic_feed_rows,
-        compact_clob_event_rows + compact_clob_block_rows,
-    ))
+        compact_clob_rows: compact_clob_event_rows + compact_clob_block_rows,
+        source_signal_rows,
+        source_trade_rows,
+        source_trade_result_rows,
+    })
+}
+
+/// Count rows in one destination table.
+fn table_count(conn: &Connection, table: &str) -> anyhow::Result<i64> {
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })
+    .with_context(|| format!("counting prepared table {table}"))
 }
 
 /// Write one JSON manifest beside the prepared database.
@@ -384,7 +592,7 @@ fn write_manifest(
     options: &PrepareBacktestInputOptions,
     source_bytes: u64,
     output_bytes: u64,
-    counts: (i64, i64),
+    counts: PreparedCounts,
     readiness: &BacktestInputReport,
 ) -> anyhow::Result<()> {
     let payload = json!({
@@ -395,8 +603,11 @@ fn write_manifest(
         "end_time": options.end_time,
         "source_bytes": source_bytes,
         "output_bytes": output_bytes,
-        "generic_feed_rows": counts.0,
-        "compact_clob_rows": counts.1,
+        "generic_feed_rows": counts.generic_feed_rows,
+        "compact_clob_rows": counts.compact_clob_rows,
+        "source_signal_rows": counts.source_signal_rows,
+        "source_trade_rows": counts.source_trade_rows,
+        "source_trade_result_rows": counts.source_trade_result_rows,
         "backtest_input": readiness.class.as_str(),
         "replay_quality": readiness.replay_quality.class.as_str(),
         "settled_windows": readiness.settled_windows,

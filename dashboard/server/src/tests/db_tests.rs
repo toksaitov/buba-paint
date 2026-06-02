@@ -1263,6 +1263,44 @@ async fn expired_research_step_lease_can_be_reclaimed() {
     assert_eq!(second.step.attempts, 2);
 }
 
+/// Verifies that an active worker can refresh its step lease.
+#[tokio::test]
+async fn refresh_research_step_lease_extends_active_lease() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    db.create_research_job("export", None, &user.id, 0, None)
+        .await
+        .unwrap();
+
+    let lease = db
+        .lease_next_research_step_at("worker-a", 1_000, 500)
+        .await
+        .unwrap()
+        .unwrap();
+    db.mark_research_step_running_at(&lease.step.id, "worker-a", 1_100)
+        .await
+        .unwrap();
+
+    let refreshed = db
+        .refresh_research_step_lease_at(&lease.step.id, "worker-a", 1_400, 1_000)
+        .await
+        .unwrap();
+    let stolen = db
+        .lease_next_research_step_at("worker-b", 1_501, 500)
+        .await
+        .unwrap();
+    let bad_owner = db
+        .refresh_research_step_lease_at(&lease.step.id, "worker-b", 1_600, 1_000)
+        .await;
+
+    assert_eq!(refreshed.status, "running");
+    assert_eq!(refreshed.lease_owner.as_deref(), Some("worker-a"));
+    assert_eq!(refreshed.leased_until_ms, Some(2_400));
+    assert_eq!(refreshed.attempts, 1);
+    assert!(stolen.is_none());
+    assert!(bad_owner.is_err());
+}
+
 /// Verifies that completing a step unlocks the next step.
 #[tokio::test]
 async fn complete_research_step_unlocks_next_step() {

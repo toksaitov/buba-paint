@@ -6,6 +6,7 @@
 //! full analysis payload to `report.json`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -34,6 +35,7 @@ struct ResearchReportDocument {
     generated_at_ms: u64,
     provenance: ReportProvenance,
     metrics: ReportMetrics,
+    source_comparison: Option<SourceRunComparison>,
     equity_curve: Vec<EquityPoint>,
     drawdown_curve: Vec<DrawdownPoint>,
     rejection_reasons: Vec<RejectionReason>,
@@ -48,6 +50,7 @@ struct ResearchReportSummary {
     generated_at_ms: u64,
     provenance: ReportProvenance,
     metrics: ReportMetrics,
+    source_comparison: Option<SourceRunComparison>,
     diagnostics: Vec<String>,
     sweep_summary: Option<SweepSummary>,
     steps: Vec<StepSummary>,
@@ -90,6 +93,32 @@ struct ReportMetrics {
     signal_count: Option<u64>,
     fill_count: Option<u64>,
     no_fill_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SourceRunComparison {
+    status: String,
+    source: SourceRunMetrics,
+    replay: SourceRunMetrics,
+    delta: SourceRunMetricDelta,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct SourceRunMetrics {
+    net_pnl: Option<f64>,
+    gross_pnl: Option<f64>,
+    total_fees: Option<f64>,
+    final_balance: Option<f64>,
+    trade_count: Option<u64>,
+    signal_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct SourceRunMetricDelta {
+    net_pnl: Option<f64>,
+    final_balance: Option<f64>,
+    trade_count: Option<i64>,
+    signal_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,6 +186,7 @@ pub fn build_report_documents(
 ) -> Result<ReportDocuments, DashboardError> {
     let mut diagnostics = Vec::new();
     let mut metrics = ReportMetrics::default();
+    let mut source_comparison = None;
     let mut equity_curve = Vec::new();
     let mut drawdown_curve = Vec::new();
     let mut rejection_reasons = Vec::new();
@@ -166,6 +196,7 @@ pub fn build_report_documents(
         "current_params" => analyze_current_params(
             plan,
             &mut metrics,
+            &mut source_comparison,
             &mut equity_curve,
             &mut drawdown_curve,
             &mut rejection_reasons,
@@ -183,6 +214,7 @@ pub fn build_report_documents(
         generated_at_ms: current_epoch_ms(),
         provenance: provenance(plan),
         metrics,
+        source_comparison,
         equity_curve,
         drawdown_curve,
         rejection_reasons,
@@ -235,6 +267,7 @@ pub fn report_analysis_source_exists(plan: &ResearchPipelinePlan) -> bool {
 fn analyze_current_params(
     plan: &ResearchPipelinePlan,
     metrics: &mut ReportMetrics,
+    source_comparison: &mut Option<SourceRunComparison>,
     equity_curve: &mut Vec<EquityPoint>,
     drawdown_curve: &mut Vec<DrawdownPoint>,
     rejection_reasons: &mut Vec<RejectionReason>,
@@ -251,12 +284,13 @@ fn analyze_current_params(
     .map_err(|error| DashboardError::Internal(format!("opening backtest DB: {error}")))?;
 
     analyze_trade_metrics(&conn, plan.balance, metrics, diagnostics)?;
-    *equity_curve = read_equity_curve(&conn)?;
+    *equity_curve = read_equity_curve(&conn, parse_time_ms(&plan.start))?;
     *drawdown_curve = drawdowns(equity_curve);
     apply_drawdown_metrics(metrics, drawdown_curve);
     metrics.signal_count = count_table_rows(&conn, "signals")?;
     apply_fill_metrics(&conn, metrics)?;
     *rejection_reasons = read_rejection_reasons(&conn)?;
+    *source_comparison = compare_source_run(plan, metrics, diagnostics)?;
     if metrics.trade_count == Some(0) {
         diagnostics.push("no_trades".to_string());
     }
@@ -270,6 +304,199 @@ fn analyze_current_params(
         diagnostics.push("no_rejection_reasons".to_string());
     }
     Ok(())
+}
+
+/// Compare replay output against source-run results when the source DB has them.
+fn compare_source_run(
+    plan: &ResearchPipelinePlan,
+    replay: &ReportMetrics,
+    diagnostics: &mut Vec<String>,
+) -> Result<Option<SourceRunComparison>, DashboardError> {
+    if !plan.data_db_path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(
+        &plan.data_db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|error| DashboardError::Internal(format!("opening source DB: {error}")))?;
+    let source = read_source_run_metrics(&conn, plan)?;
+    if source.net_pnl.is_none() && source.trade_count.is_none() && source.signal_count.is_none() {
+        return Ok(None);
+    }
+    let replay = SourceRunMetrics::from_report_metrics(replay);
+    let delta = SourceRunMetricDelta {
+        net_pnl: metric_delta(replay.net_pnl, source.net_pnl),
+        final_balance: metric_delta(replay.final_balance, source.final_balance),
+        trade_count: count_delta(replay.trade_count, source.trade_count),
+        signal_count: count_delta(replay.signal_count, source.signal_count),
+    };
+    let status = if source_run_mismatch(&delta) {
+        push_diagnostic(diagnostics, "source_replay_result_mismatch");
+        "mismatch"
+    } else {
+        "matched"
+    };
+    Ok(Some(SourceRunComparison {
+        status: status.to_string(),
+        source,
+        replay,
+        delta,
+    }))
+}
+
+/// Read source-run metrics from the artifact DB over the requested interval.
+fn read_source_run_metrics(
+    conn: &Connection,
+    plan: &ResearchPipelinePlan,
+) -> Result<SourceRunMetrics, DashboardError> {
+    let start_ms = parse_time_ms(&plan.start);
+    let end_ms = parse_time_ms(&plan.end);
+    let (trade_count, net_pnl, total_fees) = read_source_trade_metrics(conn, start_ms, end_ms)?;
+    let signal_count = read_time_window_count(conn, "signals", "timestamp", start_ms, end_ms)?;
+    let gross_pnl = metric_sum(net_pnl, total_fees);
+    let final_balance = net_pnl.map(|value| plan.balance + value);
+    Ok(SourceRunMetrics {
+        net_pnl,
+        gross_pnl,
+        total_fees,
+        final_balance,
+        trade_count,
+        signal_count,
+    })
+}
+
+/// Read trade metrics from a source DB, filtering by settlement time when possible.
+fn read_source_trade_metrics(
+    conn: &Connection,
+    start_ms: Option<u64>,
+    end_ms: Option<u64>,
+) -> Result<(Option<u64>, Option<f64>, Option<f64>), DashboardError> {
+    if !table_exists(conn, "trade_results")? || !column_exists(conn, "trade_results", "pnl_net")? {
+        return Ok((None, None, None));
+    }
+    let has_fee = column_exists(conn, "trade_results", "fee_amount")?;
+    let fee_expr = if has_fee {
+        "COALESCE(SUM(fee_amount), 0.0)"
+    } else {
+        "0.0"
+    };
+    let predicate = source_time_predicate(conn, "trade_results", "resolved_at", start_ms, end_ms)?;
+    let query = format!(
+        "SELECT COUNT(*), COALESCE(SUM(pnl_net), 0.0), {fee_expr} FROM trade_results{predicate}",
+    );
+    let params = source_time_params(&predicate, start_ms, end_ms);
+    let row = conn
+        .query_row(&query, rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        })
+        .map_err(|error| {
+            DashboardError::Internal(format!("reading source trade metrics: {error}"))
+        })?;
+    Ok((
+        Some(u64::try_from(row.0).unwrap_or(0)),
+        Some(row.1),
+        Some(row.2),
+    ))
+}
+
+/// Count source rows inside the requested interval when the time column exists.
+fn read_time_window_count(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    start_ms: Option<u64>,
+    end_ms: Option<u64>,
+) -> Result<Option<u64>, DashboardError> {
+    if !table_exists(conn, table)? {
+        return Ok(None);
+    }
+    let predicate = source_time_predicate(conn, table, column, start_ms, end_ms)?;
+    let query = format!("SELECT COUNT(*) FROM {}{predicate}", sqlite_ident(table));
+    let params = source_time_params(&predicate, start_ms, end_ms);
+    let count = conn
+        .query_row(&query, rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| DashboardError::Internal(format!("counting source rows: {error}")))?;
+    Ok(Some(u64::try_from(count).unwrap_or(0)))
+}
+
+/// Return a trusted source DB time predicate when both bounds and column exist.
+fn source_time_predicate(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    start_ms: Option<u64>,
+    end_ms: Option<u64>,
+) -> Result<String, DashboardError> {
+    if start_ms.is_some() && end_ms.is_some() && column_exists(conn, table, column)? {
+        Ok(format!(" WHERE {} BETWEEN ?1 AND ?2", sqlite_ident(column)))
+    } else {
+        Ok(String::new())
+    }
+}
+
+/// Return source time predicate parameters when both bounds are present.
+fn source_time_params(predicate: &str, start_ms: Option<u64>, end_ms: Option<u64>) -> Vec<i64> {
+    match (predicate.is_empty(), start_ms, end_ms) {
+        (true, _, _) => Vec::new(),
+        (false, Some(start_ms), Some(end_ms)) => vec![
+            i64::try_from(start_ms).unwrap_or(i64::MAX),
+            i64::try_from(end_ms).unwrap_or(i64::MAX),
+        ],
+        (false, _, _) => Vec::new(),
+    }
+}
+
+/// Return whether source-run and replay metrics differ enough to warn.
+fn source_run_mismatch(delta: &SourceRunMetricDelta) -> bool {
+    delta.net_pnl.is_some_and(|value| value.abs() > 0.01)
+        || delta.final_balance.is_some_and(|value| value.abs() > 0.01)
+        || delta.trade_count.is_some_and(|value| value != 0)
+        || delta.signal_count.is_some_and(|value| value != 0)
+}
+
+/// Return an optional numeric difference.
+fn metric_delta(replay: Option<f64>, source: Option<f64>) -> Option<f64> {
+    Some(replay? - source?)
+}
+
+/// Return an optional count difference.
+fn count_delta(replay: Option<u64>, source: Option<u64>) -> Option<i64> {
+    let replay = i64::try_from(replay?).ok()?;
+    let source = i64::try_from(source?).ok()?;
+    Some(replay - source)
+}
+
+/// Return an optional numeric sum.
+fn metric_sum(left: Option<f64>, right: Option<f64>) -> Option<f64> {
+    Some(left? + right?)
+}
+
+/// Push one diagnostic only once.
+fn push_diagnostic(diagnostics: &mut Vec<String>, diagnostic: &str) {
+    if !diagnostics.iter().any(|value| value == diagnostic) {
+        diagnostics.push(diagnostic.to_string());
+    }
+}
+
+impl SourceRunMetrics {
+    /// Build replay comparison metrics from report metrics.
+    fn from_report_metrics(metrics: &ReportMetrics) -> Self {
+        Self {
+            net_pnl: metrics.net_pnl,
+            gross_pnl: metrics.gross_pnl,
+            total_fees: metrics.total_fees,
+            final_balance: metrics.final_balance,
+            trade_count: metrics.trade_count,
+            signal_count: metrics.signal_count,
+        }
+    }
 }
 
 /// Compute trade-level metrics from `trade_results`.
@@ -339,7 +566,10 @@ fn read_final_balance(conn: &Connection) -> Result<Option<f64>, DashboardError> 
 }
 
 /// Read the backtest balance log as an equity curve.
-fn read_equity_curve(conn: &Connection) -> Result<Vec<EquityPoint>, DashboardError> {
+fn read_equity_curve(
+    conn: &Connection,
+    start_ms: Option<u64>,
+) -> Result<Vec<EquityPoint>, DashboardError> {
     if !table_exists(conn, "balance_log")? {
         return Ok(Vec::new());
     }
@@ -352,10 +582,17 @@ fn read_equity_curve(conn: &Connection) -> Result<Vec<EquityPoint>, DashboardErr
         .map_err(|error| DashboardError::Internal(format!("preparing equity query: {error}")))?;
     let rows = stmt
         .query_map([], |row| {
+            let raw_ts = row.get::<_, i64>(0)?;
+            let event = row.get::<_, String>(2)?;
+            let ts = if raw_ts <= 0 && event == "init" {
+                start_ms.unwrap_or(0)
+            } else {
+                u64::try_from(raw_ts).unwrap_or(0)
+            };
             Ok(EquityPoint {
-                ts: u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                ts,
                 equity: row.get(1)?,
-                event: row.get(2)?,
+                event,
                 amount: row.get(3)?,
             })
         })
@@ -509,12 +746,21 @@ fn analyze_sweep(
             &values,
         ));
     }
-    rows.sort_by(|a, b| numeric_metric(b, "pnl").total_cmp(&numeric_metric(a, "pnl")));
+    let ranked_by = if metric_columns.iter().any(|name| name == "calibrated_pnl") {
+        push_diagnostic(diagnostics, "sweep_ranked_by_calibrated_pnl");
+        "calibrated_pnl"
+    } else {
+        "pnl"
+    };
+    rows.sort_by(|a, b| numeric_metric(b, ranked_by).total_cmp(&numeric_metric(a, ranked_by)));
     for (index, row) in rows.iter_mut().enumerate() {
         row.rank = Some(index + 1);
     }
     if let Some(top) = rows.first() {
-        apply_sweep_metrics(metrics, top);
+        apply_sweep_metrics(metrics, top, ranked_by);
+        if string_metric(top, "calibration_confidence").as_deref() == Some("low") {
+            push_diagnostic(diagnostics, "sweep_calibration_confidence_low");
+        }
     }
     if rows.is_empty() {
         diagnostics.push("sweep_csv_no_rows".to_string());
@@ -523,7 +769,7 @@ fn analyze_sweep(
         columns,
         parameter_columns,
         metric_columns,
-        ranked_by: "pnl".to_string(),
+        ranked_by: ranked_by.to_string(),
         top_rows: rows.iter().take(10).cloned().collect(),
         rows,
     })
@@ -568,11 +814,12 @@ fn sweep_row(
 }
 
 /// Apply top sweep-row values to summary metrics.
-fn apply_sweep_metrics(metrics: &mut ReportMetrics, top: &SweepRow) {
-    metrics.net_pnl = metric_value(top, "pnl");
+fn apply_sweep_metrics(metrics: &mut ReportMetrics, top: &SweepRow, ranked_by: &str) {
+    metrics.net_pnl = metric_value(top, ranked_by).or_else(|| metric_value(top, "pnl"));
     metrics.gross_pnl = metric_value(top, "gross_pnl");
     metrics.total_fees = metric_value(top, "total_fees");
-    metrics.final_balance = metric_value(top, "final_balance");
+    metrics.final_balance = metric_value(top, "calibrated_final_balance")
+        .or_else(|| metric_value(top, "final_balance"));
     metrics.trade_count = metric_value(top, "trades").and_then(f64_to_u64);
     metrics.wins = metric_value(top, "wins").and_then(f64_to_u64);
     metrics.losses = metric_value(top, "losses").and_then(f64_to_u64);
@@ -600,6 +847,14 @@ fn metric_value(row: &SweepRow, name: &str) -> Option<f64> {
 /// Return one numeric metric or negative infinity for sorting.
 fn numeric_metric(row: &SweepRow, name: &str) -> f64 {
     metric_value(row, name).unwrap_or(f64::NEG_INFINITY)
+}
+
+/// Return one string metric from a sweep row.
+fn string_metric(row: &SweepRow, name: &str) -> Option<String> {
+    row.metrics
+        .get(name)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
 }
 
 /// Return known sweep metric column names.
@@ -647,6 +902,18 @@ fn sweep_metric_names() -> BTreeSet<&'static str> {
         "gross_pnl",
         "pnl_net",
         "elapsed_s",
+        "calibrated_pnl",
+        "calibrated_final_balance",
+        "baseline_replay_delta_pnl",
+        "source_baseline_pnl",
+        "baseline_replay_pnl",
+        "calibration_confidence",
+        "source_baseline_trades",
+        "baseline_replay_trades",
+        "baseline_trade_delta",
+        "source_baseline_signals",
+        "baseline_replay_signals",
+        "baseline_signal_delta",
     ]
     .into_iter()
     .collect()
@@ -678,6 +945,7 @@ fn summary_from_document(document: &ResearchReportDocument) -> ResearchReportSum
         generated_at_ms: document.generated_at_ms,
         provenance: document.provenance.clone(),
         metrics: document.metrics.clone(),
+        source_comparison: document.source_comparison.clone(),
         diagnostics: document.diagnostics.clone(),
         sweep_summary: document.sweep.as_ref().map(|sweep| SweepSummary {
             row_count: sweep.rows.len(),
@@ -779,12 +1047,37 @@ fn current_params_report_csv(document: &ResearchReportDocument) -> String {
     );
     push_metric_row(&mut csv, "win_rate", document.metrics.win_rate);
     push_metric_row(&mut csv, "max_drawdown", document.metrics.max_drawdown);
+    if let Some(comparison) = &document.source_comparison {
+        push_metric_row(&mut csv, "source_net_pnl", comparison.source.net_pnl);
+        push_metric_row(
+            &mut csv,
+            "source_final_balance",
+            comparison.source.final_balance,
+        );
+        push_metric_row(
+            &mut csv,
+            "source_trade_count",
+            comparison.source.trade_count.map(|value| value as f64),
+        );
+        push_metric_row(
+            &mut csv,
+            "source_signal_count",
+            comparison.source.signal_count.map(|value| value as f64),
+        );
+        push_metric_row(&mut csv, "source_net_pnl_delta", comparison.delta.net_pnl);
+        push_metric_row(
+            &mut csv,
+            "source_final_balance_delta",
+            comparison.delta.final_balance,
+        );
+    }
     csv.push_str("section,timestamp,equity,drawdown,drawdown_pct\n");
     for (equity, drawdown) in document.equity_curve.iter().zip(&document.drawdown_curve) {
-        csv.push_str(&format!(
-            "equity,{},{},{},{}\n",
+        let _ = writeln!(
+            csv,
+            "equity,{},{},{},{}",
             equity.ts, equity.equity, drawdown.drawdown, drawdown.drawdown_pct
-        ));
+        );
     }
     csv
 }
@@ -792,7 +1085,7 @@ fn current_params_report_csv(document: &ResearchReportDocument) -> String {
 /// Append one metric CSV row when a value exists.
 fn push_metric_row(csv: &mut String, name: &str, value: Option<f64>) {
     if let Some(value) = value {
-        csv.push_str(&format!("metric,{name},{value}\n"));
+        let _ = writeln!(csv, "metric,{name},{value}");
     }
 }
 
@@ -833,7 +1126,7 @@ fn json_value_to_csv_cell(value: &Value) -> String {
     }
 }
 
-/// Return whether a SQLite table exists.
+/// Return whether a `SQLite` table exists.
 fn table_exists(conn: &Connection, table: &str) -> Result<bool, DashboardError> {
     conn.query_row(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -845,7 +1138,7 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool, DashboardError> 
     .map_err(|error| DashboardError::Internal(format!("checking table existence: {error}")))
 }
 
-/// Return whether a SQLite table has a column.
+/// Return whether a `SQLite` table has a column.
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, DashboardError> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({})", sqlite_ident(table)))
@@ -893,7 +1186,7 @@ fn count_where(conn: &Connection, table: &str, predicate: &str) -> Result<u64, D
     Ok(u64::try_from(count).unwrap_or(0))
 }
 
-/// Quote a trusted SQLite identifier.
+/// Quote a trusted `SQLite` identifier.
 fn sqlite_ident(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -961,7 +1254,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO balance_log (timestamp, event, trade_id, amount, balance) VALUES (1, 'init', NULL, 0.0, 200.0), (2, 'trade', 1, 10.0, 210.0), (3, 'trade', 2, -3.0, 207.0)",
+            "INSERT INTO balance_log (timestamp, event, trade_id, amount, balance) VALUES (0, 'init', NULL, 0.0, 200.0), (2, 'trade', 1, 10.0, 210.0), (3, 'trade', 2, -3.0, 207.0)",
             [],
         )
         .unwrap();
@@ -991,8 +1284,86 @@ mod tests {
         assert_eq!(full["metrics"]["wins"], 1);
         assert_eq!(full["metrics"]["losses"], 1);
         assert_eq!(full["equity_curve"].as_array().unwrap().len(), 3);
+        assert_eq!(full["equity_curve"][0]["ts"], 1000);
         assert_eq!(full["rejection_reasons"][0]["reason"], "late");
         assert!(summary["equity_curve"].is_null());
+    }
+
+    /// Verify reports warn when source-run metrics differ from replay output.
+    #[test]
+    fn current_params_report_compares_source_run_metrics() {
+        let dir = tempdir().unwrap();
+        let plan = test_plan(dir.path(), "current_params");
+        let replay = Connection::open(&plan.backtest_output_path).unwrap();
+        replay
+            .execute(
+                "CREATE TABLE trade_results (pnl_net REAL, fee_amount REAL)",
+                [],
+            )
+            .unwrap();
+        replay
+            .execute(
+                "INSERT INTO trade_results (pnl_net, fee_amount) VALUES (45.0, 2.0)",
+                [],
+            )
+            .unwrap();
+        replay
+            .execute(
+                "CREATE TABLE balance_log (id INTEGER PRIMARY KEY, timestamp INTEGER, event TEXT, trade_id INTEGER, amount REAL, balance REAL)",
+                [],
+            )
+            .unwrap();
+        replay
+            .execute(
+                "INSERT INTO balance_log (timestamp, event, trade_id, amount, balance) VALUES (0, 'init', NULL, 0.0, 200.0), (1500, 'trade', 1, 45.0, 245.0)",
+                [],
+            )
+            .unwrap();
+        replay
+            .execute("CREATE TABLE signals (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
+        replay
+            .execute("INSERT INTO signals (id) VALUES (1), (2)", [])
+            .unwrap();
+        drop(replay);
+
+        let source = Connection::open(&plan.data_db_path).unwrap();
+        source
+            .execute(
+                "CREATE TABLE trade_results (resolved_at INTEGER, pnl_net REAL, fee_amount REAL)",
+                [],
+            )
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO trade_results (resolved_at, pnl_net, fee_amount) VALUES (1500, 35.0, 1.5)",
+                [],
+            )
+            .unwrap();
+        source
+            .execute("CREATE TABLE signals (timestamp INTEGER)", [])
+            .unwrap();
+        source
+            .execute("INSERT INTO signals (timestamp) VALUES (1500)", [])
+            .unwrap();
+        drop(source);
+
+        let docs = build_report_documents(&plan, &no_steps()).unwrap();
+        let full: Value = serde_json::from_str(&docs.full_json).unwrap();
+        let summary: Value = serde_json::from_str(&docs.summary_json).unwrap();
+
+        assert_eq!(full["source_comparison"]["status"], "mismatch");
+        assert_eq!(full["source_comparison"]["source"]["net_pnl"], 35.0);
+        assert_eq!(full["source_comparison"]["replay"]["net_pnl"], 45.0);
+        assert_eq!(full["source_comparison"]["delta"]["net_pnl"], 10.0);
+        assert_eq!(full["source_comparison"]["delta"]["signal_count"], 1);
+        assert_eq!(summary["source_comparison"]["status"], "mismatch");
+        assert!(
+            full["diagnostics"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("source_replay_result_mismatch".to_string()))
+        );
     }
 
     /// Verify no-trade reports state the condition explicitly.
@@ -1058,6 +1429,34 @@ mod tests {
         assert_eq!(full["sweep"]["rows"][0]["rank"], 1);
         assert_eq!(full["sweep"]["rows"][0]["params"]["EDGE"], 2.0);
         assert!(docs.csv.starts_with("rank,EDGE,pnl"));
+    }
+
+    /// Verify sweep reports prefer calibrated PnL when available.
+    #[test]
+    fn sweep_report_ranks_rows_by_calibrated_pnl() {
+        let dir = tempdir().unwrap();
+        let plan = test_plan(dir.path(), "sweep");
+        std::fs::write(
+            &plan.sweep_output_path,
+            "EDGE,pnl,calibrated_pnl,calibrated_final_balance,calibration_confidence,trades\n1,50,30,130,medium,2\n2,45,35,135,medium,2\n",
+        )
+        .unwrap();
+
+        let docs = build_report_documents(&plan, &no_steps()).unwrap();
+        let full: Value = serde_json::from_str(&docs.full_json).unwrap();
+        let summary: Value = serde_json::from_str(&docs.summary_json).unwrap();
+
+        assert_eq!(full["metrics"]["net_pnl"], 35.0);
+        assert_eq!(full["metrics"]["final_balance"], 135.0);
+        assert_eq!(full["sweep"]["ranked_by"], "calibrated_pnl");
+        assert_eq!(full["sweep"]["rows"][0]["params"]["EDGE"], 2.0);
+        assert_eq!(summary["sweep_summary"]["ranked_by"], "calibrated_pnl");
+        assert!(
+            full["diagnostics"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("sweep_ranked_by_calibrated_pnl".to_string()))
+        );
     }
 
     /// Verify malformed sweep rows are skipped and diagnosed.

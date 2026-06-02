@@ -21,6 +21,15 @@ SKIP_DIR_NAMES = {
     "playwright-report",
 }
 
+LOCAL_DATA_SKIP_PREFIXES = (
+    Path("data/live-run-backups"),
+)
+
+LOCAL_DATA_SKIP_PARTS = (
+    ("data", "experiments", "research-manual-qa-"),
+    ("data", "experiments", "docker-deploy-"),
+)
+
 DOC_MARKERS = {
     "readme.md",
     "notes.md",
@@ -57,7 +66,20 @@ STALE_PLANNING_REFERENCES = {
 
 def should_skip(path: Path) -> bool:
     """Return true when a path belongs to generated or vendor content."""
-    return any(part in SKIP_DIR_NAMES for part in path.parts)
+    if any(part in SKIP_DIR_NAMES for part in path.parts):
+        return True
+    try:
+        rel = path.relative_to(ROOT)
+    except ValueError:
+        return False
+    if any(rel == prefix or prefix in rel.parents for prefix in LOCAL_DATA_SKIP_PREFIXES):
+        return True
+    parts = rel.parts
+    for prefix in LOCAL_DATA_SKIP_PARTS:
+        if len(parts) >= len(prefix) and parts[: len(prefix) - 1] == prefix[:-1]:
+            if parts[len(prefix) - 1].startswith(prefix[-1]):
+                return True
+    return False
 
 
 def repo_files() -> list[Path]:
@@ -169,7 +191,7 @@ def audit_data_docs(errors: list[str]) -> None:
     data_root = ROOT / "data"
     if not data_root.exists():
         return
-    for path in sorted(p for p in data_root.rglob("*") if p.is_dir()):
+    for path in sorted(p for p in data_root.rglob("*") if p.is_dir() and not should_skip(p)):
         names = {child.name.lower() for child in path.iterdir() if child.is_file()}
         if DOC_MARKERS.isdisjoint(names):
             errors.append(f"{display(path)} needs Readme.md, notes.md, or equivalent context")
@@ -232,6 +254,8 @@ def audit_data_wal_shm(errors: list[str]) -> None:
     if not data_root.exists():
         return
     for path in data_root.rglob("*"):
+        if should_skip(path):
+            continue
         if path.suffix in {".db-wal", ".db-shm"}:
             errors.append(f"{display(path)} is transient derived SQLite state")
 

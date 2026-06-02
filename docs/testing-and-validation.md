@@ -109,6 +109,14 @@ Sweep preparation:
 buba-paint prepare-backtest-input --data <db> --start <time> --end <time> --output /tmp/prepared.db
 ```
 
+Sweep calibration:
+
+```bash
+buba-paint sweep --data /tmp/prepared.db --start <time> --end <time> --balance <usd> --sweep PARAM=a,b --output /tmp/sweep.csv
+```
+
+When the prepared DB contains source audit rows, sweep output must include calibrated PnL columns and a calibration confidence label. Report generation should rank those rows by `calibrated_pnl` and keep raw replay `pnl` visible for audit.
+
 Funded live evidence:
 
 ```bash

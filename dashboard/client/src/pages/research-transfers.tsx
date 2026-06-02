@@ -306,8 +306,8 @@ export function ResearchTransfersPage() {
                       </td>
                       <td className="px-2 py-1.5 text-muted">
                         <span className="font-mono text-[11px]">
-                          {transfer.source_machine_id ?? "—"} →{" "}
-                          {transfer.dest_machine_id ?? "—"}
+                          {transfer.source_machine_id ?? "-"} →{" "}
+                          {transfer.dest_machine_id ?? "-"}
                         </span>
                       </td>
                       <td className="px-2 py-1.5">
@@ -335,7 +335,7 @@ export function ResearchTransfersPage() {
                           label={
                             transfer.checksum_status
                               ? humanize(transfer.checksum_status)
-                              : "—"
+                              : "-"
                           }
                           tone={checksumTone(transfer.checksum_status)}
                           compact
@@ -540,7 +540,7 @@ function CreateTransferDialog({
                 }}
                 className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
               >
-                <option value="">—</option>
+                <option value="">-</option>
                 {machines.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.id}
@@ -560,7 +560,7 @@ function CreateTransferDialog({
                 }}
                 className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
               >
-                <option value="">—</option>
+                <option value="">-</option>
                 {machines.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.id}

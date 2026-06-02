@@ -250,7 +250,7 @@ impl BankrollManager {
 
     /// Reserve capital for a spread-capture (buy both sides) trade.
     ///
-    /// Returns `(up_tokens, down_tokens)` — both equal for a balanced pair.
+    /// Returns `(up_tokens, down_tokens)` - both equal for a balanced pair.
     pub fn reserve_spread_capital(
         &mut self,
         up_ask: f64,

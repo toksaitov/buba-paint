@@ -15,7 +15,7 @@ pub struct WsQuery {
     token: Option<String>,
 }
 
-/// `GET /ws/bots/:id` — `WebSocket` proxy to agent.
+/// `GET /ws/bots/:id` - `WebSocket` proxy to agent.
 ///
 /// Authenticates via `?token=<jwt>` query parameter, connects to the agent's
 /// `/ws/live` endpoint, and bridges the two `WebSocket` connections.

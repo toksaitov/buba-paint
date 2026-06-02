@@ -9,10 +9,21 @@ vi.mock("recharts", async () => {
     ...actual,
     ResponsiveContainer: ({
       children,
+      width,
+      height,
     }: {
       children: React.ReactElement;
-    }) =>
-      React.cloneElement(children, { width: 64, height: 64 }),
+      width?: string | number;
+      height?: string | number;
+    }) => (
+      <div
+        data-testid="responsive-container"
+        data-width={width}
+        data-height={height}
+      >
+        {React.cloneElement(children, { width: Number(width), height: Number(height) })}
+      </div>
+    ),
   };
 });
 
@@ -34,7 +45,7 @@ test("renders em-dash when total is zero", () => {
   const { getByText } = render(
     <DonutGauge used={0} total={0} ariaLabel="no-data donut" />,
   );
-  expect(getByText("—")).toBeInTheDocument();
+  expect(getByText("-")).toBeInTheDocument();
 });
 
 test("exposes ariaLabel for screen readers", () => {
@@ -49,6 +60,20 @@ test("renders the optional caption label", () => {
     <DonutGauge used={1} total={4} label="DISK" ariaLabel="disk donut" />,
   );
   expect(getByText("DISK")).toBeInTheDocument();
+});
+
+test("passes explicit dimensions to the chart container", () => {
+  const { getByTestId } = render(
+    <DonutGauge used={1} total={2} size={72} ariaLabel="sized donut" />,
+  );
+  expect(getByTestId("responsive-container")).toHaveAttribute(
+    "data-width",
+    "72",
+  );
+  expect(getByTestId("responsive-container")).toHaveAttribute(
+    "data-height",
+    "72",
+  );
 });
 
 test("clamps used to total without throwing", () => {

@@ -15,12 +15,11 @@ import {
   permissionHint,
   stepTone,
 } from "../../lib/research-permissions";
-import { humanize } from "../../lib/utils";
 import type {
   ResearchAction,
   ResearchJobStep,
 } from "../../lib/research-types";
-import { cn } from "../../lib/utils";
+import { cn, formatDurationShort, humanize } from "../../lib/utils";
 
 const STEP_LABELS: Record<string, string> = {
   plan_export: "Plan export",
@@ -49,6 +48,17 @@ interface StepTimelineProps {
 
 function humanStepName(name: string): string {
   return STEP_LABELS[name] ?? name.replace(/_/g, " ");
+}
+
+function leaseRefreshText(deadlineMs: number, nowMs: number): string {
+  const delta = deadlineMs - nowMs;
+  if (delta > 1_000) {
+    return `refresh due in ${formatDurationShort(delta)}`;
+  }
+  if (delta >= -1_000) {
+    return "refresh due now";
+  }
+  return `refresh overdue by ${formatDurationShort(-delta)}`;
 }
 
 export function StepTimeline({
@@ -123,16 +133,14 @@ export function StepTimeline({
                   </div>
                 )}
                 {step.lease_owner && (
-                  <div className="text-[11px] text-muted">
-                    Leased to {step.lease_owner}
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted">
+                    <span>Leased to {step.lease_owner}</span>
                     {step.leased_until_ms != null && (
                       <>
-                        {" "}
-                        until{" "}
-                        <RelativeTime epochMs={step.leased_until_ms} />
+                        <span>{leaseRefreshText(step.leased_until_ms, effectiveNow)}</span>
                         {leaseExpired && (
                           <StatusChip
-                            label="expired"
+                            label="refresh overdue"
                             tone="warning"
                             compact
                           />

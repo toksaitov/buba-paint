@@ -123,11 +123,7 @@ function latestRelatedEvent(
   events: ResearchJobEvent[],
 ): ResearchJobEvent | null {
   const related = [...events]
-    .filter((event) => {
-      if (event.step_id === step.id) return true;
-      const details = parseRecord(event.details_json);
-      return commandFromRecord(details) != null || outputFromRecord(details) != null;
-    })
+    .filter((event) => event.step_id === step.id)
     .sort((a, b) => b.timestamp_ms - a.timestamp_ms);
   return (
     related.find((event) => outputFromRecord(parseRecord(event.details_json)) != null) ??
@@ -163,7 +159,7 @@ function buildGuidance(
   const stderr = output?.stderr ?? "";
   if (staleLease) {
     return [
-      "The active step lease is expired. Clear stale lease before retrying so another worker can claim it.",
+      "The active step lease refresh is overdue. Confirm no worker command is still running before clearing the lease.",
       "Retry keeps the same inputs. Clone only if the inputs also need to change.",
     ];
   }
@@ -201,7 +197,7 @@ function recoveryContext(
   events: ResearchJobEvent[],
 ): RecoveryContext | null {
   const step = activeRecoveryStep(job, steps);
-  if (!step) return null;
+    if (!step) return null;
   const event = latestRelatedEvent(step, events);
   const details = parseRecord(event?.details_json ?? null) ?? parseRecord(step.output_json);
   const command = commandFromRecord(details);
@@ -237,7 +233,10 @@ export function JobRecoveryDiagnosis({
       subtitle="Inspect the failed or blocked step before retrying or cloning."
     >
       <div className="space-y-3">
-        <Banner tone={tone} title="Operator recovery required">
+        <Banner
+          tone={tone}
+          title={staleLease ? "Lease refresh overdue" : "Operator recovery required"}
+        >
           <div className="space-y-1">
             <div>
               Step {step.step_index + 1} ({humanize(step.name)}) is{" "}
@@ -278,10 +277,16 @@ export function JobRecoveryDiagnosis({
             {
               label: "Lease until",
               value: step.leased_until_ms ? (
-                <>
-                  <RelativeTime epochMs={step.leased_until_ms} />{" "}
-                  {staleLease ? "(expired)" : ""}
-                </>
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  <RelativeTime epochMs={step.leased_until_ms} />
+                  {staleLease && (
+                    <StatusChip
+                      label="refresh overdue"
+                      tone="warning"
+                      compact
+                    />
+                  )}
+                </span>
               ) : (
                 "-"
               ),

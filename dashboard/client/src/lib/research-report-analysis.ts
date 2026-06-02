@@ -31,6 +31,29 @@ export interface ReportMetrics {
   no_fill_count?: number | null;
 }
 
+export interface SourceRunMetrics {
+  net_pnl?: number | null;
+  gross_pnl?: number | null;
+  total_fees?: number | null;
+  final_balance?: number | null;
+  trade_count?: number | null;
+  signal_count?: number | null;
+}
+
+export interface SourceRunMetricDelta {
+  net_pnl?: number | null;
+  final_balance?: number | null;
+  trade_count?: number | null;
+  signal_count?: number | null;
+}
+
+export interface SourceRunComparison {
+  status: string;
+  source: SourceRunMetrics;
+  replay: SourceRunMetrics;
+  delta: SourceRunMetricDelta;
+}
+
 export interface EquityPoint {
   ts: number;
   equity: number;
@@ -77,6 +100,7 @@ export interface ParsedReportSummary {
   has_analysis: boolean;
   provenance: ReportProvenance;
   metrics: ReportMetrics;
+  source_comparison: SourceRunComparison | null;
   diagnostics: string[];
   sweep_summary: SweepSummary | null;
 }
@@ -167,6 +191,12 @@ export function comparisonWarnings(
   if (distinct(reports.map((r) => r.parsed.provenance.balance)).length > 1) {
     warnings.push("Reports use different starting balances.");
   }
+  if (reports.some((r) => reportHasSourceMismatch(r.parsed))) {
+    warnings.push("One or more reports differ from source-run metrics.");
+  }
+  if (reports.some((r) => reportUsesCalibratedSweep(r.parsed))) {
+    warnings.push("One or more sweep reports are ranked by calibrated PnL.");
+  }
   return warnings;
 }
 
@@ -174,7 +204,12 @@ export function bestReportLabel(
   reports: Array<{ report: ResearchReport; parsed: ParsedReportPayload }>,
 ): string {
   const scored = reports.filter((r) => numberOrNull(r.parsed.metrics.net_pnl) != null);
-  if (scored.length === 0) return "No winner: Net PnL is unavailable.";
+  const label = reports.some((r) => reportUsesCalibratedSweep(r.parsed))
+    ? "Calibrated Net PnL"
+    : reports.some((r) => reportHasSourceComparison(r.parsed))
+    ? "Replay Net PnL"
+    : "Net PnL";
+  if (scored.length === 0) return `No winner: ${label} is unavailable.`;
   const sorted = [...scored].sort(
     (a, b) =>
       optionalMetric(b.parsed.metrics.net_pnl) -
@@ -188,9 +223,40 @@ export function bestReportLabel(
     optionalMetric(first.parsed.metrics.net_pnl) ===
       optionalMetric(second.parsed.metrics.net_pnl)
   ) {
-    return "No winner: top Net PnL is tied.";
+    return `No winner: top ${label} is tied.`;
   }
-  return first ? `Best by Net PnL: ${first.report.title}` : "No winner.";
+  return first ? `Best by ${label}: ${first.report.title}` : "No winner.";
+}
+
+export function reportHasSourceComparison(
+  parsed: ParsedReportSummary | ParsedReportPayload,
+): boolean {
+  return parsed.source_comparison != null;
+}
+
+export function reportHasSourceMismatch(
+  parsed: ParsedReportSummary | ParsedReportPayload,
+): boolean {
+  return parsed.source_comparison?.status === "mismatch";
+}
+
+export function netPnlMetricLabel(
+  parsed: ParsedReportSummary | ParsedReportPayload,
+): string {
+  if (reportUsesCalibratedSweep(parsed)) {
+    return "Calibrated Net PnL";
+  }
+  return reportHasSourceComparison(parsed) ? "Replay Net PnL" : "Net PnL";
+}
+
+export function reportUsesCalibratedSweep(
+  parsed: ParsedReportSummary | ParsedReportPayload,
+): boolean {
+  const payloadSweep = "sweep" in parsed ? parsed.sweep : null;
+  return (
+    parsed.sweep_summary?.ranked_by === "calibrated_pnl" ||
+    payloadSweep?.ranked_by === "calibrated_pnl"
+  );
 }
 
 function summaryFromObject(
@@ -204,6 +270,7 @@ function summaryFromObject(
     has_analysis: numberOrNull(obj?.schema_version) === 2,
     provenance,
     metrics,
+    source_comparison: readSourceComparison(obj?.source_comparison),
     diagnostics: readArray(obj?.diagnostics).flatMap((value) =>
       typeof value === "string" ? [value] : [],
     ),
@@ -250,6 +317,42 @@ function readMetrics(value: unknown): ReportMetrics {
     signal_count: numberOrNull(obj?.signal_count),
     fill_count: numberOrNull(obj?.fill_count),
     no_fill_count: numberOrNull(obj?.no_fill_count),
+  };
+}
+
+function readSourceComparison(value: unknown): SourceRunComparison | null {
+  const obj = asRecord(value);
+  if (!obj) return null;
+  const source = readSourceRunMetrics(obj.source);
+  const replay = readSourceRunMetrics(obj.replay);
+  const delta = readSourceRunDelta(obj.delta);
+  return {
+    status: stringOrUndefined(obj.status) ?? "unknown",
+    source,
+    replay,
+    delta,
+  };
+}
+
+function readSourceRunMetrics(value: unknown): SourceRunMetrics {
+  const obj = asRecord(value);
+  return {
+    net_pnl: numberOrNull(obj?.net_pnl),
+    gross_pnl: numberOrNull(obj?.gross_pnl),
+    total_fees: numberOrNull(obj?.total_fees),
+    final_balance: numberOrNull(obj?.final_balance),
+    trade_count: numberOrNull(obj?.trade_count),
+    signal_count: numberOrNull(obj?.signal_count),
+  };
+}
+
+function readSourceRunDelta(value: unknown): SourceRunMetricDelta {
+  const obj = asRecord(value);
+  return {
+    net_pnl: numberOrNull(obj?.net_pnl),
+    final_balance: numberOrNull(obj?.final_balance),
+    trade_count: numberOrNull(obj?.trade_count),
+    signal_count: numberOrNull(obj?.signal_count),
   };
 }
 

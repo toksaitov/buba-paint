@@ -438,7 +438,7 @@ export function ResearchJobDetailPage() {
                     {job.artifact_id}
                   </Link>
                 ) : (
-                  "—"
+                  "-"
                 ),
               },
               { label: "Requested by", value: job.requested_by },
@@ -456,7 +456,7 @@ export function ResearchJobDetailPage() {
                 value: job.cancelled_at ? (
                   <RelativeTime epochMs={job.cancelled_at} />
                 ) : (
-                  "—"
+                  "-"
                 ),
               },
               {
@@ -464,7 +464,7 @@ export function ResearchJobDetailPage() {
                 value: job.completed_at ? (
                   <RelativeTime epochMs={job.completed_at} />
                 ) : (
-                  "—"
+                  "-"
                 ),
               },
             ]}

@@ -156,91 +156,106 @@ struct WorkerActivity {
     last_loop_error: Option<String>,
 }
 
+/// Runtime dependencies shared by the worker loop.
+struct WorkerRuntime {
+    db: Arc<DashboardDb>,
+    sampler: Arc<MachineSampler>,
+    pipeline: ResearchPipelineConfig,
+    worker: LocalResearchWorker,
+    transfer_worker: ArtifactTransferWorker,
+    executor: ProcessCommandExecutor,
+    heartbeat: RemoteHeartbeat,
+    activity: Arc<Mutex<WorkerActivity>>,
+}
+
 /// Run the local research worker loop.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_tracing();
+    let runtime = WorkerRuntime::from_cli(&cli)?;
+    send_heartbeat(
+        &runtime.db,
+        &runtime.heartbeat,
+        &runtime.sampler,
+        &activity_snapshot(&runtime.activity),
+    )
+    .await;
+    let _heartbeat_task = (!cli.run_once).then(|| runtime.spawn_heartbeat_loop());
+    run_worker_loop(&cli, &runtime).await
+}
 
-    let db = Arc::new(DashboardDb::new(&cli.db_path)?);
-    let work_root = resolve_root(&cli.work_root)?;
-    std::fs::create_dir_all(&work_root).context("creating research work root for telemetry")?;
-    let sampler = MachineSampler::start(work_root);
-    let pipeline = build_pipeline(&cli)?;
-    let worker = LocalResearchWorker::new(cli.worker_id.clone(), cli.lease_ms)?;
-    let transfer_worker = build_transfer_worker(&cli)?;
-    let executor = ProcessCommandExecutor;
-    let heartbeat = RemoteHeartbeat::from_cli(&cli)?;
-    let activity = Arc::new(Mutex::new(WorkerActivity::from_cli(&cli)));
-    send_heartbeat(&db, &heartbeat, &sampler, &activity_snapshot(&activity)).await;
-    let _heartbeat_task = (!cli.run_once).then(|| {
+impl WorkerRuntime {
+    /// Build worker runtime dependencies from CLI configuration.
+    fn from_cli(cli: &Cli) -> anyhow::Result<Self> {
+        let db = Arc::new(DashboardDb::new(&cli.db_path)?);
+        let work_root = resolve_root(&cli.work_root)?;
+        std::fs::create_dir_all(&work_root).context("creating research work root for telemetry")?;
+        let sampler = MachineSampler::start(work_root);
+        let pipeline = build_pipeline(cli)?;
+        let worker = LocalResearchWorker::new(cli.worker_id.clone(), cli.lease_ms)?;
+        let transfer_worker = build_transfer_worker(cli)?;
+        let executor = ProcessCommandExecutor;
+        let heartbeat = RemoteHeartbeat::from_cli(cli)?;
+        let activity = Arc::new(Mutex::new(WorkerActivity::from_cli(cli)));
+        Ok(Self {
+            db,
+            sampler,
+            pipeline,
+            worker,
+            transfer_worker,
+            executor,
+            heartbeat,
+            activity,
+        })
+    }
+
+    /// Spawn periodic telemetry publishing independent of the work loop.
+    fn spawn_heartbeat_loop(&self) -> tokio::task::JoinHandle<()> {
         spawn_heartbeat_loop(
-            Arc::clone(&db),
-            heartbeat.clone(),
-            Arc::clone(&sampler),
-            Arc::clone(&activity),
+            Arc::clone(&self.db),
+            self.heartbeat.clone(),
+            Arc::clone(&self.sampler),
+            Arc::clone(&self.activity),
         )
-    });
+    }
+}
 
+/// Run the main polling loop until run-once completion or fatal worker error.
+async fn run_worker_loop(cli: &Cli, runtime: &WorkerRuntime) -> anyhow::Result<()> {
     loop {
-        if machine_work_disabled(&db, &cli.machine_id).await? {
-            update_activity(&activity, |activity| {
-                activity.status = "idle".to_string();
-                activity.phase = "disabled".to_string();
-                activity.disabled = true;
-                activity.processed_last_tick = 0;
-                activity.transfers_processed_last_tick = 0;
-                activity.last_loop_error = None;
-            });
-            if cli.run_once {
-                send_heartbeat(&db, &heartbeat, &sampler, &activity_snapshot(&activity)).await;
-                tracing::info!("research worker run-once skipped because machine is disabled");
+        if machine_work_disabled(&runtime.db, &cli.machine_id).await? {
+            if handle_disabled_tick(cli, runtime).await {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_millis(cli.poll_ms)).await;
             continue;
         }
-        update_activity(&activity, |activity| {
+        update_activity(&runtime.activity, |activity| {
             activity.status = "busy".to_string();
             activity.phase = "processing".to_string();
             activity.disabled = false;
             activity.last_loop_error = None;
         });
-        let tick_result = async {
-            let transfers_processed = if cli.transfers_enabled {
-                transfer_worker
-                    .run_until_idle(&db, cli.max_transfers_per_tick)
-                    .await
-                    .context("running artifact transfer tick")?
-            } else {
-                0
-            };
-            let processed = worker
-                .run_local_with_pipeline_until_idle(
-                    &db,
-                    &pipeline,
-                    &executor,
-                    cli.max_steps_per_tick,
-                )
-                .await
-                .context("running research worker tick")?;
-            Ok::<_, anyhow::Error>((processed, transfers_processed))
-        }
-        .await;
-        let (processed, transfers_processed) = match tick_result {
+        let (processed, transfers_processed) = match run_work_tick(cli, runtime).await {
             Ok(result) => result,
             Err(error) => {
-                update_activity(&activity, |activity| {
+                update_activity(&runtime.activity, |activity| {
                     activity.status = "error".to_string();
                     activity.phase = "error".to_string();
                     activity.last_loop_error = Some(error.to_string());
                 });
-                send_heartbeat(&db, &heartbeat, &sampler, &activity_snapshot(&activity)).await;
+                send_heartbeat(
+                    &runtime.db,
+                    &runtime.heartbeat,
+                    &runtime.sampler,
+                    &activity_snapshot(&runtime.activity),
+                )
+                .await;
                 return Err(error);
             }
         };
         let total_processed = transfers_processed + processed;
-        update_activity(&activity, |activity| {
+        update_activity(&runtime.activity, |activity| {
             activity.status = if total_processed == 0 {
                 "idle".to_string()
             } else {
@@ -257,7 +272,13 @@ async fn main() -> anyhow::Result<()> {
             activity.last_loop_error = None;
         });
         if cli.run_once {
-            send_heartbeat(&db, &heartbeat, &sampler, &activity_snapshot(&activity)).await;
+            send_heartbeat(
+                &runtime.db,
+                &runtime.heartbeat,
+                &runtime.sampler,
+                &activity_snapshot(&runtime.activity),
+            )
+            .await;
             tracing::info!(
                 processed,
                 transfers_processed,
@@ -269,6 +290,55 @@ async fn main() -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_millis(cli.poll_ms)).await;
         }
     }
+}
+
+/// Handle one disabled-machine loop tick and return true when the worker should exit.
+async fn handle_disabled_tick(cli: &Cli, runtime: &WorkerRuntime) -> bool {
+    update_activity(&runtime.activity, |activity| {
+        activity.status = "idle".to_string();
+        activity.phase = "disabled".to_string();
+        activity.disabled = true;
+        activity.processed_last_tick = 0;
+        activity.transfers_processed_last_tick = 0;
+        activity.last_loop_error = None;
+    });
+    if cli.run_once {
+        send_heartbeat(
+            &runtime.db,
+            &runtime.heartbeat,
+            &runtime.sampler,
+            &activity_snapshot(&runtime.activity),
+        )
+        .await;
+        tracing::info!("research worker run-once skipped because machine is disabled");
+        return true;
+    }
+    tokio::time::sleep(Duration::from_millis(cli.poll_ms)).await;
+    false
+}
+
+/// Process one transfer and job work tick.
+async fn run_work_tick(cli: &Cli, runtime: &WorkerRuntime) -> anyhow::Result<(usize, usize)> {
+    let transfers_processed = if cli.transfers_enabled {
+        runtime
+            .transfer_worker
+            .run_until_idle(&runtime.db, cli.max_transfers_per_tick)
+            .await
+            .context("running artifact transfer tick")?
+    } else {
+        0
+    };
+    let processed = runtime
+        .worker
+        .run_local_with_pipeline_until_idle(
+            &runtime.db,
+            &runtime.pipeline,
+            &runtime.executor,
+            cli.max_steps_per_tick,
+        )
+        .await
+        .context("running research worker tick")?;
+    Ok((processed, transfers_processed))
 }
 
 /// Initialize process logging.

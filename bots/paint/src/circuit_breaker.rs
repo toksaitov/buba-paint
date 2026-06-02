@@ -13,8 +13,8 @@ pub struct CircuitBreaker {
 impl CircuitBreaker {
     /// Create a new circuit breaker.
     ///
-    /// * `max_losses` – number of consecutive losses that triggers the pause.
-    /// * `pause_ms`   – how long (in ms) to pause trading after triggering.
+    /// * `max_losses` - number of consecutive losses that triggers the pause.
+    /// * `pause_ms`   - how long (in ms) to pause trading after triggering.
     pub fn new(max_losses: u32, pause_ms: u64) -> Self {
         Self {
             consecutive_losses: 0,

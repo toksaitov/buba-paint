@@ -181,7 +181,7 @@ describe("JobCreateForm - backtest", () => {
     expect(payload.params.start_ms).toBe(Date.parse(start));
     expect(payload.params.end_ms).toBe(Date.parse(end));
     expect(screen.getByText(/effective interval/i)).toBeInTheDocument();
-    expect(screen.getByText(/explicit input/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/typed value/i).length).toBeGreaterThan(0);
   });
 
   it("syncs browser-filled datetime-local values on blur", async () => {
@@ -226,6 +226,16 @@ describe("JobCreateForm - backtest", () => {
     );
     const createBtn = screen.getByRole("button", { name: /create job/i });
     expect(createBtn).toBeDisabled();
+    expect(
+      screen.getAllByText(/leave blank to use artifact interval/i).length,
+    ).toBe(2);
+    expect(
+      screen.getByText(/start and end are blank, so this job will use the artifact interval/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/start source/i)).toBeInTheDocument();
+    expect(screen.getByText(/end source/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/artifact interval/i).length).toBeGreaterThan(1);
+    expect(screen.queryByText(/artifact fallback/i)).not.toBeInTheDocument();
 
     await userEvent.click(
       screen.getByRole("checkbox", {

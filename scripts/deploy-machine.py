@@ -185,17 +185,28 @@ def remote_shell_command(plan: dict[str, Any]) -> list[str]:
 
 
 def remote_run(plan: dict[str, Any], script: str) -> None:
-    run(remote_shell_command(plan), input_bytes=script.encode("utf-8"))
+    run(remote_shell_command(plan), input_bytes=prepare_remote_script(plan, script).encode("utf-8"))
 
 
 def remote_output(plan: dict[str, Any], script: str) -> str:
     result = subprocess.run(
         remote_shell_command(plan),
-        input=script.encode("utf-8"),
+        input=prepare_remote_script(plan, script).encode("utf-8"),
         check=True,
         capture_output=True,
     )
     return result.stdout.decode("utf-8", errors="replace")
+
+
+def prepare_remote_script(plan: dict[str, Any], script: str) -> str:
+    if plan.get("execution_environment") != "wsl":
+        return script
+    return "\n".join(
+        [
+            "if [ -x /Docker/host/bin/docker ]; then export PATH=/Docker/host/bin:$PATH; fi",
+            script,
+        ]
+    )
 
 
 def compose_args(plan: dict[str, Any]) -> str:
@@ -284,7 +295,7 @@ def ensure_research_secrets(plan: dict[str, Any]) -> None:
             "BUBA_RESEARCH_RUNTIME_DIR=./.docker/research/runtime",
             "BUBA_RESEARCH_WORK_DIR=./.docker/research/work",
             "BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh",
-            "BUBA_DASHBOARD_CONFIG=./.docker/research/config/dashboard.toml",
+            "BUBA_DASHBOARD_CONFIG_DIR=./.docker/research/config",
             "",
         ]
     )
@@ -318,6 +329,7 @@ def ensure_research_secrets(plan: dict[str, Any]) -> None:
                 "ensure_env_key BUBA_RESEARCH_HEARTBEAT_MS 30000",
                 "ensure_env_key BUBA_RESEARCH_TRANSFER_STALE_MS 1800000",
                 "ensure_env_key BUBA_RESEARCH_SSH_DIR /home/testing/.ssh",
+                "ensure_env_key BUBA_DASHBOARD_CONFIG_DIR ./.docker/research/config",
                 "if [ ! -f \"$root/.docker/research/config/dashboard.toml\" ]; then",
                 f"  printf '%s' {quote(config_b64)} | base64 -d > \"$root/.docker/research/config/dashboard.toml\"",
                 "  chmod 600 \"$root/.docker/research/config/dashboard.toml\"",
@@ -440,10 +452,26 @@ def compose_up_registry_pinned(plan: dict[str, Any]) -> None:
                 f"cd {quote(root)}",
                 "mkdir -p .docker",
                 "docker_config=$(mktemp -d .docker/ghcr-auth.XXXXXX)",
-                "cleanup() { docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf \"$docker_config\"; }",
+                "cleanup() { rm -rf \"$docker_config\"; }",
                 "trap cleanup EXIT",
                 "export DOCKER_CONFIG=\"$docker_config\"",
-                f"printf '%s' {quote(token_b64)} | base64 -d | docker login ghcr.io -u {quote(username)} --password-stdin >/dev/null",
+                f"export GHCR_USER={quote(username)}",
+                f"export GHCR_TOKEN_B64={quote(token_b64)}",
+                "python3 - <<'PY'",
+                "import base64",
+                "import json",
+                "import os",
+                "from pathlib import Path",
+                "user = os.environ['GHCR_USER']",
+                "token = base64.b64decode(os.environ['GHCR_TOKEN_B64']).decode('utf-8')",
+                "auth = base64.b64encode(f'{user}:{token}'.encode('utf-8')).decode('ascii')",
+                "Path(os.environ['DOCKER_CONFIG']).mkdir(parents=True, exist_ok=True)",
+                "Path(os.environ['DOCKER_CONFIG'], 'config.json').write_text(",
+                "    json.dumps({'auths': {'ghcr.io': {'auth': auth}}}),",
+                "    encoding='utf-8',",
+                ")",
+                "PY",
+                "unset GHCR_TOKEN_B64",
                 compose_image_exports(plan),
                 f"docker compose {compose_args(plan)} config --quiet",
                 f"docker compose {compose_args(plan)} pull {services}",

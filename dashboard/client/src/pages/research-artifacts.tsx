@@ -262,7 +262,7 @@ export function ResearchArtifactsPage() {
                       {humanize(artifact.kind)}
                     </td>
                     <td className="px-2 py-1.5 text-muted">
-                      {artifact.run_mode ? humanize(artifact.run_mode) : "—"}
+                      {artifact.run_mode ? humanize(artifact.run_mode) : "-"}
                     </td>
                     <td className="px-2 py-1.5">
                       <StatusChip
@@ -275,7 +275,7 @@ export function ResearchArtifactsPage() {
                       {formatBytes(artifact.bytes ?? undefined)}
                     </td>
                     <td className="px-2 py-1.5 font-mono text-[11px] text-muted">
-                      {artifact.source_machine_id ?? "—"}
+                      {artifact.source_machine_id ?? "-"}
                     </td>
                     <td className="px-2 py-1.5 text-muted">
                       <RelativeTime epochMs={artifact.updated_at} />
@@ -301,7 +301,7 @@ export function ResearchArtifactsPage() {
         Last refreshed{" "}
         {artifactsQuery.dataUpdatedAt
           ? formatDateTime(artifactsQuery.dataUpdatedAt)
-          : "—"}
+          : "-"}
       </div>
     </div>
   );
@@ -449,7 +449,7 @@ function ImportArtifactDialog({
               }}
               className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
             >
-              <option value="">—</option>
+              <option value="">-</option>
               {machines.map((m) => (
                 <option key={m} value={m}>
                   {m}
@@ -590,7 +590,7 @@ function RegisterArtifactDialog({
               }}
               className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
             >
-              <option value="">—</option>
+              <option value="">-</option>
               {machines.map((m) => (
                 <option key={m} value={m}>
                   {m}

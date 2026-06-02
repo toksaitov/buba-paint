@@ -28,8 +28,8 @@ beforeEach(() => {
 });
 
 function getInputs() {
-  const username = document.querySelector('input[type="text"]') as HTMLInputElement;
-  const password = document.querySelector('input[type="password"]') as HTMLInputElement;
+  const username = screen.getByLabelText("Username") as HTMLInputElement;
+  const password = screen.getByLabelText("Password") as HTMLInputElement;
   return { username, password };
 }
 

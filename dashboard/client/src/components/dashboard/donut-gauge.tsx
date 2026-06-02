@@ -50,7 +50,7 @@ export function DonutGauge({
       style={{ width: size, height: size + (label ? 14 : 0) }}
     >
       <div style={{ width: size, height: size, position: "relative" }}>
-        <ResponsiveContainer>
+        <ResponsiveContainer width={size} height={size}>
           <PieChart>
             <Pie
               data={data}
@@ -77,7 +77,7 @@ export function DonutGauge({
             pointerEvents: "none",
           }}
         >
-          {percent == null ? "—" : `${percent.toFixed(0)}%`}
+          {percent == null ? "-" : `${percent.toFixed(0)}%`}
         </div>
       </div>
       {label ? (

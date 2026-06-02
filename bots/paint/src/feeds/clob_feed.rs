@@ -341,7 +341,7 @@ async fn clob_feed_loop(
                     warn!(
                         feed = "clob",
                         count = rapid_disconnect_count,
-                        "CLOB disconnecting immediately after subscribe — market tokens may be expired"
+                        "CLOB disconnecting immediately after subscribe - market tokens may be expired"
                     );
                 }
             }

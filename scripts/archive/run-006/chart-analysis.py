@@ -42,7 +42,7 @@ bal_vals = [r["balance"] for r in bal_rows]
 
 # ── FIGURE 1: 6-panel overview ──────────────────────────────────────────
 fig, axes = plt.subplots(3, 2, figsize=(20, 18))
-fig.suptitle("Run 006 (v0.4) Deep Analysis — $200 → $4,765 (+2,283%)",
+fig.suptitle("Run 006 (v0.4) Deep Analysis - $200 → $4,765 (+2,283%)",
              fontsize=16, fontweight="bold", y=0.98)
 
 # ── Panel 1: Equity curve (clean) ───────────────────────────────────────
@@ -117,7 +117,7 @@ for h in range(24):
 ax.axvspan(4.5, 9.5, alpha=0.08, color="red", label="Danger zone 05-09 UTC")
 ax.axvspan(12.5, 17.5, alpha=0.08, color="green", label="Hot zone 13-17 UTC")
 
-ax.set_title("Win Rate by Hour (UTC) — number = trade count", fontweight="bold", fontsize=12)
+ax.set_title("Win Rate by Hour (UTC) - number = trade count", fontweight="bold", fontsize=12)
 ax.set_ylabel("Win Rate %")
 ax.set_xlabel("Hour (UTC)")
 ax.set_xticks(range(24))
@@ -241,7 +241,7 @@ plt.close()
 
 # ── FIGURE 2: Drawdown + volatility ─────────────────────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(20, 12))
-fig.suptitle("Run 006 — Risk Analysis", fontsize=16, fontweight="bold", y=0.98)
+fig.suptitle("Run 006 - Risk Analysis", fontsize=16, fontweight="bold", y=0.98)
 
 # Panel 1: Drawdown over time
 ax = axes[0, 0]

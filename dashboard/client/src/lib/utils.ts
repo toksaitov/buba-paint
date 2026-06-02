@@ -79,7 +79,7 @@ export function truncateMiddle(value: string, head = 8, tail = 6): string {
 }
 
 export function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null) return "—";
+  if (bytes == null) return "-";
   if (bytes === 0) return "0 B";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let value = bytes;

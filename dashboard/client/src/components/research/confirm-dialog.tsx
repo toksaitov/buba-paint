@@ -60,7 +60,7 @@ export function ConfirmDialog({
         {requiresPhrase && (
           <FormField
             label={`Type "${phrase}" to confirm`}
-            hint="This action affects files on disk and cannot be undone from the dashboard."
+            hint="This action cannot be undone from the dashboard."
           >
             {({ id }) => (
               <Input

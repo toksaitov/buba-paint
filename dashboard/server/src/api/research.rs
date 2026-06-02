@@ -1772,8 +1772,8 @@ pub async fn regenerate_job_report(
         let artifact = research_artifact_for_job(&state, &detail.job).await?;
         let pipeline = pipeline_for_archive(&state)?;
         let mut plan = pipeline.plan_for_job(&detail.job, artifact.as_ref())?;
-        plan.report_json_path = report_paths.report_path.clone();
-        plan.report_csv_path = report_paths.csv_path.clone();
+        plan.report_json_path.clone_from(&report_paths.report_path);
+        plan.report_csv_path.clone_from(&report_paths.csv_path);
         if report_analysis_source_exists(&plan) {
             write_report_files(&plan, &detail.steps)?
         } else {
@@ -1985,7 +1985,28 @@ async fn build_research_queue_response(
     let machines = state.db.list_research_machines().await?;
     let reports = state.db.list_research_reports().await?;
     let retention = build_research_retention_response(state).await?.totals;
+    let job_groups = build_queue_job_groups(state, &jobs, generated_at_ms).await?;
+    let transfer_groups = build_queue_transfer_groups(&transfers, generated_at_ms);
+    let disabled_hosts = build_disabled_host_items(state, machines).await?;
+    let counts = build_queue_counts(&jobs, &job_groups, &transfer_groups, disabled_hosts.len());
 
+    Ok(ResearchQueueResponse {
+        generated_at_ms,
+        counts,
+        jobs: job_groups,
+        transfers: transfer_groups,
+        disabled_hosts,
+        recent_reports: pick_recent_reports(reports, 5),
+        retention,
+    })
+}
+
+/// Build grouped job rows for the Research queue cockpit.
+async fn build_queue_job_groups(
+    state: &AppState,
+    jobs: &[ResearchJob],
+    generated_at_ms: u64,
+) -> Result<ResearchQueueJobGroups, DashboardError> {
     let mut running = Vec::new();
     let mut waiting = Vec::new();
     let mut retryable = Vec::new();
@@ -1993,7 +2014,7 @@ async fn build_research_queue_response(
     let mut failed = Vec::new();
     let mut stale_leases = Vec::new();
 
-    for job in &jobs {
+    for job in jobs {
         let steps = state.db.get_research_job_steps(&job.id).await?;
         let active_step = queue_step_for_job(job, &steps, generated_at_ms);
         let stale = active_step.as_ref().is_some_and(|step| {
@@ -2024,10 +2045,25 @@ async fn build_research_queue_response(
         }
     }
 
+    Ok(ResearchQueueJobGroups {
+        running,
+        waiting,
+        retryable,
+        blocked,
+        failed,
+        stale_leases,
+    })
+}
+
+/// Build grouped transfer rows for the Research queue cockpit.
+fn build_queue_transfer_groups(
+    transfers: &[ArtifactTransfer],
+    generated_at_ms: u64,
+) -> ResearchQueueTransferGroups {
     let mut active_transfers = Vec::new();
     let mut attention_transfers = Vec::new();
     let mut stale_transfers = Vec::new();
-    for transfer in &transfers {
+    for transfer in transfers {
         let stale = transfer_is_stale(transfer, generated_at_ms);
         let item = ResearchQueueTransferItem {
             transfer: transfer.clone(),
@@ -2052,6 +2088,18 @@ async fn build_research_queue_response(
         }
     }
 
+    ResearchQueueTransferGroups {
+        active: active_transfers,
+        attention: attention_transfers,
+        stale: stale_transfers,
+    }
+}
+
+/// Build disabled research host rows with dependency counts.
+async fn build_disabled_host_items(
+    state: &AppState,
+    machines: Vec<ResearchMachine>,
+) -> Result<Vec<ResearchQueueMachineItem>, DashboardError> {
     let mut disabled_hosts = Vec::new();
     for machine in machines
         .into_iter()
@@ -2066,46 +2114,33 @@ async fn build_research_queue_response(
             dependencies,
         });
     }
+    Ok(disabled_hosts)
+}
 
-    let recent_reports = pick_recent_reports(reports, 5);
-    let counts = ResearchQueueCounts {
+/// Build aggregate queue counts from grouped queue rows.
+fn build_queue_counts(
+    jobs: &[ResearchJob],
+    job_groups: &ResearchQueueJobGroups,
+    transfer_groups: &ResearchQueueTransferGroups,
+    disabled_hosts: usize,
+) -> ResearchQueueCounts {
+    ResearchQueueCounts {
         jobs_total: jobs.len(),
         jobs_active: jobs
             .iter()
             .filter(|job| !is_job_terminal(&job.status))
             .count(),
-        jobs_waiting: waiting.len(),
-        jobs_running: running.len(),
-        jobs_retryable: retryable.len(),
-        jobs_blocked: blocked.len(),
-        jobs_failed: failed.len(),
+        jobs_waiting: job_groups.waiting.len(),
+        jobs_running: job_groups.running.len(),
+        jobs_retryable: job_groups.retryable.len(),
+        jobs_blocked: job_groups.blocked.len(),
+        jobs_failed: job_groups.failed.len(),
         jobs_completed: jobs.iter().filter(|job| job.status == "completed").count(),
-        stale_leases: stale_leases.len(),
-        transfers_active: active_transfers.len(),
-        transfers_attention: attention_transfers.len(),
-        disabled_hosts: disabled_hosts.len(),
-    };
-
-    Ok(ResearchQueueResponse {
-        generated_at_ms,
-        counts,
-        jobs: ResearchQueueJobGroups {
-            running,
-            waiting,
-            retryable,
-            blocked,
-            failed,
-            stale_leases,
-        },
-        transfers: ResearchQueueTransferGroups {
-            active: active_transfers,
-            attention: attention_transfers,
-            stale: stale_transfers,
-        },
+        stale_leases: job_groups.stale_leases.len(),
+        transfers_active: transfer_groups.active.len(),
+        transfers_attention: transfer_groups.attention.len(),
         disabled_hosts,
-        recent_reports,
-        retention,
-    })
+    }
 }
 
 /// Build the retention snapshot response.
@@ -2289,9 +2324,9 @@ async fn archive_retention_report(
                 item: Some(item),
                 message: None,
             },
-            Err(error) => retention_metadata_error(report_id, error),
+            Err(error) => retention_metadata_error(report_id, &error),
         },
-        Err(error) => retention_metadata_error(report_id, error),
+        Err(error) => retention_metadata_error(report_id, &error),
     }
 }
 
@@ -2302,7 +2337,7 @@ async fn archive_retention_artifact(
 ) -> RetentionArchiveMetadataResult<ResearchArtifact> {
     let artifact = match research_artifact_by_id(state, artifact_id).await {
         Ok(artifact) => artifact,
-        Err(error) => return retention_metadata_error(artifact_id, error),
+        Err(error) => return retention_metadata_error(artifact_id, &error),
     };
     if artifact.status == "archived" {
         return RetentionArchiveMetadataResult {
@@ -2314,11 +2349,11 @@ async fn archive_retention_artifact(
     }
     let jobs = match state.db.list_research_jobs().await {
         Ok(jobs) => jobs,
-        Err(error) => return retention_metadata_error(artifact_id, error),
+        Err(error) => return retention_metadata_error(artifact_id, &error),
     };
     let transfers = match state.db.list_artifact_transfers().await {
         Ok(transfers) => transfers,
-        Err(error) => return retention_metadata_error(artifact_id, error),
+        Err(error) => return retention_metadata_error(artifact_id, &error),
     };
     let active_dependency_count = active_artifact_dependency_count(&artifact, &jobs, &transfers);
     if active_dependency_count > 0 {
@@ -2336,14 +2371,14 @@ async fn archive_retention_artifact(
             item: Some(item),
             message: None,
         },
-        Err(error) => retention_metadata_error(artifact_id, error),
+        Err(error) => retention_metadata_error(artifact_id, &error),
     }
 }
 
 /// Return an error result for one metadata archive request.
 fn retention_metadata_error<T>(
     id: &str,
-    error: DashboardError,
+    error: &DashboardError,
 ) -> RetentionArchiveMetadataResult<T> {
     RetentionArchiveMetadataResult {
         id: id.to_string(),
@@ -2469,7 +2504,7 @@ async fn estimate_job_scratch_bytes(
     Ok(total)
 }
 
-/// Return the SQLite DB path and WAL/SHM sidecars.
+/// Return the `SQLite` DB path and WAL/SHM sidecars.
 fn scratch_db_family_paths(path: &StdPath) -> Vec<PathBuf> {
     let mut paths = vec![path.to_path_buf()];
     if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
@@ -3141,6 +3176,15 @@ fn validate_artifact_manifest(
         if file.kind.trim().is_empty() {
             return Err(DashboardError::BadRequest(
                 "artifact file kind must not be empty".to_string(),
+            ));
+        }
+        if matches!(file.kind.as_str(), "sqlite_wal" | "sqlite_shm")
+            || file.relative_path.ends_with(".db-wal")
+            || file.relative_path.ends_with(".db-shm")
+        {
+            return Err(DashboardError::BadRequest(
+                "artifact manifests must use a stable SQLite backup DB, not WAL or SHM sidecars"
+                    .to_string(),
             ));
         }
         research_artifacts::normalize_relative_path(&file.relative_path)?;

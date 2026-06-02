@@ -174,7 +174,7 @@ export function ResearchTransferDetailPage() {
           tone={transferTone(transfer.status)}
         />
         <StatusChip
-          label={`Checksum: ${transfer.checksum_status ? humanize(transfer.checksum_status) : "—"}`}
+          label={`Checksum: ${transfer.checksum_status ? humanize(transfer.checksum_status) : "-"}`}
           tone={checksumTone(transfer.checksum_status)}
           compact
         />
@@ -240,7 +240,7 @@ export function ResearchTransferDetailPage() {
                 value: transfer.completed_at ? (
                   <RelativeTime epochMs={transfer.completed_at} />
                 ) : (
-                  "—"
+                  "-"
                 ),
               },
               {

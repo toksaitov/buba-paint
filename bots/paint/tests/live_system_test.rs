@@ -910,7 +910,7 @@ async fn live_bot_recovers_balance_from_db() {
         .any(|(_, bal)| (*bal - 999.0).abs() < f64::EPSILON);
     assert!(
         !has_999,
-        "Balance 999.0 should NOT appear in balance_log — \
+        "Balance 999.0 should NOT appear in balance_log - \
          the bot should have recovered from DB. Entries: {entries:?}"
     );
 
@@ -919,7 +919,7 @@ async fn live_bot_recovers_balance_from_db() {
         for bal in &second_run_balances {
             assert!(
                 (*bal - 999.0).abs() > 0.01,
-                "Balance {bal} is suspiciously close to 999.0 — \
+                "Balance {bal} is suspiciously close to 999.0 - \
                  recovery may have failed. First run final: {first_run_final_balance}"
             );
         }
@@ -2789,7 +2789,7 @@ async fn send_clob_book_for_tokens(clob_mock: &MockWsServer, up_token: &str, dow
         .await;
 }
 
-/// WL1: THE REGRESSION TEST — trades must be settled even when market discovery
+/// WL1: THE REGRESSION TEST - trades must be settled even when market discovery
 /// has already advanced `current_window` to the next slot before `WindowClosed`
 /// fires for the previous slot.
 ///
@@ -3160,7 +3160,7 @@ async fn live_bot_settles_both_overlapping_windows() {
     );
 }
 
-/// WL3: A window closes with no trades (no `CLOB` data sent) — `resolve_window`
+/// WL3: A window closes with no trades (no `CLOB` data sent) - `resolve_window`
 /// is called with 0 trades and the bot returns Ok without errors.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]

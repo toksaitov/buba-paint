@@ -7,7 +7,7 @@ interface MachineReferenceProps {
 }
 
 export function MachineReference({ machineId, machines }: MachineReferenceProps) {
-  if (!machineId) return <span className="text-muted">—</span>;
+  if (!machineId) return <span className="text-muted">-</span>;
   const machine = machines.find((m) => m.id === machineId);
   if (machine?.role === "research") {
     return (

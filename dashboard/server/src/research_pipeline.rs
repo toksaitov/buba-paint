@@ -9,7 +9,7 @@ use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::process::ExitStatus;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
@@ -92,8 +92,12 @@ pub struct CommandCancellation<'a> {
     pub job_id: &'a str,
     /// Step currently owning the command process.
     pub step_id: &'a str,
+    /// Worker currently supervising this command.
+    pub worker_id: &'a str,
     /// Poll interval while the child is still running.
     pub poll_interval: Duration,
+    /// Lease duration to refresh while the child command is alive.
+    pub lease_duration_ms: u64,
 }
 
 impl CommandCancellation<'_> {
@@ -109,6 +113,14 @@ impl CommandCancellation<'_> {
         Ok(steps
             .iter()
             .any(|step| step.id == self.step_id && step.status == "cancelled"))
+    }
+
+    /// Extend the active step lease while its child process is still alive.
+    pub async fn refresh_lease(&self) -> Result<(), DashboardError> {
+        self.db
+            .refresh_research_step_lease(self.step_id, self.worker_id, self.lease_duration_ms)
+            .await?;
+        Ok(())
     }
 }
 
@@ -441,6 +453,8 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
             let stderr_task = tokio::spawn(read_child_output(stderr));
 
             let mut cancelled = false;
+            let refresh_interval = lease_refresh_interval(cancellation.lease_duration_ms);
+            let mut last_refresh = Instant::now();
             let status = loop {
                 if let Some(status) = child.try_wait().map_err(|e| {
                     DashboardError::Internal(format!("waiting for research command: {e}"))
@@ -450,6 +464,10 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
                 if cancellation.is_cancelled().await? {
                     cancelled = true;
                     break terminate_cancelled_child(&mut child).await?;
+                }
+                if last_refresh.elapsed() >= refresh_interval {
+                    cancellation.refresh_lease().await?;
+                    last_refresh = Instant::now();
                 }
                 tokio::time::sleep(cancellation.poll_interval).await;
             };
@@ -465,6 +483,12 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
             })
         })
     }
+}
+
+/// Return a bounded interval for refreshing a supervised command lease.
+fn lease_refresh_interval(lease_duration_ms: u64) -> Duration {
+    let refresh_ms = (lease_duration_ms / 3).clamp(1_000, 30_000);
+    Duration::from_millis(refresh_ms)
 }
 
 /// Terminate a running research child process after durable cancellation.

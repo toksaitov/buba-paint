@@ -234,7 +234,7 @@ def remote_output(plan: dict[str, Any], script: str) -> str:
 
 def cmd_status(args: argparse.Namespace) -> int:
     """Run the status command."""
-    plan = plan_for(args)
+    plan = plan_for(args, allow_stale_image_lock=True)
     require_research(plan)
     if args.dry_run:
         return print_json(dry_run_payload("status", plan))
@@ -243,7 +243,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_backup_db(args: argparse.Namespace) -> int:
     """Run the DB backup command."""
-    plan = plan_for(args)
+    plan = plan_for(args, allow_stale_image_lock=True)
     require_research(plan)
     if args.dry_run:
         return print_json(dry_run_payload("backup-db", plan, {"backup_root": f"{plan['remote_root']}/.docker/research/runtime/backups"}))
@@ -252,7 +252,7 @@ def cmd_backup_db(args: argparse.Namespace) -> int:
 
 def cmd_restore_db(args: argparse.Namespace) -> int:
     """Run the DB restore command."""
-    plan = plan_for(args)
+    plan = plan_for(args, allow_stale_image_lock=True)
     require_research(plan)
     validate_backup_id(args.backup)
     if args.dry_run:
@@ -264,7 +264,7 @@ def cmd_restore_db(args: argparse.Namespace) -> int:
 
 def cmd_collect_diagnostics(args: argparse.Namespace) -> int:
     """Run the diagnostics collection command."""
-    plan = plan_for(args)
+    plan = plan_for(args, allow_stale_image_lock=True)
     require_research(plan)
     if args.dry_run:
         return print_json(dry_run_payload("collect-diagnostics", plan, {"remote_tmp": "/tmp"}))
@@ -434,7 +434,9 @@ def remote_python_script(root: str, body: str, extra_env: dict[str, str] | None 
 
 REMOTE_COMMON_PY = r'''
 import datetime as dt
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -500,13 +502,46 @@ def env_map():
         values[key] = value.strip().strip("\"'")
     return values
 
-def api_json(path):
+def b64url(data):
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+def jwt_secret():
+    config_path = ROOT / ".docker" / "research" / "config" / "dashboard.toml"
+    if not config_path.exists():
+        raise RuntimeError("dashboard.toml is missing")
+    for line in config_path.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("jwt_secret") and "=" in line:
+            return line.split("=", 1)[1].strip().strip("\"'")
+    raise RuntimeError("jwt_secret is missing")
+
+def token_from_db(env):
+    username = env.get("ADMIN_USER")
+    if not username:
+        raise RuntimeError("ADMIN_USER is missing")
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute("SELECT id, role FROM users WHERE username = ? LIMIT 1", (username,)).fetchone()
+    if row is None:
+        raise RuntimeError("admin user is missing")
+    now = int(time.time())
+    header = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    payload = b64url(json.dumps({"sub": row[0], "role": row[1], "iat": now, "exp": now + 600}, separators=(",", ":")).encode())
+    signing_input = f"{header}.{payload}"
+    signature = hmac.new(jwt_secret().encode(), signing_input.encode(), hashlib.sha256).digest()
+    return f"{signing_input}.{b64url(signature)}"
+
+def auth_token(env):
     try:
-        env = env_map()
         body = json.dumps({"username": env["ADMIN_USER"], "password": env["ADMIN_PASSWORD"]}).encode()
         req = urllib.request.Request("http://localhost:3002/api/auth/login", data=body, headers={"content-type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as response:
-            token = json.loads(response.read())["token"]
+            return json.loads(response.read())["token"]
+    except Exception:
+        return token_from_db(env)
+
+def api_json(path):
+    try:
+        env = env_map()
+        token = auth_token(env)
         req = urllib.request.Request("http://localhost:3002" + path, headers={"authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=10) as response:
             return json.loads(response.read())
@@ -563,7 +598,7 @@ def summarize_queue(payload):
     if not isinstance(payload, dict) or "error" in payload:
         return payload
     summary = {}
-    for key in ("queue_counts", "attention_counts", "retention_totals", "disabled_host_impact", "generated_at_ms"):
+    for key in ("counts", "queue_counts", "attention_counts", "retention_totals", "disabled_host_impact", "generated_at_ms"):
         if key in payload:
             summary[key] = payload[key]
     counts = group_counts(payload)

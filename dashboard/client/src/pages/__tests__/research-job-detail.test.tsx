@@ -213,6 +213,22 @@ describe("ResearchJobDetailPage - clone flow", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/research/jobs/fixture-job-cloned");
   });
 
+  it("omits additional params JSON when cloned params are all known fields", async () => {
+    const user = userEvent.setup();
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+    await user.click(screen.getByRole("button", { name: /^clone$/i }));
+
+    expect(screen.getByRole("dialog", { name: /clone job/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/additional params json/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/unknown source params remain/i)).not.toBeInTheDocument();
+  });
+
   it("blocks clone submission when additional params JSON is invalid", async () => {
     const user = userEvent.setup();
     mockUseResearchJob.mockReturnValue({
@@ -306,7 +322,7 @@ describe("ResearchJobDetailPage - observer", () => {
 });
 
 describe("ResearchJobDetailPage - stale leases", () => {
-  it("shows clear stale lease guidance for expired running steps", () => {
+  it("shows clear stale lease guidance for overdue running steps", () => {
     mockUseResearchJob.mockReturnValue({
       data: fixtureJobRunning(),
       isLoading: false,
@@ -315,7 +331,118 @@ describe("ResearchJobDetailPage - stale leases", () => {
 
     render(<ResearchJobDetailPage />, { wrapper });
 
-    expect(screen.getByText(/clear stale lease before retrying/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/refresh overdue/i).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/confirm no worker command is still running/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/expired/i)).not.toBeInTheDocument();
+  });
+
+  it("shows fresh lease refresh timing without stale-looking relative text", () => {
+    const data = fixtureJobRunning();
+    const now = Date.now();
+    data.steps = data.steps.map((step, index) => ({
+      ...step,
+      status: index < 2 ? "completed" : index === 2 ? "running" : "queued",
+      started_at: index <= 2 ? now - 10_000 : null,
+      completed_at: index < 2 ? now - 5_000 : null,
+      lease_owner: index === 2 ? "fixture-worker" : null,
+      leased_until_ms: index === 2 ? now + 60_000 : null,
+    }));
+    mockUseResearchJob.mockReturnValue({
+      data,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    expect(screen.getByText(/refresh due in/i)).toBeInTheDocument();
+    expect(screen.queryByText(/refresh overdue/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/until 0s ago/i)).not.toBeInTheDocument();
+  });
+
+  it("does not reuse previous step command output for the active running step", () => {
+    const data = fixtureJobRunning();
+    data.steps[0] = {
+      ...data.steps[0],
+      status: "completed",
+      output_json: JSON.stringify({
+        command_output: {
+          status_code: 0,
+          stdout: "previous replay stdout",
+          stderr: "",
+        },
+      }),
+      completed_at: data.steps[0].started_at,
+      lease_owner: null,
+      leased_until_ms: null,
+    };
+    data.steps[1] = {
+      ...data.steps[1],
+      status: "completed",
+      output_json: JSON.stringify({ fixture_step: "validate_replay_data" }),
+      completed_at: data.steps[0].started_at,
+      lease_owner: null,
+      leased_until_ms: null,
+    };
+    data.steps[2] = {
+      ...data.steps[2],
+      status: "running",
+      lease_owner: "fixture-worker",
+      leased_until_ms: 1,
+      started_at: data.steps[0].started_at,
+    };
+    data.events = [
+      {
+        id: "previous-step-output",
+        job_id: data.job.id,
+        step_id: data.steps[1].id,
+        timestamp_ms: 2,
+        level: "info",
+        message: "local command worker completed step",
+        details_json: JSON.stringify({
+          command: {
+            program: "buba-paint",
+            args: ["validate-replay-data"],
+            cwd: "/",
+          },
+          command_output: {
+            status_code: 0,
+            stdout: "previous replay stdout",
+            stderr: "",
+            success: true,
+            cancelled: false,
+          },
+        }),
+      },
+      {
+        id: "active-step-started",
+        job_id: data.job.id,
+        step_id: data.steps[2].id,
+        timestamp_ms: 3,
+        level: "info",
+        message: "research command started",
+        details_json: JSON.stringify({
+          program: "buba-paint",
+          args: ["validate-backtest-input"],
+          cwd: "/",
+        }),
+      },
+    ];
+    mockUseResearchJob.mockReturnValue({
+      data,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    expect(screen.getAllByText(/validate-backtest-input/i).length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.getAllByText(/no output recorded/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/previous replay stdout/i)).not.toBeInTheDocument();
   });
 });
 

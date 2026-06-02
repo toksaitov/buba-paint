@@ -243,6 +243,13 @@ function jobTypeName(type: JobType): string {
   return "Backtest";
 }
 
+function intervalSourceLabel(source: IntervalSource): string {
+  if (source === "explicit input") return "typed value";
+  if (source === "artifact fallback") return "artifact interval";
+  if (source === "invalid") return "invalid input";
+  return "missing";
+}
+
 export function JobCreateForm({
   artifacts,
   initialType = "current_params",
@@ -722,6 +729,7 @@ function BacktestFields({
   const endInputRef = useRef<HTMLInputElement | null>(null);
   const sourceLabel = [interval.start.source, interval.end.source]
     .filter((value, index, values) => values.indexOf(value) === index)
+    .map(intervalSourceLabel)
     .join(", ");
   const resetIntervalConfirmation = (next: BacktestState): BacktestState => ({
     ...next,
@@ -783,7 +791,7 @@ function BacktestFields({
         )}
       </FormField>
       <div className="grid gap-3 sm:grid-cols-2">
-        <FormField label="Start" hint="Falls back to artifact interval">
+        <FormField label="Start" hint="Leave blank to use artifact interval">
           {({ id }) => (
             <Input
               ref={startInputRef}
@@ -809,7 +817,7 @@ function BacktestFields({
             />
           )}
         </FormField>
-        <FormField label="End" hint="Falls back to artifact interval">
+        <FormField label="End" hint="Leave blank to use artifact interval">
           {({ id }) => (
             <Input
               ref={endInputRef}
@@ -859,12 +867,28 @@ function BacktestFields({
               <dt className="text-muted">Source</dt>
               <dd>{sourceLabel}</dd>
             </div>
+            <div>
+              <dt className="text-muted">Start source</dt>
+              <dd>{intervalSourceLabel(interval.start.source)}</dd>
+            </div>
+            <div>
+              <dt className="text-muted">End source</dt>
+              <dd>{intervalSourceLabel(interval.end.source)}</dd>
+            </div>
           </dl>
         ) : (
           <p className="mt-1 text-accent-red">
             {interval.reason ?? "Select an artifact or provide explicit bounds."}
           </p>
         )}
+        {artifact &&
+          interval.start.source === "artifact fallback" &&
+          interval.end.source === "artifact fallback" && (
+            <p className="mt-2 text-[11px] text-muted">
+              Start and End are blank, so this job will use the artifact
+              interval.
+            </p>
+          )}
         {artifact && interval.requiresConfirmation && (
           <label className="mt-3 flex items-start gap-2">
             <input

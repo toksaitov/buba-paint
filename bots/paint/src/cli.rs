@@ -320,6 +320,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("output_bytes={}", report.output_bytes);
             println!("generic_feed_rows={}", report.generic_feed_rows);
             println!("compact_clob_rows={}", report.compact_clob_rows);
+            println!("source_signal_rows={}", report.source_signal_rows);
+            println!("source_trade_rows={}", report.source_trade_rows);
+            println!(
+                "source_trade_result_rows={}",
+                report.source_trade_result_rows
+            );
             println!("backtest_input={}", report.readiness.class.as_str());
             println!(
                 "replay_quality={}",

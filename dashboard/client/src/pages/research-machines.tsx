@@ -195,14 +195,14 @@ function ResearchHostRow({
             {state.worker_id} / {humanize(state.worker_status)}
           </span>
         ) : (
-          "—"
+          "-"
         )}
       </td>
       <td className="px-2 py-1.5 text-muted tabular-nums">
-        {dependencyTotal == null ? "—" : dependencyTotal}
+        {dependencyTotal == null ? "-" : dependencyTotal}
       </td>
       <td className="px-2 py-1.5 text-muted">
-        {state ? <RelativeTime epochMs={state.last_heartbeat_ms} /> : "—"}
+        {state ? <RelativeTime epochMs={state.last_heartbeat_ms} /> : "-"}
       </td>
     </tr>
   );

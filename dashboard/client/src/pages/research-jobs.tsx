@@ -284,7 +284,7 @@ export function ResearchJobsPage() {
           <StateEmpty
             message={
               (jobsData ?? []).length === 0
-                ? "No jobs yet — create an export, backtest, or sweep job."
+                ? "No jobs yet. Create an export, backtest, or sweep job."
                 : "No jobs match the selected filters."
             }
           />
@@ -333,7 +333,7 @@ export function ResearchJobsPage() {
                           {job.artifact_id}
                         </Link>
                       ) : (
-                        <span className="text-muted">—</span>
+                        <span className="text-muted">-</span>
                       )}
                     </td>
                     <td className="px-2 py-1.5">

@@ -51,6 +51,7 @@ import {
   reportTone,
 } from "../lib/research-permissions";
 import {
+  netPnlMetricLabel,
   parseReportPayload,
   parseReportSummary,
 } from "../lib/research-report-analysis";
@@ -167,6 +168,7 @@ export function ResearchReportDetailPage() {
     : null;
   const analysis = parsedPayload ?? parsedSummary;
   const metrics = analysis.metrics;
+  const sourceComparison = analysis.source_comparison;
   const equity = parsedPayload?.equity_curve ?? [];
   const drawdown = parsedPayload?.drawdown_curve ?? [];
   const sweep = parsedPayload?.sweep ?? null;
@@ -252,6 +254,21 @@ export function ResearchReportDetailPage() {
           enough to choose a better configuration.
         </Banner>
       )}
+      {sourceComparison?.status === "mismatch" && (
+        <Banner tone="warning" title="Backtest differs from source run">
+          Replay Net PnL is{" "}
+          {formatMetricUsd(sourceComparison.replay.net_pnl)}, source run Net PnL
+          is {formatMetricUsd(sourceComparison.source.net_pnl)}, and the delta
+          is {formatMetricUsd(sourceComparison.delta.net_pnl)}. The charts below
+          show replay output.
+        </Banner>
+      )}
+      {sweep?.ranked_by === "calibrated_pnl" && (
+        <Banner tone="info" title="Sweep uses calibrated ranking">
+          Rows are ranked by source-baseline bias-adjusted PnL. Raw replay PnL
+          remains available in the sweep table as `pnl`.
+        </Banner>
+      )}
 
       <SectionCard title="Provenance">
         <KeyValueList
@@ -278,55 +295,57 @@ export function ResearchReportDetailPage() {
                   {report.artifact_id}
                 </Link>
               ) : (
-                "—"
+                "-"
               ),
             },
             {
               label: "Job type",
               value: analysis.provenance.job_type
                 ? humanize(analysis.provenance.job_type)
-                : "—",
+                : "-",
             },
             {
               label: "Interval",
               value:
                 analysis.provenance.start && analysis.provenance.end
                   ? `${analysis.provenance.start} → ${analysis.provenance.end}`
-                  : "—",
+                  : "-",
             },
             {
               label: "Starting balance",
               value:
                 analysis.provenance.balance != null
                   ? formatSignedUsd(analysis.provenance.balance).replace("+", "")
-                  : "—",
+                  : "-",
             },
             {
               label: "Report path",
               value: report.report_path ? (
-                <span className="font-mono text-[11px]">
+                <span className="break-all font-mono text-[11px]">
                   {report.report_path}
                 </span>
               ) : (
-                "—"
+                "-"
               ),
             },
             {
               label: "CSV path",
               value: report.csv_path ? (
-                <span className="font-mono text-[11px]">{report.csv_path}</span>
+                <span className="break-all font-mono text-[11px]">
+                  {report.csv_path}
+                </span>
               ) : (
-                "—"
+                "-"
               ),
             },
             {
               label: "Worker image",
               value: analysis.provenance.research_worker_image_ref ? (
-                <span className="font-mono text-[11px]">
+                <span className="break-all font-mono text-[11px]">
                   {analysis.provenance.research_worker_image_ref}
                 </span>
               ) : (
-                "—"
+                "-"
               ),
             },
             {
@@ -348,7 +367,7 @@ export function ResearchReportDetailPage() {
       <SectionCard title="Summary metrics">
         <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
           <MetricCard
-            label="Net PnL"
+            label={netPnlMetricLabel(analysis)}
             value={formatMetricUsd(metrics.net_pnl)}
             tone={
               metrics.net_pnl == null
@@ -369,6 +388,30 @@ export function ResearchReportDetailPage() {
             label="Final balance"
             value={formatUsd(metrics.final_balance)}
           />
+          {sourceComparison && (
+            <>
+              <MetricCard
+                label="Source run Net PnL"
+                value={formatMetricUsd(sourceComparison.source.net_pnl)}
+                tone={
+                  sourceComparison.source.net_pnl == null
+                    ? "neutral"
+                    : sourceComparison.source.net_pnl >= 0
+                      ? "success"
+                      : "danger"
+                }
+              />
+              <MetricCard
+                label="Replay delta"
+                value={formatMetricUsd(sourceComparison.delta.net_pnl)}
+                tone={
+                  sourceComparison.status === "mismatch"
+                    ? "warning"
+                    : "neutral"
+                }
+              />
+            </>
+          )}
           <MetricCard
             label="Signals"
             value={formatInteger(metrics.signal_count)}
@@ -377,6 +420,68 @@ export function ResearchReportDetailPage() {
           <MetricCard label="Losses" value={formatInteger(metrics.losses)} />
         </div>
       </SectionCard>
+
+      {sourceComparison && (
+        <SectionCard title="Source run comparison">
+          <KeyValueList
+            columns={2}
+            items={[
+              {
+                label: "Status",
+                value: humanize(sourceComparison.status),
+              },
+              {
+                label: "Replay Net PnL",
+                value: formatMetricUsd(sourceComparison.replay.net_pnl),
+              },
+              {
+                label: "Source Net PnL",
+                value: formatMetricUsd(sourceComparison.source.net_pnl),
+              },
+              {
+                label: "Net PnL delta",
+                value: formatMetricUsd(sourceComparison.delta.net_pnl),
+              },
+              {
+                label: "Replay final balance",
+                value: formatUsd(sourceComparison.replay.final_balance),
+              },
+              {
+                label: "Source final balance",
+                value: formatUsd(sourceComparison.source.final_balance),
+              },
+              {
+                label: "Final balance delta",
+                value: formatMetricUsd(sourceComparison.delta.final_balance),
+              },
+              {
+                label: "Replay trades",
+                value: formatInteger(sourceComparison.replay.trade_count),
+              },
+              {
+                label: "Source trades",
+                value: formatInteger(sourceComparison.source.trade_count),
+              },
+              {
+                label: "Trade delta",
+                value: formatSignedInteger(sourceComparison.delta.trade_count),
+              },
+              {
+                label: "Replay signals",
+                value: formatInteger(sourceComparison.replay.signal_count),
+              },
+              {
+                label: "Source signals",
+                value: formatInteger(sourceComparison.source.signal_count),
+              },
+              {
+                label: "Signal delta",
+                value: formatSignedInteger(sourceComparison.delta.signal_count),
+              },
+            ]}
+          />
+        </SectionCard>
+      )}
 
       {rejectionReasons.length > 0 && (
         <SectionCard title="Top rejection reasons">
@@ -425,6 +530,7 @@ export function ResearchReportDetailPage() {
               data={drawdown}
               dataKey="drawdown"
               colors={colors}
+              zeroCeiling
             />
           </div>
         ) : (
@@ -433,7 +539,7 @@ export function ResearchReportDetailPage() {
       </SectionCard>
 
       {sweep && (
-        <SectionCard title="Sweep ranking">
+        <SectionCard title={`Sweep ranking by ${humanize(sweep.ranked_by)}`}>
           {sweep.rows.length === 0 ? (
             <StateEmpty message="No sweep rows are available." />
           ) : (
@@ -481,12 +587,12 @@ export function ResearchReportDetailPage() {
         title="Report JSON"
         toolbar={
           <Button size="sm" onClick={() => setShowJson((s) => !s)}>
-            {showJson ? "Hide raw" : "Show raw"}
+            {showJson ? "Hide JSON" : "Show JSON"}
           </Button>
         }
       >
         {!showJson ? (
-          <StateEmpty message="Raw JSON is hidden." />
+          <StateEmpty message="Report JSON is hidden." />
         ) : jsonQuery.isLoading ? (
           <Loading label="Loading report JSON" />
         ) : jsonQuery.isError ? (
@@ -502,7 +608,7 @@ export function ResearchReportDetailPage() {
         title="CSV"
         toolbar={
           <Button size="sm" onClick={() => setShowCsv((s) => !s)}>
-            {showCsv ? "Hide" : "Load CSV"}
+            {showCsv ? "Hide CSV" : "Load CSV"}
           </Button>
         }
       >
@@ -574,8 +680,9 @@ export function ResearchReportDetailPage() {
       <ConfirmDialog
         open={confirmDeleteRecordOpen}
         title="Delete report record"
-        description="Removes the report metadata. JSON and CSV files on disk are not touched."
+        description="Type the report ID to confirm. Removes the report metadata. JSON and CSV files on disk are not touched."
         confirmLabel="Delete record"
+        phrase={report.id}
         destructive
         pending={deleteRecordMutation.isPending}
         errorMessage={
@@ -611,19 +718,22 @@ function MetricLineChart({
   data,
   dataKey,
   colors,
+  zeroCeiling = false,
 }: {
   title: string;
   data: unknown[];
   dataKey: string;
   colors: ReturnType<typeof getChartColors>;
+  zeroCeiling?: boolean;
 }) {
+  const valueDomain = chartValueDomain(data, dataKey, { zeroCeiling });
   return (
     <div>
       <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">
         {title}
       </h3>
-      <div style={{ width: "100%", height: 220 }} className="mt-2">
-        <ResponsiveContainer>
+      <div className="mt-2 min-w-0">
+        <ResponsiveContainer width="100%" height={220} minWidth={280}>
           <LineChart data={data} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
             <CartesianGrid stroke={colors.gridColor} strokeDasharray="3 3" />
             <XAxis
@@ -633,7 +743,13 @@ function MetricLineChart({
               tick={{ fill: colors.textColor, fontSize: 10 }}
               tickFormatter={(value: number) => new Date(value).toLocaleTimeString()}
             />
-            <YAxis tick={{ fill: colors.textColor, fontSize: 10 }} width={64} />
+            <YAxis
+              dataKey={dataKey}
+              domain={valueDomain}
+              tick={{ fill: colors.textColor, fontSize: 10 }}
+              tickFormatter={formatChartAxisValue}
+              width={72}
+            />
             <Tooltip
               contentStyle={{
                 background: colors.tooltipBg,
@@ -641,6 +757,12 @@ function MetricLineChart({
                 color: colors.textColor,
                 fontSize: 11,
               }}
+              formatter={(value: unknown, name: unknown) => [
+                typeof value === "number"
+                  ? formatChartAxisValue(value)
+                  : String(value),
+                typeof name === "string" ? humanize(name) : String(name),
+              ]}
             />
             <Line
               type="monotone"
@@ -655,6 +777,37 @@ function MetricLineChart({
       </div>
     </div>
   );
+}
+
+function chartValueDomain(
+  data: unknown[],
+  dataKey: string,
+  options: { zeroCeiling?: boolean } = {},
+): [number, number] | undefined {
+  const values = data.flatMap((row) => {
+    if (typeof row !== "object" || row === null) return [];
+    const value = (row as Record<string, unknown>)[dataKey];
+    return typeof value === "number" && Number.isFinite(value) ? [value] : [];
+  });
+  if (values.length === 0) return undefined;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(max - min, Math.abs(max) * 0.02, 1);
+  const padding = span * 0.1;
+  if (options.zeroCeiling) {
+    return [min < 0 ? min - padding : -padding, 0];
+  }
+  return [min - padding, max + padding];
+}
+
+function formatChartAxisValue(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  if (abs >= 1000) return `${sign}$${Math.round(abs).toLocaleString()}`;
+  if (abs >= 100) return `${sign}$${abs.toFixed(0)}`;
+  if (abs >= 10) return `${sign}$${abs.toFixed(1)}`;
+  return `${sign}$${abs.toFixed(2)}`;
 }
 
 function formatMetricUsd(value: number | null | undefined): string {
@@ -673,4 +826,9 @@ function formatPercent(value: number | null | undefined): string {
 
 function formatInteger(value: number | null | undefined): string {
   return typeof value === "number" ? value.toLocaleString() : "n/a";
+}
+
+function formatSignedInteger(value: number | null | undefined): string {
+  if (typeof value !== "number") return "n/a";
+  return value > 0 ? `+${value.toLocaleString()}` : value.toLocaleString();
 }

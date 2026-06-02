@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { createElement } from "react";
 
@@ -31,11 +32,40 @@ vi.mock("recharts", () => ({
   Line: () => createElement("path", { "data-testid": "line" }),
   LineChart: ({ children }: { children: ReactNode }) =>
     createElement("div", { "data-testid": "line-chart" }, children),
-  ResponsiveContainer: ({ children }: { children: ReactNode }) =>
-    createElement("div", { "data-testid": "responsive" }, children),
+  ResponsiveContainer: ({
+    children,
+    width,
+    height,
+    minWidth,
+  }: {
+    children: ReactNode;
+    width?: string | number;
+    height?: string | number;
+    minWidth?: string | number;
+  }) =>
+    createElement(
+      "div",
+      {
+        "data-testid": "responsive",
+        "data-width": width,
+        "data-height": height,
+        "data-min-width": minWidth,
+      },
+      children,
+    ),
   Tooltip: () => createElement("div", { "data-testid": "tooltip" }),
   XAxis: () => createElement("div", { "data-testid": "x-axis" }),
-  YAxis: () => createElement("div", { "data-testid": "y-axis" }),
+  YAxis: (props: {
+    dataKey?: string;
+    domain?: [number, number];
+    tickFormatter?: (value: number) => string;
+  }) =>
+    createElement("div", {
+      "data-testid": "y-axis",
+      "data-key": props.dataKey ?? "",
+      "data-domain": props.domain?.join(",") ?? "",
+      "data-sample": props.tickFormatter?.(136.699998) ?? "",
+    }),
 }));
 
 vi.mock("../../components/common/loading", () => ({
@@ -107,6 +137,28 @@ describe("ResearchReportDetailPage - missing file", () => {
     ).toBeInTheDocument();
   });
 
+  it("requires the report id before deleting the metadata record", async () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: /delete record/i }));
+
+    const dialog = screen.getByRole("dialog", {
+      name: /delete report record/i,
+    });
+    expect(dialog).toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", {
+      name: "Delete record",
+    });
+    expect(confirm).toBeDisabled();
+
+    await userEvent.type(
+      screen.getByLabelText(/type "fixture-report-missing-file" to confirm/i),
+      "fixture-report-missing-file",
+    );
+
+    expect(confirm).not.toBeDisabled();
+  });
+
   it("observer sees mutate buttons disabled", () => {
     useAuthStore.setState({
       token: "tok",
@@ -122,6 +174,28 @@ describe("ResearchReportDetailPage - missing file", () => {
     expect(
       screen.getByText(/notes\/tags: unsupported/i),
     ).toBeInTheDocument();
+  });
+
+  it("uses explicit JSON and CSV toggle labels", async () => {
+    mockUseJson.mockReturnValue({
+      isLoading: false,
+      data: { schema_version: 2, metrics: { net_pnl: 1 } },
+      isError: false,
+    } as ReturnType<typeof useResearchReportJson>);
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    expect(
+      screen.getByRole("button", { name: "Show JSON" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Report JSON is hidden.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load CSV" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /show raw/i }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Show JSON" }));
+
+    expect(screen.getByRole("button", { name: "Hide JSON" })).toBeInTheDocument();
   });
 
   it("renders schema v2 metrics, charts, and rejection diagnostics", () => {
@@ -143,6 +217,27 @@ describe("ResearchReportDetailPage - missing file", () => {
           win_rate: 0.5,
           trade_count: 2,
           signal_count: 4,
+        },
+        source_comparison: {
+          status: "mismatch",
+          source: {
+            net_pnl: 10,
+            final_balance: 210,
+            trade_count: 2,
+            signal_count: 3,
+          },
+          replay: {
+            net_pnl: 12.5,
+            final_balance: 212.5,
+            trade_count: 2,
+            signal_count: 4,
+          },
+          delta: {
+            net_pnl: 2.5,
+            final_balance: 2.5,
+            trade_count: 0,
+            signal_count: 1,
+          },
         },
         diagnostics: [],
       }),
@@ -167,6 +262,27 @@ describe("ResearchReportDetailPage - missing file", () => {
           max_drawdown: -2,
           win_rate: 0.5,
           trade_count: 2,
+        },
+        source_comparison: {
+          status: "mismatch",
+          source: {
+            net_pnl: 10,
+            final_balance: 210,
+            trade_count: 2,
+            signal_count: 3,
+          },
+          replay: {
+            net_pnl: 12.5,
+            final_balance: 212.5,
+            trade_count: 2,
+            signal_count: 4,
+          },
+          delta: {
+            net_pnl: 2.5,
+            final_balance: 2.5,
+            trade_count: 0,
+            signal_count: 1,
+          },
         },
         equity_curve: [
           { ts: 1, equity: 200 },
@@ -194,10 +310,27 @@ describe("ResearchReportDetailPage - missing file", () => {
 
     render(<ResearchReportDetailPage />, { wrapper });
 
-    expect(screen.getByText(/net pnl/i)).toBeInTheDocument();
-    expect(screen.getByText(/\+\$12\.50/)).toBeInTheDocument();
+    expect(screen.getAllByText(/replay net pnl/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/source run net pnl/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/replay delta/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/\+\$12\.50/).length).toBeGreaterThan(0);
     expect(screen.getByText(/equity curve/i)).toBeInTheDocument();
     expect(screen.getByText(/top rejection reasons/i)).toBeInTheDocument();
     expect(screen.getByText(/window_too_late/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/backtest differs from source run/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/source run comparison/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/\+\$2\.50/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/\+1/)).toBeInTheDocument();
+    const axes = screen.getAllByTestId("y-axis");
+    expect(axes[0]).toHaveAttribute("data-key", "equity");
+    expect(axes[0]).toHaveAttribute("data-domain", "198.75,213.75");
+    expect(axes[0]).toHaveAttribute("data-sample", "$137");
+    expect(axes[1]).toHaveAttribute("data-key", "drawdown");
+    expect(axes[1]).toHaveAttribute("data-domain", "-0.1,0");
+    const containers = screen.getAllByTestId("responsive");
+    expect(containers[0]).toHaveAttribute("data-height", "220");
+    expect(containers[0]).toHaveAttribute("data-min-width", "280");
   });
 });

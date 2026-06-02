@@ -24,7 +24,7 @@ fn build_query(params: &HashMap<String, String>) -> Option<String> {
     Some(qs)
 }
 
-/// `GET /api/bots` — list configured agents.
+/// `GET /api/bots` - list configured agents.
 #[allow(clippy::unused_async)]
 pub async fn list_bots(State(state): State<AppState>) -> impl IntoResponse {
     let bots: Vec<serde_json::Value> = state

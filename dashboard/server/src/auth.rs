@@ -78,7 +78,7 @@ pub struct AuthState {
     pub db: Arc<DashboardDb>,
 }
 
-/// `JWT` auth middleware — extracts and validates the Bearer token.
+/// `JWT` auth middleware - extracts and validates the Bearer token.
 /// Stores `Claims` in request extensions on success.
 pub async fn require_auth(mut request: Request, next: Next) -> Result<Response, StatusCode> {
     let path = request.uri().path();

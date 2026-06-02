@@ -6,12 +6,92 @@ use anyhow::Context;
 use rayon::prelude::*;
 
 use crate::backtest::runner::{BacktestOptions, BacktestResult, TickSource};
-use crate::backtest::tick_replay::TickReplay;
+use crate::backtest::tick_replay::{SharedTicks, TickReplay};
 use crate::config::{Config, parse_boolish};
+use crate::db::source_run_metrics::SourceRunMetrics;
 
 pub struct SweepDimension {
     pub param: String,
     pub values: Vec<f64>,
+}
+
+/// Source-run calibration used to bias-adjust sweep PnL.
+#[derive(Debug, Clone)]
+pub(crate) struct SweepCalibration {
+    source_baseline_pnl: f64,
+    baseline_replay_pnl: f64,
+    source_baseline_trades: u64,
+    baseline_replay_trades: u64,
+    source_baseline_signals: u64,
+    baseline_replay_signals: u64,
+    starting_balance: f64,
+    confidence: &'static str,
+}
+
+impl SweepCalibration {
+    /// Build calibration from one source run and one replay baseline.
+    #[must_use]
+    pub(crate) fn from_source_and_replay(
+        source: SourceRunMetrics,
+        replay: &BacktestResult,
+        starting_balance: f64,
+    ) -> Self {
+        let source_baseline_pnl = source.net_pnl.unwrap_or(0.0);
+        let source_baseline_trades = source.trade_count.unwrap_or(0);
+        let source_baseline_signals = source.signal_count.unwrap_or(0);
+        let baseline_replay_trades = replay.trades;
+        let baseline_replay_signals = replay.signals;
+        let baseline_replay_pnl = replay.total_pnl;
+        let pnl_delta = baseline_replay_pnl - source_baseline_pnl;
+        let trade_delta = i64::try_from(baseline_replay_trades).unwrap_or(i64::MAX)
+            - i64::try_from(source_baseline_trades).unwrap_or(i64::MAX);
+        let signal_delta = i64::try_from(baseline_replay_signals).unwrap_or(i64::MAX)
+            - i64::try_from(source_baseline_signals).unwrap_or(i64::MAX);
+        let confidence =
+            calibration_confidence(starting_balance, pnl_delta, trade_delta, signal_delta);
+        Self {
+            source_baseline_pnl,
+            baseline_replay_pnl,
+            source_baseline_trades,
+            baseline_replay_trades,
+            source_baseline_signals,
+            baseline_replay_signals,
+            starting_balance,
+            confidence,
+        }
+    }
+
+    /// Return replay minus source PnL for the baseline current-params replay.
+    #[must_use]
+    pub(crate) fn baseline_delta_pnl(&self) -> f64 {
+        self.baseline_replay_pnl - self.source_baseline_pnl
+    }
+
+    /// Return replay minus source trade count for the baseline replay.
+    #[must_use]
+    pub(crate) fn baseline_trade_delta(&self) -> i64 {
+        i64::try_from(self.baseline_replay_trades).unwrap_or(i64::MAX)
+            - i64::try_from(self.source_baseline_trades).unwrap_or(i64::MAX)
+    }
+
+    /// Return replay minus source signal count for the baseline replay.
+    #[must_use]
+    pub(crate) fn baseline_signal_delta(&self) -> i64 {
+        i64::try_from(self.baseline_replay_signals).unwrap_or(i64::MAX)
+            - i64::try_from(self.source_baseline_signals).unwrap_or(i64::MAX)
+    }
+
+    /// Return one sweep row's baseline bias-adjusted PnL.
+    #[must_use]
+    pub(crate) fn calibrated_pnl(&self, replay_pnl: f64) -> f64 {
+        replay_pnl - self.baseline_delta_pnl()
+    }
+
+    /// Return one sweep row's baseline bias-adjusted final balance.
+    #[must_use]
+    pub(crate) fn calibrated_final_balance(&self, replay_pnl: f64) -> f64 {
+        self.starting_balance + self.calibrated_pnl(replay_pnl)
+    }
 }
 
 /// Runs sweep.
@@ -57,6 +137,15 @@ pub fn run_sweep(
     println!("Loaded {} ticks.\n", cached_ticks.len());
 
     let cached_ticks = Arc::new(cached_ticks);
+    let calibration = build_sweep_calibration(
+        data_path,
+        start_time,
+        end_time,
+        starting_balance,
+        Arc::clone(&cached_ticks),
+        fixed_overrides,
+        base_config,
+    )?;
 
     let combinations = cartesian(dimensions);
     let total_runs = combinations.len();
@@ -83,19 +172,7 @@ pub fn run_sweep(
             for (param, value) in combo {
                 config.set_param(param, *value);
             }
-            for (param, value_str) in fixed_overrides {
-                if let Ok(num) = value_str.parse::<f64>() {
-                    config.set_param(param, num);
-                } else if let Some(value) = parse_boolish(value_str) {
-                    if !config.set_bool_param(param, value) {
-                        eprintln!(
-                            "Boolean --set value ignored for non-boolean param: {param}={value_str}"
-                        );
-                    }
-                } else {
-                    eprintln!("Unsupported --set value ignored: {param}={value_str}");
-                }
-            }
+            apply_fixed_overrides(&mut config, fixed_overrides);
 
             let results_db_path = ":memory:".to_string();
 
@@ -202,7 +279,7 @@ pub fn run_sweep(
             .with_context(|| format!("creating output directory: {}", parent.display()))?;
     }
 
-    let csv = build_csv(&dim_names, &results);
+    let csv = build_csv_with_calibration(&dim_names, &results, calibration.as_ref());
 
     fs::write(output_path, &csv).with_context(|| format!("writing CSV to {output_path}"))?;
 
@@ -210,20 +287,30 @@ pub fn run_sweep(
     println!("\nSweep complete: {total_runs} runs in {total_elapsed:.1}s");
     println!("Results: {output_path}");
 
-    let top = top_n_by_pnl(&results, 5);
+    let top = top_n_by_calibrated_pnl(&results, calibration.as_ref(), 5);
 
-    println!("\nTop 5 by PnL:");
+    println!(
+        "\nTop 5 by {}:",
+        if calibration.is_some() {
+            "calibrated PnL"
+        } else {
+            "PnL"
+        }
+    );
     for (i, &(combo, r)) in top.iter().enumerate() {
         let params: String = combo
             .iter()
             .map(|(p, v)| format!("{p}={v}"))
             .collect::<Vec<_>>()
             .join(" ");
+        let displayed_pnl = calibration
+            .as_ref()
+            .map_or(r.total_pnl, |value| value.calibrated_pnl(r.total_pnl));
         println!(
             "  {}. {} -> PnL=${:.0} WR={:.1}% DD={:.1}%",
             i + 1,
             params,
-            r.total_pnl,
+            displayed_pnl,
             r.win_rate * 100.0,
             r.max_drawdown_pct * 100.0,
         );
@@ -232,13 +319,103 @@ pub fn run_sweep(
     Ok(())
 }
 
+/// Build sweep calibration from source-run metrics and a current-params replay.
+fn build_sweep_calibration(
+    data_path: &str,
+    start_time: u64,
+    end_time: u64,
+    starting_balance: f64,
+    cached_ticks: SharedTicks,
+    fixed_overrides: &[(String, String)],
+    base_config: &Config,
+) -> anyhow::Result<Option<SweepCalibration>> {
+    let Some(source) = crate::db::source_run_metrics::read_source_run_metrics(
+        data_path,
+        start_time,
+        end_time,
+        starting_balance,
+    )?
+    else {
+        return Ok(None);
+    };
+    println!("Calibrating sweep against source-run current params baseline...");
+    let mut config = base_config.clone();
+    config.starting_balance = starting_balance;
+    config.log_level = "error".to_string();
+    apply_fixed_overrides(&mut config, fixed_overrides);
+    config.validate()?;
+    let replay = crate::backtest::runner::run_backtest(BacktestOptions {
+        tick_source: TickSource::Cached(cached_ticks),
+        data_db_path: data_path.to_string(),
+        results_db_path: ":memory:".to_string(),
+        start_time,
+        end_time,
+        starting_balance,
+        quiet: true,
+        config,
+    })?;
+    let calibration = SweepCalibration::from_source_and_replay(source, &replay, starting_balance);
+    println!(
+        "Calibration: source_pnl={:.4} baseline_replay_pnl={:.4} delta={:.4} confidence={}",
+        calibration.source_baseline_pnl,
+        calibration.baseline_replay_pnl,
+        calibration.baseline_delta_pnl(),
+        calibration.confidence,
+    );
+    Ok(Some(calibration))
+}
+
+/// Apply fixed CLI overrides to one sweep config.
+fn apply_fixed_overrides(config: &mut Config, fixed_overrides: &[(String, String)]) {
+    for (param, value_str) in fixed_overrides {
+        if let Ok(num) = value_str.parse::<f64>() {
+            config.set_param(param, num);
+        } else if let Some(value) = parse_boolish(value_str) {
+            if !config.set_bool_param(param, value) {
+                eprintln!("Boolean --set value ignored for non-boolean param: {param}={value_str}");
+            }
+        } else {
+            eprintln!("Unsupported --set value ignored: {param}={value_str}");
+        }
+    }
+}
+
+/// Classify how much source/replay baseline mismatch affects sweep confidence.
+fn calibration_confidence(
+    starting_balance: f64,
+    pnl_delta: f64,
+    trade_delta: i64,
+    signal_delta: i64,
+) -> &'static str {
+    if pnl_delta.abs() <= 0.01 && trade_delta == 0 && signal_delta == 0 {
+        "high"
+    } else if pnl_delta.abs() <= (starting_balance.abs() * 0.10).max(1.0)
+        && trade_delta.abs() <= 2
+        && signal_delta.abs() <= 2
+    {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
 /// Build the CSV string from sweep results.
 ///
 /// Each row contains the parameter values followed by aggregate `PnL`, fill,
 /// replay-fidelity, and timing metrics used by sweep analysis.
+#[cfg(test)]
 pub(crate) fn build_csv(
     dim_names: &[String],
     results: &[(Vec<(&str, f64)>, BacktestResult)],
+) -> String {
+    build_csv_with_calibration(dim_names, results, None)
+}
+
+/// Build the CSV string from sweep results with optional source-run calibration.
+pub(crate) fn build_csv_with_calibration(
+    dim_names: &[String],
+    results: &[(Vec<(&str, f64)>, BacktestResult)],
+    calibration: Option<&SweepCalibration>,
 ) -> String {
     let mut csv = String::new();
 
@@ -287,6 +464,22 @@ pub(crate) fn build_csv(
         "pnl_net".to_string(),
         "elapsed_s".to_string(),
     ]);
+    if calibration.is_some() {
+        headers.extend([
+            "calibrated_pnl".to_string(),
+            "calibrated_final_balance".to_string(),
+            "baseline_replay_delta_pnl".to_string(),
+            "source_baseline_pnl".to_string(),
+            "baseline_replay_pnl".to_string(),
+            "calibration_confidence".to_string(),
+            "source_baseline_trades".to_string(),
+            "baseline_replay_trades".to_string(),
+            "baseline_trade_delta".to_string(),
+            "source_baseline_signals".to_string(),
+            "baseline_replay_signals".to_string(),
+            "baseline_signal_delta".to_string(),
+        ]);
+    }
     csv.push_str(&headers.join(","));
     csv.push('\n');
 
@@ -334,11 +527,48 @@ pub(crate) fn build_csv(
         row.push(format!("{}", r.gross_pnl));
         row.push(format!("{}", r.pnl_net));
         row.push(format!("{}", r.elapsed_seconds));
+        if let Some(calibration) = calibration {
+            row.push(format!("{}", calibration.calibrated_pnl(r.total_pnl)));
+            row.push(format!(
+                "{}",
+                calibration.calibrated_final_balance(r.total_pnl)
+            ));
+            row.push(format!("{}", calibration.baseline_delta_pnl()));
+            row.push(format!("{}", calibration.source_baseline_pnl));
+            row.push(format!("{}", calibration.baseline_replay_pnl));
+            row.push(calibration.confidence.to_string());
+            row.push(format!("{}", calibration.source_baseline_trades));
+            row.push(format!("{}", calibration.baseline_replay_trades));
+            row.push(format!("{}", calibration.baseline_trade_delta()));
+            row.push(format!("{}", calibration.source_baseline_signals));
+            row.push(format!("{}", calibration.baseline_replay_signals));
+            row.push(format!("{}", calibration.baseline_signal_delta()));
+        }
         csv.push_str(&row.join(","));
         csv.push('\n');
     }
 
     csv
+}
+
+/// Return the top `n` results sorted by calibrated PnL when available.
+pub(crate) fn top_n_by_calibrated_pnl<'a>(
+    results: &'a [(Vec<(&'a str, f64)>, BacktestResult)],
+    calibration: Option<&SweepCalibration>,
+    n: usize,
+) -> Vec<&'a (Vec<(&'a str, f64)>, BacktestResult)> {
+    let Some(calibration) = calibration else {
+        return top_n_by_pnl(results, n);
+    };
+    let mut sorted: Vec<_> = results.iter().collect();
+    sorted.sort_by(|a, b| {
+        calibration
+            .calibrated_pnl(b.1.total_pnl)
+            .partial_cmp(&calibration.calibrated_pnl(a.1.total_pnl))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    sorted.truncate(n);
+    sorted
 }
 
 /// Return the top `n` results sorted by descending `PnL`.
@@ -382,8 +612,8 @@ pub(crate) fn cartesian(dims: &[SweepDimension]) -> Vec<Vec<(String, f64)>> {
 /// Parse a sweep specification string into a `SweepDimension`.
 ///
 /// Formats:
-/// - `PARAM=start:end:step` — range
-/// - `PARAM=val1,val2,val3`  — explicit list
+/// - `PARAM=start:end:step` - range
+/// - `PARAM=val1,val2,val3`  - explicit list
 pub fn parse_sweep_spec(spec: &str) -> anyhow::Result<SweepDimension> {
     let eq_idx = spec.find('=').ok_or_else(|| {
         anyhow::anyhow!("invalid sweep format: {spec} (expected PARAM=start:end:step)")

@@ -70,7 +70,7 @@ export function MachineTimeline({
       style={{ width: "100%", height }}
       className="text-[10px]"
     >
-      <ResponsiveContainer>
+      <ResponsiveContainer width="100%" height={height} minWidth={280}>
         <ComposedChart
           data={merged}
           margin={{ top: 4, right: 8, bottom: 4, left: 0 }}

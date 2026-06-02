@@ -277,6 +277,42 @@ fn build_csv_single_result_correct_row() {
     assert_eq!(cols[5], "1");
 }
 
+/// Verifies that calibrated CSV includes source baseline columns.
+#[test]
+fn build_csv_with_calibration_appends_bias_adjusted_metrics() {
+    let dim_names = vec!["PARAM_A".to_string()];
+    let results: Vec<(Vec<(&str, f64)>, BacktestResult)> =
+        vec![(vec![("PARAM_A", 0.5)], result_with_pnl(42.0))];
+    let calibration = SweepCalibration::from_source_and_replay(
+        crate::db::source_run_metrics::SourceRunMetrics {
+            net_pnl: Some(35.0),
+            total_fees: Some(0.0),
+            gross_pnl: Some(35.0),
+            final_balance: Some(135.0),
+            trade_count: Some(3),
+            signal_count: Some(5),
+        },
+        &result_with_pnl(45.0),
+        100.0,
+    );
+    let csv = build_csv_with_calibration(&dim_names, &results, Some(&calibration));
+
+    let lines: Vec<&str> = csv.lines().collect();
+    let header: Vec<&str> = lines[0].split(',').collect();
+    let row: Vec<&str> = lines[1].split(',').collect();
+    let calibrated_index = header
+        .iter()
+        .position(|column| *column == "calibrated_pnl")
+        .unwrap();
+    let confidence_index = header
+        .iter()
+        .position(|column| *column == "calibration_confidence")
+        .unwrap();
+
+    assert_eq!(row[calibrated_index], "32");
+    assert_eq!(row[confidence_index], "medium");
+}
+
 /// Verifies that build csv header matches expected columns.
 #[test]
 fn build_csv_header_matches_expected_columns() {
@@ -440,6 +476,33 @@ fn top_n_by_pnl_negative_pnl_sorted_correctly() {
     assert!((top[0].1.total_pnl - 5.0).abs() < f64::EPSILON);
     assert!((top[1].1.total_pnl - (-10.0)).abs() < f64::EPSILON);
     assert!((top[2].1.total_pnl - (-50.0)).abs() < f64::EPSILON);
+}
+
+/// Verifies that calibrated top results use bias-adjusted PnL.
+#[test]
+fn top_n_by_calibrated_pnl_uses_calibration_when_present() {
+    let results: Vec<(Vec<(&str, f64)>, BacktestResult)> = vec![
+        (vec![("P", 1.0)], result_with_pnl(20.0)),
+        (vec![("P", 2.0)], result_with_pnl(25.0)),
+    ];
+    let calibration = SweepCalibration::from_source_and_replay(
+        crate::db::source_run_metrics::SourceRunMetrics {
+            net_pnl: Some(10.0),
+            total_fees: Some(0.0),
+            gross_pnl: Some(10.0),
+            final_balance: Some(110.0),
+            trade_count: Some(3),
+            signal_count: Some(5),
+        },
+        &result_with_pnl(15.0),
+        100.0,
+    );
+
+    let top = top_n_by_calibrated_pnl(&results, Some(&calibration), 1);
+
+    assert_eq!(top.len(), 1);
+    assert!((top[0].0[0].1 - 2.0).abs() < f64::EPSILON);
+    assert!((calibration.calibrated_pnl(top[0].1.total_pnl) - 20.0).abs() < f64::EPSILON);
 }
 
 /// Verifies that parse sweep spec zero step.

@@ -588,7 +588,9 @@ async fn process_command_executor_terminates_cancelled_command() {
                 db: &db,
                 job_id: &job.id,
                 step_id: &step_id,
+                worker_id: "worker-a",
                 poll_interval: Duration::from_millis(50),
+                lease_duration_ms: 1_000,
             },
         ),
         async {

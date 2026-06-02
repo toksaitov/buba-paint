@@ -11,9 +11,19 @@ function RememberJobsList() {
   return <div>remembered</div>;
 }
 
+function RememberTransfersList() {
+  useRememberResearchListReturn("transfers", "/research/transfers");
+  return <div>remembered transfers</div>;
+}
+
 function JobsBackLink() {
   const returnTo = useResearchReturnTo("jobs", "/research/jobs");
   return <a href={returnTo}>Back to jobs</a>;
+}
+
+function TransfersBackLink() {
+  const returnTo = useResearchReturnTo("transfers", "/research/transfers");
+  return <a href={returnTo}>Back to transfers</a>;
 }
 
 function CurrentLocation() {
@@ -66,6 +76,40 @@ describe("research return links", () => {
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
         "/research/jobs?preset=completed&type=sweep",
+      ),
+    );
+  });
+
+  it("remembers and restores transfer filter query state", async () => {
+    const transferList =
+      "/research/transfers?status=queued%2Crunning%2Cretryable%2Cpaused%2Cfailed%2Ccancelled%2Ccompleted&sort=created_desc&q=live-readonly";
+
+    render(
+      <MemoryRouter initialEntries={[transferList]}>
+        <RememberTransfersList />
+      </MemoryRouter>,
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/research/transfers/transfer-1"]}>
+        <TransfersBackLink />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: /back to transfers/i }),
+    ).toHaveAttribute("href", transferList);
+
+    render(
+      <MemoryRouter initialEntries={["/research/transfers"]}>
+        <RememberTransfersList />
+        <CurrentLocation />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("location").at(-1)).toHaveTextContent(
+        transferList,
       ),
     );
   });

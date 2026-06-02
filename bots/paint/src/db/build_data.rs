@@ -1163,7 +1163,7 @@ fn compute_data_quality(conn: &Connection) -> anyhow::Result<()> {
     )?;
 
     let (Some(tmin), Some(tmax)) = range else {
-        log("  No tick data — skipping quality computation");
+        log("  No tick data - skipping quality computation");
         return Ok(());
     };
 

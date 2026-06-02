@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { createElement } from "react";
@@ -55,7 +55,10 @@ vi.mock("../../components/common/loading", () => ({
 }));
 
 import { ResearchArtifactDetailPage } from "../research-artifact-detail";
-import { useResearchArtifact } from "../../hooks/use-research-artifacts";
+import {
+  useResearchArtifact,
+  useResearchArtifactChecksums,
+} from "../../hooks/use-research-artifacts";
 import { useResearchMachines } from "../../hooks/use-research-machines";
 import { verifyResearchArtifact } from "../../lib/research-api";
 import { useAuthStore } from "../../stores/auth-store";
@@ -66,6 +69,7 @@ import {
 } from "../../lib/research-fixtures";
 
 const mockUseArtifact = vi.mocked(useResearchArtifact);
+const mockUseChecksums = vi.mocked(useResearchArtifactChecksums);
 const mockUseMachines = vi.mocked(useResearchMachines);
 const mockVerify = vi.mocked(verifyResearchArtifact);
 
@@ -88,6 +92,10 @@ beforeEach(() => {
   mockUseMachines.mockReturnValue({
     data: { machines: [fixtureMachineLive(), fixtureMachineResearch()] },
   } as ReturnType<typeof useResearchMachines>);
+  mockUseChecksums.mockReturnValue({
+    isLoading: false,
+    data: null,
+  } as ReturnType<typeof useResearchArtifactChecksums>);
 });
 
 describe("ResearchArtifactDetailPage - bad checksum", () => {
@@ -123,11 +131,50 @@ describe("ResearchArtifactDetailPage - bad checksum", () => {
     ).toBeInTheDocument();
   });
 
+  it("requires the artifact id before deleting the metadata record", async () => {
+    render(<ResearchArtifactDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: /delete record/i }));
+
+    const dialog = screen.getByRole("dialog", {
+      name: /delete artifact record/i,
+    });
+    expect(dialog).toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", {
+      name: "Delete record",
+    });
+    expect(confirm).toBeDisabled();
+
+    await userEvent.type(
+      screen.getByLabelText(/type "fixture-artifact-bad-checksum" to confirm/i),
+      "fixture-artifact-bad-checksum",
+    );
+
+    expect(confirm).not.toBeDisabled();
+  });
+
   it("renders the manifest 'Load manifest' button gate (no preload)", () => {
     render(<ResearchArtifactDetailPage />, { wrapper });
     expect(
       screen.getByRole("button", { name: /load manifest/i }),
     ).toBeInTheDocument();
+  });
+
+  it("uses explicit checksum file labels before and after loading", async () => {
+    mockUseChecksums.mockReturnValue({
+      isLoading: false,
+      data: "abc123  remote-runtime/paint.db",
+    } as ReturnType<typeof useResearchArtifactChecksums>);
+    render(<ResearchArtifactDetailPage />, { wrapper });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /load checksums\.sha256/i }),
+    );
+
+    expect(
+      screen.getByRole("button", { name: /hide checksums\.sha256/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/abc123/)).toBeInTheDocument();
   });
 
   it("renders the 'Labels/notes: unsupported' explicit placeholder", () => {

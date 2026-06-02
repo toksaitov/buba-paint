@@ -13,8 +13,8 @@ services:
         source: ${BUBA_RESEARCH_WORK_DIR:-./.docker/research/work}
         target: /research
       - type: bind
-        source: ${BUBA_DASHBOARD_CONFIG:-./ops/research/dashboard.local.toml}
-        target: /config/dashboard.toml
+        source: ${BUBA_DASHBOARD_CONFIG_DIR:-./.docker/research/config}
+        target: /config
         read_only: true
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}

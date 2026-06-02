@@ -463,7 +463,7 @@ struct WindowDef {
 
 /// Create a fixture data DB with multiple 5-minute market windows.
 ///
-/// * `windows` — list of `WindowDef` structs.
+/// * `windows` - list of `WindowDef` structs.
 /// * Between windows, ticks with the given `base_price` are generated.
 /// * During each window, price rises or falls according to `momentum_up`.
 /// * `CLOB` book: `up_ask`=0.45, `down_ask`=0.50 (latency-arb friendly).

@@ -111,7 +111,7 @@ cargo run -p buba-paint --release -- validate-live-fidelity \
   --output /tmp/live-fidelity.json
 ```
 
-`prepare-backtest-input` opens the source DB read-only, copies the selected interval, preserves CLOB blocks, creates offline replay indexes, runs replay and backtest-input validation, and writes a manifest. Large sweeps should use the prepared DB rather than the append-optimized runtime DB.
+`prepare-backtest-input` opens the source DB read-only, copies the selected interval, preserves CLOB blocks, keeps source audit rows for `signals`, `signal_metrics`, `simulated_trades`, `trade_results`, and `balance_log`, creates offline replay indexes, runs replay and backtest-input validation, and writes a manifest. Large sweeps should use the prepared DB rather than the append-optimized runtime DB.
 
 ## Runtime Metadata
 
@@ -135,6 +135,10 @@ The backtester replays typed feed events at recorded receive time. When microsec
 Live-runtime DBs may not store derived `open_price` and `close_price` columns. The backtester derives missing open price from the first Binance `aggTrade` inside a market window and missing close price from the last Binance `aggTrade` before close when needed for reporting. Settled outcomes still come from `markets.outcome`; missing outcomes fail validation instead of being guessed.
 
 When replay-grade rows are absent, the backtester can fall back to legacy `tick_data` snapshots. That path is lower fidelity and must not be used as evidence for latency-sensitive parameter selection.
+
+The backtester regenerates strategy decisions from replayed public feed state. It is not an exact source-decision auditor. For live-readonly research artifacts that still contain source audit tables, reports compare replay metrics against the source run. Current-params reports show source Net PnL, replay Net PnL, deltas, and a mismatch diagnostic when the two differ.
+
+Sweeps run one current-params replay baseline before the parameter grid when source audit metrics exist. The sweep CSV then includes raw replay `pnl`, source baseline PnL, baseline replay PnL, baseline replay-source delta, calibrated PnL, calibrated final balance, source/replay trade and signal counts, and a calibration confidence label. The dashboard ranks such sweeps by `calibrated_pnl` while leaving raw replay PnL visible. Treat this as bias calibration, not proof that every parameter row would have matched live conditions exactly.
 
 ## Live Fidelity
 

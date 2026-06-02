@@ -25,6 +25,7 @@ function makeReport(
   jobType: string,
   netPnl: number | null,
   status: "available" | "archived" = "available",
+  sourceMismatch = false,
 ): ResearchReport {
   return {
     id,
@@ -45,6 +46,14 @@ function makeReport(
         win_rate: 0.5,
         trade_count: id === "a" ? 1 : 4,
       },
+      source_comparison: sourceMismatch
+        ? {
+            status: "mismatch",
+            source: { net_pnl: 1 },
+            replay: { net_pnl: netPnl },
+            delta: { net_pnl: 1 },
+          }
+        : null,
       diagnostics: [],
     }),
     report_path: `/reports/${id}.json`,
@@ -83,8 +92,29 @@ describe("ResearchReportsPage", () => {
 
     const rows = screen.getAllByRole("row");
     expect(rows[1]).toHaveTextContent("Report b");
+    expect(screen.getByLabelText(/report sort/i)).toHaveDisplayValue(
+      "Sort: Report PnL",
+    );
     expect(screen.getByText("+$9.00")).toBeInTheDocument();
     expect(screen.getAllByText(/DD -\$2\.00/).length).toBeGreaterThan(0);
+  });
+
+  it("flags reports whose replay metrics diverge from source run metrics", () => {
+    mockUseReports.mockReturnValue({
+      data: {
+        reports: [makeReport("a", "current_params", 2, "available", true)],
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchReports>);
+
+    renderReports();
+
+    expect(screen.getByText(/source mismatch/i)).toBeInTheDocument();
+    const row = screen.getByText("Report a").closest("tr");
+    expect(row).toHaveTextContent(/Replay Net PnL/);
+    expect(row).toHaveTextContent(/Source run \+\$1\.00/);
+    expect(row).toHaveTextContent(/Delta \+\$1\.00/);
   });
 
   it("filters by job type and analysis availability", async () => {
@@ -122,6 +152,29 @@ describe("ResearchReportsPage", () => {
   it("retention archived direct URLs derive archived status", () => {
     renderReports("/research/reports?retention=archived");
 
+    expect(screen.getByText("Report legacy")).toBeInTheDocument();
+    expect(screen.queryByText("Report a")).not.toBeInTheDocument();
+  });
+
+  it("searches by report, job, and artifact text", async () => {
+    renderReports("/research/reports?q=job-b");
+
+    expect(screen.getByText("Report b")).toBeInTheDocument();
+    expect(screen.queryByText("Report a")).not.toBeInTheDocument();
+
+    await userEvent.clear(screen.getByLabelText(/search reports/i));
+    await userEvent.type(screen.getByLabelText(/search reports/i), "artifact-a");
+
+    expect(screen.getByText("Report a")).toBeInTheDocument();
+    expect(screen.queryByText("Report b")).not.toBeInTheDocument();
+  });
+
+  it("keeps legacy artifact filter URLs working", () => {
+    renderReports("/research/reports?retention=archived&artifact=artifact-legacy");
+
+    expect(screen.getByLabelText(/search reports/i)).toHaveValue(
+      "artifact-legacy",
+    );
     expect(screen.getByText("Report legacy")).toBeInTheDocument();
     expect(screen.queryByText("Report a")).not.toBeInTheDocument();
   });

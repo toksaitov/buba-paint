@@ -26,7 +26,7 @@ DB_PATH = sys.argv[1]
 
 conn = sqlite3.connect(DB_PATH)
 
-# EXACT timestamp join — fixes the 1500ms cross-join false positives
+# EXACT timestamp join - fixes the 1500ms cross-join false positives
 query = """
 SELECT
     u.timestamp,

@@ -188,7 +188,7 @@ function IdentityCard({ data }: { data: MachineTelemetryResponse }) {
             label: "SSH alias",
             value:
               machine.ssh_alias == null ? (
-                <span className="text-muted">—</span>
+                <span className="text-muted">-</span>
               ) : (
                 <span className="font-mono text-[11px]">{machine.ssh_alias}</span>
               ),
@@ -216,9 +216,9 @@ function WorkerCard({ data }: { data: MachineTelemetryResponse }) {
             items={[
               { label: "Worker ID", value: <span className="font-mono">{state.worker_id}</span> },
               { label: "Worker status", value: humanize(state.worker_status) },
-              { label: "Worker version", value: state.worker_version ?? "—" },
+              { label: "Worker version", value: state.worker_version ?? "-" },
               { label: "Last heartbeat", value: <RelativeTime epochMs={state.last_heartbeat_ms} /> },
-              { label: "Last sample", value: state.last_sample_ms == null ? "—" : <RelativeTime epochMs={state.last_sample_ms} /> },
+              { label: "Last sample", value: state.last_sample_ms == null ? "-" : <RelativeTime epochMs={state.last_sample_ms} /> },
               { label: "Stale threshold", value: `${Math.round(data.stale_after_ms / 1000)}s` },
               { label: "Artifacts", value: String(deps.artifacts) },
               { label: "Transfers as source", value: String(deps.transfers_as_source) },

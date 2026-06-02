@@ -299,12 +299,12 @@ async fn watchdog_loop(
 
         if count > max_restarts {
             tracing::error!(
-                "bot exited unexpectedly {count} times — giving up (max_restarts={max_restarts})"
+                "bot exited unexpectedly {count} times - giving up (max_restarts={max_restarts})"
             );
             push_log(
                 &log_buffer,
                 log_buffer_size,
-                format!("[agent] bot exited — max restarts ({max_restarts}) exceeded, giving up"),
+                format!("[agent] bot exited - max restarts ({max_restarts}) exceeded, giving up"),
             );
             return;
         }
@@ -316,7 +316,7 @@ async fn watchdog_loop(
             &log_buffer,
             log_buffer_size,
             format!(
-                "[agent] bot exited — restarting ({count}/{max_restarts}) in {restart_delay:?}"
+                "[agent] bot exited - restarting ({count}/{max_restarts}) in {restart_delay:?}"
             ),
         );
 
@@ -406,7 +406,7 @@ fn send_terminate(pid: u32) {
 /// Sends terminate.
 #[cfg(not(unix))]
 fn send_terminate(_pid: u32) {
-    tracing::debug!("SIGTERM not available on this platform — relying on kill()");
+    tracing::debug!("SIGTERM not available on this platform - relying on kill()");
 }
 
 /// Sends kill.

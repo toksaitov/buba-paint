@@ -16,7 +16,9 @@ import {
 import {
   bestReportLabel,
   comparisonWarnings,
+  netPnlMetricLabel,
   parseReportPayload,
+  reportHasSourceMismatch,
 } from "../lib/research-report-analysis";
 import { formatDateTime, formatSignedUsd, humanize } from "../lib/utils";
 
@@ -101,7 +103,7 @@ export function ResearchReportComparePage() {
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 <MetricCard
-                  label="Net PnL"
+                  label={netPnlMetricLabel(parsed)}
                   value={formatMetricUsd(parsed.metrics.net_pnl)}
                   tone={
                     parsed.metrics.net_pnl == null
@@ -124,6 +126,32 @@ export function ResearchReportComparePage() {
                   label="Trades"
                   value={formatInteger(parsed.metrics.trade_count)}
                 />
+                {parsed.source_comparison && (
+                  <>
+                    <MetricCard
+                      label="Source run Net PnL"
+                      value={formatMetricUsd(
+                        parsed.source_comparison.source.net_pnl,
+                      )}
+                      tone={
+                        parsed.source_comparison.source.net_pnl == null
+                          ? "neutral"
+                          : parsed.source_comparison.source.net_pnl >= 0
+                            ? "success"
+                            : "danger"
+                      }
+                    />
+                    <MetricCard
+                      label="Replay delta"
+                      value={formatMetricUsd(
+                        parsed.source_comparison.delta.net_pnl,
+                      )}
+                      tone={
+                        reportHasSourceMismatch(parsed) ? "warning" : "neutral"
+                      }
+                    />
+                  </>
+                )}
               </div>
               <KeyValueList
                 columns={1}
@@ -132,18 +160,18 @@ export function ResearchReportComparePage() {
                     label: "Job type",
                     value: parsed.provenance.job_type
                       ? humanize(parsed.provenance.job_type)
-                      : "—",
+                      : "-",
                   },
                   {
                     label: "Artifact",
-                    value: parsed.provenance.artifact_id ?? "—",
+                    value: parsed.provenance.artifact_id ?? "-",
                   },
                   {
                     label: "Interval",
                     value:
                       parsed.provenance.start && parsed.provenance.end
                         ? `${parsed.provenance.start} → ${parsed.provenance.end}`
-                        : "—",
+                        : "-",
                   },
                   {
                     label: "Updated",

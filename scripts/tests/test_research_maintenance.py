@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import importlib.util
 import json
 import subprocess
@@ -217,6 +220,35 @@ class ResearchMaintenanceTests(unittest.TestCase):
         )
         self.assertIn("ROOT='/tmp/research root; echo unsafe'", script)
         self.assertIn("BACKUP_ID=dashboard-db-20260531-120000", script)
+
+    def test_status_script_has_local_jwt_fallback(self) -> None:
+        """Keeps status API probes working when env password drifted."""
+        script = MAINTENANCE.remote_status_script("/srv/research")
+        self.assertIn("def token_from_db", script)
+        self.assertIn("jwt_secret", script)
+        self.assertIn("Bearer {token}", script)
+        self.assertIn('"counts"', script)
+
+    def test_readonly_maintenance_commands_allow_stale_image_locks(self) -> None:
+        """Keeps status-style commands usable during local source changes."""
+        args = argparse.Namespace(
+            machine="research",
+            dry_run=True,
+            backup="dashboard-db-20260531-120000",
+        )
+        plan = {"machine": "research", "role": "research", "remote_root": "/srv/research"}
+        commands = [
+            ("status", MAINTENANCE.cmd_status),
+            ("backup-db", MAINTENANCE.cmd_backup_db),
+            ("restore-db", MAINTENANCE.cmd_restore_db),
+            ("collect-diagnostics", MAINTENANCE.cmd_collect_diagnostics),
+        ]
+        for _name, command in commands:
+            with self.subTest(command=command.__name__):
+                with mock.patch.object(MAINTENANCE, "plan_for", return_value=plan) as plan_mock:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        command(args)
+                plan_mock.assert_called_once_with(args, allow_stale_image_lock=True)
 
     def test_command_failure_shapes_diagnostics_payload(self) -> None:
         """Converts deploy failures into bounded JSON-friendly diagnostics."""
