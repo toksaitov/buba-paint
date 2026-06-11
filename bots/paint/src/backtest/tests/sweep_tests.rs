@@ -284,7 +284,7 @@ fn build_csv_with_calibration_appends_bias_adjusted_metrics() {
     let results: Vec<(Vec<(&str, f64)>, BacktestResult)> =
         vec![(vec![("PARAM_A", 0.5)], result_with_pnl(42.0))];
     let calibration = SweepCalibration::from_source_and_replay(
-        crate::db::source_run_metrics::SourceRunMetrics {
+        &crate::db::source_run_metrics::SourceRunMetrics {
             net_pnl: Some(35.0),
             total_fees: Some(0.0),
             gross_pnl: Some(35.0),
@@ -486,7 +486,7 @@ fn top_n_by_calibrated_pnl_uses_calibration_when_present() {
         (vec![("P", 2.0)], result_with_pnl(25.0)),
     ];
     let calibration = SweepCalibration::from_source_and_replay(
-        crate::db::source_run_metrics::SourceRunMetrics {
+        &crate::db::source_run_metrics::SourceRunMetrics {
             net_pnl: Some(10.0),
             total_fees: Some(0.0),
             gross_pnl: Some(10.0),

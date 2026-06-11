@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use super::*;
 use crate::db::DashboardDb;
 use crate::research_artifacts::{ArtifactFileSpec, build_manifest, write_manifest_files};
+use crate::research_backend::ResearchWorkBackend;
 use crate::research_pipeline::{
     CommandCancellation, CommandExecutionFuture, CommandOutput, CommandSpec,
     ResearchCommandExecutor, ResearchPipelineConfig,
@@ -69,10 +70,10 @@ impl ResearchCommandExecutor for CancellingExecutor {
     }
 
     /// Capture one supervised command and mark the owning job cancelled.
-    fn execute_supervised<'a>(
+    fn execute_supervised<'a, B: ResearchWorkBackend>(
         &'a self,
         command: &'a CommandSpec,
-        cancellation: CommandCancellation<'a>,
+        cancellation: CommandCancellation<'a, B>,
     ) -> CommandExecutionFuture<'a> {
         Box::pin(async move {
             self.commands.lock().unwrap().push(command.clone());

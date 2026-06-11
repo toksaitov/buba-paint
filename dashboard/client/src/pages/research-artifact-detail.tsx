@@ -261,21 +261,27 @@ export function ResearchArtifactDetailPage() {
             },
             {
               label: "Replay quality",
-              value: artifact.replay_quality_class
-                ? humanize(artifact.replay_quality_class)
-                : "-",
+              value: artifact.replay_quality_class ? (
+                humanize(artifact.replay_quality_class)
+              ) : (
+                <span className="text-muted">Not assessed</span>
+              ),
             },
             {
               label: "Backtest readiness",
-              value: artifact.backtest_ready_class
-                ? humanize(artifact.backtest_ready_class)
-                : "-",
+              value: artifact.backtest_ready_class ? (
+                humanize(artifact.backtest_ready_class)
+              ) : (
+                <span className="text-muted">Not assessed</span>
+              ),
             },
             {
               label: "Live fidelity",
-              value: artifact.live_fidelity_class
-                ? humanize(artifact.live_fidelity_class)
-                : "-",
+              value: artifact.live_fidelity_class ? (
+                humanize(artifact.live_fidelity_class)
+              ) : (
+                <span className="text-muted">Not assessed</span>
+              ),
             },
             {
               label: "Manifest path",
@@ -499,6 +505,44 @@ export function ResearchArtifactDetailPage() {
 
       <SectionCard title="Actions">
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            tone="accent"
+            disabled={artifact.status !== "available" || !role || !canPerform(role, "create")}
+            title={
+              artifact.status !== "available"
+                ? "Restore the artifact before starting a backtest."
+                : role && canPerform(role, "create")
+                  ? "Open a prefilled backtest job for this artifact."
+                  : permissionHint("create")
+            }
+            onClick={() =>
+              navigate(
+                `/research/jobs/new?type=current_params&artifact=${encodeURIComponent(artifact.id)}`,
+              )
+            }
+          >
+            Backtest
+          </Button>
+          <Button
+            size="sm"
+            tone="accent"
+            disabled={artifact.status !== "available" || !role || !canPerform(role, "create")}
+            title={
+              artifact.status !== "available"
+                ? "Restore the artifact before starting a sweep."
+                : role && canPerform(role, "create")
+                  ? "Open a prefilled sweep job for this artifact."
+                  : permissionHint("create")
+            }
+            onClick={() =>
+              navigate(
+                `/research/jobs/new?type=sweep&artifact=${encodeURIComponent(artifact.id)}`,
+              )
+            }
+          >
+            Sweep
+          </Button>
           <Button
             size="sm"
             disabled={!role || !canPerform(role, "update")}

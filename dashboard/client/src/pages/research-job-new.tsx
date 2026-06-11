@@ -51,6 +51,18 @@ export function ResearchJobNewPage() {
   const selectedTemplate = templates.find(
     (template) => template.id === selectedTemplateId,
   );
+  const requestedArtifactId = params.get("artifact") ?? "";
+  const artifactInitialValues = useMemo(() => {
+    if (!requestedArtifactId) return undefined;
+    const exists = (artifactsQuery.data?.artifacts ?? []).some(
+      (artifact) => artifact.id === requestedArtifactId,
+    );
+    if (!exists) return undefined;
+    return {
+      backtest: { artifact_id: requestedArtifactId },
+      sweep: { artifact_id: requestedArtifactId },
+    };
+  }, [requestedArtifactId, artifactsQuery.data]);
 
   const mutation = useMutation({
     mutationFn: (req: CreateJobRequest) => createResearchJob(req),
@@ -112,7 +124,10 @@ export function ResearchJobNewPage() {
                 </Banner>
               )}
               <JobCreateForm
-                key={selectedTemplate?.id ?? "manual"}
+                key={
+                  selectedTemplate?.id ??
+                  (artifactInitialValues ? requestedArtifactId : "manual")
+                }
                 artifacts={artifactsQuery.data?.artifacts ?? []}
                 initialType={
                   selectedTemplate?.job_type ??
@@ -122,7 +137,7 @@ export function ResearchJobNewPage() {
                 initialValues={
                   selectedTemplate
                     ? initialValuesFromTemplate(selectedTemplate)
-                    : undefined
+                    : artifactInitialValues
                 }
                 typeLocked={selectedTemplate != null}
                 showPriority

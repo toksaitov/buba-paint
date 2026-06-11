@@ -8,11 +8,13 @@ import type {
 const BACKTEST_KNOWN_KEYS = new Set([
   "artifact_id",
   "data_db_path",
+  "interval_mode",
   "start",
   "start_ms",
   "end",
   "end_ms",
   "balance",
+  "param_source",
   "set",
   "set_overrides",
 ]);
@@ -21,6 +23,7 @@ const SWEEP_KNOWN_KEYS = new Set([
   ...BACKTEST_KNOWN_KEYS,
   "sweep",
   "sweep_dimensions",
+  "sweep_scope",
   "sweeps",
 ]);
 
@@ -34,6 +37,11 @@ const EXPORT_KNOWN_KEYS = new Set([
   "dry_run",
   "confirm_export",
 ]);
+
+const DEFAULT_STARTING_BALANCE = "100";
+
+type IntervalMode = "artifact" | "custom";
+type SweepScope = "full" | "focused";
 
 export function parseRecord(value: string | null): Record<string, unknown> {
   if (!value) return {};
@@ -98,6 +106,28 @@ function keyValueRows(value: unknown): KeyValueRow[] {
     }));
   }
   return [];
+}
+
+function sweepScope(value: unknown, rows: KeyValueRow[]): SweepScope {
+  if (value === "full" || value === "focused") return value;
+  return rows.length > 0 ? "focused" : "full";
+}
+
+function parameterSource(
+  value: unknown,
+  rows: KeyValueRow[],
+): "custom" | "worker_defaults" {
+  if (value === "custom" || value === "worker_defaults") return value;
+  return rows.length > 0 ? "custom" : "worker_defaults";
+}
+
+function intervalMode(
+  value: unknown,
+  startIso: string,
+  endIso: string,
+): IntervalMode {
+  if (value === "artifact" || value === "custom") return value;
+  return startIso || endIso ? "custom" : "artifact";
 }
 
 function firstDefined(...values: unknown[]): unknown {
@@ -178,27 +208,32 @@ function initialValuesFromBacktestParams(
   artifactId: string | null,
   params: Record<string, unknown>,
 ): JobCreateFormInitialValues {
+  const setOverrides = keyValueRows(firstDefined(params.set, params.set_overrides));
+  const startIso = datetimeLocalFromMs(params.start_ms ?? params.start);
+  const endIso = datetimeLocalFromMs(params.end_ms ?? params.end);
   const base = {
     artifact_id: artifactId ?? stringValue(params.artifact_id),
     data_db_path: stringValue(params.data_db_path),
-    start_iso: datetimeLocalFromMs(params.start_ms ?? params.start),
-    end_iso: datetimeLocalFromMs(params.end_ms ?? params.end),
-    balance: stringValue(params.balance) || "200",
-    setOverrides: keyValueRows(
-      firstDefined(params.set, params.set_overrides),
-    ),
+    interval_mode: intervalMode(params.interval_mode, startIso, endIso),
+    start_iso: startIso,
+    end_iso: endIso,
+    balance: stringValue(params.balance) || DEFAULT_STARTING_BALANCE,
+    param_source: parameterSource(params.param_source, setOverrides),
+    setOverrides,
   };
 
   if (type === "sweep") {
+    const sweeps = keyValueRows(
+      firstDefined(params.sweeps, params.sweep, params.sweep_dimensions),
+    );
     return {
       type,
       priority,
       additionalParamsJson: additionalJson(params, SWEEP_KNOWN_KEYS),
       sweep: {
         ...base,
-        sweeps: keyValueRows(
-          firstDefined(params.sweeps, params.sweep, params.sweep_dimensions),
-        ),
+        sweep_scope: sweepScope(params.sweep_scope, sweeps),
+        sweeps,
       },
     };
   }

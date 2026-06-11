@@ -6,20 +6,61 @@ in local evidence folders under `data/experiments/`.
 
 ## Current Status
 
-Status: Phase 14 unified public controller is deployed and browser-smoked.
-The current cleanup pass has lint, docs, comments, tests, and deploy dry-runs
-in good order.
+Status: Phase 15 remote worker-controller protocol is implemented locally and
+is pending deployment plus public browser acceptance.
 
-The operator-facing architecture is now:
+Honesty correction recorded on 2026-06-11: Phase 14 unified the public VIEW
+but never unified job execution. The worker on `testing` leased steps only
+from its own local SQLite database, and the only worker-token endpoint on the
+public controller was heartbeat. Jobs created on
+`https://buba.toksaitov.com` were written to a queue no worker consumed and
+stayed `queued` forever while worker telemetry looked healthy. The 2026-06-02
+QA jobs and reports lived in the private `testing` database, not the public
+controller. Finish-line items 3 through 7 therefore did not work end to end
+from the public dashboard before Phase 15.
+
+Phase 15 adds:
+
+* Worker-token protocol endpoints under `/api/research/workers/` on the
+  controller: step claim/renew/run/complete/fail/block, job get/cancel/steps,
+  job events, job-artifact attach, artifact get/upsert plus manifest and
+  checksum document upload, report upsert plus report JSON/CSV document
+  upload, transfer claim/get/progress/recover, and machine get.
+* `ResearchWorkBackend` trait over the worker execution pipeline with two
+  implementations: the local `DashboardDb` (tests, local dev, private stacks)
+  and `ResearchControllerClient` over authenticated HTTP.
+* Remote worker mode: when `BUBA_RESEARCH_CONTROLLER_URL` and
+  `BUBA_RESEARCH_WORKER_TOKEN` are set, the worker leases and persists all
+  job, transfer, report, and artifact work on the public controller.
+  Cancellation polling and lease refresh during long supervised commands also
+  flow through the controller. Without a controller URL the worker keeps the
+  previous local behavior.
+* Report JSON/CSV and artifact manifest/checksum documents are uploaded to
+  the controller and stored under its research work root, so the public
+  dashboard serves them directly.
+* The research worker container now falls back to stdout logging when
+  `/runtime/research-worker.log` is not writable instead of crash-looping.
+
+The operator-facing architecture remains:
 
 * `https://buba.toksaitov.com` is the only dashboard URL.
 * Monitor pages observe the stopped live-readonly run on `buba-paint`.
 * Research pages are available from the same public dashboard.
-* `testing` runs the research dashboard and worker as private infrastructure.
-* Caddy on `buba-paint` proxies `/api/research*` to `testing` through managed
-  tunnel services.
+* `testing` runs the research worker and storage stack as private
+  infrastructure.
+* Caddy on `buba-paint` proxies all public dashboard routes to the live
+  dashboard container. Research worker traffic authenticates to that same
+  controller with `BUBA_RESEARCH_WORKER_TOKEN`.
 * `paint` and `sidecar` stay stopped until the user explicitly starts a new
   live or paper run.
+
+Known Phase 15 limitations:
+
+* Job scratch archival deletes files under the work root of the machine that
+  serves the dashboard API. Scratch DBs produced by a remote worker live on
+  `testing` and are not deleted through the public controller yet.
+* Export jobs still assume the source runtime DB path is readable from the
+  worker machine. Cross-machine export remains a manual finalize flow.
 
 The current good run is preserved locally and remotely. The live DB checksum is:
 
@@ -55,16 +96,50 @@ found.
 These are operator-facing issues found during manual evaluation and their
 current status.
 
-* Research > Jobs > New Job interval fallback is confusing. The Start and End
-  fields say they fall back to the artifact interval, but it is not obvious that
-  leaving both fields blank is the way to trigger that behavior. The page should
-  make artifact-derived boundaries explicit before submit, distinguish
-  placeholders from real values, and use clearer copy such as "Leave blank to
-  use artifact interval." The effective interval preview should remain the
-  source of truth and should clearly show whether each boundary came from typed
-  input or artifact metadata. Local fix implemented: Start and End now say
-  "Leave blank to use artifact interval", and the preview shows typed value
-  versus artifact interval source labels. Deployed on 2026-06-02.
+* Public job creation was a trap before Phase 15. A 3-hour backtest created
+  from the public New Job form on 2026-06-11 stayed `queued` for 11+ minutes
+  while Research > Machines showed a healthy idle worker, because no worker
+  consumed the controller queue. Local fix implemented: the Phase 15 protocol
+  above, plus job detail now shows a queue-wait banner that combines queue
+  age with live worker telemetry and escalates when a live worker has not
+  claimed the job after three minutes. Pending deploy and public acceptance.
+* Job detail honesty fixes implemented locally on 2026-06-11: the Report
+  section no longer tells operators to click Regenerate report on jobs that
+  have not completed, the Events empty state distinguishes "no events yet"
+  from "none match the filter", job Cancel asks for confirmation and explains
+  that completed steps are kept, the Details list shows the humanized
+  interval and duration from job params, and `Requested by` resolves user ids
+  to usernames at the API boundary.
+* Artifact flow fixes implemented locally on 2026-06-11: the Artifacts list
+  dropped its duplicate status filter, sorts newest run first, and shows a
+  run interval column; artifact detail gained direct Backtest and Sweep
+  actions that prefill the New Job form via `type` and `artifact` query
+  parameters; unassessed quality fields read "Not assessed" instead of a bare
+  dash. The Research home retention metric now sums scratch, report, and
+  artifact bytes and is labeled "Retention candidates". New Job interval
+  source labels are operator phrasing ("Set by you", "Artifact") and queue
+  priority moved to the bottom of the form with plain-language help.
+
+* Research > Jobs > New Job interval, export, and parameter controls must be
+  operator safe. Earlier copy made artifact interval fallback look like hidden
+  magic, and raw fields such as Data DB path override, `--set`, and sweep
+  dimensions made the page feel built for an agent instead of a person. Local
+  fix implemented: Backtest and Sweep now show artifact range, explicit
+  effective interval source labels, a "Use full artifact" reset, a Starting
+  balance field defaulted to 100, named parameter baseline controls, wide named
+  parameter override rows, full versus focused sweep ranges, sweep combination
+  counts, and advanced-only database overrides. Export now first shows
+  available run artifacts with direct Backtest and Sweep actions; known-path
+  export remains an advanced operation. Remaining workflow gap: the dashboard
+  still needs exact live-run parameter reconstruction before "same params as the
+  run" can be presented as automatic.
+  Deployment fix implemented on 2026-06-02: stopped-live dashboard containers
+  now mount a controller research metadata root at `/research`, and the public
+  controller has available records plus manifest/checksum metadata for
+  `live-readonly-20260601-022105-finalized-20260601-185751Z` and
+  `live-readonly-20260514-184119-finalized-20260517-075706Z`. The New Job
+  picker sorts available artifacts newest first, so the just-finished run is
+  selected by default.
 * Research job detail does not give enough confidence for long-running command
   steps. During a full-interval current-run backtest,
   `validate_backtest_input` can run for several minutes with an active
@@ -213,11 +288,13 @@ Current runtime:
 * DB SHA-256:
   `90908f7725d2a82a5d450d07f39b18ac0bea92b4d546b651227aca31189fcd0e`
 
-Public Research bridge:
+Public Research controller:
 
-* `buba-research-tunnel.service` runs on `testing`.
-* `buba-research-proxy.service` runs on `buba-paint`.
-* Caddy proxies `/api/research*` to the bridge.
+* Caddy proxies public dashboard UI and API traffic to the live dashboard
+  container on `buba-paint`.
+* `testing` runs the private research worker and storage stack.
+* The worker authenticates to `https://buba.toksaitov.com` with
+  `BUBA_RESEARCH_WORKER_TOKEN`.
 * `https://buba.toksaitov.com/health` returns `{"ok":true}`.
 
 ### `testing`
@@ -281,22 +358,22 @@ the next real deploy if code or image inputs change.
 `ops/research-images.lock.json`:
 
 * dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:83e3f83f371e55a48ab9fbb6094986ed9fdb412aa77ed015afcaca35d9107c98`
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:7440d447dd6ec49121a27f9fc9c1b95d44aaf61ea66c46189b7b77c586210862`
 * research worker:
-  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:9ef064d3d1b6f9ea93dc37aee065d2eb93b7784ad58d9445fdbd8011dc61f1ba`
+  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:8e471b0a4a90f223e5c795456108ae856eb71035db0bdac4bfdec9a6aa51dd6a`
 
 ### Stopped-Live Images
 
 `ops/live-images.lock.json`:
 
 * dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:8f594cf69a4af61fa643d61556cca854caecb3250f908002bbda8a8e136b9f51`
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:a9da8865fc63b33d86b2e8ddd8e02f672c19d355b63131db7a5a3a9e7a0ef10a`
 * agent:
-  `ghcr.io/toksaitov/buba-paint-agent@sha256:cf04bcd42a179d20a44bb550f46972c4953f0e9b199dede9d0d01d1760ca798f`
+  `ghcr.io/toksaitov/buba-paint-agent@sha256:1c36aa8cdb3a14eec6f3d2c41e4e7a40ea18b62835854f4197cd04981e173ccf`
 * paint image published but not running:
-  `ghcr.io/toksaitov/buba-paint-bot@sha256:a8f08855fbbedb336d7809573062799939f763e5ed1e2296a15a9cfdc958de83`
+  `ghcr.io/toksaitov/buba-paint-bot@sha256:b6c411cfbc1742f7694afd8de0ce83c8233a00861f594f65adb45c81c6c47259`
 * sidecar image published but not running:
-  `ghcr.io/toksaitov/buba-paint-sidecar@sha256:e830b3905f28fb61e79f46b3054b188c86b545ec01ed9ad35ccd8199fef7064d`
+  `ghcr.io/toksaitov/buba-paint-sidecar@sha256:70caccdc9aa773bee667980e901968ec53ba97fb8aaf659f5f3d417c6d8892fc`
 
 ## Deployment Commands
 
@@ -362,13 +439,13 @@ The public dashboard was checked through the browser after Phase 14 changes:
 Latest stopped-live redeploy on 2026-06-02:
 
 * dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:8f594cf69a4af61fa643d61556cca854caecb3250f908002bbda8a8e136b9f51`
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:a9da8865fc63b33d86b2e8ddd8e02f672c19d355b63131db7a5a3a9e7a0ef10a`
 * agent:
-  `ghcr.io/toksaitov/buba-paint-agent@sha256:cf04bcd42a179d20a44bb550f46972c4953f0e9b199dede9d0d01d1760ca798f`
+  `ghcr.io/toksaitov/buba-paint-agent@sha256:1c36aa8cdb3a14eec6f3d2c41e4e7a40ea18b62835854f4197cd04981e173ccf`
 * paint:
-  `ghcr.io/toksaitov/buba-paint-bot@sha256:a8f08855fbbedb336d7809573062799939f763e5ed1e2296a15a9cfdc958de83`
+  `ghcr.io/toksaitov/buba-paint-bot@sha256:b6c411cfbc1742f7694afd8de0ce83c8233a00861f594f65adb45c81c6c47259`
 * sidecar:
-  `ghcr.io/toksaitov/buba-paint-sidecar@sha256:e830b3905f28fb61e79f46b3054b188c86b545ec01ed9ad35ccd8199fef7064d`
+  `ghcr.io/toksaitov/buba-paint-sidecar@sha256:70caccdc9aa773bee667980e901968ec53ba97fb8aaf659f5f3d417c6d8892fc`
 * `paint` and `sidecar` stayed stopped after deploy.
 * Latest finalization browser smoke evidence:
   `data/experiments/research-manual-qa-playwright/finalize-public-smoke-20260602T064237Z/summary.json`.

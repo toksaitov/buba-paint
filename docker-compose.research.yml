@@ -85,8 +85,11 @@ services:
     command:
       - |
         mkdir -p /runtime /research
-        touch /runtime/research-worker.log
-        exec buba-research-worker >> /runtime/research-worker.log 2>&1
+        if touch /runtime/research-worker.log 2>/dev/null; then
+          exec buba-research-worker >> /runtime/research-worker.log 2>&1
+        fi
+        echo "research-worker.log is not writable; logging to stdout" >&2
+        exec buba-research-worker
     depends_on:
       research-dashboard:
         condition: service_healthy

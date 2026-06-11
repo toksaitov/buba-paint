@@ -1288,9 +1288,9 @@ async fn admin_can_create_sweep_job() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
+    let probe_status = resp.status();
     let body = json_body(resp).await;
+    assert_eq!(probe_status, StatusCode::OK, "body: {body}");
     assert_eq!(body["job"]["job_type"], "sweep");
     assert_eq!(body["job"]["status"], "queued");
     assert_eq!(body["steps"].as_array().unwrap().len(), 6);

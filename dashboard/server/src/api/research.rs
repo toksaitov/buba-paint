@@ -5,6 +5,7 @@
 //! Mutating routes require an admin claim; read routes are available to any
 //! authenticated dashboard user.
 
+use std::collections::HashMap;
 use std::path::{Component, Path as StdPath, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1347,7 +1348,8 @@ pub async fn delete_transfer(
 
 /// `GET /api/research/jobs`
 pub async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoResponse, DashboardError> {
-    let jobs = state.db.list_research_jobs().await?;
+    let mut jobs = state.db.list_research_jobs().await?;
+    humanize_job_audit(&state, &mut jobs).await;
     Ok(Json(JobsResponse { jobs }))
 }
 
@@ -1355,7 +1357,8 @@ pub async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoRespons
 pub async fn list_job_templates(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, DashboardError> {
-    let templates = state.db.list_research_job_templates().await?;
+    let mut templates = state.db.list_research_job_templates().await?;
+    humanize_template_audit(&state, &mut templates).await;
     Ok(Json(JobTemplatesResponse { templates }))
 }
 
@@ -1367,7 +1370,7 @@ pub async fn create_job_template(
 ) -> Result<impl IntoResponse, DashboardError> {
     require_admin(&claims)?;
     let params_json = template_params_json(&req.params)?;
-    let template = state
+    let mut template = state
         .db
         .create_research_job_template(&ResearchJobTemplateRecord {
             name: &req.name,
@@ -1379,6 +1382,7 @@ pub async fn create_job_template(
             operator_id: &claims.sub,
         })
         .await?;
+    template.created_by = display_user_name(&state, &template.created_by).await;
     Ok(Json(JobTemplateResponse { template }))
 }
 
@@ -1387,7 +1391,8 @@ pub async fn get_job_template(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, DashboardError> {
-    let template = research_job_template_by_id(&state, &id).await?;
+    let mut template = research_job_template_by_id(&state, &id).await?;
+    template.created_by = display_user_name(&state, &template.created_by).await;
     Ok(Json(JobTemplateResponse { template }))
 }
 
@@ -1400,7 +1405,7 @@ pub async fn update_job_template(
 ) -> Result<impl IntoResponse, DashboardError> {
     require_admin(&claims)?;
     let params_json = template_params_json(&req.params)?;
-    let template = state
+    let mut template = state
         .db
         .update_research_job_template(
             &id,
@@ -1415,6 +1420,7 @@ pub async fn update_job_template(
             },
         )
         .await?;
+    template.created_by = display_user_name(&state, &template.created_by).await;
     Ok(Json(JobTemplateResponse { template }))
 }
 
@@ -1425,7 +1431,8 @@ pub async fn archive_job_template(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, DashboardError> {
     require_admin(&claims)?;
-    let template = state.db.archive_research_job_template(&id).await?;
+    let mut template = state.db.archive_research_job_template(&id).await?;
+    template.created_by = display_user_name(&state, &template.created_by).await;
     Ok(Json(JobTemplateResponse { template }))
 }
 
@@ -1436,7 +1443,8 @@ pub async fn restore_job_template(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, DashboardError> {
     require_admin(&claims)?;
-    let template = state.db.restore_research_job_template(&id).await?;
+    let mut template = state.db.restore_research_job_template(&id).await?;
+    template.created_by = display_user_name(&state, &template.created_by).await;
     Ok(Json(JobTemplateResponse { template }))
 }
 
@@ -3030,11 +3038,12 @@ fn nullable_string_update_as_deref(update: &NullableUpdate<String>) -> NullableU
 
 /// Return full job detail for one job ID.
 async fn job_detail(state: &AppState, id: &str) -> Result<JobDetailResponse, DashboardError> {
-    let job = state
+    let mut job = state
         .db
         .get_research_job(id)
         .await?
         .ok_or_else(|| DashboardError::NotFound(format!("research job '{id}' not found")))?;
+    job.requested_by = display_user_name(state, &job.requested_by).await;
     let steps = state.db.get_research_job_steps(id).await?;
     let events = state.db.list_research_job_events(id).await?;
     Ok(JobDetailResponse { job, steps, events })
@@ -3077,6 +3086,46 @@ fn require_admin(claims: &Claims) -> Result<(), DashboardError> {
         return Err(DashboardError::Forbidden("admin role required".to_string()));
     }
     Ok(())
+}
+
+/// Resolve a stored user id to its username for display, falling back to the raw id.
+async fn display_user_name(state: &AppState, user_id: &str) -> String {
+    match state.db.get_user_by_id(user_id).await {
+        Ok(Some(user)) => user.username,
+        _ => user_id.to_string(),
+    }
+}
+
+/// Resolve a user id through a per-request display-name cache.
+async fn cached_display_user_name(
+    state: &AppState,
+    names: &mut HashMap<String, String>,
+    user_id: &str,
+) -> String {
+    if let Some(existing) = names.get(user_id) {
+        return existing.clone();
+    }
+    let resolved = display_user_name(state, user_id).await;
+    names.insert(user_id.to_string(), resolved.clone());
+    resolved
+}
+
+/// Replace job audit user ids with display usernames on outgoing responses.
+async fn humanize_job_audit(state: &AppState, jobs: &mut [ResearchJob]) {
+    let mut names: HashMap<String, String> = HashMap::new();
+    for job in jobs.iter_mut() {
+        let id = job.requested_by.clone();
+        job.requested_by = cached_display_user_name(state, &mut names, &id).await;
+    }
+}
+
+/// Replace template audit user ids with display usernames on outgoing responses.
+async fn humanize_template_audit(state: &AppState, templates: &mut [ResearchJobTemplate]) {
+    let mut names: HashMap<String, String> = HashMap::new();
+    for template in templates.iter_mut() {
+        let id = template.created_by.clone();
+        template.created_by = cached_display_user_name(state, &mut names, &id).await;
+    }
 }
 
 /// Resolve an import path under the configured research work root.
@@ -3277,7 +3326,10 @@ fn default_worker_status() -> String {
 }
 
 /// Require the configured research worker token on machine endpoints.
-fn require_worker_token(state: &AppState, headers: &HeaderMap) -> Result<(), DashboardError> {
+pub(crate) fn require_worker_token(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), DashboardError> {
     let Some(expected) = state.research_worker_token.as_deref() else {
         return Err(DashboardError::Unauthorized(
             "research worker token is not configured".to_string(),

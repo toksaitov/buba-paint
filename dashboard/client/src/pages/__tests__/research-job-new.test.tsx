@@ -46,6 +46,8 @@ import { createResearchJob } from "../../lib/research-api";
 import {
   fixtureArtifactAvailable,
   fixtureJobCompleted,
+  FIXTURE_INTERVAL_END_MS,
+  FIXTURE_INTERVAL_START_MS,
   FIXTURE_TIMESTAMP_MS,
 } from "../../lib/research-fixtures";
 import type { ResearchJobTemplate } from "../../lib/research-types";
@@ -63,8 +65,8 @@ function templateFixture(): ResearchJobTemplate {
     artifact_id: "fixture-artifact-available",
     priority: 7,
     params_json: JSON.stringify({
-      start_ms: 1_779_003_540_000,
-      end_ms: 1_779_003_660_000,
+      start_ms: FIXTURE_INTERVAL_START_MS,
+      end_ms: FIXTURE_INTERVAL_START_MS + 120_000,
       balance: 250,
     }),
     status: "active",
@@ -85,8 +87,8 @@ function sweepTemplateFixture(): ResearchJobTemplate {
     artifact_id: "fixture-artifact-available",
     priority: 4,
     params_json: JSON.stringify({
-      start_ms: 1_779_003_540_000,
-      end_ms: 1_779_003_660_000,
+      start_ms: FIXTURE_INTERVAL_START_MS,
+      end_ms: FIXTURE_INTERVAL_END_MS,
       balance: 100,
       sweep: ["LATENCY_ARB_MIN_ASK=0.30,0.35"],
       set_overrides: ["RISK=low"],
@@ -126,9 +128,11 @@ describe("ResearchJobNewPage", () => {
     renderWithProviders(<ResearchJobNewPage />);
 
     await user.selectOptions(screen.getByLabelText(/^template/i), "template-current");
-    await user.click(
-      screen.getByRole("button", { name: /create from template/i }),
-    );
+    const createFromTemplate = screen.getByRole("button", {
+      name: /create from template/i,
+    });
+    await waitFor(() => expect(createFromTemplate).toBeEnabled());
+    await user.click(createFromTemplate);
 
     await waitFor(() =>
       expect(mockCreateJob).toHaveBeenCalledWith(
@@ -160,9 +164,11 @@ describe("ResearchJobNewPage", () => {
       screen.getByRole("button", { name: /create from template/i }),
     ).toBeEnabled();
 
-    await user.click(
-      screen.getByRole("button", { name: /create from template/i }),
-    );
+    const createFromTemplate = screen.getByRole("button", {
+      name: /create from template/i,
+    });
+    await waitFor(() => expect(createFromTemplate).toBeEnabled());
+    await user.click(createFromTemplate);
 
     await waitFor(() =>
       expect(mockCreateJob).toHaveBeenCalledWith(

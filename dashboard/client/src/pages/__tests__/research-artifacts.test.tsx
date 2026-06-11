@@ -149,16 +149,15 @@ describe("ResearchArtifactsPage", () => {
     expect(screen.queryByText("archived-artifact")).not.toBeInTheDocument();
   });
 
-  it("manual status changes clear preset-specific filtering", async () => {
+  it("switching presets replaces the previous preset statuses", async () => {
     renderArtifacts("/research/artifacts?preset=archived");
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /artifact status filter/i }),
+    await userEvent.selectOptions(
+      screen.getByLabelText(/artifact preset/i),
+      "available",
     );
-    await userEvent.click(screen.getByRole("button", { name: "clear" }));
-    await userEvent.click(screen.getByRole("button", { name: "Available" }));
 
-    expect(screen.getByLabelText(/artifact preset/i)).toHaveValue("all");
+    expect(screen.getByLabelText(/artifact preset/i)).toHaveValue("available");
     expect(screen.getByText("available-artifact")).toBeInTheDocument();
     expect(screen.queryByText("archived-artifact")).not.toBeInTheDocument();
   });

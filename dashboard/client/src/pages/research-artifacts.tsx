@@ -14,7 +14,6 @@ import {
 } from "../components/ui/dashboard-primitives";
 import { Loading } from "../components/common/loading";
 import { Dialog } from "../components/ui/dialog";
-import { StatusFilter } from "../components/research/status-filter";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
 import { useResearchJobs } from "../hooks/use-research-jobs";
 import { useResearchMachines } from "../hooks/use-research-machines";
@@ -48,7 +47,12 @@ import {
   setQueryParam,
   updateQueryParam,
 } from "../lib/research-list-url-state";
-import { formatBytes, formatDateTime, humanize } from "../lib/utils";
+import {
+  formatBytes,
+  formatDateTime,
+  formatDurationShort,
+  humanize,
+} from "../lib/utils";
 
 const ALL_STATUSES: ArtifactStatus[] = ["available", "archived"];
 
@@ -127,7 +131,12 @@ export function ResearchArtifactsPage() {
             .join(" ")
             .toLowerCase()
             .includes(needle);
-        });
+        })
+        .sort(
+          (a, b) =>
+            (b.interval_end_ms ?? b.updated_at) -
+            (a.interval_end_ms ?? a.updated_at),
+        );
     },
     [artifactsData, active, preset, jobsData, transfersData, reportsData, search],
   );
@@ -193,24 +202,6 @@ export function ResearchArtifactsPage() {
           </div>
         }
       >
-        <StatusFilter
-          label="Status"
-          statuses={ALL_STATUSES}
-          active={active}
-          onChange={(next) => {
-            const params = new URLSearchParams(searchParams);
-            setQueryParam(params, "preset", "all", DEFAULT_PRESET);
-            setQueryListParam(
-              params,
-              "status",
-              next,
-              artifactPresetStatuses("all"),
-            );
-            setSearchParams(params, { replace: true });
-          }}
-          toneFor={(s) => artifactTone(s as ArtifactStatus)}
-          ariaLabel="Artifact status filter"
-        />
         <div className="mb-3 max-w-md">
           <Input
             aria-label="Search artifacts"
@@ -235,7 +226,7 @@ export function ResearchArtifactsPage() {
               <thead className="border-b border-border bg-surface text-left text-[11px] uppercase text-muted">
                 <tr>
                   <th className="px-2 py-1.5 font-semibold">ID</th>
-                  <th className="px-2 py-1.5 font-semibold">Kind</th>
+                  <th className="px-2 py-1.5 font-semibold">Run interval</th>
                   <th className="px-2 py-1.5 font-semibold">Run mode</th>
                   <th className="px-2 py-1.5 font-semibold">Status</th>
                   <th className="px-2 py-1.5 font-semibold">Bytes</th>
@@ -259,7 +250,22 @@ export function ResearchArtifactsPage() {
                       </Link>
                     </td>
                     <td className="px-2 py-1.5 text-muted">
-                      {humanize(artifact.kind)}
+                      {artifact.interval_start_ms != null &&
+                      artifact.interval_end_ms != null ? (
+                        <span className="inline-flex flex-col">
+                          <span>
+                            {formatDateTime(artifact.interval_start_ms)}
+                          </span>
+                          <span className="text-[11px]">
+                            {formatDurationShort(
+                              artifact.interval_end_ms -
+                                artifact.interval_start_ms,
+                            )}
+                          </span>
+                        </span>
+                      ) : (
+                        "-"
+                      )}
                     </td>
                     <td className="px-2 py-1.5 text-muted">
                       {artifact.run_mode ? humanize(artifact.run_mode) : "-"}

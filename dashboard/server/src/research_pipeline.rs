@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
 
-use crate::db::{DashboardDb, ResearchArtifact, ResearchJob, ResearchJobStep};
+use crate::db::{ResearchArtifact, ResearchJob, ResearchJobStep};
 use crate::error::DashboardError;
 use crate::research_artifacts;
+use crate::research_backend::ResearchWorkBackend;
 use crate::research_reports;
 
 /// Static configuration required to plan and run local research jobs.
@@ -85,9 +86,9 @@ pub type CommandExecutionFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CommandOutput, DashboardError>> + Send + 'a>>;
 
 /// Durable cancellation context for one running research command.
-pub struct CommandCancellation<'a> {
-    /// Dashboard database used to observe job and step state.
-    pub db: &'a DashboardDb,
+pub struct CommandCancellation<'a, B: ResearchWorkBackend> {
+    /// Work backend used to observe job and step state.
+    pub db: &'a B,
     /// Job currently owning the command-backed step.
     pub job_id: &'a str,
     /// Step currently owning the command process.
@@ -100,7 +101,7 @@ pub struct CommandCancellation<'a> {
     pub lease_duration_ms: u64,
 }
 
-impl CommandCancellation<'_> {
+impl<B: ResearchWorkBackend> CommandCancellation<'_, B> {
     /// Return true once either the job or active step has been cancelled.
     pub async fn is_cancelled(&self) -> Result<bool, DashboardError> {
         let Some(job) = self.db.get_research_job(self.job_id).await? else {
@@ -130,10 +131,10 @@ pub trait ResearchCommandExecutor: Sync {
     fn execute(&self, command: &CommandSpec) -> Result<CommandOutput, DashboardError>;
 
     /// Execute one command while checking for durable operator cancellation.
-    fn execute_supervised<'a>(
+    fn execute_supervised<'a, B: ResearchWorkBackend>(
         &'a self,
         command: &'a CommandSpec,
-        _cancellation: CommandCancellation<'a>,
+        _cancellation: CommandCancellation<'a, B>,
     ) -> CommandExecutionFuture<'a> {
         Box::pin(async move { self.execute(command) })
     }
@@ -424,10 +425,10 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
     }
 
     /// Execute one command as a supervised child and terminate it on cancellation.
-    fn execute_supervised<'a>(
+    fn execute_supervised<'a, B: ResearchWorkBackend>(
         &'a self,
         command: &'a CommandSpec,
-        cancellation: CommandCancellation<'a>,
+        cancellation: CommandCancellation<'a, B>,
     ) -> CommandExecutionFuture<'a> {
         Box::pin(async move {
             let mut process = tokio::process::Command::new(&command.program);

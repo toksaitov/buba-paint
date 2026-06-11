@@ -366,12 +366,15 @@ fn read_source_run_metrics(
     })
 }
 
+/// Source trade aggregate columns: trade count, net `PnL` sum, and fee sum.
+type SourceTradeMetrics = (Option<u64>, Option<f64>, Option<f64>);
+
 /// Read trade metrics from a source DB, filtering by settlement time when possible.
 fn read_source_trade_metrics(
     conn: &Connection,
     start_ms: Option<u64>,
     end_ms: Option<u64>,
-) -> Result<(Option<u64>, Option<f64>, Option<f64>), DashboardError> {
+) -> Result<SourceTradeMetrics, DashboardError> {
     if !table_exists(conn, "trade_results")? || !column_exists(conn, "trade_results", "pnl_net")? {
         return Ok((None, None, None));
     }
@@ -443,14 +446,16 @@ fn source_time_predicate(
 
 /// Return source time predicate parameters when both bounds are present.
 fn source_time_params(predicate: &str, start_ms: Option<u64>, end_ms: Option<u64>) -> Vec<i64> {
-    match (predicate.is_empty(), start_ms, end_ms) {
-        (true, _, _) => Vec::new(),
-        (false, Some(start_ms), Some(end_ms)) => vec![
-            i64::try_from(start_ms).unwrap_or(i64::MAX),
-            i64::try_from(end_ms).unwrap_or(i64::MAX),
-        ],
-        (false, _, _) => Vec::new(),
+    if predicate.is_empty() {
+        return Vec::new();
     }
+    let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) else {
+        return Vec::new();
+    };
+    vec![
+        i64::try_from(start_ms).unwrap_or(i64::MAX),
+        i64::try_from(end_ms).unwrap_or(i64::MAX),
+    ]
 }
 
 /// Return whether source-run and replay metrics differ enough to warn.

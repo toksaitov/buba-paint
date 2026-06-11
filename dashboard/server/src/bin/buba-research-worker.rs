@@ -15,11 +15,30 @@ use clap::Parser;
 use buba_dashboard::db::{
     DashboardDb, ResearchMachineHeartbeatRecord, ResearchMachineTelemetryUpdate,
 };
+use buba_dashboard::research_backend::ResearchWorkBackend;
+use buba_dashboard::research_controller_client::{ResearchControllerClient, WorkerBackend};
 use buba_dashboard::research_pipeline::{
     BubaPaintCommand, ProcessCommandExecutor, ResearchPipelineConfig,
 };
 use buba_dashboard::research_transfer::{ArtifactTransferConfig, ArtifactTransferWorker};
 use buba_dashboard::research_worker::LocalResearchWorker;
+
+/// Select the worker's work source from CLI configuration.
+fn build_backend(cli: &Cli, db: &Arc<DashboardDb>) -> anyhow::Result<WorkerBackend> {
+    match optional_value(cli.controller_url.as_deref()) {
+        Some(controller_url) => {
+            let token = optional_value(cli.worker_token.as_deref()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "BUBA_RESEARCH_WORKER_TOKEN is required when BUBA_RESEARCH_CONTROLLER_URL is set"
+                )
+            })?;
+            let client = ResearchControllerClient::new(&controller_url, &token)
+                .map_err(|error| anyhow::anyhow!("building controller client: {error}"))?;
+            Ok(WorkerBackend::Remote(client))
+        }
+        None => Ok(WorkerBackend::Local(Arc::clone(db))),
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "buba-research-worker", version)]
@@ -159,6 +178,7 @@ struct WorkerActivity {
 /// Runtime dependencies shared by the worker loop.
 struct WorkerRuntime {
     db: Arc<DashboardDb>,
+    backend: WorkerBackend,
     sampler: Arc<MachineSampler>,
     pipeline: ResearchPipelineConfig,
     worker: LocalResearchWorker,
@@ -197,9 +217,15 @@ impl WorkerRuntime {
         let transfer_worker = build_transfer_worker(cli)?;
         let executor = ProcessCommandExecutor;
         let heartbeat = RemoteHeartbeat::from_cli(cli)?;
+        let backend = build_backend(cli, &db)?;
+        tracing::info!(
+            backend = backend.describe(),
+            "research work source selected"
+        );
         let activity = Arc::new(Mutex::new(WorkerActivity::from_cli(cli)));
         Ok(Self {
             db,
+            backend,
             sampler,
             pipeline,
             worker,
@@ -224,7 +250,7 @@ impl WorkerRuntime {
 /// Run the main polling loop until run-once completion or fatal worker error.
 async fn run_worker_loop(cli: &Cli, runtime: &WorkerRuntime) -> anyhow::Result<()> {
     loop {
-        if machine_work_disabled(&runtime.db, &cli.machine_id).await? {
+        if machine_work_disabled(&runtime.backend, &cli.machine_id).await? {
             if handle_disabled_tick(cli, runtime).await {
                 return Ok(());
             }
@@ -322,7 +348,7 @@ async fn run_work_tick(cli: &Cli, runtime: &WorkerRuntime) -> anyhow::Result<(us
     let transfers_processed = if cli.transfers_enabled {
         runtime
             .transfer_worker
-            .run_until_idle(&runtime.db, cli.max_transfers_per_tick)
+            .run_until_idle(&runtime.backend, cli.max_transfers_per_tick)
             .await
             .context("running artifact transfer tick")?
     } else {
@@ -331,7 +357,7 @@ async fn run_work_tick(cli: &Cli, runtime: &WorkerRuntime) -> anyhow::Result<(us
     let processed = runtime
         .worker
         .run_local_with_pipeline_until_idle(
-            &runtime.db,
+            &runtime.backend,
             &runtime.pipeline,
             &runtime.executor,
             cli.max_steps_per_tick,
@@ -387,8 +413,11 @@ fn resolve_root(path: &str) -> anyhow::Result<PathBuf> {
 }
 
 /// Return whether the configured machine is disabled for new work.
-async fn machine_work_disabled(db: &DashboardDb, machine_id: &str) -> anyhow::Result<bool> {
-    let machine = db
+async fn machine_work_disabled(
+    backend: &impl ResearchWorkBackend,
+    machine_id: &str,
+) -> anyhow::Result<bool> {
+    let machine = backend
         .get_research_machine(machine_id)
         .await
         .with_context(|| format!("loading research machine '{machine_id}'"))?;

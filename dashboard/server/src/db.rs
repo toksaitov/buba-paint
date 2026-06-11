@@ -35,7 +35,7 @@ pub struct Session {
 }
 
 /// Dashboard record for a machine that can participate in research workflows.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResearchMachine {
     /// Stable machine ID, for example `live` or `research`.
     pub id: String,
@@ -168,7 +168,7 @@ impl ResearchMachineTelemetryUpdate<'_> {
 }
 
 /// Persisted metadata for one exported runtime artifact.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResearchArtifact {
     /// Stable artifact ID.
     pub id: String,
@@ -267,7 +267,7 @@ pub struct ResearchReportRecord<'a> {
 }
 
 /// Persisted status for a machine-to-machine artifact transfer.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactTransfer {
     /// Stable transfer ID.
     pub id: String,
@@ -377,7 +377,7 @@ pub struct ResearchJobTemplateRecord<'a> {
 }
 
 /// Durable research job requested from the dashboard.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResearchJob {
     /// Stable job ID.
     pub id: String,
@@ -404,7 +404,7 @@ pub struct ResearchJob {
 }
 
 /// Durable step belonging to a research job.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResearchJobStep {
     /// Stable step ID.
     pub id: String,
@@ -439,7 +439,7 @@ pub struct ResearchJobStep {
 }
 
 /// Job and step returned together when a worker obtains a lease.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResearchStepLease {
     /// Job that owns the leased step.
     pub job: ResearchJob,
@@ -448,7 +448,7 @@ pub struct ResearchStepLease {
 }
 
 /// Timeline event recorded for a research job.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResearchJobEvent {
     /// Stable event ID.
     pub id: String,
@@ -467,7 +467,7 @@ pub struct ResearchJobEvent {
 }
 
 /// Persisted report metadata produced by a completed research job.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResearchReport {
     /// Stable report ID.
     pub id: String,
@@ -2621,6 +2621,40 @@ impl DashboardDb {
              SET title = ?2, status = ?3, updated_at = ?4
              WHERE id = ?1",
             params![id, title.trim(), status.trim(), now],
+        )?;
+        if changed == 0 {
+            return Err(DashboardError::NotFound(format!("report '{id}' not found")));
+        }
+        let report = conn.query_row(
+            "SELECT id, job_id, artifact_id, title, status, summary_json, report_path, csv_path,
+                    created_at, updated_at
+             FROM research_reports
+             WHERE id = ?1",
+            params![id],
+            research_report_from_row,
+        )?;
+        Ok(report)
+    }
+
+    /// Update the stored document paths for one research report.
+    pub async fn update_research_report_paths(
+        &self,
+        id: &str,
+        report_path: &str,
+        csv_path: &str,
+    ) -> Result<ResearchReport, DashboardError> {
+        if report_path.trim().is_empty() || csv_path.trim().is_empty() {
+            return Err(DashboardError::BadRequest(
+                "report document paths must not be empty".to_string(),
+            ));
+        }
+        let conn = self.conn.lock().await;
+        let now = now_ms();
+        let changed = conn.execute(
+            "UPDATE research_reports
+             SET report_path = ?2, csv_path = ?3, updated_at = ?4
+             WHERE id = ?1",
+            params![id, report_path.trim(), csv_path.trim(), now],
         )?;
         if changed == 0 {
             return Err(DashboardError::NotFound(format!("report '{id}' not found")));

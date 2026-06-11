@@ -20,7 +20,7 @@ impl SourceRunMetrics {
     }
 }
 
-/// Read source-run metrics from one SQLite database path.
+/// Read source-run metrics from one `SQLite` database path.
 pub fn read_source_run_metrics(
     db_path: &str,
     start_time: u64,
@@ -32,7 +32,7 @@ pub fn read_source_run_metrics(
     read_source_run_metrics_from_connection(&conn, start_time, end_time, starting_balance)
 }
 
-/// Read source-run metrics from one opened SQLite connection.
+/// Read source-run metrics from one opened `SQLite` connection.
 pub fn read_source_run_metrics_from_connection(
     conn: &Connection,
     start_time: u64,
@@ -54,7 +54,7 @@ pub fn read_source_run_metrics_from_connection(
     Ok(metrics.has_evidence().then_some(metrics))
 }
 
-/// Read source trade count and PnL metrics.
+/// Read source trade count and `PnL` metrics.
 fn read_source_trade_metrics(
     conn: &Connection,
     start_time: u64,
@@ -156,12 +156,12 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> anyhow::Result
     Ok(false)
 }
 
-/// Quote one SQLite identifier from a trusted internal string.
+/// Quote one `SQLite` identifier from a trusted internal string.
 fn sqlite_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
-/// Convert one timestamp into SQLite integer form.
+/// Convert one timestamp into `SQLite` integer form.
 fn sqlite_timestamp(timestamp: u64) -> anyhow::Result<i64> {
     i64::try_from(timestamp).context("timestamp does not fit in i64")
 }

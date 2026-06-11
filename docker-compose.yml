@@ -80,9 +80,14 @@ services:
         source: ${BUBA_DASHBOARD_CONFIG:-./dashboard.toml}
         target: /config/dashboard.toml
         read_only: true
+      - type: bind
+        source: ${BUBA_RESEARCH_WORK_DIR:-./.docker/research/work}
+        target: /research
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      BUBA_RESEARCH_WORKER_TOKEN: ${BUBA_RESEARCH_WORKER_TOKEN:-}
+      BUBA_RESEARCH_WORK_ROOT: ${BUBA_RESEARCH_WORK_ROOT:-/research}
       DASHBOARD_DB_PATH: /runtime/dashboard.db
       RUST_LOG: ${RUST_LOG:-info}
     entrypoint: ["/bin/sh", "-lc"]

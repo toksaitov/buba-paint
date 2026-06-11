@@ -199,13 +199,17 @@ export function ResearchOverviewPage() {
           sub={`${queue.counts.transfers_attention} attention`}
         />
         <MetricCard
-          label="Retention"
+          label="Retention candidates"
           value={(
             queue.retention.jobs +
             queue.retention.reports +
             queue.retention.artifacts
           ).toString()}
-          sub={formatBytes(queue.retention.scratch_bytes)}
+          sub={`${formatBytes(
+            queue.retention.scratch_bytes +
+              queue.retention.report_bytes +
+              queue.retention.artifact_bytes,
+          )} reclaimable`}
         />
       </div>
 

@@ -32,11 +32,11 @@ pub struct PrepareBacktestInputReport {
 /// Row counts for prepared replay and source-audit data.
 #[derive(Debug, Clone, Copy)]
 struct PreparedCounts {
-    generic_feed_rows: i64,
-    compact_clob_rows: i64,
-    source_signal_rows: i64,
-    source_trade_rows: i64,
-    source_trade_result_rows: i64,
+    generic_feed: i64,
+    compact_clob: i64,
+    source_signals: i64,
+    source_trades: i64,
+    source_trade_results: i64,
 }
 
 /// Build a derived indexed DB for large backtests and sweeps.
@@ -92,11 +92,11 @@ pub fn prepare_backtest_input(
         manifest_path: manifest_path.to_string_lossy().to_string(),
         source_bytes,
         output_bytes,
-        generic_feed_rows: counts.generic_feed_rows,
-        compact_clob_rows: counts.compact_clob_rows,
-        source_signal_rows: counts.source_signal_rows,
-        source_trade_rows: counts.source_trade_rows,
-        source_trade_result_rows: counts.source_trade_result_rows,
+        generic_feed_rows: counts.generic_feed,
+        compact_clob_rows: counts.compact_clob,
+        source_signal_rows: counts.source_signals,
+        source_trade_rows: counts.source_trades,
+        source_trade_result_rows: counts.source_trade_results,
         readiness,
     })
 }
@@ -570,11 +570,11 @@ fn prepared_counts(output_path: &str) -> anyhow::Result<PreparedCounts> {
     let source_trade_rows = table_count(&conn, "simulated_trades")?;
     let source_trade_result_rows = table_count(&conn, "trade_results")?;
     Ok(PreparedCounts {
-        generic_feed_rows,
-        compact_clob_rows: compact_clob_event_rows + compact_clob_block_rows,
-        source_signal_rows,
-        source_trade_rows,
-        source_trade_result_rows,
+        generic_feed: generic_feed_rows,
+        compact_clob: compact_clob_event_rows + compact_clob_block_rows,
+        source_signals: source_signal_rows,
+        source_trades: source_trade_rows,
+        source_trade_results: source_trade_result_rows,
     })
 }
 
@@ -603,11 +603,11 @@ fn write_manifest(
         "end_time": options.end_time,
         "source_bytes": source_bytes,
         "output_bytes": output_bytes,
-        "generic_feed_rows": counts.generic_feed_rows,
-        "compact_clob_rows": counts.compact_clob_rows,
-        "source_signal_rows": counts.source_signal_rows,
-        "source_trade_rows": counts.source_trade_rows,
-        "source_trade_result_rows": counts.source_trade_result_rows,
+        "generic_feed_rows": counts.generic_feed,
+        "compact_clob_rows": counts.compact_clob,
+        "source_signal_rows": counts.source_signals,
+        "source_trade_rows": counts.source_trades,
+        "source_trade_result_rows": counts.source_trade_results,
         "backtest_input": readiness.class.as_str(),
         "replay_quality": readiness.replay_quality.class.as_str(),
         "settled_windows": readiness.settled_windows,

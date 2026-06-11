@@ -10,6 +10,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use buba_dashboard::api::auth_routes::{self, AppState};
 use buba_dashboard::api::bots;
 use buba_dashboard::api::research;
+use buba_dashboard::api::research_workers;
 use buba_dashboard::api::ws_proxy;
 use buba_dashboard::auth::{self, AuthState, hash_password};
 use buba_dashboard::config::DashboardConfig;
@@ -141,12 +142,105 @@ fn research_routes() -> Router<AppState> {
             "/api/research/workers/heartbeat",
             post(research::worker_heartbeat),
         )
+        .merge(research_worker_protocol_routes())
         .merge(research_artifact_routes())
         .merge(research_transfer_routes())
         .merge(research_job_routes())
         .merge(research_template_routes())
         .merge(research_queue_routes())
         .merge(research_report_routes())
+}
+
+/// Builds worker-token protocol routes that expose the research queue to remote workers.
+fn research_worker_protocol_routes() -> Router<AppState> {
+    use axum::extract::DefaultBodyLimit;
+    use axum::routing::put;
+    Router::new()
+        .route(
+            "/api/research/workers/steps/claim",
+            post(research_workers::claim_step),
+        )
+        .route(
+            "/api/research/workers/steps/{id}/renew",
+            post(research_workers::renew_step_lease),
+        )
+        .route(
+            "/api/research/workers/steps/{id}/run",
+            post(research_workers::mark_step_running),
+        )
+        .route(
+            "/api/research/workers/steps/{id}/complete",
+            post(research_workers::complete_step),
+        )
+        .route(
+            "/api/research/workers/steps/{id}/fail",
+            post(research_workers::fail_step),
+        )
+        .route(
+            "/api/research/workers/steps/{id}/block",
+            post(research_workers::block_step),
+        )
+        .route(
+            "/api/research/workers/jobs/{id}",
+            get(research_workers::get_job),
+        )
+        .route(
+            "/api/research/workers/jobs/{id}/cancel",
+            post(research_workers::cancel_job),
+        )
+        .route(
+            "/api/research/workers/jobs/{id}/steps",
+            get(research_workers::get_job_steps),
+        )
+        .route(
+            "/api/research/workers/jobs/{id}/events",
+            post(research_workers::append_job_event),
+        )
+        .route(
+            "/api/research/workers/jobs/{job_id}/artifact/{artifact_id}",
+            post(research_workers::attach_job_artifact),
+        )
+        .route(
+            "/api/research/workers/artifacts",
+            post(research_workers::upsert_artifact),
+        )
+        .route(
+            "/api/research/workers/artifacts/{id}",
+            get(research_workers::get_artifact),
+        )
+        .route(
+            "/api/research/workers/artifacts/{id}/documents",
+            put(research_workers::store_artifact_documents),
+        )
+        .route(
+            "/api/research/workers/reports",
+            post(research_workers::upsert_report),
+        )
+        .route(
+            "/api/research/workers/reports/{id}/documents",
+            put(research_workers::store_report_documents),
+        )
+        .route(
+            "/api/research/workers/transfers/claim",
+            post(research_workers::claim_transfer),
+        )
+        .route(
+            "/api/research/workers/transfers/{id}",
+            get(research_workers::get_transfer),
+        )
+        .route(
+            "/api/research/workers/transfers/{id}/progress",
+            post(research_workers::update_transfer_progress),
+        )
+        .route(
+            "/api/research/workers/transfers/recover",
+            post(research_workers::recover_stale_transfers),
+        )
+        .route(
+            "/api/research/workers/machines/{id}",
+            get(research_workers::get_machine),
+        )
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
 }
 
 /// Builds queue and retention research routes.

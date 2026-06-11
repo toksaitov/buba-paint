@@ -15,7 +15,7 @@ pub struct SweepDimension {
     pub values: Vec<f64>,
 }
 
-/// Source-run calibration used to bias-adjust sweep PnL.
+/// Source-run calibration used to bias-adjust sweep `PnL`.
 #[derive(Debug, Clone)]
 pub(crate) struct SweepCalibration {
     source_baseline_pnl: f64,
@@ -32,7 +32,7 @@ impl SweepCalibration {
     /// Build calibration from one source run and one replay baseline.
     #[must_use]
     pub(crate) fn from_source_and_replay(
-        source: SourceRunMetrics,
+        source: &SourceRunMetrics,
         replay: &BacktestResult,
         starting_balance: f64,
     ) -> Self {
@@ -61,7 +61,7 @@ impl SweepCalibration {
         }
     }
 
-    /// Return replay minus source PnL for the baseline current-params replay.
+    /// Return replay minus source `PnL` for the baseline current-params replay.
     #[must_use]
     pub(crate) fn baseline_delta_pnl(&self) -> f64 {
         self.baseline_replay_pnl - self.source_baseline_pnl
@@ -81,7 +81,7 @@ impl SweepCalibration {
             - i64::try_from(self.source_baseline_signals).unwrap_or(i64::MAX)
     }
 
-    /// Return one sweep row's baseline bias-adjusted PnL.
+    /// Return one sweep row's baseline bias-adjusted `PnL`.
     #[must_use]
     pub(crate) fn calibrated_pnl(&self, replay_pnl: f64) -> f64 {
         replay_pnl - self.baseline_delta_pnl()
@@ -354,7 +354,7 @@ fn build_sweep_calibration(
         quiet: true,
         config,
     })?;
-    let calibration = SweepCalibration::from_source_and_replay(source, &replay, starting_balance);
+    let calibration = SweepCalibration::from_source_and_replay(&source, &replay, starting_balance);
     println!(
         "Calibration: source_pnl={:.4} baseline_replay_pnl={:.4} delta={:.4} confidence={}",
         calibration.source_baseline_pnl,
@@ -418,7 +418,17 @@ pub(crate) fn build_csv_with_calibration(
     calibration: Option<&SweepCalibration>,
 ) -> String {
     let mut csv = String::new();
+    csv.push_str(&sweep_csv_header(dim_names, calibration.is_some()));
+    csv.push('\n');
+    for (combo, r) in results {
+        csv.push_str(&sweep_csv_row(combo, r, calibration));
+        csv.push('\n');
+    }
+    csv
+}
 
+/// Build the sweep CSV header row, optionally with calibration columns.
+fn sweep_csv_header(dim_names: &[String], with_calibration: bool) -> String {
     let mut headers: Vec<String> = dim_names.to_vec();
     headers.extend([
         "pnl".to_string(),
@@ -464,7 +474,7 @@ pub(crate) fn build_csv_with_calibration(
         "pnl_net".to_string(),
         "elapsed_s".to_string(),
     ]);
-    if calibration.is_some() {
+    if with_calibration {
         headers.extend([
             "calibrated_pnl".to_string(),
             "calibrated_final_balance".to_string(),
@@ -480,10 +490,16 @@ pub(crate) fn build_csv_with_calibration(
             "baseline_signal_delta".to_string(),
         ]);
     }
-    csv.push_str(&headers.join(","));
-    csv.push('\n');
+    headers.join(",")
+}
 
-    for (combo, r) in results {
+/// Build one sweep CSV data row, optionally with calibration columns.
+fn sweep_csv_row(
+    combo: &[(&str, f64)],
+    r: &BacktestResult,
+    calibration: Option<&SweepCalibration>,
+) -> String {
+    {
         let mut row: Vec<String> = combo.iter().map(|(_, v)| format!("{v}")).collect();
         row.push(format!("{}", r.total_pnl));
         row.push(format!("{}", r.win_rate));
@@ -544,14 +560,11 @@ pub(crate) fn build_csv_with_calibration(
             row.push(format!("{}", calibration.baseline_replay_signals));
             row.push(format!("{}", calibration.baseline_signal_delta()));
         }
-        csv.push_str(&row.join(","));
-        csv.push('\n');
+        row.join(",")
     }
-
-    csv
 }
 
-/// Return the top `n` results sorted by calibrated PnL when available.
+/// Return the top `n` results sorted by calibrated `PnL` when available.
 pub(crate) fn top_n_by_calibrated_pnl<'a>(
     results: &'a [(Vec<(&'a str, f64)>, BacktestResult)],
     calibration: Option<&SweepCalibration>,

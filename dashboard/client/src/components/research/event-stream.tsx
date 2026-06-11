@@ -112,7 +112,9 @@ export function EventStream({
       )}
       {sorted.length === 0 ? (
         <div className="text-[12px] text-muted">
-          No events match the selected levels.
+          {events.length === 0
+            ? "No events yet. Worker activity and operator notes appear here."
+            : "No events match the selected levels."}
         </div>
       ) : (
         <ol className="space-y-1.5">

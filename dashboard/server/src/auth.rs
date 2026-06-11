@@ -84,7 +84,7 @@ pub async fn require_auth(mut request: Request, next: Next) -> Result<Response, 
     let path = request.uri().path();
     if path == "/api/auth/login"
         || path == "/health"
-        || path == "/api/research/workers/heartbeat"
+        || path.starts_with("/api/research/workers/")
         || path.starts_with("/ws/")
     {
         return Ok(next.run(request).await);

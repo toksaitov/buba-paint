@@ -10,10 +10,11 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::db::{
-    DashboardDb, ResearchArtifact, ResearchArtifactRecord, ResearchReportRecord, ResearchStepLease,
+    ResearchArtifact, ResearchArtifactRecord, ResearchReportRecord, ResearchStepLease,
 };
 use crate::error::DashboardError;
 use crate::research_artifacts;
+use crate::research_backend::ResearchWorkBackend;
 use crate::research_export;
 use crate::research_pipeline::{
     BubaPaintCommandKind, CommandCancellation, CommandOutput, CommandSpec, ResearchCommandExecutor,
@@ -78,7 +79,7 @@ impl LocalResearchWorker {
     /// Lease and run one available step with the phase-3 local no-op executor.
     pub async fn run_one_noop(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
     ) -> Result<Option<ResearchStepLease>, DashboardError> {
         let Some(lease) = db
             .lease_next_research_step(&self.worker_id, self.lease_duration_ms)
@@ -151,7 +152,7 @@ impl LocalResearchWorker {
     /// Run available no-op steps up to a bounded limit.
     pub async fn run_noop_until_idle(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         max_steps: usize,
     ) -> Result<usize, DashboardError> {
         let mut completed = 0;
@@ -167,7 +168,7 @@ impl LocalResearchWorker {
     /// Lease and run one available step with local artifact-aware behavior.
     pub async fn run_one_local(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
     ) -> Result<Option<ResearchStepLease>, DashboardError> {
         let Some(lease) = db
             .lease_next_research_step(&self.worker_id, self.lease_duration_ms)
@@ -254,7 +255,7 @@ impl LocalResearchWorker {
     /// Run artifact-aware local steps up to a bounded limit.
     pub async fn run_local_until_idle(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         max_steps: usize,
     ) -> Result<usize, DashboardError> {
         let mut processed = 0;
@@ -270,7 +271,7 @@ impl LocalResearchWorker {
     /// Lease and run one available step with command-backed local behavior.
     pub async fn run_one_local_with_pipeline<E: ResearchCommandExecutor>(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         pipeline: &ResearchPipelineConfig,
         executor: &E,
     ) -> Result<Option<ResearchStepLease>, DashboardError> {
@@ -337,7 +338,7 @@ impl LocalResearchWorker {
     /// Run command-backed local steps up to a bounded limit.
     pub async fn run_local_with_pipeline_until_idle<E: ResearchCommandExecutor>(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         pipeline: &ResearchPipelineConfig,
         executor: &E,
         max_steps: usize,
@@ -359,7 +360,7 @@ impl LocalResearchWorker {
     /// Verify the artifact referenced by the leased job.
     async fn verify_artifact_step(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         lease: &ResearchStepLease,
     ) -> Result<String, DashboardError> {
         let Some(artifact_id) = lease.job.artifact_id.as_deref() else {
@@ -397,7 +398,7 @@ impl LocalResearchWorker {
     /// Execute one local `buba-paint` command-backed pipeline step.
     async fn run_command_step<E: ResearchCommandExecutor>(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         pipeline: &ResearchPipelineConfig,
         executor: &E,
         lease: &ResearchStepLease,
@@ -473,7 +474,7 @@ impl LocalResearchWorker {
     /// Write report files, persist report metadata, and optionally archive scratch DB outputs.
     async fn write_report_step(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         pipeline: &ResearchPipelineConfig,
         lease: &ResearchStepLease,
     ) -> Result<String, DashboardError> {
@@ -518,6 +519,7 @@ impl LocalResearchWorker {
         } else {
             None
         };
+        publish_report_documents(db, &report_id, &plan).await?;
         serde_json::to_string(&serde_json::json!({
             "executor": "local_command",
             "step_kind": ResearchStepKind::WriteReport.as_str(),
@@ -577,7 +579,7 @@ impl LocalResearchWorker {
     /// Write an exported artifact manifest and attach it to the job.
     async fn write_artifact_manifest_step(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         pipeline: &ResearchPipelineConfig,
         lease: &ResearchStepLease,
     ) -> Result<String, DashboardError> {
@@ -618,6 +620,15 @@ impl LocalResearchWorker {
         .await?;
         db.attach_research_job_artifact(&lease.job.id, &result.artifact_id)
             .await?;
+        let manifest_json = std::fs::read_to_string(&result.manifest_path).ok();
+        let checksums_text =
+            std::fs::read_to_string(result.artifact_root.join("checksums.sha256")).ok();
+        db.store_research_artifact_documents(
+            &result.artifact_id,
+            manifest_json.as_deref(),
+            checksums_text.as_deref(),
+        )
+        .await?;
         export_step_output(
             ResearchStepKind::WriteArtifactManifest,
             "completed",
@@ -626,9 +637,25 @@ impl LocalResearchWorker {
     }
 }
 
+/// Upload generated report documents to the work source after metadata persists.
+async fn publish_report_documents(
+    db: &impl ResearchWorkBackend,
+    report_id: &str,
+    plan: &ResearchPipelinePlan,
+) -> Result<(), DashboardError> {
+    let report_json = std::fs::read_to_string(&plan.report_json_path).map_err(|error| {
+        DashboardError::Internal(format!("reading generated report JSON: {error}"))
+    })?;
+    let report_csv = std::fs::read_to_string(&plan.report_csv_path).map_err(|error| {
+        DashboardError::Internal(format!("reading generated report CSV: {error}"))
+    })?;
+    db.store_research_report_documents(report_id, &report_json, &report_csv)
+        .await
+}
+
 /// Persist the durable report metadata row for a generated research report.
 async fn persist_research_report_metadata(
-    db: &DashboardDb,
+    db: &impl ResearchWorkBackend,
     lease: &ResearchStepLease,
     plan: &ResearchPipelinePlan,
     summary_json: &str,
@@ -666,7 +693,7 @@ fn report_summary_with_field<T: serde::Serialize>(
 
 /// Complete a step when a local action succeeds, otherwise block it.
 async fn complete_or_block_step(
-    db: &DashboardDb,
+    db: &impl ResearchWorkBackend,
     worker_id: &str,
     lease: &ResearchStepLease,
     result: Result<String, DashboardError>,
@@ -712,7 +739,7 @@ async fn complete_or_block_step(
 
 /// Complete a command-backed step when it succeeds, otherwise block it.
 async fn complete_or_block_pipeline_step(
-    db: &DashboardDb,
+    db: &impl ResearchWorkBackend,
     worker_id: &str,
     lease: &ResearchStepLease,
     result: Result<String, DashboardError>,
@@ -775,7 +802,7 @@ async fn complete_or_block_pipeline_step(
 
 /// Return the artifact referenced by one leased job, if any.
 async fn research_artifact_for_job(
-    db: &DashboardDb,
+    db: &impl ResearchWorkBackend,
     lease: &ResearchStepLease,
 ) -> Result<Option<ResearchArtifact>, DashboardError> {
     let Some(artifact_id) = lease.job.artifact_id.as_deref() else {
@@ -793,7 +820,7 @@ async fn research_artifact_for_job(
 
 /// Return the fresh cancelled lease when the operator cancelled the active step.
 async fn cancelled_step_lease(
-    db: &DashboardDb,
+    db: &impl ResearchWorkBackend,
     lease: &ResearchStepLease,
 ) -> Result<Option<ResearchStepLease>, DashboardError> {
     let Some(job) = db.get_research_job(&lease.job.id).await? else {

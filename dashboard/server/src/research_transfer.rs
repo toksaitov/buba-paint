@@ -8,11 +8,10 @@
 use std::io::{Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
-use crate::db::{
-    ArtifactTransfer, DashboardDb, ResearchArtifact, ResearchArtifactRecord, ResearchMachine,
-};
+use crate::db::{ArtifactTransfer, ResearchArtifact, ResearchArtifactRecord, ResearchMachine};
 use crate::error::DashboardError;
 use crate::research_artifacts::{self, ArtifactManifest};
+use crate::research_backend::ResearchWorkBackend;
 
 /// Runtime configuration for artifact transfer execution.
 #[derive(Debug, Clone)]
@@ -102,7 +101,7 @@ impl ArtifactTransferWorker {
     /// Claim and process one queued or retryable transfer for this worker.
     pub async fn run_one(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
     ) -> Result<Option<ArtifactTransfer>, DashboardError> {
         let Some(transfer) = db
             .claim_next_artifact_transfer(&self.config.local_machine_id)
@@ -119,7 +118,7 @@ impl ArtifactTransferWorker {
     /// Process available transfers up to a bounded limit.
     pub async fn run_until_idle(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         max_transfers: usize,
     ) -> Result<usize, DashboardError> {
         if max_transfers == 0 {
@@ -137,7 +136,10 @@ impl ArtifactTransferWorker {
     }
 
     /// Recover stale running transfers for this worker's destination machine.
-    pub async fn recover_stale(&self, db: &DashboardDb) -> Result<usize, DashboardError> {
+    pub async fn recover_stale(
+        &self,
+        db: &impl ResearchWorkBackend,
+    ) -> Result<usize, DashboardError> {
         let Some(stale_after_ms) = self.config.stale_after_ms else {
             return Ok(0);
         };
@@ -148,7 +150,7 @@ impl ArtifactTransferWorker {
     /// Execute one transfer that has already been claimed.
     async fn run_claimed(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         transfer: &ArtifactTransfer,
     ) -> Result<ArtifactTransfer, DashboardError> {
         let artifact = db
@@ -192,7 +194,7 @@ impl ArtifactTransferWorker {
     /// Return the source machine declared by the transfer or artifact.
     async fn source_machine(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         transfer: &ArtifactTransfer,
         artifact: &ResearchArtifact,
     ) -> Result<Option<ResearchMachine>, DashboardError> {
@@ -216,7 +218,7 @@ impl ArtifactTransferWorker {
     /// Copy an artifact directory from a local source using resumable file appends.
     async fn copy_local_artifact(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         transfer: &ArtifactTransfer,
         source_root: &Path,
         destination_root: &Path,
@@ -257,7 +259,7 @@ impl ArtifactTransferWorker {
     /// Copy an artifact directory from a remote source using `rsync` over SSH.
     async fn copy_remote_artifact(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         transfer: &ArtifactTransfer,
         source_machine: &ResearchMachine,
         source_root: &Path,
@@ -324,7 +326,7 @@ impl ArtifactTransferWorker {
     /// Persist an artifact row that points at the verified local destination.
     async fn upsert_local_artifact(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         artifact: &ResearchArtifact,
         destination_root: &Path,
         verification: &research_artifacts::ArtifactVerification,
@@ -377,7 +379,7 @@ impl ArtifactTransferWorker {
     /// Update transfer progress while preserving monotonic byte counts.
     async fn update_running_progress(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         transfer: &ArtifactTransfer,
         bytes_done: u64,
         bytes_total: Option<u64>,
@@ -396,7 +398,7 @@ impl ArtifactTransferWorker {
     /// Mark a failed transfer as retryable unless it became terminal meanwhile.
     async fn mark_retryable(
         &self,
-        db: &DashboardDb,
+        db: &impl ResearchWorkBackend,
         transfer: &ArtifactTransfer,
         error: &str,
     ) -> Result<Option<ArtifactTransfer>, DashboardError> {

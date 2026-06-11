@@ -67,6 +67,8 @@ const mockUseResearchJob = vi.mocked(useResearchJob);
 const mockUseResearchReports = vi.mocked(useResearchReports);
 const mockCloneResearchJob = vi.mocked(cloneResearchJob);
 const mockAppendResearchJobEvent = vi.mocked(appendResearchJobEvent);
+const startDateLabel = /^start(\s*required)?$/i;
+const endDateLabel = /^end(\s*required)?$/i;
 
 function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -176,24 +178,33 @@ describe("ResearchJobDetailPage - clone flow", () => {
     render(<ResearchJobDetailPage />, { wrapper });
     await user.click(screen.getByRole("button", { name: /^clone$/i }));
 
-    expect(screen.getByLabelText(/source artifact/i)).toHaveValue(
+    expect(screen.getByLabelText(/artifact to replay/i)).toHaveValue(
       "fixture-artifact-available",
     );
     expect(screen.getByLabelText(/balance/i)).toHaveValue("200");
-    expect(screen.getByLabelText(/set overrides key 1/i)).toHaveValue("RISK");
-    expect(screen.getByLabelText(/set overrides value 1/i)).toHaveValue("low");
+    expect(
+      screen.getByLabelText(/parameter overrides parameter 1/i),
+    ).toHaveValue("RISK");
+    expect(screen.getByLabelText(/parameter overrides value 1/i)).toHaveValue(
+      "low",
+    );
     expect(
       (screen.getByLabelText(/additional params json/i) as HTMLTextAreaElement)
         .value,
     ).toContain("preserved_unknown");
 
-    fireEvent.change(screen.getByLabelText(/^Start/i), {
-      target: { value: "2026-05-17T13:39" },
+    await user.click(screen.getByRole("radio", { name: /custom range/i }));
+    const editedStart = "2026-05-17T12:41";
+    const editedEnd = "2026-05-17T12:42";
+    fireEvent.change(await screen.findByLabelText(startDateLabel), {
+      target: { value: editedStart },
     });
-    fireEvent.change(screen.getByLabelText(/^End/i), {
-      target: { value: "2026-05-17T13:41" },
+    fireEvent.change(await screen.findByLabelText(endDateLabel), {
+      target: { value: editedEnd },
     });
-    await user.click(screen.getByRole("button", { name: /create clone/i }));
+    const createClone = screen.getByRole("button", { name: /create clone/i });
+    await waitFor(() => expect(createClone).not.toBeDisabled());
+    await user.click(createClone);
 
     await waitFor(() => expect(mockCloneResearchJob).toHaveBeenCalledTimes(1));
     expect(mockCloneResearchJob).toHaveBeenCalledWith(
@@ -203,8 +214,8 @@ describe("ResearchJobDetailPage - clone flow", () => {
         priority: 0,
         params: expect.objectContaining({
           preserved_unknown: "keep me",
-          start_ms: Date.parse("2026-05-17T13:39"),
-          end_ms: Date.parse("2026-05-17T13:41"),
+          start_ms: Date.parse(editedStart),
+          end_ms: Date.parse(editedEnd),
           balance: 200,
           set: ["RISK=low"],
         }),
@@ -250,7 +261,7 @@ describe("ResearchJobDetailPage - clone flow", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("requires confirmation for fallback-derived clone intervals", async () => {
+  it("allows short full-artifact clone intervals without fallback confirmation", async () => {
     const user = userEvent.setup();
     const job = fixtureJobBlocked();
     job.job.params_json = JSON.stringify({
@@ -267,13 +278,9 @@ describe("ResearchJobDetailPage - clone flow", () => {
     await user.click(screen.getByRole("button", { name: /^clone$/i }));
 
     const createClone = screen.getByRole("button", { name: /create clone/i });
-    expect(createClone).toBeDisabled();
-    await user.click(
-      screen.getByRole("checkbox", {
-        name: /confirm this interval before creating the job/i,
-      }),
-    );
     expect(createClone).not.toBeDisabled();
+    expect(screen.queryByLabelText(startDateLabel)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/full artifact/i).length).toBeGreaterThan(0);
   });
 });
 

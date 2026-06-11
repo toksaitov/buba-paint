@@ -94,11 +94,11 @@ artifact transfers, and recovers stale running transfers after the configured
 window.
 
 In the current public operator setup, `https://buba.toksaitov.com` is the only
-dashboard URL. Caddy on `buba-paint` serves the live dashboard UI and proxies
-`/api/research*` to the `testing` research stack through the managed
-`buba-research-tunnel.service` and `buba-research-proxy.service` bridge. The
-`testing` dashboard remains private infrastructure behind that route; operators
-should not need to open a second dashboard.
+dashboard URL. Caddy on `buba-paint` serves the live dashboard UI and API from
+the live dashboard container. The `testing` host runs the research worker and
+storage stack; it authenticates back to the public controller with
+`BUBA_RESEARCH_WORKER_TOKEN`. Operators should not need to open a second
+dashboard.
 
 Check the private research stack with:
 
@@ -116,7 +116,18 @@ python3 scripts/deploy-stopped-live.py --dry-run --expected-runtime-name <runtim
 python3 scripts/deploy-stopped-live.py --expected-runtime-name <runtime-name> --expected-db-sha256 <finalized-db-sha256>
 ```
 
-The stopped-live deploy uses `ops/live-images.lock.json`, pulls dashboard, agent, paint, and sidecar images by digest, and starts only `agent`, `dashboard`, and `caddy` against the existing finalized runtime from `~/buba-paint-live/current/.env`. It refuses non-dry-run deployment unless the current runtime name matches the expected finalized run, the live DB checksum matches the supplied SHA-256, and no `paint` or `sidecar` container is running. The paint and sidecar images are pulled for provenance and rollback readiness but are not started.
+The stopped-live deploy uses `ops/live-images.lock.json`, pulls dashboard,
+agent, paint, and sidecar images by digest, and starts only `agent`,
+`dashboard`, and `caddy` against the existing finalized runtime from
+`~/buba-paint-live/current/.env`. It also persists
+`BUBA_RESEARCH_WORK_DIR=~/buba-paint-live/research-work` and
+`BUBA_RESEARCH_WORK_ROOT=/research` in the release `.env`, so the public
+controller can serve Research artifact manifest and checksum metadata without
+opening the private `testing` dashboard. It refuses non-dry-run deployment
+unless the current runtime name matches the expected finalized run, the live DB
+checksum matches the supplied SHA-256, and no `paint` or `sidecar` container is
+running. The paint and sidecar images are pulled for provenance and rollback
+readiness but are not started.
 
 Research maintenance operations:
 

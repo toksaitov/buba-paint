@@ -19,6 +19,7 @@ import { JobCloneDialog } from "../components/research/job-clone-dialog";
 import { parseRecord } from "../components/research/job-form-values";
 import { JobRecoveryDiagnosis } from "../components/research/job-recovery-diagnosis";
 import { JsonViewer } from "../components/research/json-viewer";
+import { QueueWaitBanner } from "../components/research/queue-wait-banner";
 import { StepTimeline } from "../components/research/step-timeline";
 import { Dialog } from "../components/ui/dialog";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
@@ -60,7 +61,29 @@ import type {
   ResearchAction,
   ResearchJob,
 } from "../lib/research-types";
-import { humanize } from "../lib/utils";
+import { formatDateTime, formatDurationShort, humanize } from "../lib/utils";
+
+function paramsNumber(
+  params: Record<string, unknown>,
+  key: string,
+): number | null {
+  const value = params[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function jobIntervalSummary(job: ResearchJob): {
+  range: string;
+  duration: string;
+} | null {
+  const params = parseRecord(job.params_json);
+  const start = paramsNumber(params, "start_ms");
+  const end = paramsNumber(params, "end_ms");
+  if (start == null || end == null || end <= start) return null;
+  return {
+    range: `${formatDateTime(start)} → ${formatDateTime(end)}`,
+    duration: formatDurationShort(end - start),
+  };
+}
 
 export function ResearchJobDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -85,6 +108,7 @@ export function ResearchJobDetailPage() {
   const [appendError, setAppendError] = useState<string | null>(null);
   const [isAppending, setIsAppending] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   const [confirmArchiveScratchOpen, setConfirmArchiveScratchOpen] =
     useState(false);
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
@@ -211,7 +235,7 @@ export function ResearchJobDetailPage() {
   const handleJobAction = (action: ResearchAction) => {
     switch (action) {
       case "cancel":
-        return runJobMutation("cancel", () => cancelResearchJob(id));
+        return setConfirmCancelOpen(true);
       case "pause":
         return runJobMutation("pause", () => pauseResearchJob(id));
       case "resume":
@@ -312,6 +336,7 @@ export function ResearchJobDetailPage() {
   const blockedStep = steps.find((s) => s.status === "blocked");
   const failedStep =
     job.status === "failed" ? steps.find((s) => s.status === "failed") : null;
+  const intervalSummary = jobIntervalSummary(job);
 
   return (
     <div className="space-y-3">
@@ -335,6 +360,8 @@ export function ResearchJobDetailPage() {
           {actionError}
         </Banner>
       )}
+
+      <QueueWaitBanner job={job} />
 
       {blockedStep && (
         <Banner tone="info" title="Job is blocked">
@@ -443,6 +470,12 @@ export function ResearchJobDetailPage() {
               },
               { label: "Requested by", value: job.requested_by },
               { label: "Priority", value: job.priority },
+              ...(intervalSummary
+                ? [
+                    { label: "Interval", value: intervalSummary.range },
+                    { label: "Duration", value: intervalSummary.duration },
+                  ]
+                : []),
               {
                 label: "Created",
                 value: <RelativeTime epochMs={job.created_at} />,
@@ -500,9 +533,20 @@ export function ResearchJobDetailPage() {
       <SectionCard title="Report">
         {!linkedReport ? (
           <p className="text-[12px] text-muted">
-            No report yet. For completed backtest/sweep jobs, click{" "}
-            <span className="font-semibold">Regenerate report</span> to write
-            one.
+            {job.status === "completed" ? (
+              <>
+                No report found for this completed job. Click{" "}
+                <span className="font-semibold">Regenerate report</span> to
+                write one.
+              </>
+            ) : terminal ? (
+              <>
+                No report. This job did not complete, so no report was
+                written. Retry or continue the job to produce one.
+              </>
+            ) : (
+              <>A report is written automatically when the job completes.</>
+            )}
           </p>
         ) : (
           <div className="flex flex-wrap items-center gap-3">
@@ -520,6 +564,28 @@ export function ResearchJobDetailPage() {
         )}
       </SectionCard>
 
+      <Dialog
+        open={confirmCancelOpen}
+        onClose={() => setConfirmCancelOpen(false)}
+        title="Cancel job"
+        description="Completed steps are kept and the job can be continued or cloned later. A running worker command may continue briefly until the worker observes the cancellation."
+        width="sm"
+      >
+        <div className="flex justify-end gap-2">
+          <Button onClick={() => setConfirmCancelOpen(false)}>
+            Keep job
+          </Button>
+          <Button
+            tone="danger"
+            onClick={() => {
+              setConfirmCancelOpen(false);
+              runJobMutation("cancel", () => cancelResearchJob(id));
+            }}
+          >
+            Cancel job
+          </Button>
+        </div>
+      </Dialog>
       <ConfirmDialog
         open={confirmDeleteOpen}
         title="Delete job"
