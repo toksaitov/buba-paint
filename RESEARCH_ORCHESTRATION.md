@@ -6,8 +6,41 @@ in local evidence folders under `data/experiments/`.
 
 ## Current Status
 
-Status: Phase 15 remote worker-controller protocol is implemented locally and
-is pending deployment plus public browser acceptance.
+Status: Phase 15 remote worker-controller protocol is deployed and accepted
+end to end from the public dashboard on 2026-06-11.
+
+Public acceptance evidence from 2026-06-11, all driven through
+`https://buba.toksaitov.com` only:
+
+* Backtest job `a587567d` was created from the artifact detail Backtest
+  shortcut, claimed by `research-worker-testing` over the worker protocol,
+  ran all six steps with live step and event updates on the public job
+  detail page, and completed. Its report `d7206c1d` is `available` with
+  served JSON and CSV documents, money-axis charts, and the expected
+  source-mismatch warning (replay `+$45.63` versus source `+$35.87`).
+* Sweep job `bd470e04` (focused `LATENCY_ARB_MIN_ASK=0.25,0.30,0.35`, full
+  artifact interval) completed the same way. Its report `9ec3631b` renders
+  ranked sweep rows.
+* Report comparison of both reports loads with ranked cards and
+  compatibility warnings.
+* A deliberately bad custom interval (12:00 to 15:00 local) blocked at
+  `prepare_backtest_input` with `missing_open_prices=2`; the recovery
+  diagnosis panel scoped the error to the active step and recommended Clone
+  with an adjusted interval, which succeeded. Boundary-aware interval
+  validation in the New Job form remains an open improvement.
+* Research > Machines showed fresh worker telemetry throughout, and `paint`
+  plus `sidecar` stayed stopped (verified with `live-safety`).
+
+Operator UX fixes deployed with the same images on 2026-06-11: HTML
+responses now carry `Cache-Control: no-cache` so deploys reach browsers
+immediately, report titles are generated as readable interval names instead
+of job UUIDs, report provenance intervals and chart ticks use the standard
+local time format, list tables middle-truncate long ids, the Jobs toolbar
+wraps on narrow screens, Reports filters compress to a two-column grid on
+phones, worker event copy drops the internal "local" prefix, sweep ranking
+metrics format as money and percentages, the queue cockpit and transfer
+panels collapse to a single idle line when empty, and the template dialog
+points authors at Save as template.
 
 Honesty correction recorded on 2026-06-11: Phase 14 unified the public VIEW
 but never unified job execution. The worker on `testing` leased steps only
