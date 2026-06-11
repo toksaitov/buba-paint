@@ -498,7 +498,7 @@ async fn local_worker_preserves_cancelled_state_after_command_cancellation() {
     assert!(
         events
             .iter()
-            .any(|event| { event.message == "local command worker observed cancellation" })
+            .any(|event| { event.message == "worker observed cancellation" })
     );
 }
 

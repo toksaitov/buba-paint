@@ -35,7 +35,7 @@ import {
   updateQueryListParam,
   updateQueryParam,
 } from "../lib/research-list-url-state";
-import { humanize } from "../lib/utils";
+import { humanize, truncateMiddle } from "../lib/utils";
 
 const ALL_STATUSES: JobStatus[] = [
   "queued",
@@ -174,7 +174,7 @@ export function ResearchJobsPage() {
       <SectionCard
         title="All jobs"
         toolbar={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <select
               aria-label="Job preset"
               value={preset}
@@ -312,9 +312,10 @@ export function ResearchJobsPage() {
                       <Link
                         to={`/research/jobs/${encodeURIComponent(job.id)}`}
                         state={{ returnTo: returnToJobs }}
-                        className="font-mono text-[11px] hover:underline"
+                        title={job.id}
+                        className="whitespace-nowrap font-mono text-[11px] hover:underline"
                       >
-                        {job.id}
+                        {truncateMiddle(job.id, 8, 4)}
                       </Link>
                     </td>
                     <td className="px-2 py-1.5">
@@ -328,9 +329,10 @@ export function ResearchJobsPage() {
                       {job.artifact_id ? (
                         <Link
                           to={`/research/artifacts/${encodeURIComponent(job.artifact_id)}`}
-                          className="font-mono text-[11px] hover:underline"
+                          title={job.artifact_id}
+                          className="whitespace-nowrap font-mono text-[11px] hover:underline"
                         >
-                          {job.artifact_id}
+                          {truncateMiddle(job.artifact_id, 14, 8)}
                         </Link>
                       ) : (
                         <span className="text-muted">-</span>

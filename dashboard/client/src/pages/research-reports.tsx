@@ -36,7 +36,7 @@ import {
   setQueryParam,
   updateQueryParam,
 } from "../lib/research-list-url-state";
-import { formatSignedUsd, humanize } from "../lib/utils";
+import { formatSignedUsd, humanize, truncateMiddle } from "../lib/utils";
 
 const ALL_STATUSES: ReportStatus[] = ["available", "archived"];
 const JOB_TYPES: Array<"all" | JobType | "unknown"> = [
@@ -188,7 +188,7 @@ export function ResearchReportsPage() {
           </Button>
         }
       >
-        <div className="mb-3 grid gap-2 md:grid-cols-5">
+        <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-5">
           <select
             aria-label="Report job type filter"
             value={typeFilter}
@@ -269,17 +269,19 @@ export function ResearchReportsPage() {
             <option value="archive_candidate">Archive candidates</option>
             <option value="archived">Archived only</option>
           </select>
-          <Input
-            aria-label="Search reports"
-            value={textFilter}
-            onChange={(e) => {
-              const next = new URLSearchParams(searchParams);
-              setQueryParam(next, "q", e.currentTarget.value, "");
-              next.delete("artifact");
-              setSearchParams(next, { replace: true });
-            }}
-            placeholder="Search report, job, artifact"
-          />
+          <div className="col-span-2 md:col-span-1">
+            <Input
+              aria-label="Search reports"
+              value={textFilter}
+              onChange={(e) => {
+                const next = new URLSearchParams(searchParams);
+                setQueryParam(next, "q", e.currentTarget.value, "");
+                next.delete("artifact");
+                setSearchParams(next, { replace: true });
+              }}
+              placeholder="Search report, job, artifact"
+            />
+          </div>
         </div>
         <StatusFilter
           label="Status"
@@ -354,8 +356,11 @@ export function ResearchReportsPage() {
                         >
                           {report.title}
                         </Link>
-                        <div className="font-mono text-[11px] text-muted">
-                          {report.id}
+                        <div
+                          title={report.id}
+                          className="font-mono text-[11px] text-muted"
+                        >
+                          {truncateMiddle(report.id, 8, 4)}
                         </div>
                         <div className="text-[11px] text-muted">
                           {parsed.provenance.job_type
@@ -404,18 +409,20 @@ export function ResearchReportsPage() {
                       <td className="px-2 py-1.5">
                         <Link
                           to={`/research/jobs/${encodeURIComponent(report.job_id)}`}
-                          className="font-mono text-[11px] hover:underline"
+                          title={report.job_id}
+                          className="whitespace-nowrap font-mono text-[11px] hover:underline"
                         >
-                          {report.job_id}
+                          {truncateMiddle(report.job_id, 8, 4)}
                         </Link>
                       </td>
                       <td className="px-2 py-1.5">
                         {report.artifact_id ? (
                           <Link
                             to={`/research/artifacts/${encodeURIComponent(report.artifact_id)}`}
-                            className="font-mono text-[11px] hover:underline"
+                            title={report.artifact_id}
+                            className="whitespace-nowrap font-mono text-[11px] hover:underline"
                           >
-                            {report.artifact_id}
+                            {truncateMiddle(report.artifact_id, 14, 8)}
                           </Link>
                         ) : (
                           <span className="text-muted">-</span>

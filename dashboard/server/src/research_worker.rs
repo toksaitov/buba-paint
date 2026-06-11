@@ -119,7 +119,7 @@ impl LocalResearchWorker {
             &job_id,
             Some(&step_id),
             "info",
-            "local worker started step",
+            "worker started step",
             Some(&format!(
                 r#"{{"executor":"local_noop","step_kind":"{}"}}"#,
                 step_kind.as_str()
@@ -138,7 +138,7 @@ impl LocalResearchWorker {
             &job_id,
             Some(&step_id),
             "info",
-            "local worker completed step",
+            "worker completed step",
             Some(&output),
         )
         .await?;
@@ -237,7 +237,7 @@ impl LocalResearchWorker {
                     &job_id,
                     Some(&step_id),
                     "info",
-                    "local artifact worker completed placeholder step",
+                    "worker completed placeholder step",
                     Some(&output),
                 )
                 .await?;
@@ -660,7 +660,7 @@ async fn persist_research_report_metadata(
     plan: &ResearchPipelinePlan,
     summary_json: &str,
 ) -> Result<String, DashboardError> {
-    let title = format!("Research job {}", lease.job.id);
+    let title = research_report_title(&lease.job);
     let report_path = plan.report_json_path.to_string_lossy().to_string();
     let csv_path = plan.report_csv_path.to_string_lossy().to_string();
     let report = db
@@ -675,6 +675,36 @@ async fn persist_research_report_metadata(
         })
         .await?;
     Ok(report.id)
+}
+
+/// Build an operator-facing report title from job type and interval.
+fn research_report_title(job: &crate::db::ResearchJob) -> String {
+    let type_label = match job.job_type.as_str() {
+        "current_params" => "Backtest",
+        "sweep" => "Sweep",
+        "export" => "Export",
+        other => other,
+    };
+    let params: serde_json::Value = job
+        .params_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let start_ms = params.get("start_ms").and_then(serde_json::Value::as_i64);
+    let end_ms = params.get("end_ms").and_then(serde_json::Value::as_i64);
+    if let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) {
+        let start = chrono::DateTime::from_timestamp_millis(start_ms);
+        let end = chrono::DateTime::from_timestamp_millis(end_ms);
+        if let (Some(start), Some(end)) = (start, end) {
+            return format!(
+                "{type_label} {} to {} UTC",
+                start.format("%Y-%m-%d %H:%M"),
+                end.format("%Y-%m-%d %H:%M")
+            );
+        }
+    }
+    let short_id: String = job.id.chars().take(8).collect();
+    format!("{type_label} {short_id}")
 }
 
 /// Return a report JSON document with one top-level field inserted.
@@ -704,7 +734,7 @@ async fn complete_or_block_step(
                 &lease.job.id,
                 Some(&lease.step.id),
                 "info",
-                "local artifact worker completed step",
+                "worker completed step",
                 Some(&output),
             )
             .await?;
@@ -750,7 +780,7 @@ async fn complete_or_block_pipeline_step(
                 &lease.job.id,
                 Some(&lease.step.id),
                 "info",
-                "local command worker completed step",
+                "worker completed step",
                 Some(&output),
             )
             .await?;
@@ -774,7 +804,7 @@ async fn complete_or_block_pipeline_step(
                     &lease.job.id,
                     Some(&lease.step.id),
                     "info",
-                    "local command worker observed cancellation",
+                    "worker observed cancellation",
                     Some(&output),
                 )
                 .await?;

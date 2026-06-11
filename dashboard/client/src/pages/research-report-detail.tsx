@@ -47,6 +47,7 @@ import {
   canPerform,
   getActionGateState,
   getAllowedActions,
+  jobTypeLabel,
   permissionHint,
   reportTone,
 } from "../lib/research-permissions";
@@ -59,7 +60,25 @@ import type {
   ResearchAction,
   UpdateReportRequest,
 } from "../lib/research-types";
-import { formatDateTime, formatSignedUsd, humanize } from "../lib/utils";
+import {
+  formatChartTick,
+  formatDateTime,
+  formatSignedUsd,
+  humanize,
+} from "../lib/utils";
+
+function formatProvenanceInterval(
+  start: string | null | undefined,
+  end: string | null | undefined,
+): string {
+  if (!start || !end) return "-";
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
+    return `${start} → ${end}`;
+  }
+  return `${formatDateTime(startMs)} → ${formatDateTime(endMs)}`;
+}
 
 export function ResearchReportDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -301,15 +320,15 @@ export function ResearchReportDetailPage() {
             {
               label: "Job type",
               value: analysis.provenance.job_type
-                ? humanize(analysis.provenance.job_type)
+                ? jobTypeLabel(analysis.provenance.job_type)
                 : "-",
             },
             {
               label: "Interval",
-              value:
-                analysis.provenance.start && analysis.provenance.end
-                  ? `${analysis.provenance.start} → ${analysis.provenance.end}`
-                  : "-",
+              value: formatProvenanceInterval(
+                analysis.provenance.start,
+                analysis.provenance.end,
+              ),
             },
             {
               label: "Starting balance",
@@ -741,7 +760,7 @@ function MetricLineChart({
               type="number"
               domain={["dataMin", "dataMax"]}
               tick={{ fill: colors.textColor, fontSize: 10 }}
-              tickFormatter={(value: number) => new Date(value).toLocaleTimeString()}
+              tickFormatter={formatChartTick}
             />
             <YAxis
               dataKey={dataKey}

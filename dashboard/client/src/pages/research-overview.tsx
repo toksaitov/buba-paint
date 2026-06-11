@@ -41,6 +41,7 @@ import {
 import type {
   ResearchJobTemplate,
   ResearchQueueJobItem,
+  ResearchQueueResponse,
   ResearchQueueTransferItem,
   ResearchRetentionArtifactCandidate,
   ResearchRetentionJobCandidate,
@@ -215,28 +216,46 @@ export function ResearchOverviewPage() {
 
       <div className="grid gap-3 xl:grid-cols-[1.3fr_1fr]">
         <SectionCard title="Queue cockpit">
-          <div className="grid gap-3 lg:grid-cols-2">
-            <QueueJobGroup title="Running" items={queue.jobs.running} />
-            <QueueJobGroup title="Waiting" items={queue.jobs.waiting} />
-            <QueueJobGroup title="Retryable" items={queue.jobs.retryable} />
-            <QueueJobGroup title="Blocked" items={queue.jobs.blocked} />
-            <QueueJobGroup title="Failed" items={queue.jobs.failed} />
-            <QueueJobGroup
-              title="Stale leases"
-              items={queue.jobs.stale_leases}
-            />
-          </div>
+          {queueIsIdle(queue) ? (
+            <p className="text-[12px] text-muted">
+              The queue is idle. No jobs are running, waiting, or needing
+              attention.
+            </p>
+          ) : (
+            <div className="grid gap-3 lg:grid-cols-2">
+              <QueueJobGroup title="Running" items={queue.jobs.running} />
+              <QueueJobGroup title="Waiting" items={queue.jobs.waiting} />
+              <QueueJobGroup title="Retryable" items={queue.jobs.retryable} />
+              <QueueJobGroup title="Blocked" items={queue.jobs.blocked} />
+              <QueueJobGroup title="Failed" items={queue.jobs.failed} />
+              <QueueJobGroup
+                title="Stale leases"
+                items={queue.jobs.stale_leases}
+              />
+            </div>
+          )}
         </SectionCard>
 
         <SectionCard title="Transfer attention">
-          <div className="space-y-3">
-            <QueueTransferGroup title="Active" items={queue.transfers.active} />
-            <QueueTransferGroup
-              title="Attention"
-              items={queue.transfers.attention}
-            />
-            <QueueTransferGroup title="Stale" items={queue.transfers.stale} />
-          </div>
+          {queue.transfers.active.length === 0 &&
+          queue.transfers.attention.length === 0 &&
+          queue.transfers.stale.length === 0 ? (
+            <p className="text-[12px] text-muted">
+              No transfers are active or needing attention.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <QueueTransferGroup
+                title="Active"
+                items={queue.transfers.active}
+              />
+              <QueueTransferGroup
+                title="Attention"
+                items={queue.transfers.attention}
+              />
+              <QueueTransferGroup title="Stale" items={queue.transfers.stale} />
+            </div>
+          )}
         </SectionCard>
       </div>
 
@@ -453,6 +472,17 @@ export function ResearchOverviewPage() {
         onClose={() => setConfirmRetentionOpen(false)}
       />
     </div>
+  );
+}
+
+function queueIsIdle(queue: ResearchQueueResponse): boolean {
+  return (
+    queue.jobs.running.length === 0 &&
+    queue.jobs.waiting.length === 0 &&
+    queue.jobs.retryable.length === 0 &&
+    queue.jobs.blocked.length === 0 &&
+    queue.jobs.failed.length === 0 &&
+    queue.jobs.stale_leases.length === 0
   );
 }
 

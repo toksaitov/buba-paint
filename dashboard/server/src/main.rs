@@ -69,7 +69,14 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(dir) = cli.static_dir {
         let index = std::path::PathBuf::from(&dir).join("index.html");
-        app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
+        let html_no_cache = tower_http::set_header::SetResponseHeaderLayer::overriding(
+            axum::http::header::CACHE_CONTROL,
+            html_no_cache_header,
+        );
+        let static_service = tower::ServiceBuilder::new()
+            .layer(html_no_cache)
+            .service(ServeDir::new(dir).fallback(ServeFile::new(index)));
+        app = app.fallback_service(static_service);
     }
 
     let addr = format!("0.0.0.0:{port}");
@@ -149,6 +156,16 @@ fn research_routes() -> Router<AppState> {
         .merge(research_template_routes())
         .merge(research_queue_routes())
         .merge(research_report_routes())
+}
+
+/// Mark HTML responses as always revalidated so deploys reach browsers immediately.
+fn html_no_cache_header<B>(response: &axum::http::Response<B>) -> Option<axum::http::HeaderValue> {
+    let is_html = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"));
+    is_html.then(|| axum::http::HeaderValue::from_static("no-cache"))
 }
 
 /// Builds worker-token protocol routes that expose the research queue to remote workers.
