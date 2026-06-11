@@ -858,7 +858,7 @@ function TemplateDialog({
       open={open}
       onClose={pending ? () => undefined : onClose}
       title={mode === "edit" ? "Edit template" : "Create template"}
-      description="Templates are shared defaults for backtest and sweep jobs."
+      description="Templates are shared defaults for backtest and sweep jobs. The easiest way to build one is to configure a job on the New Job page and click Save as template there."
       width="lg"
     >
       <div className="space-y-3">

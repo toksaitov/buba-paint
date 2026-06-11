@@ -590,7 +590,7 @@ export function ResearchReportDetailPage() {
                       ))}
                       {sweep.metric_columns.map((column) => (
                         <td key={column} className="px-2 py-1 tabular-nums">
-                          {String(row.metrics[column] ?? "")}
+                          {formatSweepMetric(column, row.metrics[column])}
                         </td>
                       ))}
                     </tr>
@@ -817,6 +817,43 @@ function chartValueDomain(
     return [min < 0 ? min - padding : -padding, 0];
   }
   return [min - padding, max + padding];
+}
+
+const SWEEP_RATE_COLUMNS = new Set([
+  "win_rate",
+  "fill_rate",
+  "partial_fill_rate",
+  "max_dd",
+]);
+
+const SWEEP_MONEY_COLUMNS = new Set([
+  "pnl",
+  "pnl_net",
+  "gross_pnl",
+  "total_fees",
+  "final_balance",
+  "hwm",
+  "calibrated_pnl",
+  "calibrated_final_balance",
+  "baseline_replay_delta_pnl",
+  "source_baseline_pnl",
+  "baseline_replay_pnl",
+]);
+
+function formatSweepMetric(column: string, value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return String(value ?? "");
+  }
+  if (SWEEP_RATE_COLUMNS.has(column)) {
+    return `${(value * 100).toFixed(1)}%`;
+  }
+  if (SWEEP_MONEY_COLUMNS.has(column)) {
+    return formatChartAxisValue(value);
+  }
+  if (Number.isInteger(value)) {
+    return value.toString();
+  }
+  return value.toFixed(3);
 }
 
 function formatChartAxisValue(value: number): string {
