@@ -1,75 +1,63 @@
 {
-  "commit": "923a4703e3e9a9506c832c9907e1d2e75defa186",
-  "created_at": "2026-06-02T20:10:49+00:00",
-  "dirty_source_allowed": true,
-  "dirty_source_files": [
-    "M RESEARCH_ORCHESTRATION.md",
-    " M dashboard/client/src/components/research/__tests__/job-create-form.test.tsx",
-    " M dashboard/client/src/components/research/job-create-form.tsx",
-    " M dashboard/client/src/components/research/job-form-values.ts",
-    " M dashboard/client/src/pages/__tests__/research-job-detail.test.tsx",
-    " M dashboard/client/src/pages/__tests__/research-job-new.test.tsx",
-    " M docker-compose.yml",
-    " M ops/docker/Readme.md",
-    " M ops/live-images.lock.json",
-    " M ops/research-images.lock.json",
-    " M scripts/deploy-stopped-live.py"
-  ],
+  "commit": "7aa5861818bd8575b84092a9be4fcfe70e82ac45",
+  "created_at": "2026-06-11T07:28:34+00:00",
+  "dirty_source_allowed": false,
+  "dirty_source_files": [],
   "images": {
     "agent": {
       "description": "Read-only live bot monitor and machine telemetry service.",
-      "digest": "sha256:1c36aa8cdb3a14eec6f3d2c41e4e7a40ea18b62835854f4197cd04981e173ccf",
+      "digest": "sha256:44c5319f1091f439d8d434b8108b7efb5989c45bcfde6dbf234d5965764f5de2",
       "dockerfile": "agent/Dockerfile",
       "key": "agent",
       "platform": "linux/arm64",
-      "ref": "ghcr.io/toksaitov/buba-paint-agent@sha256:1c36aa8cdb3a14eec6f3d2c41e4e7a40ea18b62835854f4197cd04981e173ccf",
+      "ref": "ghcr.io/toksaitov/buba-paint-agent@sha256:44c5319f1091f439d8d434b8108b7efb5989c45bcfde6dbf234d5965764f5de2",
       "repository": "ghcr.io/toksaitov/buba-paint-agent",
-      "tag": "live-stopped-20260602-201048-923a4703e3e9",
+      "tag": "live-stopped-20260611-072833-7aa5861818bd",
       "title": "Buba Paint agent"
     },
     "dashboard": {
       "description": "Dashboard and static frontend for Buba live observability.",
-      "digest": "sha256:a9da8865fc63b33d86b2e8ddd8e02f672c19d355b63131db7a5a3a9e7a0ef10a",
+      "digest": "sha256:dce01b1bb8ed8dfeef5e7e55a6e4f11de0b3064f7b934c2ccdf184e92414e591",
       "dockerfile": "dashboard/Dockerfile",
       "key": "dashboard",
       "platform": "linux/arm64",
-      "ref": "ghcr.io/toksaitov/buba-paint-dashboard@sha256:a9da8865fc63b33d86b2e8ddd8e02f672c19d355b63131db7a5a3a9e7a0ef10a",
+      "ref": "ghcr.io/toksaitov/buba-paint-dashboard@sha256:dce01b1bb8ed8dfeef5e7e55a6e4f11de0b3064f7b934c2ccdf184e92414e591",
       "repository": "ghcr.io/toksaitov/buba-paint-dashboard",
-      "tag": "live-stopped-20260602-201048-923a4703e3e9",
+      "tag": "live-stopped-20260611-072833-7aa5861818bd",
       "title": "Buba Paint dashboard"
     },
     "paint": {
       "description": "Buba Paint trading, replay, backtest, and sweep runtime.",
-      "digest": "sha256:b6c411cfbc1742f7694afd8de0ce83c8233a00861f594f65adb45c81c6c47259",
+      "digest": "sha256:7f499cc9f48292a52c678c0e6ee357d0800981b30081bb3e1c5b7ee5817e0a0d",
       "dockerfile": "bots/paint/Dockerfile",
       "key": "paint",
       "platform": "linux/arm64",
-      "ref": "ghcr.io/toksaitov/buba-paint-bot@sha256:b6c411cfbc1742f7694afd8de0ce83c8233a00861f594f65adb45c81c6c47259",
+      "ref": "ghcr.io/toksaitov/buba-paint-bot@sha256:7f499cc9f48292a52c678c0e6ee357d0800981b30081bb3e1c5b7ee5817e0a0d",
       "repository": "ghcr.io/toksaitov/buba-paint-bot",
-      "tag": "live-stopped-20260602-201048-923a4703e3e9",
+      "tag": "live-stopped-20260611-072833-7aa5861818bd",
       "title": "Buba Paint bot"
     },
     "sidecar": {
       "description": "Authenticated Polymarket boundary service.",
-      "digest": "sha256:70caccdc9aa773bee667980e901968ec53ba97fb8aaf659f5f3d417c6d8892fc",
+      "digest": "sha256:89b010594e8ec2998b3458d9b8cfd9d6e31d30767a0e95bf6aa3e4d9caf6d4d7",
       "dockerfile": "polymarket-sidecar/Dockerfile",
       "key": "sidecar",
       "platform": "linux/arm64",
-      "ref": "ghcr.io/toksaitov/buba-paint-sidecar@sha256:70caccdc9aa773bee667980e901968ec53ba97fb8aaf659f5f3d417c6d8892fc",
+      "ref": "ghcr.io/toksaitov/buba-paint-sidecar@sha256:89b010594e8ec2998b3458d9b8cfd9d6e31d30767a0e95bf6aa3e4d9caf6d4d7",
       "repository": "ghcr.io/toksaitov/buba-paint-sidecar",
-      "tag": "live-stopped-20260602-201048-923a4703e3e9",
+      "tag": "live-stopped-20260611-072833-7aa5861818bd",
       "title": "Buba Paint Polymarket sidecar"
     }
   },
   "input_hashes": {
     "agent": "f8af421cf4974689a915ac9ada526f2f9c675436e69abe42e529cbd6336e9651",
-    "dashboard": "9ecfd576cea2e1719e515c9b7ee645340f0f23684e8244e997961d3c18c6186f",
-    "paint": "f1702c1bdb0ce19d2a626066150535e65ae5f0ce6e47f1a2a3aaebc10ca9bc2b",
+    "dashboard": "a762413bf30877225a54ffebbc9902238167dac350252a2c0d0ba9784028c57d",
+    "paint": "f2ab0078c8ff3f46e65bb01da143b7ad2bd258c8a7822f18f0f616b84780c8de",
     "sidecar": "0f30560446add6747bfbb5691955f848b4298f47c3c89558a1ac817ad31717ef"
   },
   "namespace": "toksaitov",
   "registry": "ghcr.io",
   "schema": 1,
   "source": "https://github.com/toksaitov/buba-paint",
-  "tag": "live-stopped-20260602-201048-923a4703e3e9"
+  "tag": "live-stopped-20260611-072833-7aa5861818bd"
 }
