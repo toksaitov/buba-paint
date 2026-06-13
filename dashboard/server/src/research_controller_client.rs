@@ -311,11 +311,23 @@ impl ResearchControllerClient {
         if status == reqwest::StatusCode::NO_CONTENT {
             return Ok(None);
         }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let text = response.text().await.map_err(|error| {
             DashboardError::Internal(format!("reading controller response {path}: {error}"))
         })?;
         if !status.is_success() {
             return Err(Self::status_to_error(path, status, &text));
+        }
+        if !Self::is_json_content_type(content_type.as_deref()) {
+            let observed = content_type.as_deref().unwrap_or("none");
+            return Err(DashboardError::Proxy(format!(
+                "controller {path} returned {status} with non-JSON content type {observed}; body starts: {}",
+                Self::body_prefix(&text)
+            )));
         }
         let decoded: T = serde_json::from_str(&text).map_err(|error| {
             DashboardError::Internal(format!("decoding controller response {path}: {error}"))
@@ -376,6 +388,29 @@ impl ResearchControllerClient {
                 DashboardError::Internal(format!("controller {path} returned {status}: {message}"))
             }
         }
+    }
+
+    /// Report whether a response content type is JSON for safe decoding.
+    fn is_json_content_type(content_type: Option<&str>) -> bool {
+        content_type.is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        })
+    }
+
+    /// Return a short, single-line prefix of a response body for diagnostics.
+    fn body_prefix(text: &str) -> String {
+        const MAX: usize = 120;
+        let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut prefix: String = collapsed.chars().take(MAX).collect();
+        if collapsed.chars().count() > MAX {
+            prefix.push_str("...");
+        }
+        prefix
     }
 }
 
@@ -1132,3 +1167,7 @@ impl ResearchWorkBackend for WorkerBackend {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/research_controller_client_tests.rs"]
+mod tests;
