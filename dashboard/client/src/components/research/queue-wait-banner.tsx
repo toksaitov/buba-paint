@@ -34,7 +34,7 @@ export function QueueWaitBanner({ job }: QueueWaitBannerProps) {
   }, []);
 
   const queued = job.status === "queued";
-  const machinesQuery = useResearchMachines();
+  const machinesQuery = useResearchMachines(queued);
   const machines = machinesQuery.data?.machines;
   const workerMachineId = useMemo(() => {
     if (!machines || machines.length === 0) return "";

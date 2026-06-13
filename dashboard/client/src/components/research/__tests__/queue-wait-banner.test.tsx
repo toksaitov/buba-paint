@@ -14,7 +14,7 @@ const machinesMock = vi.fn();
 const telemetryMock = vi.fn();
 
 vi.mock("../../../hooks/use-research-machines", () => ({
-  useResearchMachines: () => machinesMock(),
+  useResearchMachines: (enabled: boolean) => machinesMock(enabled),
   useResearchMachineTelemetry: (id: string, enabled: boolean) =>
     telemetryMock(id, enabled),
 }));
@@ -103,5 +103,24 @@ describe("QueueWaitBanner", () => {
     telemetryMock.mockReturnValue({ data: undefined });
     render(<QueueWaitBanner job={fixtureJobCompleted().job} />);
     expect(telemetryMock).toHaveBeenCalledWith(expect.any(String), false);
+  });
+
+  it("polls machines only for queued jobs", () => {
+    mockMachines();
+    telemetryMock.mockReturnValue({ data: undefined });
+    render(<QueueWaitBanner job={fixtureJobCompleted().job} />);
+    expect(machinesMock).toHaveBeenCalledWith(false);
+
+    machinesMock.mockClear();
+    telemetryMock.mockReturnValue({
+      data: fixtureMachineTelemetryResponse({
+        telemetry: fixtureMachineTelemetryState({
+          last_heartbeat_ms: Date.now() - 10_000,
+        }),
+        stale: false,
+      }),
+    });
+    render(<QueueWaitBanner job={queuedJob()} />);
+    expect(machinesMock).toHaveBeenCalledWith(true);
   });
 });
