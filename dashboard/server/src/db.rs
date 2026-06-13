@@ -1336,11 +1336,7 @@ impl DashboardDb {
                 "artifact kind must not be empty".to_string(),
             ));
         }
-        if record.status.trim().is_empty() {
-            return Err(DashboardError::BadRequest(
-                "artifact status must not be empty".to_string(),
-            ));
-        }
+        validate_research_artifact_status(record.status)?;
 
         let conn = self.conn.lock().await;
         let now = now_ms();
@@ -4051,6 +4047,17 @@ fn validate_research_report_status(status: &str) -> Result<(), DashboardError> {
     } else {
         Err(DashboardError::BadRequest(
             "research report status must be available or archived".to_string(),
+        ))
+    }
+}
+
+/// Validate run-artifact lifecycle status against the persisted enum.
+fn validate_research_artifact_status(status: &str) -> Result<(), DashboardError> {
+    if matches!(status.trim(), "available" | "archived") {
+        Ok(())
+    } else {
+        Err(DashboardError::BadRequest(
+            "research artifact status must be available or archived".to_string(),
         ))
     }
 }

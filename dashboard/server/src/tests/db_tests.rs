@@ -1783,6 +1783,50 @@ async fn research_artifact_upsert_and_attach_validate_inputs() {
     );
 }
 
+/// Verifies that artifact upsert rejects unknown status strings and accepts each valid one.
+#[tokio::test]
+async fn research_artifact_upsert_rejects_unknown_status() {
+    let db = test_db();
+    let base = ResearchArtifactRecord {
+        id: "artifact-status-1",
+        source_machine_id: Some("live"),
+        kind: "readonly_run",
+        status: "available",
+        run_mode: Some("live_readonly"),
+        artifact_root: Some("/tmp/artifact"),
+        manifest_path: Some("/tmp/artifact/manifest.json"),
+        bundle_path: None,
+        source_db_path: Some("/tmp/paint.db"),
+        interval_start_ms: Some(1_000),
+        interval_end_ms: Some(2_000),
+        bytes: Some(10),
+        checksum: Some("checksum-1"),
+        replay_quality_class: None,
+        backtest_ready_class: None,
+        live_fidelity_class: None,
+    };
+
+    assert!(
+        db.upsert_research_artifact(&ResearchArtifactRecord {
+            status: "avaliable",
+            ..base.clone()
+        })
+        .await
+        .is_err()
+    );
+
+    for status in ["available", "archived"] {
+        assert!(
+            db.upsert_research_artifact(&ResearchArtifactRecord {
+                status,
+                ..base.clone()
+            })
+            .await
+            .is_ok()
+        );
+    }
+}
+
 /// Verifies that artifact transfers are listed with progress metadata.
 #[tokio::test]
 async fn artifact_transfers_list_progress_records() {
