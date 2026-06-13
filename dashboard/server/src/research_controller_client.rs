@@ -817,379 +817,51 @@ impl WorkerBackend {
     }
 }
 
-impl ResearchWorkBackend for WorkerBackend {
-    /// Lease the next executable research step.
-    async fn lease_next_research_step(
-        &self,
-        worker_id: &str,
-        lease_duration_ms: u64,
-    ) -> Result<Option<ResearchStepLease>, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .lease_next_research_step(worker_id, lease_duration_ms)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .lease_next_research_step(worker_id, lease_duration_ms)
-                    .await
-            }
+/// Generate `WorkerBackend`'s `ResearchWorkBackend` impl by delegating each
+/// method to the selected inner backend, keeping every signature in one place.
+macro_rules! delegate_worker_backend {
+    (
+        $(
+            fn $name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty;
+        )*
+    ) => {
+        impl ResearchWorkBackend for WorkerBackend {
+            $(
+                async fn $name(&self, $( $arg : $ty ),* ) -> $ret {
+                    match self {
+                        WorkerBackend::Local(db) => db.as_ref().$name($( $arg ),*).await,
+                        WorkerBackend::Remote(client) => client.$name($( $arg ),*).await,
+                    }
+                }
+            )*
         }
-    }
-
-    /// Refresh a step lease.
-    async fn refresh_research_step_lease(
-        &self,
-        step_id: &str,
-        worker_id: &str,
-        lease_duration_ms: u64,
-    ) -> Result<ResearchJobStep, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .refresh_research_step_lease(step_id, worker_id, lease_duration_ms)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .refresh_research_step_lease(step_id, worker_id, lease_duration_ms)
-                    .await
-            }
-        }
-    }
-
-    /// Mark a step running.
-    async fn mark_research_step_running(
-        &self,
-        step_id: &str,
-        worker_id: &str,
-    ) -> Result<ResearchJobStep, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .mark_research_step_running(step_id, worker_id)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client.mark_research_step_running(step_id, worker_id).await
-            }
-        }
-    }
-
-    /// Complete a step.
-    async fn complete_research_step(
-        &self,
-        step_id: &str,
-        worker_id: &str,
-        output_json: Option<&str>,
-    ) -> Result<ResearchJobStep, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .complete_research_step(step_id, worker_id, output_json)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .complete_research_step(step_id, worker_id, output_json)
-                    .await
-            }
-        }
-    }
-
-    /// Fail a step.
-    async fn fail_research_step(
-        &self,
-        step_id: &str,
-        worker_id: &str,
-        error: &str,
-        retryable: bool,
-    ) -> Result<ResearchJobStep, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .fail_research_step(step_id, worker_id, error, retryable)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .fail_research_step(step_id, worker_id, error, retryable)
-                    .await
-            }
-        }
-    }
-
-    /// Block a step.
-    async fn block_research_step(
-        &self,
-        step_id: &str,
-        worker_id: &str,
-        reason: &str,
-    ) -> Result<ResearchJobStep, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .block_research_step(step_id, worker_id, reason)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client.block_research_step(step_id, worker_id, reason).await
-            }
-        }
-    }
-
-    /// Append a job event.
-    async fn append_research_job_event(
-        &self,
-        job_id: &str,
-        step_id: Option<&str>,
-        level: &str,
-        message: &str,
-        details_json: Option<&str>,
-    ) -> Result<ResearchJobEvent, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .append_research_job_event(job_id, step_id, level, message, details_json)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .append_research_job_event(job_id, step_id, level, message, details_json)
-                    .await
-            }
-        }
-    }
-
-    /// Fetch one job.
-    async fn get_research_job(&self, id: &str) -> Result<Option<ResearchJob>, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().get_research_job(id).await,
-            WorkerBackend::Remote(client) => client.get_research_job(id).await,
-        }
-    }
-
-    /// Cancel one job.
-    async fn cancel_research_job(&self, id: &str) -> Result<ResearchJob, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().cancel_research_job(id).await,
-            WorkerBackend::Remote(client) => client.cancel_research_job(id).await,
-        }
-    }
-
-    /// Fetch job steps.
-    async fn get_research_job_steps(
-        &self,
-        job_id: &str,
-    ) -> Result<Vec<ResearchJobStep>, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().get_research_job_steps(job_id).await,
-            WorkerBackend::Remote(client) => client.get_research_job_steps(job_id).await,
-        }
-    }
-
-    /// Report job cancellation.
-    async fn is_job_cancelled(&self, job_id: &str) -> Result<bool, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().is_job_cancelled(job_id).await,
-            WorkerBackend::Remote(client) => client.is_job_cancelled(job_id).await,
-        }
-    }
-
-    /// Fetch one artifact.
-    async fn get_research_artifact(
-        &self,
-        id: &str,
-    ) -> Result<Option<ResearchArtifact>, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().get_research_artifact(id).await,
-            WorkerBackend::Remote(client) => client.get_research_artifact(id).await,
-        }
-    }
-
-    /// Upsert an artifact.
-    async fn upsert_research_artifact(
-        &self,
-        record: &ResearchArtifactRecord<'_>,
-    ) -> Result<ResearchArtifact, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().upsert_research_artifact(record).await,
-            WorkerBackend::Remote(client) => client.upsert_research_artifact(record).await,
-        }
-    }
-
-    /// Attach a produced artifact to its job.
-    async fn attach_research_job_artifact(
-        &self,
-        job_id: &str,
-        artifact_id: &str,
-    ) -> Result<ResearchJob, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .attach_research_job_artifact(job_id, artifact_id)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .attach_research_job_artifact(job_id, artifact_id)
-                    .await
-            }
-        }
-    }
-
-    /// Create or update a report row.
-    async fn create_or_update_research_report(
-        &self,
-        record: &ResearchReportRecord<'_>,
-    ) -> Result<ResearchReport, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().create_or_update_research_report(record).await,
-            WorkerBackend::Remote(client) => client.create_or_update_research_report(record).await,
-        }
-    }
-
-    /// Publish report documents.
-    async fn store_research_report_documents(
-        &self,
-        report_id: &str,
-        report_json: &str,
-        report_csv: &str,
-    ) -> Result<(), DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .store_research_report_documents(report_id, report_json, report_csv)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .store_research_report_documents(report_id, report_json, report_csv)
-                    .await
-            }
-        }
-    }
-
-    /// Publish artifact documents.
-    async fn store_research_artifact_documents(
-        &self,
-        artifact_id: &str,
-        manifest_json: Option<&str>,
-        checksums_text: Option<&str>,
-    ) -> Result<(), DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .store_research_artifact_documents(artifact_id, manifest_json, checksums_text)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .store_research_artifact_documents(artifact_id, manifest_json, checksums_text)
-                    .await
-            }
-        }
-    }
-
-    /// Claim the next queued transfer.
-    async fn claim_next_artifact_transfer(
-        &self,
-        dest_machine_id: &str,
-    ) -> Result<Option<ArtifactTransfer>, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .claim_next_artifact_transfer(dest_machine_id)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client.claim_next_artifact_transfer(dest_machine_id).await
-            }
-        }
-    }
-
-    /// Fetch one transfer.
-    async fn get_artifact_transfer(
-        &self,
-        id: &str,
-    ) -> Result<Option<ArtifactTransfer>, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().get_artifact_transfer(id).await,
-            WorkerBackend::Remote(client) => client.get_artifact_transfer(id).await,
-        }
-    }
-
-    /// Update transfer progress.
-    async fn update_artifact_transfer_progress(
-        &self,
-        id: &str,
-        status: &str,
-        bytes_done: Option<u64>,
-        bytes_total: Option<u64>,
-        checksum_status: Option<&str>,
-        error: Option<&str>,
-    ) -> Result<ArtifactTransfer, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .update_artifact_transfer_progress(
-                        id,
-                        status,
-                        bytes_done,
-                        bytes_total,
-                        checksum_status,
-                        error,
-                    )
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .update_artifact_transfer_progress(
-                        id,
-                        status,
-                        bytes_done,
-                        bytes_total,
-                        checksum_status,
-                        error,
-                    )
-                    .await
-            }
-        }
-    }
-
-    /// Recover stale running transfers.
-    async fn recover_stale_artifact_transfers(
-        &self,
-        dest_machine_id: &str,
-        stale_after_ms: u64,
-    ) -> Result<usize, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => {
-                db.as_ref()
-                    .recover_stale_artifact_transfers(dest_machine_id, stale_after_ms)
-                    .await
-            }
-            WorkerBackend::Remote(client) => {
-                client
-                    .recover_stale_artifact_transfers(dest_machine_id, stale_after_ms)
-                    .await
-            }
-        }
-    }
-
-    /// Fetch one machine.
-    async fn get_research_machine(
-        &self,
-        id: &str,
-    ) -> Result<Option<ResearchMachine>, DashboardError> {
-        match self {
-            WorkerBackend::Local(db) => db.as_ref().get_research_machine(id).await,
-            WorkerBackend::Remote(client) => client.get_research_machine(id).await,
-        }
-    }
+    };
 }
 
+delegate_worker_backend! {
+    fn lease_next_research_step(worker_id: &str, lease_duration_ms: u64) -> Result<Option<ResearchStepLease>, DashboardError>;
+    fn refresh_research_step_lease(step_id: &str, worker_id: &str, lease_duration_ms: u64) -> Result<ResearchJobStep, DashboardError>;
+    fn mark_research_step_running(step_id: &str, worker_id: &str) -> Result<ResearchJobStep, DashboardError>;
+    fn complete_research_step(step_id: &str, worker_id: &str, output_json: Option<&str>) -> Result<ResearchJobStep, DashboardError>;
+    fn fail_research_step(step_id: &str, worker_id: &str, error: &str, retryable: bool) -> Result<ResearchJobStep, DashboardError>;
+    fn block_research_step(step_id: &str, worker_id: &str, reason: &str) -> Result<ResearchJobStep, DashboardError>;
+    fn append_research_job_event(job_id: &str, step_id: Option<&str>, level: &str, message: &str, details_json: Option<&str>) -> Result<ResearchJobEvent, DashboardError>;
+    fn get_research_job(id: &str) -> Result<Option<ResearchJob>, DashboardError>;
+    fn cancel_research_job(id: &str) -> Result<ResearchJob, DashboardError>;
+    fn get_research_job_steps(job_id: &str) -> Result<Vec<ResearchJobStep>, DashboardError>;
+    fn is_job_cancelled(job_id: &str) -> Result<bool, DashboardError>;
+    fn get_research_artifact(id: &str) -> Result<Option<ResearchArtifact>, DashboardError>;
+    fn upsert_research_artifact(record: &ResearchArtifactRecord<'_>) -> Result<ResearchArtifact, DashboardError>;
+    fn attach_research_job_artifact(job_id: &str, artifact_id: &str) -> Result<ResearchJob, DashboardError>;
+    fn create_or_update_research_report(record: &ResearchReportRecord<'_>) -> Result<ResearchReport, DashboardError>;
+    fn store_research_report_documents(report_id: &str, report_json: &str, report_csv: &str) -> Result<(), DashboardError>;
+    fn store_research_artifact_documents(artifact_id: &str, manifest_json: Option<&str>, checksums_text: Option<&str>) -> Result<(), DashboardError>;
+    fn claim_next_artifact_transfer(dest_machine_id: &str) -> Result<Option<ArtifactTransfer>, DashboardError>;
+    fn get_artifact_transfer(id: &str) -> Result<Option<ArtifactTransfer>, DashboardError>;
+    fn update_artifact_transfer_progress(id: &str, status: &str, bytes_done: Option<u64>, bytes_total: Option<u64>, checksum_status: Option<&str>, error: Option<&str>) -> Result<ArtifactTransfer, DashboardError>;
+    fn recover_stale_artifact_transfers(dest_machine_id: &str, stale_after_ms: u64) -> Result<usize, DashboardError>;
+    fn get_research_machine(id: &str) -> Result<Option<ResearchMachine>, DashboardError>;
+}
 #[cfg(test)]
 #[path = "tests/research_controller_client_tests.rs"]
 mod tests;
