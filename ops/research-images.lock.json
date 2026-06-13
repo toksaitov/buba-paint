@@ -1,39 +1,39 @@
 {
-  "commit": "6104f3347cbc326abf6b5a9348d6acf745e75f29",
-  "created_at": "2026-06-13T15:42:53+00:00",
+  "commit": "9ea0888595c076a37e3284232b36341f7169f9fc",
+  "created_at": "2026-06-13T18:41:13+00:00",
   "dirty_source_allowed": false,
   "dirty_source_files": [],
   "images": {
     "dashboard": {
       "description": "Dashboard and static frontend for Buba research orchestration.",
-      "digest": "sha256:2fd879366e1cbdf1d0d2ef44482fefb73dcba32ebf413fabfcf4e3573247ee08",
+      "digest": "sha256:e7d5e45f6d856476de744b2d28f7eee61bdb5137650cfe3d5b472031b3d609e2",
       "dockerfile": "dashboard/Dockerfile",
       "key": "dashboard",
       "platform": "linux/amd64",
-      "ref": "ghcr.io/toksaitov/buba-paint-dashboard@sha256:2fd879366e1cbdf1d0d2ef44482fefb73dcba32ebf413fabfcf4e3573247ee08",
+      "ref": "ghcr.io/toksaitov/buba-paint-dashboard@sha256:e7d5e45f6d856476de744b2d28f7eee61bdb5137650cfe3d5b472031b3d609e2",
       "repository": "ghcr.io/toksaitov/buba-paint-dashboard",
-      "tag": "research-20260613-154252-6104f3347cbc",
+      "tag": "research-20260613-184113-9ea0888595c0",
       "title": "Buba Paint research dashboard"
     },
     "research_worker": {
       "description": "Research worker with backtest, transfer, and telemetry tooling.",
-      "digest": "sha256:94c7f9d0977672aab2e4b5fc5f371cc1ba0ebe47f976216eb1aa670a28f3a95a",
+      "digest": "sha256:9733bf70efd9d63ea8baaaa0bb584f69ef7b06c2da23ed7a344e80d52c2e8122",
       "dockerfile": "dashboard/Dockerfile.research-worker",
       "key": "research_worker",
       "platform": "linux/amd64",
-      "ref": "ghcr.io/toksaitov/buba-paint-research-worker@sha256:94c7f9d0977672aab2e4b5fc5f371cc1ba0ebe47f976216eb1aa670a28f3a95a",
+      "ref": "ghcr.io/toksaitov/buba-paint-research-worker@sha256:9733bf70efd9d63ea8baaaa0bb584f69ef7b06c2da23ed7a344e80d52c2e8122",
       "repository": "ghcr.io/toksaitov/buba-paint-research-worker",
-      "tag": "research-20260613-154252-6104f3347cbc",
+      "tag": "research-20260613-184113-9ea0888595c0",
       "title": "Buba Paint research worker"
     }
   },
   "input_hashes": {
-    "dashboard": "d19f8c5cad29001b64f1cd5bf6ec3fec138b616f4ac90458d88a17f414231842",
-    "research_worker": "6d66a70494a531871fcc144602943e29a035cbad6a926616cd212b591107ef06"
+    "dashboard": "63e9f83381388560d9bfa5093566393812428f92b97cb49337d6a8b1af8cbf78",
+    "research_worker": "00cd9b3c1cb82f5fe6b9b6faa24699bff655f7f75fd963c3bd85bf40708440d8"
   },
   "namespace": "toksaitov",
   "registry": "ghcr.io",
   "schema": 1,
   "source": "https://github.com/toksaitov/buba-paint",
-  "tag": "research-20260613-154252-6104f3347cbc"
+  "tag": "research-20260613-184113-9ea0888595c0"
 }
