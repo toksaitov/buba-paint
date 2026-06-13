@@ -1502,6 +1502,65 @@ async fn expired_research_step_lease_can_be_reclaimed() {
     assert_eq!(second.step.attempts, 2);
 }
 
+/// Verifies that after worker-b reclaims an expired lease, worker-a cannot
+/// complete, fail, or block the step, and worker-b's lease stays intact.
+#[tokio::test]
+async fn reclaimed_research_step_rejects_original_owner_terminal_calls() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let job = db
+        .create_research_job("export", None, &user.id, 0, None)
+        .await
+        .unwrap();
+
+    let first = db
+        .lease_next_research_step_at("worker-a", 1_000, 500)
+        .await
+        .unwrap()
+        .unwrap();
+    let second = db
+        .lease_next_research_step_at("worker-b", 1_501, 500)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.step.id, second.step.id);
+    assert_eq!(second.step.lease_owner.as_deref(), Some("worker-b"));
+
+    let stale_complete = db
+        .complete_research_step_at(&first.step.id, "worker-a", Some(r#"{"ok":true}"#), 1_600)
+        .await;
+    let stale_fail = db
+        .fail_research_step_at(&first.step.id, "worker-a", "stale worker error", true, 1_700)
+        .await;
+    let stale_block = db
+        .block_research_step_at(&first.step.id, "worker-a", "stale worker block", 1_800)
+        .await;
+
+    assert!(stale_complete.is_err());
+    assert!(stale_fail.is_err());
+    assert!(stale_block.is_err());
+
+    let steps = db.get_research_job_steps(&job.id).await.unwrap();
+    let stolen = steps
+        .iter()
+        .find(|step| step.id == first.step.id)
+        .expect("leased step present");
+    assert_eq!(stolen.status, "leased");
+    assert_eq!(stolen.lease_owner.as_deref(), Some("worker-b"));
+    assert_eq!(stolen.leased_until_ms, Some(2_001));
+    assert_eq!(stolen.attempts, 2);
+    assert_eq!(stolen.output_json, None);
+    assert_eq!(stolen.error, None);
+
+    let next = db
+        .complete_research_step_at(&first.step.id, "worker-b", Some(r#"{"ok":true}"#), 1_900)
+        .await
+        .unwrap();
+    assert_eq!(next.status, "completed");
+    assert_eq!(next.output_json.as_deref(), Some(r#"{"ok":true}"#));
+    assert_eq!(next.lease_owner, None);
+}
+
 /// Verifies that an active worker can refresh its step lease.
 #[tokio::test]
 async fn refresh_research_step_lease_extends_active_lease() {
