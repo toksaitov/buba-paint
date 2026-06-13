@@ -213,6 +213,55 @@ async fn worker_protocol_rejects_missing_token() {
     assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
 
+/// Verifies artifact and report upserts reject path-unsafe ids with 400.
+#[tokio::test]
+async fn worker_protocol_rejects_unsafe_upsert_ids() {
+    let work_root = unique_work_root();
+    let (base_url, db) = spawn_controller(&work_root).await;
+    let job_id = seed_backtest_job(&db).await;
+    let client = reqwest::Client::new();
+
+    for unsafe_id in ["../escape", ".hidden", "a/b"] {
+        let artifact_response = client
+            .post(format!("{base_url}/api/research/workers/artifacts"))
+            .header("x-buba-research-worker-token", TEST_TOKEN)
+            .json(&serde_json::json!({
+                "id": unsafe_id,
+                "kind": "readonly_run",
+                "status": "available",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            artifact_response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "artifact upsert should reject id {unsafe_id}"
+        );
+
+        let report_response = client
+            .post(format!("{base_url}/api/research/workers/reports"))
+            .header("x-buba-research-worker-token", TEST_TOKEN)
+            .json(&serde_json::json!({
+                "job_id": job_id,
+                "artifact_id": unsafe_id,
+                "title": "Protocol test report",
+                "status": "available",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            report_response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "report upsert should reject artifact_id {unsafe_id}"
+        );
+    }
+
+    assert!(db.list_research_reports().await.unwrap().is_empty());
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
 /// Verifies an HTTP claim returns 204 when the queue is empty.
 #[tokio::test]
 async fn worker_protocol_claim_returns_none_on_empty_queue() {

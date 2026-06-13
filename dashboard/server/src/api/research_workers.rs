@@ -260,6 +260,7 @@ pub async fn upsert_artifact(
     Json(req): Json<WorkerArtifactUpsertRequest>,
 ) -> Result<impl IntoResponse, DashboardError> {
     require_worker_token(&state, &headers)?;
+    require_safe_document_id(&req.id)?;
     let artifact = state.db.upsert_research_artifact(&req.as_record()).await?;
     Ok(Json(artifact))
 }
@@ -325,6 +326,9 @@ pub async fn upsert_report(
     Json(req): Json<WorkerReportUpsertRequest>,
 ) -> Result<impl IntoResponse, DashboardError> {
     require_worker_token(&state, &headers)?;
+    if let Some(artifact_id) = req.artifact_id.as_deref() {
+        require_safe_document_id(artifact_id)?;
+    }
     let report = state
         .db
         .create_or_update_research_report(&req.as_record())
