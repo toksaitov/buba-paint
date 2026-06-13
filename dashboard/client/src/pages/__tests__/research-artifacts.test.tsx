@@ -212,4 +212,17 @@ describe("ResearchArtifactsPage", () => {
     expect(screen.getByLabelText(/manifest json/i)).toHaveValue("");
     expect(screen.getByLabelText(/source machine/i)).toHaveValue("");
   });
+
+  it("presents the register source machine field as optional", async () => {
+    renderArtifacts();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /register remote/i }),
+    );
+    await screen.findByRole("dialog");
+
+    const sourceField = screen.getByLabelText(/source machine/i);
+    expect(sourceField).not.toBeRequired();
+    expect(screen.getByText(/optional/i)).toBeInTheDocument();
+  });
 });

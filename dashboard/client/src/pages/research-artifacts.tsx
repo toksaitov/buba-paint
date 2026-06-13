@@ -585,7 +585,7 @@ function RegisterArtifactDialog({
             />
           )}
         </FormField>
-        <FormField label="Source machine" required>
+        <FormField label="Source machine" hint="Optional">
           {({ id: fieldId }) => (
             <select
               id={fieldId}
