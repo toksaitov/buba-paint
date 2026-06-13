@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Banner,
   Button,
@@ -608,6 +608,13 @@ export function JobCreateForm({
     }
     setType(nextType);
   };
+  const handleBacktestFieldsChange = useCallback(
+    (next: BacktestState) =>
+      type === "current_params"
+        ? setBacktestState(next)
+        : setSweepState((prev) => ({ ...prev, ...next })),
+    [type],
+  );
 
   return (
     <form
@@ -660,11 +667,7 @@ export function JobCreateForm({
           artifact={type === "current_params" ? backtestArtifact : sweepArtifact}
           interval={type === "current_params" ? backtestInterval : sweepInterval}
           artifacts={availableArtifacts}
-          onChange={(next) =>
-            type === "current_params"
-              ? setBacktestState(next)
-              : setSweepState({ ...sweepState, ...next })
-          }
+          onChange={handleBacktestFieldsChange}
         />
       )}
 
@@ -1099,23 +1102,6 @@ function BacktestFields({
     ...next,
     confirm_interval: false,
   });
-  useEffect(() => {
-    if (state.interval_mode !== "custom") return undefined;
-    const intervalId = window.setInterval(() => {
-      const startValue = startInputRef.current?.value ?? state.start_iso;
-      const endValue = endInputRef.current?.value ?? state.end_iso;
-      if (startValue === state.start_iso && endValue === state.end_iso) {
-        return;
-      }
-      onChange({
-        ...state,
-        start_iso: startValue,
-        end_iso: endValue,
-        confirm_interval: false,
-      });
-    }, 250);
-    return () => window.clearInterval(intervalId);
-  }, [onChange, state]);
 
   return (
     <div className="space-y-3">
