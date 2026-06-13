@@ -362,7 +362,7 @@ fn failure_output(stderr: &str) -> CommandOutput {
     }
 }
 
-/// Write one valid but empty SQLite database to the given path.
+/// Write one valid but empty `SQLite` database to the given path.
 fn write_empty_sqlite_db(path: &std::path::Path) {
     let conn = Connection::open(path).unwrap();
     conn.execute_batch("CREATE TABLE _scratch (id INTEGER);")
@@ -404,7 +404,7 @@ fn artifact_fixture() -> tempfile::TempDir {
     dir
 }
 
-/// Build a manifest-backed artifact fixture whose runtime DB is valid SQLite.
+/// Build a manifest-backed artifact fixture whose runtime DB is valid `SQLite`.
 fn artifact_fixture_with_sqlite_db() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     write_empty_sqlite_db(&dir.path().join("paint.db"));
