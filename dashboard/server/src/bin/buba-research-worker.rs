@@ -1,8 +1,11 @@
-//! Long-running local process that executes dashboard research jobs.
+//! Long-running process that executes dashboard research jobs.
 //!
-//! The binary polls the shared dashboard database, leases research steps, and
-//! runs the local command-backed worker loop. It is intended for Compose-managed
-//! deployments on research machines or for one-shot local verification runs.
+//! The binary leases research steps through a `ResearchWorkBackend` and runs the
+//! command-backed worker loop. The backend is the shared dashboard `SQLite`
+//! database by default, or a remote controller over HTTP when
+//! `BUBA_RESEARCH_CONTROLLER_URL` and `BUBA_RESEARCH_WORKER_TOKEN` are both set.
+//! It is intended for Compose-managed deployments on research machines or for
+//! one-shot local verification runs.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -121,7 +124,9 @@ struct Cli {
     #[arg(long, env = "BUBA_RESEARCH_RUN_ONCE", default_value_t = false)]
     run_once: bool,
 
-    /// Optional central dashboard URL for remote worker heartbeat reporting.
+    /// Optional controller URL. When set together with the worker token, the
+    /// worker leases and persists all job, step, transfer, report, and artifact
+    /// work through this controller over HTTP instead of the local database.
     #[arg(long, env = "BUBA_RESEARCH_CONTROLLER_URL")]
     controller_url: Option<String>,
 
@@ -129,7 +134,9 @@ struct Cli {
     #[arg(long, env = "BUBA_RESEARCH_MACHINE_ID", default_value = "research")]
     machine_id: String,
 
-    /// Shared token accepted by the central dashboard worker heartbeat endpoint.
+    /// Shared token sent on every controller request through the
+    /// `x-buba-research-worker-token` header. Required when a controller URL is
+    /// set, and authenticates all worker-token endpoints, not only heartbeats.
     #[arg(long, env = "BUBA_RESEARCH_WORKER_TOKEN")]
     worker_token: Option<String>,
 
