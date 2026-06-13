@@ -391,9 +391,9 @@ the next real deploy if code or image inputs change.
 `ops/research-images.lock.json`:
 
 * dashboard:
-  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:7440d447dd6ec49121a27f9fc9c1b95d44aaf61ea66c46189b7b77c586210862`
+  `ghcr.io/toksaitov/buba-paint-dashboard@sha256:2fd879366e1cbdf1d0d2ef44482fefb73dcba32ebf413fabfcf4e3573247ee08`
 * research worker:
-  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:8e471b0a4a90f223e5c795456108ae856eb71035db0bdac4bfdec9a6aa51dd6a`
+  `ghcr.io/toksaitov/buba-paint-research-worker@sha256:94c7f9d0977672aab2e4b5fc5f371cc1ba0ebe47f976216eb1aa670a28f3a95a`
 
 ### Stopped-Live Images
 
