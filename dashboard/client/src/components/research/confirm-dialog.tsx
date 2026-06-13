@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Banner,
   Button,
@@ -37,6 +37,12 @@ export function ConfirmDialog({
   const requiresPhrase = phrase != null && phrase.length > 0;
   const phraseSatisfied = !requiresPhrase || typed === phrase;
   const canConfirm = !pending && phraseSatisfied;
+
+  useEffect(() => {
+    if (!open) {
+      setTyped("");
+    }
+  }, [open]);
 
   const closeAndReset = () => {
     setTyped("");

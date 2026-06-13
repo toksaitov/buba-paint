@@ -90,4 +90,53 @@ describe("ConfirmDialog", () => {
     );
     expect(screen.getByText(/permission denied/)).toBeInTheDocument();
   });
+
+  it("clears the typed phrase when the dialog is closed externally and reopened", async () => {
+    const { rerender } = render(
+      <ConfirmDialog
+        open={true}
+        title="Archive scratch DBs"
+        description="Type the job ID."
+        phrase="job-9"
+        destructive
+        confirmLabel="Archive scratch DBs"
+        onConfirm={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await userEvent.type(screen.getByRole("textbox"), "job-9");
+    expect(
+      screen.getByRole("button", { name: /archive scratch dbs/i }),
+    ).not.toBeDisabled();
+
+    rerender(
+      <ConfirmDialog
+        open={false}
+        title="Archive scratch DBs"
+        description="Type the job ID."
+        phrase="job-9"
+        destructive
+        confirmLabel="Archive scratch DBs"
+        onConfirm={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    rerender(
+      <ConfirmDialog
+        open={true}
+        title="Archive scratch DBs"
+        description="Type the job ID."
+        phrase="job-9"
+        destructive
+        confirmLabel="Archive scratch DBs"
+        onConfirm={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    expect(
+      screen.getByRole("button", { name: /archive scratch dbs/i }),
+    ).toBeDisabled();
+  });
 });
