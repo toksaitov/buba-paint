@@ -2040,6 +2040,7 @@ impl DashboardDb {
         priority: i64,
         params_json: Option<&str>,
     ) -> Result<ResearchJob, DashboardError> {
+        validate_research_priority(priority)?;
         let step_names = step_templates_for_job(job_type).ok_or_else(|| {
             DashboardError::BadRequest(
                 "job_type must be 'export', 'current_params', or 'sweep'".to_string(),
@@ -2236,6 +2237,7 @@ impl DashboardDb {
         }
 
         let new_priority = priority.unwrap_or(existing.priority);
+        validate_research_priority(new_priority)?;
         let new_params_json = match params_json {
             NullableUpdate::Unchanged => existing.params_json.as_deref(),
             NullableUpdate::Clear => None,
@@ -4069,6 +4071,21 @@ fn validate_research_artifact_status(status: &str) -> Result<(), DashboardError>
     }
 }
 
+/// Inclusive bound for research queue priority on both jobs and templates.
+const RESEARCH_PRIORITY_BOUND: i64 = 1000;
+
+/// Validate that a research queue priority is within the documented range.
+fn validate_research_priority(priority: i64) -> Result<(), DashboardError> {
+    if (-RESEARCH_PRIORITY_BOUND..=RESEARCH_PRIORITY_BOUND).contains(&priority) {
+        Ok(())
+    } else {
+        Err(DashboardError::BadRequest(format!(
+            "priority must be between {} and {}",
+            -RESEARCH_PRIORITY_BOUND, RESEARCH_PRIORITY_BOUND
+        )))
+    }
+}
+
 /// Validate a complete research job template record.
 fn validate_research_job_template_record(
     conn: &Connection,
@@ -4080,6 +4097,7 @@ fn validate_research_job_template_record(
         ));
     }
     validate_research_job_template_job_type(record.job_type)?;
+    validate_research_priority(record.priority)?;
     validate_research_job_template_params(record.params_json)?;
     ensure_user_exists(conn, record.operator_id)?;
     if let Some(artifact_id) = record.artifact_id {

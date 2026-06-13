@@ -841,6 +841,58 @@ async fn create_research_job_rejects_invalid_type_and_missing_artifact() {
     assert!(missing_artifact.is_err());
 }
 
+/// Verifies that create_research_job rejects an out-of-range queue priority.
+#[tokio::test]
+async fn create_research_job_rejects_out_of_range_priority() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+
+    let too_high = db
+        .create_research_job("export", None, &user.id, 1_001, None)
+        .await;
+    let too_low = db
+        .create_research_job("export", None, &user.id, -1_001, None)
+        .await;
+    let at_bound = db
+        .create_research_job("export", None, &user.id, 1_000, None)
+        .await;
+
+    assert!(matches!(too_high, Err(DashboardError::BadRequest(_))));
+    assert!(matches!(too_low, Err(DashboardError::BadRequest(_))));
+    assert_eq!(at_bound.unwrap().priority, 1_000);
+}
+
+/// Verifies that research job templates reject an out-of-range default priority.
+#[tokio::test]
+async fn create_research_job_template_rejects_out_of_range_priority() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let artifact = db
+        .create_research_artifact(
+            Some("live"),
+            "readonly_run",
+            "available",
+            Some("live_readonly"),
+            Some("/tmp/artifact/manifest.json"),
+        )
+        .await
+        .unwrap();
+
+    let result = db
+        .create_research_job_template(&ResearchJobTemplateRecord {
+            name: "Out of range",
+            description: None,
+            job_type: "sweep",
+            artifact_id: Some(&artifact.id),
+            priority: 5_000,
+            params_json: r#"{"sweeps":["A=1,2"],"start_ms":1,"end_ms":2}"#,
+            operator_id: &user.id,
+        })
+        .await;
+
+    assert!(matches!(result, Err(DashboardError::BadRequest(_))));
+}
+
 /// Verifies reusable research job templates can be managed and marked used.
 #[tokio::test]
 async fn research_job_templates_crud_and_usage() {
