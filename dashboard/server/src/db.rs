@@ -210,6 +210,33 @@ pub struct ResearchArtifact {
     pub archived_at: Option<u64>,
 }
 
+impl ResearchArtifact {
+    /// Borrow this artifact as an upsert record, preserving every persisted field.
+    ///
+    /// Read-modify-write sites build the record from this and override only the
+    /// fields they change, so a future schema field cannot be silently dropped.
+    pub fn to_record(&self) -> ResearchArtifactRecord<'_> {
+        ResearchArtifactRecord {
+            id: &self.id,
+            source_machine_id: self.source_machine_id.as_deref(),
+            kind: &self.kind,
+            status: &self.status,
+            run_mode: self.run_mode.as_deref(),
+            artifact_root: self.artifact_root.as_deref(),
+            manifest_path: self.manifest_path.as_deref(),
+            bundle_path: self.bundle_path.as_deref(),
+            source_db_path: self.source_db_path.as_deref(),
+            interval_start_ms: self.interval_start_ms,
+            interval_end_ms: self.interval_end_ms,
+            bytes: self.bytes,
+            checksum: self.checksum.as_deref(),
+            replay_quality_class: self.replay_quality_class.as_deref(),
+            backtest_ready_class: self.backtest_ready_class.as_deref(),
+            live_fidelity_class: self.live_fidelity_class.as_deref(),
+        }
+    }
+}
+
 /// Borrowed input record for inserting or updating an artifact row.
 #[derive(Debug, Clone)]
 pub struct ResearchArtifactRecord<'a> {

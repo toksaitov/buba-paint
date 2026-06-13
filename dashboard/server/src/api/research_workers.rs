@@ -300,27 +300,10 @@ pub async fn store_artifact_documents(
         .join(&id)
         .to_string_lossy()
         .to_string();
-    let updated = state
-        .db
-        .upsert_research_artifact(&crate::db::ResearchArtifactRecord {
-            id: &artifact.id,
-            source_machine_id: artifact.source_machine_id.as_deref(),
-            kind: &artifact.kind,
-            status: &artifact.status,
-            run_mode: artifact.run_mode.as_deref(),
-            artifact_root: Some(&artifact_root),
-            manifest_path: manifest_path.as_deref(),
-            bundle_path: artifact.bundle_path.as_deref(),
-            source_db_path: artifact.source_db_path.as_deref(),
-            interval_start_ms: artifact.interval_start_ms,
-            interval_end_ms: artifact.interval_end_ms,
-            bytes: artifact.bytes,
-            checksum: artifact.checksum.as_deref(),
-            replay_quality_class: artifact.replay_quality_class.as_deref(),
-            backtest_ready_class: artifact.backtest_ready_class.as_deref(),
-            live_fidelity_class: artifact.live_fidelity_class.as_deref(),
-        })
-        .await?;
+    let mut record = artifact.to_record();
+    record.artifact_root = Some(&artifact_root);
+    record.manifest_path = manifest_path.as_deref();
+    let updated = state.db.upsert_research_artifact(&record).await?;
     Ok(Json(updated).into_response())
 }
 

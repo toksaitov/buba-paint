@@ -2474,3 +2474,57 @@ async fn research_report_upsert_validates_and_updates_existing_report() {
     assert_eq!(reports[0].title, "Updated report");
     assert_eq!(reports[0].status, "archived");
 }
+
+/// `ResearchArtifact::to_record` mirrors every persisted field into the upsert record.
+#[test]
+fn artifact_to_record_round_trips_all_fields() {
+    let artifact = ResearchArtifact {
+        id: "artifact-1".to_string(),
+        source_machine_id: Some("machine-1".to_string()),
+        kind: "readonly_run".to_string(),
+        status: "available".to_string(),
+        run_mode: Some("live_readonly".to_string()),
+        artifact_root: Some("/research/artifacts/artifact-1".to_string()),
+        manifest_path: Some("/research/artifacts/artifact-1/manifest.json".to_string()),
+        bundle_path: Some("/research/artifacts/artifact-1/bundle.tar".to_string()),
+        source_db_path: Some("/runtime/paint.db".to_string()),
+        interval_start_ms: Some(1_779_000_000_000),
+        interval_end_ms: Some(1_779_000_600_000),
+        bytes: Some(4096),
+        checksum: Some("abc123".to_string()),
+        replay_quality_class: Some("replay_grade".to_string()),
+        backtest_ready_class: Some("ready".to_string()),
+        live_fidelity_class: Some("verified".to_string()),
+        created_at: 1_779_000_000_000,
+        updated_at: 1_779_000_600_000,
+        archived_at: Some(1_779_000_900_000),
+    };
+
+    let record = artifact.to_record();
+
+    assert_eq!(record.id, artifact.id);
+    assert_eq!(record.source_machine_id, artifact.source_machine_id.as_deref());
+    assert_eq!(record.kind, artifact.kind);
+    assert_eq!(record.status, artifact.status);
+    assert_eq!(record.run_mode, artifact.run_mode.as_deref());
+    assert_eq!(record.artifact_root, artifact.artifact_root.as_deref());
+    assert_eq!(record.manifest_path, artifact.manifest_path.as_deref());
+    assert_eq!(record.bundle_path, artifact.bundle_path.as_deref());
+    assert_eq!(record.source_db_path, artifact.source_db_path.as_deref());
+    assert_eq!(record.interval_start_ms, artifact.interval_start_ms);
+    assert_eq!(record.interval_end_ms, artifact.interval_end_ms);
+    assert_eq!(record.bytes, artifact.bytes);
+    assert_eq!(record.checksum, artifact.checksum.as_deref());
+    assert_eq!(
+        record.replay_quality_class,
+        artifact.replay_quality_class.as_deref()
+    );
+    assert_eq!(
+        record.backtest_ready_class,
+        artifact.backtest_ready_class.as_deref()
+    );
+    assert_eq!(
+        record.live_fidelity_class,
+        artifact.live_fidelity_class.as_deref()
+    );
+}

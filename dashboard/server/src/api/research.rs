@@ -925,27 +925,13 @@ pub async fn update_artifact(
     validate_optional_metadata("replay_quality_class", replay_quality_class)?;
     validate_optional_metadata("backtest_ready_class", backtest_ready_class)?;
     validate_optional_metadata("live_fidelity_class", live_fidelity_class)?;
-    let artifact = state
-        .db
-        .upsert_research_artifact(&ResearchArtifactRecord {
-            id: &current.id,
-            source_machine_id,
-            kind: &current.kind,
-            status: &current.status,
-            run_mode,
-            artifact_root: current.artifact_root.as_deref(),
-            manifest_path: current.manifest_path.as_deref(),
-            bundle_path: current.bundle_path.as_deref(),
-            source_db_path: current.source_db_path.as_deref(),
-            interval_start_ms: current.interval_start_ms,
-            interval_end_ms: current.interval_end_ms,
-            bytes: current.bytes,
-            checksum: current.checksum.as_deref(),
-            replay_quality_class,
-            backtest_ready_class,
-            live_fidelity_class,
-        })
-        .await?;
+    let mut record = current.to_record();
+    record.source_machine_id = source_machine_id;
+    record.run_mode = run_mode;
+    record.replay_quality_class = replay_quality_class;
+    record.backtest_ready_class = backtest_ready_class;
+    record.live_fidelity_class = live_fidelity_class;
+    let artifact = state.db.upsert_research_artifact(&record).await?;
     Ok(Json(artifact))
 }
 
