@@ -58,6 +58,12 @@ RUST_TARGETS = {
 }
 
 FRONTEND_MINIMUM = 80.0
+FRONTEND_RESEARCH_MINIMUM = 70.0
+RESEARCH_RUST_MINIMUM = 80.0
+RESEARCH_RUST_SCOPE_RE = re.compile(
+    r"(?:^|/)(?:research_[^/]*\.rs|api/research[^/]*\.rs|bin/buba-research-worker\.rs)$"
+)
+FRONTEND_RESEARCH_SCOPE_RE = re.compile(r"client/src/.*research")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -96,6 +102,48 @@ def parse_frontend_line_coverage() -> float:
     return float(data["total"]["lines"]["pct"])
 
 
+def parse_research_rust_line_coverage() -> float:
+    """Aggregate llvm-cov JSON line coverage over research-scoped server files."""
+    summary_path = ROOT / "target" / "llvm-cov" / "research-summary.json"
+    if not summary_path.exists():
+        raise SystemExit("research Rust coverage summary was not generated")
+    data = json.loads(summary_path.read_text())
+    covered = 0
+    total = 0
+    for export in data.get("data", []):
+        for file_entry in export.get("files", []):
+            filename = file_entry.get("filename", "").replace("\\", "/")
+            if not RESEARCH_RUST_SCOPE_RE.search(filename):
+                continue
+            lines = file_entry["summary"]["lines"]
+            covered += int(lines["covered"])
+            total += int(lines["count"])
+    if total == 0:
+        raise SystemExit("research Rust coverage matched no files")
+    return 100.0 * covered / total
+
+
+def parse_research_frontend_line_coverage() -> float:
+    """Aggregate vitest line coverage over research-scoped client files."""
+    summary_path = CLIENT_DIR / "coverage" / "coverage-summary.json"
+    if not summary_path.exists():
+        raise SystemExit("frontend coverage summary was not generated")
+    data = json.loads(summary_path.read_text())
+    covered = 0
+    total = 0
+    for key, entry in data.items():
+        if key == "total":
+            continue
+        if not FRONTEND_RESEARCH_SCOPE_RE.search(key.replace("\\", "/")):
+            continue
+        lines = entry["lines"]
+        covered += int(lines["covered"])
+        total += int(lines["total"])
+    if total == 0:
+        raise SystemExit("research frontend coverage matched no files")
+    return 100.0 * covered / total
+
+
 def main() -> int:
     failures: list[str] = []
     for name, target in RUST_TARGETS.items():
@@ -107,6 +155,33 @@ def main() -> int:
                 f"{name} line coverage {line_pct:.2f}% is below {target['minimum']:.2f}%"
             )
 
+    run(
+        [
+            "cargo",
+            "llvm-cov",
+            "--json",
+            "--summary-only",
+            "-p",
+            "buba-dashboard",
+            "--lib",
+            "--tests",
+            "--bin",
+            "buba-research-worker",
+            "--output-path",
+            str(ROOT / "target" / "llvm-cov" / "research-summary.json"),
+        ]
+    )
+    research_rust_pct = parse_research_rust_line_coverage()
+    print(
+        f"research server line coverage: {research_rust_pct:.2f}% "
+        f"(minimum {RESEARCH_RUST_MINIMUM:.2f}%)"
+    )
+    if research_rust_pct < RESEARCH_RUST_MINIMUM:
+        failures.append(
+            f"research server line coverage {research_rust_pct:.2f}% "
+            f"is below {RESEARCH_RUST_MINIMUM:.2f}%"
+        )
+
     run(["npm", "run", "test:coverage"], cwd=CLIENT_DIR)
     frontend_line_pct = parse_frontend_line_coverage()
     print(
@@ -116,6 +191,17 @@ def main() -> int:
     if frontend_line_pct < FRONTEND_MINIMUM:
         failures.append(
             f"dashboard client line coverage {frontend_line_pct:.2f}% is below {FRONTEND_MINIMUM:.2f}%"
+        )
+
+    research_frontend_pct = parse_research_frontend_line_coverage()
+    print(
+        f"research client line coverage: {research_frontend_pct:.2f}% "
+        f"(minimum {FRONTEND_RESEARCH_MINIMUM:.2f}%)"
+    )
+    if research_frontend_pct < FRONTEND_RESEARCH_MINIMUM:
+        failures.append(
+            f"research client line coverage {research_frontend_pct:.2f}% "
+            f"is below {FRONTEND_RESEARCH_MINIMUM:.2f}%"
         )
 
     if failures:
