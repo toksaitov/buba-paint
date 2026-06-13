@@ -15,6 +15,7 @@ use clap::Parser;
 use buba_dashboard::db::{
     DashboardDb, ResearchMachineHeartbeatRecord, ResearchMachineTelemetryUpdate,
 };
+use buba_dashboard::error::DashboardError;
 use buba_dashboard::research_backend::ResearchWorkBackend;
 use buba_dashboard::research_controller_client::{ResearchControllerClient, WorkerBackend};
 use buba_dashboard::research_pipeline::{
@@ -250,7 +251,14 @@ impl WorkerRuntime {
 /// Run the main polling loop until run-once completion or fatal worker error.
 async fn run_worker_loop(cli: &Cli, runtime: &WorkerRuntime) -> anyhow::Result<()> {
     loop {
-        if machine_work_disabled(&runtime.backend, &cli.machine_id).await? {
+        let disabled = match machine_work_disabled(&runtime.backend, &cli.machine_id).await {
+            Ok(disabled) => disabled,
+            Err(error) => {
+                handle_transient_poll_error(cli, runtime, error).await?;
+                continue;
+            }
+        };
+        if disabled {
             if handle_disabled_tick(cli, runtime).await {
                 return Ok(());
             }
@@ -265,19 +273,8 @@ async fn run_worker_loop(cli: &Cli, runtime: &WorkerRuntime) -> anyhow::Result<(
         let (processed, transfers_processed) = match run_work_tick(cli, runtime).await {
             Ok(result) => result,
             Err(error) => {
-                update_activity(&runtime.activity, |activity| {
-                    activity.status = "error".to_string();
-                    activity.phase = "error".to_string();
-                    activity.last_loop_error = Some(error.to_string());
-                });
-                send_heartbeat(
-                    &runtime.db,
-                    &runtime.heartbeat,
-                    &runtime.sampler,
-                    &activity_snapshot(&runtime.activity),
-                )
-                .await;
-                return Err(error);
+                handle_transient_poll_error(cli, runtime, error).await?;
+                continue;
             }
         };
         let total_processed = transfers_processed + processed;
@@ -341,6 +338,51 @@ async fn handle_disabled_tick(cli: &Cli, runtime: &WorkerRuntime) -> bool {
     }
     tokio::time::sleep(Duration::from_millis(cli.poll_ms)).await;
     false
+}
+
+/// Classify a per-tick poll failure as a genuinely fatal configuration or auth error.
+fn worker_poll_error_is_fatal(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<DashboardError>(),
+        Some(
+            DashboardError::Unauthorized(_)
+                | DashboardError::Forbidden(_)
+                | DashboardError::BadRequest(_)
+        )
+    )
+}
+
+/// Record a transient poll failure and sleep, or surface a fatal or one-shot error.
+///
+/// Fatal config/auth errors and any error under run-once propagate so the worker
+/// stops; all other per-tick failures warn, back off for one poll interval, and
+/// let the caller continue the long-running loop.
+async fn handle_transient_poll_error(
+    cli: &Cli,
+    runtime: &WorkerRuntime,
+    error: anyhow::Error,
+) -> anyhow::Result<()> {
+    update_activity(&runtime.activity, |activity| {
+        activity.status = "error".to_string();
+        activity.phase = "error".to_string();
+        activity.last_loop_error = Some(error.to_string());
+    });
+    send_heartbeat(
+        &runtime.db,
+        &runtime.heartbeat,
+        &runtime.sampler,
+        &activity_snapshot(&runtime.activity),
+    )
+    .await;
+    if cli.run_once || worker_poll_error_is_fatal(&error) {
+        return Err(error);
+    }
+    tracing::warn!(
+        ?error,
+        "research worker poll failed; retrying after backoff"
+    );
+    tokio::time::sleep(Duration::from_millis(cli.poll_ms)).await;
+    Ok(())
 }
 
 /// Process one transfer and job work tick.
@@ -783,5 +825,101 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(telemetry.state.unwrap().worker_status, "idle");
+    }
+
+    /// Verifies the classifier treats auth/config errors as fatal and others as transient.
+    #[test]
+    fn worker_poll_error_classifies_fatal_and_transient() {
+        assert!(worker_poll_error_is_fatal(&anyhow::Error::new(
+            DashboardError::Unauthorized("bad token".to_string())
+        )));
+        assert!(worker_poll_error_is_fatal(&anyhow::Error::new(
+            DashboardError::Forbidden("nope".to_string())
+        )));
+        assert!(worker_poll_error_is_fatal(&anyhow::Error::new(
+            DashboardError::BadRequest("malformed".to_string())
+        )));
+        assert!(!worker_poll_error_is_fatal(&anyhow::Error::new(
+            DashboardError::Internal("decode failed".to_string())
+        )));
+        assert!(!worker_poll_error_is_fatal(&anyhow::Error::new(
+            DashboardError::NotFound("missing".to_string())
+        )));
+    }
+
+    /// Verifies the classifier sees a `DashboardError` wrapped in anyhow context.
+    #[test]
+    fn worker_poll_error_unwraps_context_layer() {
+        let wrapped = Err::<(), DashboardError>(DashboardError::Internal("boom".to_string()))
+            .context("loading research machine 'research'")
+            .unwrap_err();
+        assert!(!worker_poll_error_is_fatal(&wrapped));
+        let wrapped_fatal =
+            Err::<(), DashboardError>(DashboardError::Unauthorized("bad token".to_string()))
+                .context("loading research machine 'research'")
+                .unwrap_err();
+        assert!(worker_poll_error_is_fatal(&wrapped_fatal));
+    }
+
+    /// Verifies a transient long-running poll failure is recorded and retried, not fatal.
+    #[tokio::test]
+    async fn transient_poll_error_continues_long_running_loop() {
+        let mut cli = test_cli();
+        cli.poll_ms = 1;
+        let runtime = WorkerRuntime::from_cli(&cli).unwrap();
+
+        let outcome = handle_transient_poll_error(
+            &cli,
+            &runtime,
+            anyhow::Error::new(DashboardError::Internal(
+                "transient decode error".to_string(),
+            )),
+        )
+        .await;
+
+        assert!(outcome.is_ok());
+        let activity = activity_snapshot(&runtime.activity);
+        assert_eq!(activity.status, "error");
+        assert_eq!(
+            activity.last_loop_error.as_deref(),
+            Some("internal error: transient decode error")
+        );
+    }
+
+    /// Verifies a transient poll failure under run-once still returns the error.
+    #[tokio::test]
+    async fn transient_poll_error_is_fatal_in_run_once() {
+        let mut cli = test_cli();
+        cli.run_once = true;
+        cli.poll_ms = 1;
+        let runtime = WorkerRuntime::from_cli(&cli).unwrap();
+
+        let outcome = handle_transient_poll_error(
+            &cli,
+            &runtime,
+            anyhow::Error::new(DashboardError::Internal(
+                "transient decode error".to_string(),
+            )),
+        )
+        .await;
+
+        assert!(outcome.is_err());
+    }
+
+    /// Verifies a fatal auth poll failure stops the long-running loop.
+    #[tokio::test]
+    async fn fatal_poll_error_stops_long_running_loop() {
+        let mut cli = test_cli();
+        cli.poll_ms = 1;
+        let runtime = WorkerRuntime::from_cli(&cli).unwrap();
+
+        let outcome = handle_transient_poll_error(
+            &cli,
+            &runtime,
+            anyhow::Error::new(DashboardError::Unauthorized("bad worker token".to_string())),
+        )
+        .await;
+
+        assert!(outcome.is_err());
     }
 }
