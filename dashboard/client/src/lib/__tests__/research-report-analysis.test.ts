@@ -90,6 +90,17 @@ describe("research report analysis helpers", () => {
     expect(bestReportLabel(parsed)).toMatch(/tied/i);
   });
 
+  it("returns no-winner when every compared report lacks Net PnL", () => {
+    const a = report("a", null);
+    const b = report("b", null);
+    const parsed = [
+      { report: a, parsed: parseReportPayload(JSON.parse(a.summary_json!), a) },
+      { report: b, parsed: parseReportPayload(JSON.parse(b.summary_json!), b) },
+    ];
+
+    expect(bestReportLabel(parsed)).toBe("No winner: Net PnL is unavailable.");
+  });
+
   it("labels calibrated sweep metrics distinctly", () => {
     const base = report("sweep", 32, {
       provenance: { job_type: "sweep" },

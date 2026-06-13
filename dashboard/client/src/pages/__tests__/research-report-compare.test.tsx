@@ -163,4 +163,84 @@ describe("ResearchReportComparePage", () => {
     expect(screen.getByText(/could not load: b\./i)).toBeInTheDocument();
     expect(screen.queryByText("1. Report a")).not.toBeInTheDocument();
   });
+
+  it("renders StateEmpty when only one id is selected", () => {
+    function singleIdWrapper({ children }: { children: ReactNode }) {
+      const qc = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      return (
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={["/research/reports/compare?ids=a"]}>
+            {children}
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+    }
+
+    render(<ResearchReportComparePage />, { wrapper: singleIdWrapper });
+
+    expect(
+      screen.getByText(/select at least two reports/i),
+    ).toBeInTheDocument();
+    expect(mockGetReport).not.toHaveBeenCalled();
+    expect(mockGetJson).not.toHaveBeenCalled();
+  });
+
+  it("ranks three or more reports by Net PnL", async () => {
+    function threeIdWrapper({ children }: { children: ReactNode }) {
+      const qc = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      return (
+        <QueryClientProvider client={qc}>
+          <MemoryRouter
+            initialEntries={["/research/reports/compare?ids=a,b,c"]}
+          >
+            {children}
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+    }
+    const pnlById: Record<string, number> = { a: 1, b: 9, c: 5 };
+    mockGetJson.mockImplementation(async (id: string) =>
+      payload(id, pnlById[id] ?? 0),
+    );
+
+    render(<ResearchReportComparePage />, { wrapper: threeIdWrapper });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/best by net pnl: report b/i),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText("1. Report b")).toBeInTheDocument();
+    expect(screen.getByText("2. Report c")).toBeInTheDocument();
+    expect(screen.getByText("3. Report a")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/some reports could not be loaded/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("declares no winner when every report has a null Net PnL", async () => {
+    mockGetJson.mockImplementation(async (id: string) => ({
+      ...payload(id, 0),
+      metrics: {
+        net_pnl: null,
+        max_drawdown: -1,
+        win_rate: 0.5,
+        trade_count: 2,
+      },
+    }));
+
+    render(<ResearchReportComparePage />, { wrapper });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("No winner: Net PnL is unavailable."),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText("1. Report a")).toBeInTheDocument();
+    expect(screen.getByText("2. Report b")).toBeInTheDocument();
+  });
 });
