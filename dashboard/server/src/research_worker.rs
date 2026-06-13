@@ -472,12 +472,22 @@ impl LocalResearchWorker {
     }
 
     /// Write report files, persist report metadata, and optionally archive scratch DB outputs.
+    ///
+    /// Cancellation is re-checked at entry and again immediately before the
+    /// destructive scratch archival and before publishing report documents, so
+    /// an operator cancel during report generation neither deletes scratch
+    /// inputs nor publishes a report.
     async fn write_report_step(
         &self,
         db: &impl ResearchWorkBackend,
         pipeline: &ResearchPipelineConfig,
         lease: &ResearchStepLease,
     ) -> Result<String, DashboardError> {
+        if report_step_is_cancelled(db, lease).await? {
+            return Err(DashboardError::BadRequest(
+                "write_report cancelled before report generation".to_string(),
+            ));
+        }
         let artifact = research_artifact_for_job(db, lease).await?;
         let plan = pipeline.plan_for_job(&lease.job, artifact.as_ref())?;
         let mut steps = db.get_research_job_steps(&lease.job.id).await?;
@@ -491,6 +501,11 @@ impl LocalResearchWorker {
         let mut report_id =
             persist_research_report_metadata(db, lease, &plan, &summary_json).await?;
         let archive_summary = if plan.archive_scratch {
+            if report_step_is_cancelled(db, lease).await? {
+                return Err(DashboardError::BadRequest(
+                    "write_report cancelled before scratch archival".to_string(),
+                ));
+            }
             match archive_scratch_dbs(&plan) {
                 Ok(summary) => {
                     summary_json = report_summary_with_field(&summary_json, "archive", &summary)?;
@@ -519,6 +534,11 @@ impl LocalResearchWorker {
         } else {
             None
         };
+        if report_step_is_cancelled(db, lease).await? {
+            return Err(DashboardError::BadRequest(
+                "write_report cancelled before publishing report documents".to_string(),
+            ));
+        }
         publish_report_documents(db, &report_id, &plan).await?;
         serde_json::to_string(&serde_json::json!({
             "executor": "local_command",
@@ -867,6 +887,23 @@ async fn cancelled_step_lease(
         return Ok(None);
     }
     Ok(Some(ResearchStepLease { job, step }))
+}
+
+/// Return true when the leased job or its active step has been cancelled.
+async fn report_step_is_cancelled(
+    db: &impl ResearchWorkBackend,
+    lease: &ResearchStepLease,
+) -> Result<bool, DashboardError> {
+    let Some(job) = db.get_research_job(&lease.job.id).await? else {
+        return Ok(true);
+    };
+    if job.status == "cancelled" {
+        return Ok(true);
+    }
+    let steps = db.get_research_job_steps(&lease.job.id).await?;
+    Ok(steps
+        .iter()
+        .any(|step| step.id == lease.step.id && step.status == "cancelled"))
 }
 
 /// Return serialized command output for a completed command-backed step.
