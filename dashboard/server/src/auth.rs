@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use argon2::Argon2;
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
@@ -10,6 +10,8 @@ use password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 
+use crate::api::auth_routes::AppState;
+use crate::api::research::require_worker_token;
 use crate::db::DashboardDb;
 
 /// `JWT` claims.
@@ -82,11 +84,7 @@ pub struct AuthState {
 /// Stores `Claims` in request extensions on success.
 pub async fn require_auth(mut request: Request, next: Next) -> Result<Response, StatusCode> {
     let path = request.uri().path();
-    if path == "/api/auth/login"
-        || path == "/health"
-        || path.starts_with("/api/research/workers/")
-        || path.starts_with("/ws/")
-    {
+    if path == "/api/auth/login" || path == "/health" || path.starts_with("/ws/") {
         return Ok(next.run(request).await);
     }
 
@@ -115,6 +113,19 @@ pub async fn require_auth(mut request: Request, next: Next) -> Result<Response, 
     }
 
     request.extensions_mut().insert(claims);
+    Ok(next.run(request).await)
+}
+
+/// Worker-token auth middleware for the research worker route subtree.
+/// Rejects any request lacking a valid `BUBA_RESEARCH_WORKER_TOKEN` with 401,
+/// fail-closed even when no token is configured, so a route under the worker
+/// subtree is protected without depending on each handler calling the helper.
+pub async fn require_worker_auth(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    require_worker_token(&state, request.headers()).map_err(|_| StatusCode::UNAUTHORIZED)?;
     Ok(next.run(request).await)
 }
 

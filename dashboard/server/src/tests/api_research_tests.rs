@@ -35,12 +35,24 @@ fn test_app() -> (Router, Arc<DashboardDb>) {
         db: Arc::clone(&db),
     };
 
-    let app = test_research_routes()
+    let operator_routes = test_research_routes()
         .layer(middleware::from_fn(auth::require_auth))
-        .layer(axum::Extension(auth_state))
-        .with_state(state);
+        .layer(axum::Extension(auth_state));
+    let worker_routes = test_worker_routes().layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_worker_auth,
+    ));
+    let app = operator_routes.merge(worker_routes).with_state(state);
 
     (app, db)
+}
+
+/// Build worker-token routes used by API tests.
+fn test_worker_routes() -> Router<AppState> {
+    Router::new().route(
+        "/api/research/workers/heartbeat",
+        post(research::worker_heartbeat),
+    )
 }
 
 /// Build all research routes used by API tests.
@@ -71,10 +83,6 @@ fn test_research_routes() -> Router<AppState> {
         .route(
             "/api/research/machines/{id}/telemetry",
             get(research::get_machine_telemetry),
-        )
-        .route(
-            "/api/research/workers/heartbeat",
-            post(research::worker_heartbeat),
         )
         .merge(test_artifact_routes())
         .merge(test_transfer_routes())

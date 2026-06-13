@@ -102,7 +102,7 @@ async fn seed_admin_from_env(db: &DashboardDb) -> anyhow::Result<()> {
 
 /// Builds the authenticated dashboard route graph.
 fn authenticated_app(state: AppState, auth_state: AuthState) -> Router {
-    Router::new()
+    let operator_routes = Router::new()
         .route("/health", get(health))
         .route("/api/auth/login", post(auth_routes::login))
         .route("/api/auth/me", get(auth_routes::me))
@@ -111,12 +111,20 @@ fn authenticated_app(state: AppState, auth_state: AuthState) -> Router {
         .merge(research_routes())
         .merge(bot_routes())
         .layer(middleware::from_fn(auth::require_auth))
-        .layer(axum::Extension(auth_state))
+        .layer(axum::Extension(auth_state));
+
+    let worker_routes = research_worker_routes().layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_worker_auth,
+    ));
+
+    operator_routes
+        .merge(worker_routes)
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
-/// Builds research orchestration routes.
+/// Builds operator-authenticated research orchestration routes.
 fn research_routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -145,11 +153,6 @@ fn research_routes() -> Router<AppState> {
             "/api/research/machines/{id}/telemetry",
             get(research::get_machine_telemetry),
         )
-        .route(
-            "/api/research/workers/heartbeat",
-            post(research::worker_heartbeat),
-        )
-        .merge(research_worker_protocol_routes())
         .merge(research_artifact_routes())
         .merge(research_transfer_routes())
         .merge(research_job_routes())
@@ -168,11 +171,15 @@ fn html_no_cache_header<B>(response: &axum::http::Response<B>) -> Option<axum::h
     is_html.then(|| axum::http::HeaderValue::from_static("no-cache"))
 }
 
-/// Builds worker-token protocol routes that expose the research queue to remote workers.
-fn research_worker_protocol_routes() -> Router<AppState> {
+/// Builds worker-token routes that expose the research queue and heartbeat to remote workers.
+fn research_worker_routes() -> Router<AppState> {
     use axum::extract::DefaultBodyLimit;
     use axum::routing::put;
     Router::new()
+        .route(
+            "/api/research/workers/heartbeat",
+            post(research::worker_heartbeat),
+        )
         .route(
             "/api/research/workers/steps/claim",
             post(research_workers::claim_step),

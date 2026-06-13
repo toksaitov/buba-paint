@@ -14,6 +14,17 @@ use crate::research_backend::ResearchWorkBackend;
 use crate::research_controller_client::{ResearchControllerClient, WorkerBackend};
 use crate::research_worker::LocalResearchWorker;
 
+/// Worker route whose handler intentionally omits the token helper, proving the
+/// middleware layer guards the subtree structurally.
+async fn unguarded_worker_probe() -> &'static str {
+    "ok"
+}
+
+/// Operator route guarded only by the JWT layer, used to prove operator auth still applies.
+async fn operator_probe() -> &'static str {
+    "ok"
+}
+
 static WORK_ROOT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Shared worker token used by every protocol test.
@@ -133,10 +144,20 @@ async fn spawn_controller(work_root: &std::path::Path) -> (String, Arc<Dashboard
         jwt_secret: "protocol-test-jwt".to_string(),
         db: Arc::clone(&db),
     };
-    let app = worker_protocol_routes()
+    let operator_routes = Router::new()
+        .route("/api/research/operator-probe", get(operator_probe))
         .layer(middleware::from_fn(auth::require_auth))
-        .layer(axum::Extension(auth_state))
-        .with_state(state);
+        .layer(axum::Extension(auth_state));
+    let worker_routes = worker_protocol_routes()
+        .route(
+            "/api/research/workers/unguarded-probe",
+            get(unguarded_worker_probe),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_worker_auth,
+        ));
+    let app = operator_routes.merge(worker_routes).with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -434,4 +455,58 @@ async fn worker_loop_runs_noop_steps_through_remote_backend() {
     assert_eq!(job.status, "completed");
     let steps = db.get_research_job_steps(&job_id).await.unwrap();
     assert!(steps.iter().all(|step| step.status == "completed"));
+}
+
+/// Verifies the worker-token middleware guards the whole worker subtree even when
+/// a handler omits the helper, and that operator JWT routes still require a JWT.
+#[tokio::test]
+async fn worker_subtree_is_guarded_structurally() {
+    let work_root = unique_work_root();
+    let (base_url, db) = spawn_controller(&work_root).await;
+    let client = reqwest::Client::new();
+
+    let missing = client
+        .get(format!("{base_url}/api/research/workers/unguarded-probe"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let invalid = client
+        .get(format!("{base_url}/api/research/workers/unguarded-probe"))
+        .header("x-buba-research-worker-token", "wrong-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let valid = client
+        .get(format!("{base_url}/api/research/workers/unguarded-probe"))
+        .header("x-buba-research-worker-token", TEST_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(valid.status(), reqwest::StatusCode::OK);
+
+    let operator_no_jwt = client
+        .get(format!("{base_url}/api/research/operator-probe"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(operator_no_jwt.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let token = {
+        let admin = db
+            .create_user("probe-admin", "unused-password-hash", "admin")
+            .await
+            .unwrap();
+        crate::auth::create_jwt(&admin.id, "admin", "protocol-test-jwt", 3600)
+    };
+    let operator_with_jwt = client
+        .get(format!("{base_url}/api/research/operator-probe"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(operator_with_jwt.status(), reqwest::StatusCode::OK);
 }
