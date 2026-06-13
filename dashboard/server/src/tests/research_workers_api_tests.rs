@@ -659,3 +659,226 @@ async fn worker_protocol_maps_error_status_to_variant_and_recovers_envelope() {
 
     std::fs::remove_dir_all(&work_root).ok();
 }
+
+/// Synthetic worker route that always returns an internal error with a body,
+/// used to assert the client surfaces a 500 body inside its mapped error.
+async fn synthetic_internal_error()
+-> Result<axum::Json<serde_json::Value>, crate::error::DashboardError> {
+    Err(crate::error::DashboardError::Internal(
+        "synthetic controller failure".to_string(),
+    ))
+}
+
+/// Verifies a missing-step renew maps to `NotFound`, mirroring the
+/// `DashboardDb::refresh_research_step_lease` outcome for an unknown step.
+#[tokio::test]
+async fn worker_protocol_renew_missing_step_maps_not_found() {
+    let work_root = unique_work_root();
+    let (base_url, _db) = spawn_controller(&work_root).await;
+    let client = ResearchControllerClient::new(&base_url, TEST_TOKEN).unwrap();
+
+    let error = client
+        .refresh_research_step_lease("missing-step", "worker-a", 60_000)
+        .await
+        .expect_err("renewing a missing step should error");
+    match error {
+        crate::error::DashboardError::NotFound(message) => {
+            assert!(
+                message.contains("missing-step"),
+                "recovered NotFound message should name the step, got: {message}"
+            );
+            assert!(
+                !message.contains("\"error\""),
+                "envelope should be unwrapped, got: {message}"
+            );
+        }
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
+/// Verifies a missing-step complete maps to `NotFound`, mirroring the
+/// `DashboardDb::complete_research_step` outcome for an unknown step.
+#[tokio::test]
+async fn worker_protocol_complete_missing_step_maps_not_found() {
+    let work_root = unique_work_root();
+    let (base_url, _db) = spawn_controller(&work_root).await;
+    let client = ResearchControllerClient::new(&base_url, TEST_TOKEN).unwrap();
+
+    let error = client
+        .complete_research_step("missing-step", "worker-a", None)
+        .await
+        .expect_err("completing a missing step should error");
+    match error {
+        crate::error::DashboardError::NotFound(message) => {
+            assert!(
+                message.contains("missing-step"),
+                "recovered NotFound message should name the step, got: {message}"
+            );
+        }
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
+/// Verifies a renew or complete by a worker that does not own the lease surfaces
+/// the controller's not-active `BadRequest` through the client.
+#[tokio::test]
+async fn worker_protocol_renew_and_complete_by_other_worker_surface_not_active() {
+    let work_root = unique_work_root();
+    let (base_url, db) = spawn_controller(&work_root).await;
+    seed_backtest_job(&db).await;
+    let client = ResearchControllerClient::new(&base_url, TEST_TOKEN).unwrap();
+
+    let leased = client
+        .lease_next_research_step("worker-a", 60_000)
+        .await
+        .unwrap()
+        .expect("a step should lease for worker-a");
+
+    let renew_error = client
+        .refresh_research_step_lease(&leased.step.id, "worker-b", 60_000)
+        .await
+        .expect_err("renew by a non-owning worker should error");
+    match renew_error {
+        crate::error::DashboardError::BadRequest(message) => {
+            assert!(
+                message.contains("is not active for worker") && message.contains("worker-b"),
+                "renew should report the not-active worker, got: {message}"
+            );
+        }
+        other => panic!("expected BadRequest from renew, got {other:?}"),
+    }
+
+    let complete_error = client
+        .complete_research_step(&leased.step.id, "worker-b", None)
+        .await
+        .expect_err("complete by a non-owning worker should error");
+    match complete_error {
+        crate::error::DashboardError::BadRequest(message) => {
+            assert!(
+                message.contains("is not active for worker") && message.contains("worker-b"),
+                "complete should report the not-active worker, got: {message}"
+            );
+        }
+        other => panic!("expected BadRequest from complete, got {other:?}"),
+    }
+
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
+/// Verifies a renew request that omits `lease_duration_ms` is rejected with a
+/// `BadRequest` from the controller handler guard before any database work.
+///
+/// The typed client always sends a duration, so the request is posted raw.
+#[tokio::test]
+async fn worker_protocol_renew_without_duration_returns_bad_request() {
+    let work_root = unique_work_root();
+    let (base_url, db) = spawn_controller(&work_root).await;
+    seed_backtest_job(&db).await;
+    let client = ResearchControllerClient::new(&base_url, TEST_TOKEN).unwrap();
+
+    let leased = client
+        .lease_next_research_step("worker-a", 60_000)
+        .await
+        .unwrap()
+        .expect("a step should lease for worker-a");
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{base_url}/api/research/workers/steps/{}/renew",
+            leased.step.id
+        ))
+        .header("x-buba-research-worker-token", TEST_TOKEN)
+        .json(&serde_json::json!({"worker_id": "worker-a"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let message = body
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("lease_duration_ms is required"),
+        "missing lease_duration_ms should be reported, got: {message}"
+    );
+
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
+/// Verifies `get_job` and `get_artifact` on unknown ids return `Ok(None)` via the
+/// controller's 204 No Content path rather than erroring.
+#[tokio::test]
+async fn worker_protocol_get_missing_job_and_artifact_return_none() {
+    let work_root = unique_work_root();
+    let (base_url, _db) = spawn_controller(&work_root).await;
+    let client = ResearchControllerClient::new(&base_url, TEST_TOKEN).unwrap();
+
+    let job = client.get_research_job("missing-job").await.unwrap();
+    assert!(job.is_none(), "missing job should decode as None via 204");
+
+    let artifact = client
+        .get_research_artifact("missing-artifact")
+        .await
+        .unwrap();
+    assert!(
+        artifact.is_none(),
+        "missing artifact should decode as None via 204"
+    );
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
+/// Verifies a controller route returning 500 with a body maps to
+/// `DashboardError::Internal` and carries the response body text.
+#[tokio::test]
+async fn worker_protocol_maps_internal_error_body_into_error() {
+    let work_root = unique_work_root();
+    let db = Arc::new(DashboardDb::from_connection(
+        Connection::open_in_memory().unwrap(),
+    ));
+    let state = AppState {
+        db: Arc::clone(&db),
+        jwt_secret: "protocol-test-jwt".to_string(),
+        research_worker_token: Some(TEST_TOKEN.to_string()),
+        research_work_root: Some(work_root.to_string_lossy().to_string()),
+        agents: vec![],
+    };
+    let worker_routes = Router::new()
+        .route(
+            "/api/research/workers/machines/{id}",
+            get(synthetic_internal_error),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_worker_auth,
+        ));
+    let app = worker_routes.with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{address}");
+
+    let client = ResearchControllerClient::new(&base_url, TEST_TOKEN).unwrap();
+    let error = client
+        .get_research_machine("research")
+        .await
+        .expect_err("a 500 controller response should error");
+    match error {
+        crate::error::DashboardError::Internal(message) => {
+            assert!(
+                message.contains("synthetic controller failure"),
+                "internal error should carry the controller body, got: {message}"
+            );
+            assert!(
+                message.contains("500"),
+                "internal error should name the status, got: {message}"
+            );
+        }
+        other => panic!("expected Internal, got {other:?}"),
+    }
+    std::fs::remove_dir_all(&work_root).ok();
+}
