@@ -1530,7 +1530,13 @@ async fn reclaimed_research_step_rejects_original_owner_terminal_calls() {
         .complete_research_step_at(&first.step.id, "worker-a", Some(r#"{"ok":true}"#), 1_600)
         .await;
     let stale_fail = db
-        .fail_research_step_at(&first.step.id, "worker-a", "stale worker error", true, 1_700)
+        .fail_research_step_at(
+            &first.step.id,
+            "worker-a",
+            "stale worker error",
+            true,
+            1_700,
+        )
         .await;
     let stale_block = db
         .block_research_step_at(&first.step.id, "worker-a", "stale worker block", 1_800)
