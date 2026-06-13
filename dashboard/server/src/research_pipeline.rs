@@ -436,7 +436,8 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
                 .args(&command.args)
                 .current_dir(&command.cwd)
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
             #[cfg(unix)]
             process.process_group(0);
 
@@ -457,17 +458,40 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
             let refresh_interval = lease_refresh_interval(cancellation.lease_duration_ms);
             let mut last_refresh = Instant::now();
             let status = loop {
-                if let Some(status) = child.try_wait().map_err(|e| {
-                    DashboardError::Internal(format!("waiting for research command: {e}"))
-                })? {
-                    break status;
+                match child.try_wait() {
+                    Ok(Some(status)) => break status,
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = terminate_cancelled_child(&mut child).await;
+                        return Err(DashboardError::Internal(format!(
+                            "waiting for research command: {error}"
+                        )));
+                    }
                 }
-                if cancellation.is_cancelled().await? {
-                    cancelled = true;
-                    break terminate_cancelled_child(&mut child).await?;
+                match cancellation.is_cancelled().await {
+                    Ok(true) => {
+                        cancelled = true;
+                        break terminate_cancelled_child(&mut child).await?;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            job_id = cancellation.job_id,
+                            step_id = cancellation.step_id,
+                            "research cancellation check failed; continuing to supervise child"
+                        );
+                    }
                 }
                 if last_refresh.elapsed() >= refresh_interval {
-                    cancellation.refresh_lease().await?;
+                    if let Err(error) = cancellation.refresh_lease().await {
+                        tracing::warn!(
+                            %error,
+                            job_id = cancellation.job_id,
+                            step_id = cancellation.step_id,
+                            "research lease refresh failed; continuing to supervise child"
+                        );
+                    }
                     last_refresh = Instant::now();
                 }
                 tokio::time::sleep(cancellation.poll_interval).await;

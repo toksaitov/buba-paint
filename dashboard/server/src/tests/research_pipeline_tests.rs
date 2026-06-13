@@ -1,7 +1,8 @@
 use std::time::{Duration, Instant};
 
-use crate::db::{DashboardDb, ResearchArtifact, ResearchJob};
+use crate::db::{DashboardDb, ResearchArtifact, ResearchJob, ResearchJobStep};
 use crate::research_artifacts::{ArtifactFileSpec, build_manifest, write_manifest_files};
+use crate::research_backend::ResearchWorkBackend;
 use rusqlite::Connection;
 
 use super::*;
@@ -606,4 +607,292 @@ async fn process_command_executor_terminates_cancelled_command() {
     assert!(!output.success);
     assert!(output.stdout.contains("started"));
     assert!(!output.stdout.contains("done"));
+}
+
+/// Backend whose cancellation and lease-refresh reads always fail.
+struct FailingCancellationBackend;
+
+impl ResearchWorkBackend for FailingCancellationBackend {
+    /// Always reports a lease error for the supervision lease attempt.
+    async fn lease_next_research_step(
+        &self,
+        _worker_id: &str,
+        _lease_duration_ms: u64,
+    ) -> Result<Option<crate::db::ResearchStepLease>, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Fails every lease refresh so the loop must treat it as non-fatal.
+    async fn refresh_research_step_lease(
+        &self,
+        _step_id: &str,
+        _worker_id: &str,
+        _lease_duration_ms: u64,
+    ) -> Result<ResearchJobStep, DashboardError> {
+        Err(DashboardError::Internal("refresh failed".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn mark_research_step_running(
+        &self,
+        _step_id: &str,
+        _worker_id: &str,
+    ) -> Result<ResearchJobStep, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn complete_research_step(
+        &self,
+        _step_id: &str,
+        _worker_id: &str,
+        _output_json: Option<&str>,
+    ) -> Result<ResearchJobStep, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn fail_research_step(
+        &self,
+        _step_id: &str,
+        _worker_id: &str,
+        _error: &str,
+        _retryable: bool,
+    ) -> Result<ResearchJobStep, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn block_research_step(
+        &self,
+        _step_id: &str,
+        _worker_id: &str,
+        _reason: &str,
+    ) -> Result<ResearchJobStep, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn append_research_job_event(
+        &self,
+        _job_id: &str,
+        _step_id: Option<&str>,
+        _level: &str,
+        _message: &str,
+        _details_json: Option<&str>,
+    ) -> Result<crate::db::ResearchJobEvent, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Fails every cancellation poll so the loop must treat it as non-fatal.
+    async fn get_research_job(&self, _id: &str) -> Result<Option<ResearchJob>, DashboardError> {
+        Err(DashboardError::Internal(
+            "cancellation read failed".to_string(),
+        ))
+    }
+
+    /// Unused by the supervision loop.
+    async fn cancel_research_job(&self, _id: &str) -> Result<ResearchJob, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Fails the step read used by the cancellation poll.
+    async fn get_research_job_steps(
+        &self,
+        _job_id: &str,
+    ) -> Result<Vec<ResearchJobStep>, DashboardError> {
+        Err(DashboardError::Internal(
+            "cancellation read failed".to_string(),
+        ))
+    }
+
+    /// Unused by the supervision loop.
+    async fn get_research_artifact(
+        &self,
+        _id: &str,
+    ) -> Result<Option<ResearchArtifact>, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn upsert_research_artifact(
+        &self,
+        _record: &crate::db::ResearchArtifactRecord<'_>,
+    ) -> Result<ResearchArtifact, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn attach_research_job_artifact(
+        &self,
+        _job_id: &str,
+        _artifact_id: &str,
+    ) -> Result<ResearchJob, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn create_or_update_research_report(
+        &self,
+        _record: &crate::db::ResearchReportRecord<'_>,
+    ) -> Result<crate::db::ResearchReport, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn store_research_report_documents(
+        &self,
+        _report_id: &str,
+        _report_json: &str,
+        _report_csv: &str,
+    ) -> Result<(), DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn store_research_artifact_documents(
+        &self,
+        _artifact_id: &str,
+        _manifest_json: Option<&str>,
+        _checksums_text: Option<&str>,
+    ) -> Result<(), DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn claim_next_artifact_transfer(
+        &self,
+        _dest_machine_id: &str,
+    ) -> Result<Option<crate::db::ArtifactTransfer>, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn get_artifact_transfer(
+        &self,
+        _id: &str,
+    ) -> Result<Option<crate::db::ArtifactTransfer>, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn update_artifact_transfer_progress(
+        &self,
+        _id: &str,
+        _status: &str,
+        _bytes_done: Option<u64>,
+        _bytes_total: Option<u64>,
+        _checksum_status: Option<&str>,
+        _error: Option<&str>,
+    ) -> Result<crate::db::ArtifactTransfer, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn recover_stale_artifact_transfers(
+        &self,
+        _dest_machine_id: &str,
+        _stale_after_ms: u64,
+    ) -> Result<usize, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+
+    /// Unused by the supervision loop.
+    async fn get_research_machine(
+        &self,
+        _id: &str,
+    ) -> Result<Option<crate::db::ResearchMachine>, DashboardError> {
+        Err(DashboardError::Internal("unused".to_string()))
+    }
+}
+
+/// Verifies cancellation and lease-refresh read failures do not kill the worker.
+#[tokio::test]
+async fn supervised_command_survives_cancellation_and_refresh_errors() {
+    let backend = FailingCancellationBackend;
+    let executor = ProcessCommandExecutor;
+    let command = CommandSpec {
+        program: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "printf started; sleep 1.2; printf done".to_string(),
+        ],
+        cwd: std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+    };
+    let started_at = Instant::now();
+
+    let output = executor
+        .execute_supervised(
+            &command,
+            CommandCancellation {
+                db: &backend,
+                job_id: "job-err",
+                step_id: "step-err",
+                worker_id: "worker-a",
+                poll_interval: Duration::from_millis(20),
+                lease_duration_ms: 1_000,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(started_at.elapsed() < Duration::from_secs(5));
+    assert!(!output.cancelled);
+    assert!(output.success);
+    assert!(output.stdout.contains("started"));
+    assert!(output.stdout.contains("done"));
+}
+
+/// Verifies a dropped supervised future reaps the running child via kill_on_drop.
+#[tokio::test]
+async fn supervised_command_child_is_reaped_when_future_is_dropped() {
+    let db = DashboardDb::from_connection(Connection::open_in_memory().unwrap());
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let job = db
+        .create_research_job("export", None, &user.id, 0, None)
+        .await
+        .unwrap();
+    let step_id = db.get_research_job_steps(&job.id).await.unwrap()[0]
+        .id
+        .clone();
+    let executor = ProcessCommandExecutor;
+    let marker = tempfile::tempdir().unwrap();
+    let done_path = marker.path().join("done");
+    let command = CommandSpec {
+        program: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!("sleep 1; printf done > {}", done_path.to_string_lossy()),
+        ],
+        cwd: std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let timed = tokio::time::timeout(
+        Duration::from_millis(150),
+        executor.execute_supervised(
+            &command,
+            CommandCancellation {
+                db: &db,
+                job_id: &job.id,
+                step_id: &step_id,
+                worker_id: "worker-a",
+                poll_interval: Duration::from_millis(20),
+                lease_duration_ms: 1_000,
+            },
+        ),
+    )
+    .await;
+
+    assert!(timed.is_err());
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(
+        !done_path.exists(),
+        "child should be killed on future drop before writing done marker"
+    );
 }
