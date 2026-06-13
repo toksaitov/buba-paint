@@ -436,6 +436,41 @@ async fn worker_protocol_uploads_artifact_documents() {
     std::fs::remove_dir_all(&work_root).ok();
 }
 
+/// Verifies a both-None artifact document upload is a no-op: it returns 204 and
+/// does not rewrite artifact_root, matching the client guard and local backend.
+#[tokio::test]
+async fn worker_protocol_artifact_documents_both_none_is_noop() {
+    let work_root = unique_work_root();
+    let (base_url, db) = spawn_controller(&work_root).await;
+    seed_backtest_job(&db).await;
+
+    let response = reqwest::Client::new()
+        .put(format!(
+            "{base_url}/api/research/workers/artifacts/artifact-1/documents"
+        ))
+        .header("x-buba-research-worker-token", TEST_TOKEN)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let stored = db
+        .get_research_artifact("artifact-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        stored.artifact_root.is_none(),
+        "both-None upload must not rewrite artifact_root"
+    );
+    assert!(
+        stored.manifest_path.is_none(),
+        "both-None upload must not set manifest_path"
+    );
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
 /// Verifies transfer claim, progress, and recovery over HTTP.
 #[tokio::test]
 async fn worker_protocol_supports_transfer_lifecycle() {

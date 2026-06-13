@@ -274,6 +274,9 @@ pub async fn store_artifact_documents(
 ) -> Result<impl IntoResponse, DashboardError> {
     require_worker_token(&state, &headers)?;
     require_safe_document_id(&id)?;
+    if req.manifest_json.is_none() && req.checksums_text.is_none() {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
     let work_root = require_work_root(&state)?;
     let artifact = state
         .db
@@ -316,7 +319,7 @@ pub async fn store_artifact_documents(
             live_fidelity_class: artifact.live_fidelity_class.as_deref(),
         })
         .await?;
-    Ok(Json(updated))
+    Ok(Json(updated).into_response())
 }
 
 /// `POST /api/research/workers/reports`
