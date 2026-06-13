@@ -2356,17 +2356,24 @@ impl DashboardDb {
             params![id, now],
         )?;
         if updated == 0 {
-            let exists: Option<String> = tx
+            let current: Option<String> = tx
                 .query_row(
-                    "SELECT id FROM research_jobs WHERE id = ?1",
+                    "SELECT status FROM research_jobs WHERE id = ?1",
                     params![id],
                     |row| row.get(0),
                 )
                 .optional()?;
-            if exists.is_none() {
-                return Err(DashboardError::NotFound(format!(
-                    "research job '{id}' not found"
-                )));
+            match current {
+                None => {
+                    return Err(DashboardError::NotFound(format!(
+                        "research job '{id}' not found"
+                    )));
+                }
+                Some(status) => {
+                    return Err(DashboardError::BadRequest(format!(
+                        "research job '{id}' cannot be cancelled from status '{status}'"
+                    )));
+                }
             }
         }
         tx.execute(

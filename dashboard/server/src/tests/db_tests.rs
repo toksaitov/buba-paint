@@ -1265,10 +1265,36 @@ async fn research_job_cancel_and_retry_reject_invalid_transitions() {
     let completed = db.get_research_job(&job.id).await.unwrap().unwrap();
     assert_eq!(completed.status, "completed");
     assert!(db.retry_research_job(&job.id).await.is_err());
-    assert_eq!(
-        db.cancel_research_job(&job.id).await.unwrap().status,
-        "completed"
-    );
+    assert!(db.cancel_research_job(&job.id).await.is_err());
+}
+
+/// Verifies that cancelling a completed research job returns BadRequest.
+#[tokio::test]
+async fn cancel_completed_research_job_returns_bad_request() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let job = db
+        .create_research_job("export", None, &user.id, 0, None)
+        .await
+        .unwrap();
+
+    while let Some(lease) = db
+        .lease_next_research_step_at("worker-a", 1_000, 5_000)
+        .await
+        .unwrap()
+    {
+        db.complete_research_step_at(&lease.step.id, "worker-a", None, 1_100)
+            .await
+            .unwrap();
+    }
+
+    let completed = db.get_research_job(&job.id).await.unwrap().unwrap();
+    assert_eq!(completed.status, "completed");
+
+    let error = db.cancel_research_job(&job.id).await.unwrap_err();
+    assert!(matches!(error, DashboardError::BadRequest(_)));
+    let still_completed = db.get_research_job(&job.id).await.unwrap().unwrap();
+    assert_eq!(still_completed.status, "completed");
 }
 
 /// Verifies that research job events are appended and listed in order.
