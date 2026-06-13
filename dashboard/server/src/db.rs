@@ -688,6 +688,16 @@ pub const RESEARCH_TELEMETRY_MAX_LIMIT: usize = 720;
 /// Retention window for research machine telemetry samples.
 pub const RESEARCH_TELEMETRY_RETENTION_MS: u64 = 6 * 60 * 60 * 1_000;
 
+/// Maximum host samples accepted in one worker heartbeat.
+///
+/// At the 5 second sampler cadence this caps one heartbeat at about 20
+/// minutes of accumulated samples, well above the default heartbeat
+/// interval, so a healthy worker is never rejected.
+pub const RESEARCH_HEARTBEAT_MAX_SAMPLES: usize = 240;
+
+/// Maximum serialized byte length accepted for heartbeat details or activity.
+pub const RESEARCH_HEARTBEAT_MAX_JSON_BYTES: usize = 64 * 1024;
+
 /// Maximum number of lease attempts before a research step is failed as poison.
 ///
 /// A step whose lease repeatedly expires before completion is re-leased on each
@@ -3571,8 +3581,37 @@ fn validate_research_machine_heartbeat(
             "host cpu_count must be positive".to_string(),
         ));
     }
+    if record.telemetry.samples.len() > RESEARCH_HEARTBEAT_MAX_SAMPLES {
+        return Err(DashboardError::BadRequest(format!(
+            "heartbeat samples count {} exceeds maximum {}",
+            record.telemetry.samples.len(),
+            RESEARCH_HEARTBEAT_MAX_SAMPLES
+        )));
+    }
+    validate_heartbeat_json_size("details", record.details)?;
+    validate_heartbeat_json_size("activity", record.telemetry.activity)?;
     for sample in record.telemetry.samples {
         validate_machine_sample(sample)?;
+    }
+    Ok(())
+}
+
+/// Reject a heartbeat JSON field whose serialized form exceeds the size cap.
+fn validate_heartbeat_json_size(
+    name: &str,
+    value: Option<&serde_json::Value>,
+) -> Result<(), DashboardError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let serialized = serde_json::to_string(value)
+        .map_err(|error| DashboardError::BadRequest(format!("{name} must serialize: {error}")))?;
+    if serialized.len() > RESEARCH_HEARTBEAT_MAX_JSON_BYTES {
+        return Err(DashboardError::BadRequest(format!(
+            "heartbeat {name} serialized size {} bytes exceeds maximum {} bytes",
+            serialized.len(),
+            RESEARCH_HEARTBEAT_MAX_JSON_BYTES
+        )));
     }
     Ok(())
 }

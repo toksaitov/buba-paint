@@ -177,10 +177,6 @@ fn research_worker_routes() -> Router<AppState> {
     use axum::routing::put;
     Router::new()
         .route(
-            "/api/research/workers/heartbeat",
-            post(research::worker_heartbeat),
-        )
-        .route(
             "/api/research/workers/steps/claim",
             post(research_workers::claim_step),
         )
@@ -265,6 +261,18 @@ fn research_worker_routes() -> Router<AppState> {
             get(research_workers::get_machine),
         )
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .merge(research_worker_heartbeat_route())
+}
+
+/// Builds the worker heartbeat route under a small explicit body limit.
+fn research_worker_heartbeat_route() -> Router<AppState> {
+    use axum::extract::DefaultBodyLimit;
+    Router::new()
+        .route(
+            "/api/research/workers/heartbeat",
+            post(research::worker_heartbeat),
+        )
+        .layer(DefaultBodyLimit::max(1024 * 1024))
 }
 
 /// Builds queue and retention research routes.

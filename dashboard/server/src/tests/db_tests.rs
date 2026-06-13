@@ -275,6 +275,98 @@ async fn research_machine_heartbeat_rejects_invalid_inputs() {
     }
 }
 
+/// Verifies the heartbeat validator caps sample counts and JSON payload sizes.
+#[test]
+fn research_machine_heartbeat_rejects_oversized_telemetry() {
+    let base_machine = "research";
+    let base_worker = "worker-a";
+
+    let too_many_samples: Vec<MachineSample> = (0..(RESEARCH_HEARTBEAT_MAX_SAMPLES as i64 + 1))
+        .map(|index| telemetry_sample_at(1_000 + index))
+        .collect();
+    let over_cap = ResearchMachineHeartbeatRecord {
+        machine_id: base_machine,
+        worker_id: base_worker,
+        worker_version: None,
+        status: "idle",
+        details: None,
+        telemetry: ResearchMachineTelemetryUpdate {
+            host: None,
+            sampler: None,
+            samples: &too_many_samples,
+            activity: None,
+        },
+    };
+    let samples_result = validate_research_machine_heartbeat(&over_cap);
+    assert!(
+        matches!(samples_result, Err(DashboardError::BadRequest(_))),
+        "over-cap samples must be rejected"
+    );
+
+    let big_blob = serde_json::json!({
+        "padding": "x".repeat(RESEARCH_HEARTBEAT_MAX_JSON_BYTES + 1),
+    });
+    let one_sample = vec![telemetry_sample_at(1_000)];
+
+    let over_details = ResearchMachineHeartbeatRecord {
+        machine_id: base_machine,
+        worker_id: base_worker,
+        worker_version: None,
+        status: "idle",
+        details: Some(&big_blob),
+        telemetry: ResearchMachineTelemetryUpdate {
+            host: None,
+            sampler: None,
+            samples: &one_sample,
+            activity: None,
+        },
+    };
+    let details_result = validate_research_machine_heartbeat(&over_details);
+    assert!(
+        matches!(details_result, Err(DashboardError::BadRequest(_))),
+        "oversized details must be rejected"
+    );
+
+    let over_activity = ResearchMachineHeartbeatRecord {
+        machine_id: base_machine,
+        worker_id: base_worker,
+        worker_version: None,
+        status: "idle",
+        details: None,
+        telemetry: ResearchMachineTelemetryUpdate {
+            host: None,
+            sampler: None,
+            samples: &one_sample,
+            activity: Some(&big_blob),
+        },
+    };
+    let activity_result = validate_research_machine_heartbeat(&over_activity);
+    assert!(
+        matches!(activity_result, Err(DashboardError::BadRequest(_))),
+        "oversized activity must be rejected"
+    );
+
+    let within_details = serde_json::json!({"phase": "idle"});
+    let within_activity = serde_json::json!({"phase": "idle"});
+    let within_caps = ResearchMachineHeartbeatRecord {
+        machine_id: base_machine,
+        worker_id: base_worker,
+        worker_version: None,
+        status: "idle",
+        details: Some(&within_details),
+        telemetry: ResearchMachineTelemetryUpdate {
+            host: None,
+            sampler: None,
+            samples: &one_sample,
+            activity: Some(&within_activity),
+        },
+    };
+    assert!(
+        validate_research_machine_heartbeat(&within_caps).is_ok(),
+        "a heartbeat within all caps must validate"
+    );
+}
+
 /// Verifies telemetry state upsert creates and replaces latest state.
 #[tokio::test]
 async fn research_machine_telemetry_state_upsert_replaces_latest_state() {
@@ -347,27 +439,35 @@ async fn research_machine_telemetry_samples_dedupe_limits_and_since() {
     let samples = (0..800)
         .map(|index| telemetry_sample_at(1_000 + index))
         .collect::<Vec<_>>();
-    let mut duplicate_samples = vec![telemetry_sample_at(1_100)];
-    duplicate_samples.extend(samples.clone());
+    let mut first_batch = vec![telemetry_sample_at(1_100)];
+    first_batch.extend_from_slice(&samples[0..200]);
+    let batches: [&[MachineSample]; 4] = [
+        first_batch.as_slice(),
+        &samples[200..400],
+        &samples[400..600],
+        &samples[600..800],
+    ];
 
-    db.record_research_machine_heartbeat_with_telemetry_at(
-        &ResearchMachineHeartbeatRecord {
-            machine_id: "research",
-            worker_id: "worker-a",
-            worker_version: Some("0.1.0"),
-            status: "idle",
-            details: Some(&activity),
-            telemetry: ResearchMachineTelemetryUpdate {
-                host: Some(&host),
-                sampler: Some(&sampler),
-                samples: &duplicate_samples,
-                activity: Some(&activity),
+    for batch in batches {
+        db.record_research_machine_heartbeat_with_telemetry_at(
+            &ResearchMachineHeartbeatRecord {
+                machine_id: "research",
+                worker_id: "worker-a",
+                worker_version: Some("0.1.0"),
+                status: "idle",
+                details: Some(&activity),
+                telemetry: ResearchMachineTelemetryUpdate {
+                    host: Some(&host),
+                    sampler: Some(&sampler),
+                    samples: batch,
+                    activity: Some(&activity),
+                },
             },
-        },
-        10_000,
-    )
-    .await
-    .unwrap();
+            10_000,
+        )
+        .await
+        .unwrap();
+    }
 
     let default_query = db
         .get_research_machine_telemetry("research", None, None)
