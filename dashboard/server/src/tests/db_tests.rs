@@ -1172,6 +1172,38 @@ async fn update_queued_research_job_changes_metadata_before_steps_start() {
     assert_eq!(cleared_export.params_json, None);
 }
 
+/// Verifies an update rejects an explicit out-of-range priority but preserves an unchanged one.
+#[tokio::test]
+async fn update_queued_research_job_validates_only_explicit_priority() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let job = db
+        .create_research_job("export", None, &user.id, 7, None)
+        .await
+        .unwrap();
+
+    let rejected = db
+        .update_queued_research_job(
+            &job.id,
+            NullableUpdate::Unchanged,
+            Some(5_000),
+            NullableUpdate::Unchanged,
+        )
+        .await;
+    assert!(matches!(rejected, Err(DashboardError::BadRequest(_))));
+
+    let preserved = db
+        .update_queued_research_job(
+            &job.id,
+            NullableUpdate::Unchanged,
+            None,
+            NullableUpdate::Unchanged,
+        )
+        .await
+        .unwrap();
+    assert_eq!(preserved.priority, 7);
+}
+
 /// Verifies job metadata updates are rejected after step execution starts.
 #[tokio::test]
 async fn update_queued_research_job_rejects_started_work() {

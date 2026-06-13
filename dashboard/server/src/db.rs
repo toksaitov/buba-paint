@@ -2236,8 +2236,10 @@ impl DashboardDb {
             ensure_artifact_exists(&conn, value)?;
         }
 
+        if let Some(requested_priority) = priority {
+            validate_research_priority(requested_priority)?;
+        }
         let new_priority = priority.unwrap_or(existing.priority);
-        validate_research_priority(new_priority)?;
         let new_params_json = match params_json {
             NullableUpdate::Unchanged => existing.params_json.as_deref(),
             NullableUpdate::Clear => None,
