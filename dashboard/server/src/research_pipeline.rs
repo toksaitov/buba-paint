@@ -95,7 +95,10 @@ pub struct CommandCancellation<'a, B: ResearchWorkBackend> {
     pub step_id: &'a str,
     /// Worker currently supervising this command.
     pub worker_id: &'a str,
-    /// Poll interval while the child is still running.
+    /// Requested poll interval while the child is still running.
+    ///
+    /// The effective interval is capped to the lease refresh interval so a short
+    /// lease is still refreshed before it can expire.
     pub poll_interval: Duration,
     /// Lease duration to refresh while the child command is alive.
     pub lease_duration_ms: u64,
@@ -451,6 +454,7 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
 
             let mut cancelled = false;
             let refresh_interval = lease_refresh_interval(cancellation.lease_duration_ms);
+            let poll_interval = cancellation.poll_interval.min(refresh_interval);
             let mut last_refresh = Instant::now();
             let status = loop {
                 match child.try_wait() {
@@ -489,7 +493,7 @@ impl ResearchCommandExecutor for ProcessCommandExecutor {
                     }
                     last_refresh = Instant::now();
                 }
-                tokio::time::sleep(cancellation.poll_interval).await;
+                tokio::time::sleep(poll_interval).await;
             };
 
             let stdout = join_child_output(stdout_task).await?;
