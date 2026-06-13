@@ -1441,6 +1441,7 @@ async fn admin_can_pause_resume_and_continue_job() {
     assert_eq!(resume_body["job"]["status"], "queued");
     assert_eq!(cancel_body["job"]["status"], "cancelled");
     assert_eq!(continue_body["job"]["status"], "queued");
+    assert_eq!(resume_body["job"]["status"], continue_body["job"]["status"]);
 }
 
 /// Verifies admins can clone jobs with provenance events.

@@ -1590,15 +1590,15 @@ pub async fn resume_job(
 }
 
 /// `POST /api/research/jobs/:id/continue`
+///
+/// Alias of `resume_job`; the verb split is operator-facing wording only and
+/// both paths drive the same `resume_research_job` status dispatch.
 pub async fn continue_job(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, DashboardError> {
-    require_admin(&claims)?;
-    state.db.resume_research_job(&id).await?;
-    let detail = job_detail(&state, &id).await?;
-    Ok(Json(detail))
+    resume_job(State(state), Extension(claims), Path(id)).await
 }
 
 /// `POST /api/research/jobs/:id/retry`
