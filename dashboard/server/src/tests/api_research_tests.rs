@@ -584,7 +584,11 @@ async fn admin_can_manage_research_machine_lifecycle() {
         .unwrap();
     assert_eq!(create_resp.status(), StatusCode::OK);
     let created = json_body(create_resp).await;
-    assert_eq!(created["machine"]["id"], "gpu-1");
+    assert_eq!(created["id"], "gpu-1");
+    assert!(
+        created.get("machine").is_none(),
+        "machine response must be a bare entity"
+    );
 
     let patch_resp = app
         .clone()
@@ -602,9 +606,9 @@ async fn admin_can_manage_research_machine_lifecycle() {
         .unwrap();
     assert_eq!(patch_resp.status(), StatusCode::OK);
     let patched = json_body(patch_resp).await;
-    assert_eq!(patched["machine"]["name"], "GPU Worker A");
-    assert_eq!(patched["machine"]["ssh_alias"], serde_json::Value::Null);
-    assert_eq!(patched["machine"]["status"], "maintenance");
+    assert_eq!(patched["name"], "GPU Worker A");
+    assert_eq!(patched["ssh_alias"], serde_json::Value::Null);
+    assert_eq!(patched["status"], "maintenance");
 
     let health_resp = app
         .clone()
@@ -622,7 +626,7 @@ async fn admin_can_manage_research_machine_lifecycle() {
     ] {
         let resp = app.clone().oneshot(auth_post(path, &token)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(json_body(resp).await["machine"]["status"], expected_status);
+        assert_eq!(json_body(resp).await["status"], expected_status);
     }
 
     let delete_resp = app
@@ -631,7 +635,7 @@ async fn admin_can_manage_research_machine_lifecycle() {
         .await
         .unwrap();
     assert_eq!(delete_resp.status(), StatusCode::OK);
-    assert_eq!(json_body(delete_resp).await["machine"]["id"], "gpu-1");
+    assert_eq!(json_body(delete_resp).await["id"], "gpu-1");
 
     let missing_resp = app
         .oneshot(auth_get("/api/research/machines/gpu-1", &token))
@@ -1530,7 +1534,11 @@ async fn job_template_api_crud_permissions_and_usage() {
         .unwrap();
     assert_eq!(created.status(), StatusCode::OK);
     let template_body = json_body(created).await;
-    let template_id = template_body["template"]["id"].as_str().unwrap();
+    let template_id = template_body["id"].as_str().unwrap();
+    assert!(
+        template_body.get("template").is_none(),
+        "template response must be a bare entity"
+    );
 
     let observer_list = app
         .clone()
@@ -1585,7 +1593,7 @@ async fn job_template_api_crud_permissions_and_usage() {
         job_body["events"][0]["message"],
         "created from research job template"
     );
-    assert_eq!(template_after_use["template"]["usage_count"], 1);
+    assert_eq!(template_after_use["usage_count"], 1);
 
     let archived = app
         .clone()

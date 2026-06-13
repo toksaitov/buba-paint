@@ -251,12 +251,12 @@ beforeEach(() => {
     isLoading: false,
     isError: false,
   } as ReturnType<typeof useResearchArtifacts>);
-  mockArchiveTemplate.mockResolvedValue({ template: templateFixture() });
-  mockRestoreTemplate.mockResolvedValue({
-    template: templateFixture({ id: "template-archived", status: "active" }),
-  });
-  mockDeleteTemplate.mockResolvedValue({ template: templateFixture() });
-  mockCreateTemplate.mockResolvedValue({ template: templateFixture() });
+  mockArchiveTemplate.mockResolvedValue(templateFixture());
+  mockRestoreTemplate.mockResolvedValue(
+    templateFixture({ id: "template-archived", status: "active" }),
+  );
+  mockDeleteTemplate.mockResolvedValue(templateFixture());
+  mockCreateTemplate.mockResolvedValue(templateFixture());
   mockArchiveRetention.mockResolvedValue(archiveResponse());
 });
 

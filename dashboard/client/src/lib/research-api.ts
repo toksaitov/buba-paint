@@ -45,38 +45,38 @@ export async function listResearchMachines(): Promise<{
 
 export async function createResearchMachine(
   req: CreateMachineRequest,
-): Promise<{ machine: ResearchMachine }> {
+): Promise<ResearchMachine> {
   return post("/api/research/machines", req);
 }
 
 export async function getResearchMachine(
   id: string,
-): Promise<{ machine: ResearchMachine }> {
+): Promise<ResearchMachine> {
   return get(`/api/research/machines/${encodeURIComponent(id)}`);
 }
 
 export async function updateResearchMachine(
   id: string,
   req: UpdateMachineRequest,
-): Promise<{ machine: ResearchMachine }> {
+): Promise<ResearchMachine> {
   return patch(`/api/research/machines/${encodeURIComponent(id)}`, req);
 }
 
 export async function disableResearchMachine(
   id: string,
-): Promise<{ machine: ResearchMachine }> {
+): Promise<ResearchMachine> {
   return post(`/api/research/machines/${encodeURIComponent(id)}/disable`);
 }
 
 export async function enableResearchMachine(
   id: string,
-): Promise<{ machine: ResearchMachine }> {
+): Promise<ResearchMachine> {
   return post(`/api/research/machines/${encodeURIComponent(id)}/enable`);
 }
 
 export async function deleteResearchMachine(
   id: string,
-): Promise<{ machine: ResearchMachine }> {
+): Promise<ResearchMachine> {
   return del(`/api/research/machines/${encodeURIComponent(id)}`);
 }
 
@@ -251,38 +251,38 @@ export async function listResearchJobTemplates(): Promise<{
 
 export async function createResearchJobTemplate(
   req: UpsertJobTemplateRequest,
-): Promise<{ template: ResearchJobTemplate }> {
+): Promise<ResearchJobTemplate> {
   return post("/api/research/job-templates", req);
 }
 
 export async function getResearchJobTemplate(
   id: string,
-): Promise<{ template: ResearchJobTemplate }> {
+): Promise<ResearchJobTemplate> {
   return get(`/api/research/job-templates/${encodeURIComponent(id)}`);
 }
 
 export async function updateResearchJobTemplate(
   id: string,
   req: UpsertJobTemplateRequest,
-): Promise<{ template: ResearchJobTemplate }> {
+): Promise<ResearchJobTemplate> {
   return patch(`/api/research/job-templates/${encodeURIComponent(id)}`, req);
 }
 
 export async function archiveResearchJobTemplate(
   id: string,
-): Promise<{ template: ResearchJobTemplate }> {
+): Promise<ResearchJobTemplate> {
   return post(`/api/research/job-templates/${encodeURIComponent(id)}/archive`);
 }
 
 export async function restoreResearchJobTemplate(
   id: string,
-): Promise<{ template: ResearchJobTemplate }> {
+): Promise<ResearchJobTemplate> {
   return post(`/api/research/job-templates/${encodeURIComponent(id)}/restore`);
 }
 
 export async function deleteResearchJobTemplate(
   id: string,
-): Promise<{ template: ResearchJobTemplate }> {
+): Promise<ResearchJobTemplate> {
   return del(`/api/research/job-templates/${encodeURIComponent(id)}`);
 }
 

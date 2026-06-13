@@ -39,13 +39,12 @@ pub struct MachinesResponse {
     pub machines: Vec<crate::db::ResearchMachine>,
 }
 
-/// Response body for a single machine mutation or read.
-#[derive(serde::Serialize)]
-pub struct MachineResponse {
-    /// Machine metadata row.
-    pub machine: ResearchMachine,
-}
-
+/// Single-entity convention: routes that return exactly one research entity
+/// (machine, artifact, transfer, report, job template, job detail) serialize
+/// the bare entity with no wrapper object. List routes keep a plural-keyed
+/// envelope (machines, templates, artifacts, ...), and composite reads such as
+/// `MachineHealthResponse` keep their named multi-field shapes.
+///
 /// Response body for `GET /api/research/machines/:id/health`.
 #[derive(serde::Serialize)]
 pub struct MachineHealthResponse {
@@ -212,13 +211,6 @@ pub struct JobsResponse {
 pub struct JobTemplatesResponse {
     /// Reusable research job templates.
     pub templates: Vec<ResearchJobTemplate>,
-}
-
-/// Response body for one template mutation or read.
-#[derive(serde::Serialize)]
-pub struct JobTemplateResponse {
-    /// Durable job template metadata.
-    pub template: ResearchJobTemplate,
 }
 
 /// Full job response returned by create, detail, cancel, and retry routes.
@@ -725,7 +717,7 @@ pub async fn create_machine(
             details_json: details_json.as_deref(),
         })
         .await?;
-    Ok(Json(MachineResponse { machine }))
+    Ok(Json(machine))
 }
 
 /// `GET /api/research/machines/:id`
@@ -734,7 +726,7 @@ pub async fn get_machine(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, DashboardError> {
     let machine = research_machine_by_id(&state, &id).await?;
-    Ok(Json(MachineResponse { machine }))
+    Ok(Json(machine))
 }
 
 /// `PATCH /api/research/machines/:id`
@@ -770,7 +762,7 @@ pub async fn update_machine(
             details_json: details_json.as_deref(),
         })
         .await?;
-    Ok(Json(MachineResponse { machine }))
+    Ok(Json(machine))
 }
 
 /// `POST /api/research/machines/:id/disable`
@@ -784,7 +776,7 @@ pub async fn disable_machine(
         .db
         .set_research_machine_status(&id, "disabled")
         .await?;
-    Ok(Json(MachineResponse { machine }))
+    Ok(Json(machine))
 }
 
 /// `POST /api/research/machines/:id/enable`
@@ -798,7 +790,7 @@ pub async fn enable_machine(
         .db
         .set_research_machine_status(&id, "configured")
         .await?;
-    Ok(Json(MachineResponse { machine }))
+    Ok(Json(machine))
 }
 
 /// `DELETE /api/research/machines/:id`
@@ -809,7 +801,7 @@ pub async fn delete_machine(
 ) -> Result<impl IntoResponse, DashboardError> {
     require_admin(&claims)?;
     let machine = state.db.delete_research_machine(&id).await?;
-    Ok(Json(MachineResponse { machine }))
+    Ok(Json(machine))
 }
 
 /// `GET /api/research/machines/:id/health`
@@ -1383,7 +1375,7 @@ pub async fn create_job_template(
         })
         .await?;
     template.created_by = display_user_name(&state, &template.created_by).await;
-    Ok(Json(JobTemplateResponse { template }))
+    Ok(Json(template))
 }
 
 /// `GET /api/research/job-templates/:id`
@@ -1393,7 +1385,7 @@ pub async fn get_job_template(
 ) -> Result<impl IntoResponse, DashboardError> {
     let mut template = research_job_template_by_id(&state, &id).await?;
     template.created_by = display_user_name(&state, &template.created_by).await;
-    Ok(Json(JobTemplateResponse { template }))
+    Ok(Json(template))
 }
 
 /// `PATCH /api/research/job-templates/:id`
@@ -1421,7 +1413,7 @@ pub async fn update_job_template(
         )
         .await?;
     template.created_by = display_user_name(&state, &template.created_by).await;
-    Ok(Json(JobTemplateResponse { template }))
+    Ok(Json(template))
 }
 
 /// `POST /api/research/job-templates/:id/archive`
@@ -1433,7 +1425,7 @@ pub async fn archive_job_template(
     require_admin(&claims)?;
     let mut template = state.db.archive_research_job_template(&id).await?;
     template.created_by = display_user_name(&state, &template.created_by).await;
-    Ok(Json(JobTemplateResponse { template }))
+    Ok(Json(template))
 }
 
 /// `POST /api/research/job-templates/:id/restore`
@@ -1445,7 +1437,7 @@ pub async fn restore_job_template(
     require_admin(&claims)?;
     let mut template = state.db.restore_research_job_template(&id).await?;
     template.created_by = display_user_name(&state, &template.created_by).await;
-    Ok(Json(JobTemplateResponse { template }))
+    Ok(Json(template))
 }
 
 /// `DELETE /api/research/job-templates/:id`
@@ -1456,7 +1448,7 @@ pub async fn delete_job_template(
 ) -> Result<impl IntoResponse, DashboardError> {
     require_admin(&claims)?;
     let template = state.db.delete_research_job_template(&id).await?;
-    Ok(Json(JobTemplateResponse { template }))
+    Ok(Json(template))
 }
 
 /// `POST /api/research/jobs`
