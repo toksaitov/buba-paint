@@ -14,7 +14,8 @@ Read these chapters in order when reconstructing the project from repository sta
 4. [data-and-replay.md](./data-and-replay.md): replay-grade capture, validation classes, SQLite block storage, backtest readiness, and sweep preparation.
 5. [deployment-and-ops.md](./deployment-and-ops.md): Docker/Caddy process model, remote layout, local stacks, safe partial redeploys, cleanup, and acceptance checks.
 6. [testing-and-validation.md](./testing-and-validation.md): test lanes, low-latency evidence, docs fact-checking, and readiness gates.
-7. [polymarket-live-constraints.md](./polymarket-live-constraints.md), [live-trading-architecture.md](./live-trading-architecture.md), and [live-session-runbook.md](./live-session-runbook.md): advanced future-funded context.
+7. [research-orchestration.md](./research-orchestration.md): research control-plane deep-dive: the worker backend model, worker-token API, job/step/transfer lifecycle, and report schema version 2.
+8. [polymarket-live-constraints.md](./polymarket-live-constraints.md), [live-trading-architecture.md](./live-trading-architecture.md), and [live-session-runbook.md](./live-session-runbook.md): advanced future-funded context.
 
 ## Audience Paths
 
@@ -37,6 +38,7 @@ Analysts and researchers should read:
 Developers should read:
 
 * [system-architecture.md](./system-architecture.md)
+* [research-orchestration.md](./research-orchestration.md)
 * [commands-and-config.md](./commands-and-config.md)
 * [testing-and-validation.md](./testing-and-validation.md)
 * [../CLAUDE.md](../CLAUDE.md)
@@ -76,6 +78,7 @@ When docs and code disagree, code wins until the docs are corrected. When local 
 ## Current Stable Chapters
 
 * [system-architecture.md](./system-architecture.md): system narrative and service boundaries.
+* [research-orchestration.md](./research-orchestration.md): research control plane, worker backend model, worker-token API, lifecycle state machines, and report schema version 2.
 * [strategy-and-risk.md](./strategy-and-risk.md): strategy logic, current profile, risk controls, and future canary limits.
 * [commands-and-config.md](./commands-and-config.md): common CLI, env groups, Docker targets, backtest/sweep commands, and live control commands.
 * [data-and-replay.md](./data-and-replay.md): storage profiles, validation classes, SQLite layout, CLOB replay blocks, and sweep readiness.

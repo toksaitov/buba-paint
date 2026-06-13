@@ -113,11 +113,11 @@ Research pages:
 * Jobs: export, backtest, and sweep jobs with step timeline, embedded event stream, blocked/failed recovery, clone, and regenerate report.
 * Reports: backtest and sweep reports with summary metrics, equity curve, sweep points, and JSON/CSV inspection.
 
-The Research section is observation-and-steering only. Worker leases, heartbeats, and rsync execution happen in the `buba-research-worker` process on each host; the dashboard never runs jobs directly. Adaptive polling pulls at 3 seconds for active jobs and transfers and 10 seconds for terminal entities. The canonical lifecycle state machine lives at `dashboard/client/src/lib/research-permissions.ts` and is the single source of truth for which controls render. Backend API surface for these pages lives under `/api/research/*` in `dashboard/server/src/api/research.rs`.
+The Research section is observation-and-steering only. Step leasing and rsync execution happen in the `buba-research-worker` process on each host; the dashboard never runs jobs directly. The worker leases durable steps through a backend that is either the local SQLite database or a remote controller reached over the worker-token API at `/api/research/workers/*`. Adaptive polling pulls at 3 seconds for active jobs and transfers and 10 seconds for terminal entities. The canonical lifecycle state machine lives at `dashboard/client/src/lib/research-permissions.ts` and is the single source of truth for which controls render. Operator-facing API surface for these pages lives under `/api/research/*` in `dashboard/server/src/api/research.rs`. The control-plane design, backend model, worker-token API, lifecycle state machines, and report schema version 2 are described in [research-orchestration.md](./research-orchestration.md).
 
 Research machine identity comes from dashboard state and `ops/research-machines.toml`. Docker Compose services are deployment and health evidence, not the source of machine identity. Research pages use machines as source, destination, worker health, and provenance context for artifacts, transfers, jobs, and reports.
 
-Machine telemetry is separate from identity and management. The shared `buba-machine-telemetry` crate defines host identity, host samples, and sampler health for both the live bot agent and research workers. The agent keeps `GET /api/machine` response-compatible for Monitor > Machine. The research worker writes typed telemetry into `research_machine_telemetry_state` and `research_machine_telemetry_samples`, and can optionally publish the same heartbeat payload to a controller dashboard. `GET /api/research/machines/:id/telemetry` returns machine metadata, latest telemetry, bounded sample history, dependency counts, disabled state, stale state, and the stale threshold.
+Machine telemetry is separate from identity and management. The shared `buba-machine-telemetry` crate defines host identity, host samples, and sampler health for both the live bot agent and research workers. The agent keeps `GET /api/machine` response-compatible for Monitor > Machine. The research worker writes typed telemetry into `research_machine_telemetry_state` and `research_machine_telemetry_samples`. When configured with a controller URL and worker token, the worker also reports telemetry and leases all job, step, transfer, report, and artifact work through that controller, not only heartbeats. `GET /api/research/machines/:id/telemetry` returns machine metadata, latest telemetry, bounded sample history, dependency counts, disabled state, stale state, and the stale threshold.
 
 The dashboard does not call the sidecar or venue directly. Live-control mutations route through dashboard server, agent, control ledger, and the running bot.
 
@@ -151,7 +151,10 @@ Other services:
 * `crates/buba-machine-telemetry`: shared host identity, sample, sampler health, and ring-buffer telemetry contract.
 * `agent/src/main.rs`: agent routes.
 * `dashboard/server/src/main.rs`: dashboard server routes.
-* `dashboard/server/src/bin/buba-research-worker.rs`: local research worker loop, artifact transfer execution, local telemetry persistence, and optional controller heartbeat publishing.
+* `dashboard/server/src/research_backend.rs`: the `ResearchWorkBackend` trait and the local `DashboardDb` implementation the worker leases through.
+* `dashboard/server/src/research_controller_client.rs`: the remote `ResearchControllerClient` and `WorkerBackend` enum that route worker operations over the worker-token HTTP API.
+* `dashboard/server/src/api/research_workers.rs`: token-authenticated `/api/research/workers/*` endpoints for step, job, artifact, report, transfer, and machine operations.
+* `dashboard/server/src/bin/buba-research-worker.rs`: research worker loop and artifact transfer execution, selecting a local-database or remote-controller backend at startup, with local telemetry persistence and controller reporting.
 * `dashboard/client/src/lib/routes.ts`: dashboard page metadata.
 * `dashboard/client/src/lib/api.ts`: frontend API client.
 * `polymarket-sidecar/src/server.ts`: sidecar HTTP routes.
