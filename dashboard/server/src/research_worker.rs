@@ -1,10 +1,11 @@
-//! Local research worker implementation.
+//! Research worker implementation.
 //!
-//! The worker leases durable job steps from the dashboard database, executes the
-//! local action for each allowlisted step, and records progress back into job
-//! steps and events. The current implementation is intentionally local: remote
-//! deployment, transfer daemons, and process supervision can be layered around
-//! this durable state machine.
+//! The worker leases durable job steps through a `ResearchWorkBackend`, which is
+//! either the local `SQLite` `DashboardDb` or a remote `ResearchControllerClient`
+//! over HTTP, executes the allowlisted action for each step, and records progress
+//! back into job steps and events. The backend is selected at startup from the
+//! worker configuration: a controller URL plus a worker token routes all work
+//! through the controller, otherwise the worker uses the local database.
 
 use std::str::FromStr;
 use std::time::Duration;
