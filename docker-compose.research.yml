@@ -1,48 +1,4 @@
 services:
-  research-dashboard:
-    build:
-      context: .
-      dockerfile: dashboard/Dockerfile
-    image: ${BUBA_DASHBOARD_IMAGE:-buba-dashboard:local}
-    user: "${BUBA_UID:-1000}:${BUBA_GID:-1000}"
-    volumes:
-      - type: bind
-        source: ${BUBA_RESEARCH_RUNTIME_DIR:-./.docker/research/runtime}
-        target: /runtime
-      - type: bind
-        source: ${BUBA_RESEARCH_WORK_DIR:-./.docker/research/work}
-        target: /research
-      - type: bind
-        source: ${BUBA_DASHBOARD_CONFIG_DIR:-./.docker/research/config}
-        target: /config
-        read_only: true
-    environment:
-      ADMIN_USER: ${ADMIN_USER:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
-      BUBA_RESEARCH_WORKER_TOKEN: ${BUBA_RESEARCH_WORKER_TOKEN:-}
-      BUBA_RESEARCH_WORK_ROOT: /research
-      BUBA_DASHBOARD_IMAGE_REF: ${BUBA_DASHBOARD_IMAGE:-buba-dashboard:local}
-      BUBA_RESEARCH_WORKER_IMAGE_REF: ${BUBA_RESEARCH_WORKER_IMAGE:-buba-research-worker:local}
-      DASHBOARD_DB_PATH: /runtime/dashboard.db
-      RUST_LOG: ${RUST_LOG:-info}
-    entrypoint: ["/bin/sh", "-lc"]
-    command:
-      - |
-        mkdir -p /runtime /research
-        touch /runtime/dashboard.log
-        exec buba-dashboard --config /config/dashboard.toml --static-dir /srv/static >> /runtime/dashboard.log 2>&1
-    ports:
-      - "${BUBA_RESEARCH_DASHBOARD_PORT:-3002}:3001"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: unless-stopped
-    networks:
-      - research
-
   research-worker:
     build:
       context: .
@@ -90,9 +46,6 @@ services:
         fi
         echo "research-worker.log is not writable; logging to stdout" >&2
         exec buba-research-worker
-    depends_on:
-      research-dashboard:
-        condition: service_healthy
     restart: unless-stopped
     networks:
       - research

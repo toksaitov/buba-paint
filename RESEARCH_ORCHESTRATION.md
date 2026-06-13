@@ -18,13 +18,19 @@ is documented in [docs/research-orchestration.md](docs/research-orchestration.md
 
 The operator-facing architecture is:
 
-* `https://buba.toksaitov.com` is the only dashboard URL. Monitor pages observe
-  the stopped live-readonly run on `buba-paint`; Research pages are served from
-  the same public dashboard.
-* `testing` runs the research worker and storage stack as private infrastructure.
+* `https://buba.toksaitov.com` is the only dashboard URL and the only operator
+  dashboard for research. Monitor pages observe the stopped live-readonly run on
+  `buba-paint`; Research pages are served from the same public dashboard, which
+  is also the controller the worker talks to. Operators manage and view all
+  research there.
+* `testing` runs the `research-worker` container only, plus its storage, as
+  private infrastructure. There is no local research dashboard on `testing`.
 * Caddy on `buba-paint` proxies all public dashboard routes to the live dashboard
-  container. The research worker authenticates to that same controller with
-  `BUBA_RESEARCH_WORKER_TOKEN`.
+  container. The research worker on `testing` points
+  `BUBA_RESEARCH_CONTROLLER_URL` at `https://buba.toksaitov.com` and
+  authenticates to that same controller with `BUBA_RESEARCH_WORKER_TOKEN`,
+  leasing and reporting all job, step, transfer, report, artifact, and telemetry
+  work centrally.
 * `paint` and `sidecar` stay stopped until the user explicitly starts a new live
   or paper run.
 
@@ -83,14 +89,17 @@ live dashboard container, and the research worker authenticates to it with
 
 ### `testing`
 
-Research compute and artifact storage host.
+Research compute and artifact storage host. It runs the worker only and has no
+local research dashboard. The worker leases work from and reports all results to
+the central controller at `https://buba.toksaitov.com`
+(`BUBA_RESEARCH_CONTROLLER_URL=https://buba.toksaitov.com`). It keeps a local
+SQLite DB for its own telemetry, read directly by the maintenance tooling.
 
 * SSH alias: `testing`
 * WSL distro: `Ubuntu-24.04`
 * Remote root: `/home/testing/buba-paint-research`
 * Compose file: `docker-compose.research.yml`
-* Private dashboard port: `localhost:3002`
-* Services: `research-dashboard` and `research-worker`
+* Services: `research-worker`
 
 ## Artifacts
 

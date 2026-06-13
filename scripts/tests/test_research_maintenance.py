@@ -221,13 +221,49 @@ class ResearchMaintenanceTests(unittest.TestCase):
         self.assertIn("ROOT='/tmp/research root; echo unsafe'", script)
         self.assertIn("BACKUP_ID=dashboard-db-20260531-120000", script)
 
-    def test_status_script_has_local_jwt_fallback(self) -> None:
-        """Keeps status API probes working when env password drifted."""
+    def test_status_script_reads_worker_telemetry_from_local_db(self) -> None:
+        """Status reads worker telemetry from the local DB without a local dashboard."""
         script = MAINTENANCE.remote_status_script("/srv/research")
-        self.assertIn("def token_from_db", script)
-        self.assertIn("jwt_secret", script)
-        self.assertIn("Bearer {token}", script)
-        self.assertIn('"counts"', script)
+        self.assertIn("def worker_telemetry", script)
+        self.assertIn("research_machine_telemetry_state", script)
+        self.assertIn("LEFT JOIN research_machine_telemetry_state", script)
+        self.assertIn("worker_telemetry()", script)
+        self.assertIn("managed_centrally", script)
+        self.assertNotIn("localhost:3002", script)
+        self.assertNotIn("def health", script)
+        self.assertNotIn("api_json", script)
+        self.assertNotIn("research-dashboard", script)
+
+    def test_diagnostics_script_drops_local_dashboard_probes(self) -> None:
+        """Diagnostics avoid the removed local dashboard API and health probes."""
+        script = MAINTENANCE.remote_diagnostics_script("/srv/research")
+        self.assertIn("worker_telemetry()", script)
+        self.assertIn("research-worker.tail.log", script)
+        self.assertNotIn("localhost:3002", script)
+        self.assertNotIn("api_json", script)
+        self.assertNotIn("dashboard.log", script)
+
+    def test_deploy_research_secrets_target_central_controller(self) -> None:
+        """Research env generation points the worker at the central controller only."""
+        import inspect
+
+        source = inspect.getsource(DEPLOY.ensure_research_secrets)
+        self.assertIn("https://buba.toksaitov.com", source)
+        self.assertNotIn("research-dashboard:3001", source)
+        self.assertNotIn("dashboard.toml", source)
+        self.assertNotIn("ADMIN_PASSWORD", source)
+        self.assertNotIn("BUBA_DASHBOARD_CONFIG_DIR", source)
+        self.assertNotIn("BUBA_RESEARCH_DASHBOARD_PORT", source)
+
+    def test_verify_research_targets_worker_not_local_dashboard(self) -> None:
+        """Deploy verification inspects the worker rather than a local dashboard."""
+        import inspect
+
+        source = inspect.getsource(DEPLOY.verify_research)
+        self.assertIn("worker_running", source)
+        self.assertIn("research work source selected", source)
+        self.assertNotIn("localhost:3002", source)
+        self.assertNotIn("dashboard_log_tail", source)
 
     def test_readonly_maintenance_commands_allow_stale_image_locks(self) -> None:
         """Keeps status-style commands usable during local source changes."""

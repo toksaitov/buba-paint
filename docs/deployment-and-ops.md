@@ -83,7 +83,7 @@ mkdir -p .docker/research/runtime .docker/research/work
 docker compose -f docker-compose.research.yml up -d --build
 ```
 
-This starts only `research-dashboard` and `research-worker`. It is for local orchestration testing and does not start the trading bot, sidecar, agent, Caddy, or any remote host process. The worker shares the dashboard SQLite DB and writes artifacts, prepared DBs, reports, and scratch outputs under `.docker/research/work`.
+This starts only `research-worker`. It is for local orchestration testing and does not start the trading bot, sidecar, agent, Caddy, or any remote host process. The worker writes artifacts, prepared DBs, reports, and scratch outputs under `.docker/research/work` and keeps a local SQLite DB at `.docker/research/runtime/dashboard.db` for its own telemetry. Point `BUBA_RESEARCH_CONTROLLER_URL` at a controller dashboard to exercise the remote backend, or leave it unset to use the local SQLite database for offline testing.
 
 Artifact transfers are worker-owned. Same-machine transfers use append-style resumable file copies. Remote transfers use `rsync` over SSH with partial append verification, compression, and protected remote path arguments. Set `BUBA_RESEARCH_SSH_DIR` when the worker container needs a specific SSH config or key directory; the Compose file mounts it at `/home/buba/.ssh`. Running transfer rows older than `BUBA_RESEARCH_TRANSFER_STALE_MS` are recovered to `retryable` on the next worker tick so a restarted worker can resume from partial files. Set it to `0` to disable automatic stale recovery. Stale recovery has no per-transfer lease owner, so it is only safe under exactly one transfer worker per research machine: a `running` row is then always the live worker's in-flight copy, and recovery must not fire while that copy is genuinely live. To enforce this, run a single `buba-research-worker` per `machine_id`, and a configured nonzero stale age is raised to a safety floor of one hour (`MIN_SAFE_STALE_AFTER_MS` in `research_transfer.rs`) so it clearly exceeds the worst-case single-file transfer time. The CLI default of `1800000` milliseconds is below that floor and is therefore raised to one hour at startup.
 
@@ -104,7 +104,7 @@ python3 scripts/publish-research-images.py
 python3 scripts/deploy-machine.py --machine research
 ```
 
-The publisher builds `research-dashboard` and `research-worker`, pushes private GHCR images, resolves their digests, and writes `ops/research-images.lock.json`. The deploy runner syncs only the research Compose file to `/home/testing/buba-paint-research`, preserves remote `.env` and `.docker/research`, authenticates to GHCR with a temporary Docker config using the current `gh` token, pulls the digest-pinned images, removes the temporary auth config, and starts `research-dashboard` and `research-worker` without building on `testing`. The generated admin password, research worker token, and JWT secret remain on `testing` under `/home/testing/buba-paint-research/.env` and `.docker/research/config/dashboard.toml`.
+The publisher builds the dashboard and `research-worker` images, pushes private GHCR images, resolves their digests, and writes `ops/research-images.lock.json`. The deploy runner syncs only the research Compose file to `/home/testing/buba-paint-research`, preserves remote `.env` and `.docker/research`, authenticates to GHCR with a temporary Docker config using the current `gh` token, pulls the digest-pinned image, removes the temporary auth config, and starts `research-worker` only, without building on `testing`. The host runs no local research dashboard; the worker leases work from and reports to the central controller. The generated research worker token remains on `testing` under `/home/testing/buba-paint-research/.env`.
 
 The GHCR token is not persisted on `testing`. If publishing or deployment reports missing package scopes, refresh local GitHub auth with:
 
@@ -114,15 +114,16 @@ gh auth refresh -s write:packages
 
 The generated research `.env` sets `BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh` and `BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`. That lets the worker container use the WSL SSH alias `buba-paint` for live-to-research artifact transfers and recover killed transfer workers after the stale window. The worker image includes `rsync` and `openssh-client`.
 
-Controller-based central control is the current model. `BUBA_RESEARCH_CONTROLLER_URL` together with `BUBA_RESEARCH_WORKER_TOKEN` makes the worker lease and persist all job, step, transfer, report, and artifact work through that controller over the worker-token API and report telemetry to it; the token authenticates every worker-token endpoint, not only heartbeats. The research stack points `BUBA_RESEARCH_CONTROLLER_URL` at its co-located `http://research-dashboard:3001`. To run the worker against the main dashboard instead, point the URL there and configure the same `BUBA_RESEARCH_WORKER_TOKEN` on that dashboard. Without a controller URL the worker falls back to the shared local database.
+Controller-based central control is the current model. `BUBA_RESEARCH_CONTROLLER_URL` together with `BUBA_RESEARCH_WORKER_TOKEN` makes the worker lease and persist all job, step, transfer, report, and artifact work through that controller over the worker-token API and report telemetry to it; the token authenticates every worker-token endpoint, not only heartbeats. The deployed research host runs `research-worker` only and points `BUBA_RESEARCH_CONTROLLER_URL` at the central dashboard `https://buba.toksaitov.com`, configured with the same `BUBA_RESEARCH_WORKER_TOKEN`. All research is managed and viewed on that single central dashboard; there is no co-located research dashboard on the worker host. The worker keeps a local SQLite DB only for its own telemetry, which the maintenance tooling reads directly. Without a controller URL the worker falls back to that local database, which is used for local orchestration testing rather than the deployed model.
 
-Remote research checks:
+Remote research checks. The host runs `research-worker` only and has no local health endpoint, so check that the worker container is up and tail its log:
 
 ```bash
 ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-research && docker compose -f docker-compose.research.yml ps'"
-ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'curl -sf http://localhost:3002/health'"
-ssh testing "curl.exe -s http://localhost:3002/health"
+ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-research && tail -n 80 .docker/research/runtime/research-worker.log'"
 ```
+
+The `ps` output should show `research-worker` running. Operator-facing research health lives on the central dashboard `https://buba.toksaitov.com/health`.
 
 Research maintenance commands:
 

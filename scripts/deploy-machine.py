@@ -276,39 +276,24 @@ def ensure_research_secrets(plan: dict[str, Any]) -> None:
     uid_gid = remote_output(plan, "id -u; id -g").strip().splitlines()
     uid = uid_gid[0] if len(uid_gid) >= 1 else "1000"
     gid = uid_gid[1] if len(uid_gid) >= 2 else "1000"
-    admin_password = secrets.token_hex(18)
-    jwt_secret = secrets.token_hex(32)
     worker_token = secrets.token_hex(32)
     env_text = "\n".join(
         [
             f"BUBA_UID={uid}",
             f"BUBA_GID={gid}",
-            "ADMIN_USER=admin",
-            f"ADMIN_PASSWORD={admin_password}",
             f"BUBA_RESEARCH_WORKER_TOKEN={worker_token}",
-            "BUBA_RESEARCH_CONTROLLER_URL=http://research-dashboard:3001",
+            "BUBA_RESEARCH_CONTROLLER_URL=https://buba.toksaitov.com",
             "BUBA_RESEARCH_MACHINE_ID=research",
             "BUBA_RESEARCH_WORKER_ID=research-worker-testing",
             "BUBA_RESEARCH_HEARTBEAT_MS=30000",
             "BUBA_RESEARCH_TRANSFER_STALE_MS=1800000",
-            "BUBA_RESEARCH_DASHBOARD_PORT=3002",
             "BUBA_RESEARCH_RUNTIME_DIR=./.docker/research/runtime",
             "BUBA_RESEARCH_WORK_DIR=./.docker/research/work",
             "BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh",
-            "BUBA_DASHBOARD_CONFIG_DIR=./.docker/research/config",
-            "",
-        ]
-    )
-    dashboard_config = "\n".join(
-        [
-            "[server]",
-            "port = 3001",
-            f'jwt_secret = "{jwt_secret}"',
             "",
         ]
     )
     env_b64 = base64.b64encode(env_text.encode("utf-8")).decode("ascii")
-    config_b64 = base64.b64encode(dashboard_config.encode("utf-8")).decode("ascii")
     root = plan["remote_root"]
     remote_run(
         plan,
@@ -316,24 +301,19 @@ def ensure_research_secrets(plan: dict[str, Any]) -> None:
             [
                 "set -euo pipefail",
                 f"root={quote(root)}",
-                "mkdir -p \"$root/.docker/research/config\" \"$root/.docker/research/runtime\" \"$root/.docker/research/work\"",
+                "mkdir -p \"$root/.docker/research/runtime\" \"$root/.docker/research/work\"",
                 "if [ ! -f \"$root/.env\" ]; then",
                 f"  printf '%s' {quote(env_b64)} | base64 -d > \"$root/.env\"",
                 "  chmod 600 \"$root/.env\"",
                 "fi",
                 f"ensure_env_key() {{ key=\"$1\"; value=\"$2\"; if ! grep -q \"^${{key}}=\" \"$root/.env\"; then printf '%s=%s\\n' \"$key\" \"$value\" >> \"$root/.env\"; fi; }}",
                 f"ensure_env_key BUBA_RESEARCH_WORKER_TOKEN {quote(worker_token)}",
-                "ensure_env_key BUBA_RESEARCH_CONTROLLER_URL http://research-dashboard:3001",
+                "ensure_env_key BUBA_RESEARCH_CONTROLLER_URL https://buba.toksaitov.com",
                 "ensure_env_key BUBA_RESEARCH_MACHINE_ID research",
                 "ensure_env_key BUBA_RESEARCH_WORKER_ID research-worker-testing",
                 "ensure_env_key BUBA_RESEARCH_HEARTBEAT_MS 30000",
                 "ensure_env_key BUBA_RESEARCH_TRANSFER_STALE_MS 1800000",
                 "ensure_env_key BUBA_RESEARCH_SSH_DIR /home/testing/.ssh",
-                "ensure_env_key BUBA_DASHBOARD_CONFIG_DIR ./.docker/research/config",
-                "if [ ! -f \"$root/.docker/research/config/dashboard.toml\" ]; then",
-                f"  printf '%s' {quote(config_b64)} | base64 -d > \"$root/.docker/research/config/dashboard.toml\"",
-                "  chmod 600 \"$root/.docker/research/config/dashboard.toml\"",
-                "fi",
             ]
         ),
     )
@@ -488,11 +468,11 @@ def verify_research(plan: dict[str, Any]) -> dict[str, Any]:
             "set -euo pipefail",
             f"cd {quote(root)}",
             "python3 - <<'PY'",
-            "import json, subprocess, urllib.request",
+            "import json, subprocess",
             "def run(args):",
             "    return subprocess.run(args, capture_output=True, text=True, check=False)",
             "def tail(path):",
-            "    result = run(['tail', '-n', '20', path])",
+            "    result = run(['tail', '-n', '40', path])",
             "    return result.stdout if result.returncode == 0 else ''",
             "ps = run(['docker', 'compose', '-f', 'docker-compose.research.yml', 'ps', '--format', 'json'])",
             "rows = []",
@@ -501,13 +481,18 @@ def verify_research(plan: dict[str, Any]) -> dict[str, Any]:
             "        continue",
             "    row = json.loads(line)",
             "    rows.append({key: row.get(key) for key in ('Service', 'Name', 'ID', 'Image', 'State', 'Status', 'Health', 'RunningFor') if key in row})",
-            "with urllib.request.urlopen('http://localhost:3002/health', timeout=10) as response:",
-            "    health = json.loads(response.read())",
+            "worker_running = any(row.get('Service') == 'research-worker' and (row.get('State') == 'running' or 'Up' in (row.get('Status') or '')) for row in rows)",
+            "worker_log = tail('.docker/research/runtime/research-worker.log')",
+            "backend = None",
+            "for line in reversed(worker_log.splitlines()):",
+            "    if 'research work source selected' in line:",
+            "        backend = 'remote controller' if 'remote controller' in line else ('local database' if 'local database' in line else line.strip())",
+            "        break",
             "print(json.dumps({",
             "    'compose_ps': {'returncode': ps.returncode, 'services': rows, 'stderr': ps.stderr},",
-            "    'health': health,",
-            "    'worker_log_tail': tail('.docker/research/runtime/research-worker.log'),",
-            "    'dashboard_log_tail': tail('.docker/research/runtime/dashboard.log'),",
+            "    'worker_running': worker_running,",
+            "    'worker_backend': backend,",
+            "    'worker_log_tail': worker_log,",
             "}, indent=2, sort_keys=True))",
             "PY",
         ]
@@ -531,9 +516,7 @@ def collect_failure_diagnostics(plan: dict[str, Any]) -> dict[str, Any]:
             "    return {'returncode': result.returncode, 'stdout': result.stdout[-12000:], 'stderr': result.stderr[-4000:]}",
             "payload = {",
             "    'compose_ps': capture('docker compose -f docker-compose.research.yml ps --format json'),",
-            "    'health': capture('curl -sf http://localhost:3002/health'),",
             "    'worker_log_tail': capture('tail -n 80 .docker/research/runtime/research-worker.log 2>/dev/null'),",
-            "    'dashboard_log_tail': capture('tail -n 80 .docker/research/runtime/dashboard.log 2>/dev/null'),",
             "}",
             "print(json.dumps(payload, indent=2, sort_keys=True))",
             "PY",

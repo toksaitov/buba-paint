@@ -434,9 +434,7 @@ def remote_python_script(root: str, body: str, extra_env: dict[str, str] | None 
 
 REMOTE_COMMON_PY = r'''
 import datetime as dt
-import base64
 import hashlib
-import hmac
 import json
 import os
 import re
@@ -445,7 +443,6 @@ import sqlite3
 import subprocess
 import tarfile
 import time
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(os.environ["ROOT"])
@@ -490,70 +487,75 @@ def db_counts(path):
                 counts[table] = {"error": str(error)}
     return counts
 
-def env_map():
-    values = {}
+def env_value(key):
     env_path = ROOT / ".env"
     if not env_path.exists():
-        return values
+        return None
     for line in env_path.read_text(encoding="utf-8").splitlines():
         if not line or line.startswith("#") or "=" not in line:
             continue
-        key, value = line.split("=", 1)
-        values[key] = value.strip().strip("\"'")
-    return values
+        name, value = line.split("=", 1)
+        if name == key:
+            return value.strip().strip("\"'")
+    return None
 
-def b64url(data):
-    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+def load_json_column(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
 
-def jwt_secret():
-    config_path = ROOT / ".docker" / "research" / "config" / "dashboard.toml"
-    if not config_path.exists():
-        raise RuntimeError("dashboard.toml is missing")
-    for line in config_path.read_text(encoding="utf-8").splitlines():
-        if line.strip().startswith("jwt_secret") and "=" in line:
-            return line.split("=", 1)[1].strip().strip("\"'")
-    raise RuntimeError("jwt_secret is missing")
-
-def token_from_db(env):
-    username = env.get("ADMIN_USER")
-    if not username:
-        raise RuntimeError("ADMIN_USER is missing")
-    with sqlite3.connect(DB) as conn:
-        row = conn.execute("SELECT id, role FROM users WHERE username = ? LIMIT 1", (username,)).fetchone()
+def worker_telemetry(machine_id="research"):
+    if not DB.exists():
+        return {"db_exists": False}
+    summary = {"db_exists": True, "machine_id": machine_id, "managed_centrally": True}
+    try:
+        with sqlite3.connect(DB) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT m.id AS machine_id, m.name AS name, m.role AS role, "
+                "m.status AS machine_status, m.updated_at AS machine_updated_at, "
+                "t.worker_id AS worker_id, t.worker_version AS worker_version, "
+                "t.worker_status AS worker_status, t.host_json AS host_json, "
+                "t.sampler_json AS sampler_json, t.activity_json AS activity_json, "
+                "t.last_heartbeat_ms AS last_heartbeat_ms, t.last_sample_ms AS last_sample_ms, "
+                "t.last_error AS last_error, t.updated_at AS telemetry_updated_at "
+                "FROM research_machines m "
+                "LEFT JOIN research_machine_telemetry_state t ON t.machine_id = m.id "
+                "WHERE m.id = ? LIMIT 1",
+                (machine_id,),
+            ).fetchone()
+    except sqlite3.Error as error:
+        return {"db_exists": True, "machine_id": machine_id, "error": str(error)}
     if row is None:
-        raise RuntimeError("admin user is missing")
-    now = int(time.time())
-    header = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
-    payload = b64url(json.dumps({"sub": row[0], "role": row[1], "iat": now, "exp": now + 600}, separators=(",", ":")).encode())
-    signing_input = f"{header}.{payload}"
-    signature = hmac.new(jwt_secret().encode(), signing_input.encode(), hashlib.sha256).digest()
-    return f"{signing_input}.{b64url(signature)}"
-
-def auth_token(env):
-    try:
-        body = json.dumps({"username": env["ADMIN_USER"], "password": env["ADMIN_PASSWORD"]}).encode()
-        req = urllib.request.Request("http://localhost:3002/api/auth/login", data=body, headers={"content-type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return json.loads(response.read())["token"]
-    except Exception:
-        return token_from_db(env)
-
-def api_json(path):
-    try:
-        env = env_map()
-        token = auth_token(env)
-        req = urllib.request.Request("http://localhost:3002" + path, headers={"authorization": f"Bearer {token}"})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return json.loads(response.read())
-    except Exception as error:
-        return {"error": str(error)}
-
-def health():
-    try:
-        with urllib.request.urlopen("http://localhost:3002/health", timeout=10) as response:
-            return json.loads(response.read())
-    except Exception as error:
-        return {"error": str(error)}
+        summary["machine_found"] = False
+        return summary
+    summary["machine_found"] = True
+    summary["name"] = row["name"]
+    summary["role"] = row["role"]
+    summary["status"] = row["machine_status"]
+    summary["machine_updated_at"] = row["machine_updated_at"]
+    summary["worker_id"] = row["worker_id"]
+    summary["worker_version"] = row["worker_version"]
+    summary["worker_status"] = row["worker_status"]
+    summary["last_heartbeat_ms"] = row["last_heartbeat_ms"]
+    summary["last_sample_ms"] = row["last_sample_ms"]
+    summary["last_error"] = row["last_error"]
+    summary["telemetry_updated_at"] = row["telemetry_updated_at"]
+    summary["host"] = load_json_column(row["host_json"])
+    summary["sampler"] = load_json_column(row["sampler_json"])
+    summary["activity"] = load_json_column(row["activity_json"])
+    last_heartbeat = row["last_heartbeat_ms"]
+    if isinstance(last_heartbeat, int):
+        age_ms = now_ms() - last_heartbeat
+        summary["heartbeat_age_ms"] = age_ms
+        summary["stale"] = age_ms > 120000
+    else:
+        summary["heartbeat_age_ms"] = None
+        summary["stale"] = None
+    return summary
 
 def compose_ps():
     result = run([*COMPOSE, "ps", "--format", "json"])
@@ -579,109 +581,6 @@ def backup_database(destination):
     with sqlite3.connect(DB) as source, sqlite3.connect(destination) as target:
         source.backup(target)
 
-def group_counts(payload):
-    if not isinstance(payload, dict):
-        return {}
-    counts = {}
-    for key, value in payload.items():
-        if isinstance(value, list):
-            counts[key] = len(value)
-        elif isinstance(value, dict):
-            for nested_key in ("items", "rows", "jobs", "transfers", "artifacts", "reports"):
-                nested_value = value.get(nested_key)
-                if isinstance(nested_value, list):
-                    counts[key] = len(nested_value)
-                    break
-    return counts
-
-def summarize_queue(payload):
-    if not isinstance(payload, dict) or "error" in payload:
-        return payload
-    summary = {}
-    for key in ("counts", "queue_counts", "attention_counts", "retention_totals", "disabled_host_impact", "generated_at_ms"):
-        if key in payload:
-            summary[key] = payload[key]
-    counts = group_counts(payload)
-    if counts:
-        summary["group_counts"] = counts
-    return summary or {"keys": sorted(payload.keys())}
-
-def summarize_retention(payload):
-    if not isinstance(payload, dict) or "error" in payload:
-        return payload
-    summary = {}
-    for key in ("totals", "estimated_bytes", "generated_at_ms"):
-        if key in payload:
-            summary[key] = payload[key]
-    counts = group_counts(payload)
-    if counts:
-        summary["candidate_counts"] = counts
-    return summary or {"keys": sorted(payload.keys())}
-
-def summarize_templates(payload):
-    if not isinstance(payload, (dict, list)) or (isinstance(payload, dict) and "error" in payload):
-        return payload
-    templates = payload if isinstance(payload, list) else payload.get("templates", [])
-    if not isinstance(templates, list):
-        return {"keys": sorted(payload.keys())}
-    status_counts = {}
-    type_counts = {}
-    for template in templates:
-        if not isinstance(template, dict):
-            continue
-        status = template.get("status") or "unknown"
-        job_type = template.get("job_type") or "unknown"
-        status_counts[status] = status_counts.get(status, 0) + 1
-        type_counts[job_type] = type_counts.get(job_type, 0) + 1
-    return {"count": len(templates), "status_counts": status_counts, "type_counts": type_counts}
-
-def summarize_reports(payload):
-    if not isinstance(payload, dict) or "error" in payload:
-        return payload
-    reports = payload.get("reports")
-    if not isinstance(reports, list):
-        return {"keys": sorted(payload.keys())}
-    status_counts = {}
-    for report in reports:
-        if isinstance(report, dict):
-            status = report.get("status") or "unknown"
-            status_counts[status] = status_counts.get(status, 0) + 1
-    return {"count": len(reports), "status_counts": status_counts}
-
-def summarize_telemetry(payload):
-    if not isinstance(payload, dict) or "error" in payload:
-        return payload
-    state = payload.get("telemetry")
-    state_summary = None
-    if isinstance(state, dict):
-        state_summary = {
-            key: state.get(key)
-            for key in ("worker_id", "worker_version", "worker_status", "last_heartbeat_ms", "last_sample_ms", "last_error", "updated_at")
-            if key in state
-        }
-        for key in ("host", "sampler", "activity"):
-            value = state.get(key)
-            if isinstance(value, dict):
-                state_summary[key] = value
-    machine = payload.get("machine")
-    machine_summary = machine
-    if isinstance(machine, dict):
-        machine_summary = {
-            key: machine.get(key)
-            for key in ("id", "name", "role", "ssh_alias", "status", "updated_at")
-            if key in machine
-        }
-    samples = payload.get("samples")
-    return {
-        "machine": machine_summary,
-        "disabled": payload.get("disabled"),
-        "stale": payload.get("stale"),
-        "stale_after_ms": payload.get("stale_after_ms"),
-        "dependency_counts": payload.get("dependency_counts"),
-        "telemetry": state_summary,
-        "sample_count": len(samples) if isinstance(samples, list) else None,
-    }
-
 def summarize_compose_ps(payload):
     if not isinstance(payload, dict):
         return payload
@@ -702,23 +601,18 @@ def summarize_compose_ps(payload):
 
 STATUS_PY = REMOTE_COMMON_PY + r'''
 ps = compose_ps()
-queue = api_json("/api/research/queue")
-retention = api_json("/api/research/retention")
-templates = api_json("/api/research/job-templates")
-telemetry = api_json("/api/research/machines/research/telemetry")
 payload = {
     "machine": "research",
     "remote_root": str(ROOT),
     "runtime": str(RUNTIME),
-    "health": health(),
+    "role": "worker-only",
+    "controlled_by": env_value("BUBA_RESEARCH_CONTROLLER_URL"),
+    "managed_centrally": ["jobs", "reports", "queue", "templates", "retention"],
     "compose_ps": summarize_compose_ps(ps),
     "image_refs": image_refs_from_ps(ps["rows"]),
     "db": db_counts(DB),
     "backups": backup_ids(),
-    "queue": summarize_queue(queue),
-    "retention": summarize_retention(retention),
-    "templates": summarize_templates(templates),
-    "telemetry": summarize_telemetry(telemetry),
+    "telemetry": worker_telemetry(),
 }
 print(json.dumps(payload, indent=2, sort_keys=True))
 '''
@@ -767,10 +661,7 @@ if check != "ok":
 restore_env = os.environ.copy()
 image_refs = manifest.get("image_refs") if isinstance(manifest, dict) else None
 if isinstance(image_refs, dict):
-    dashboard_image = image_refs.get("research-dashboard")
     worker_image = image_refs.get("research-worker")
-    if isinstance(dashboard_image, str) and dashboard_image:
-        restore_env["BUBA_DASHBOARD_IMAGE"] = dashboard_image
     if isinstance(worker_image, str) and worker_image:
         restore_env["BUBA_RESEARCH_WORKER_IMAGE"] = worker_image
 pre_id = "pre-restore-" + stamp()
@@ -778,7 +669,7 @@ pre_dir = BACKUPS / pre_id
 pre_db = pre_dir / "dashboard.db"
 stopped = False
 try:
-    run([*COMPOSE, "stop", "research-worker", "research-dashboard"], check=True)
+    run([*COMPOSE, "stop", "research-worker"], check=True)
     stopped = True
     if DB.exists():
         backup_database(pre_db)
@@ -802,41 +693,26 @@ try:
     restored_check = quick_check(DB)
     if restored_check != "ok":
         raise RuntimeError(f"restored DB quick_check failed: {restored_check}")
-    run([*COMPOSE, "up", "-d", "--no-build", "research-dashboard", "research-worker"], check=True, env=restore_env)
+    run([*COMPOSE, "up", "-d", "--no-build", "research-worker"], check=True, env=restore_env)
     stopped = False
-    for _ in range(30):
-        current_health = health()
-        if current_health.get("ok") is True:
-            break
-        time.sleep(2)
-    else:
-        raise RuntimeError("dashboard did not become healthy after restore")
-    queue = api_json("/api/research/queue")
-    reports = api_json("/api/research/reports")
-    templates = api_json("/api/research/job-templates")
-    retention = api_json("/api/research/retention")
-    telemetry = api_json("/api/research/machines/research/telemetry")
+    ps = compose_ps()
     verification = {
-        "health": health(),
-        "queue": summarize_queue(queue),
-        "reports": summarize_reports(reports),
-        "templates": summarize_templates(templates),
-        "retention": summarize_retention(retention),
-        "telemetry": summarize_telemetry(telemetry),
+        "compose_ps": summarize_compose_ps(ps),
+        "telemetry": worker_telemetry(),
+        "managed_centrally": ["jobs", "reports", "queue", "templates", "retention"],
     }
     print(json.dumps({
         "restored_backup_id": backup_id,
         "pre_restore_backup_id": pre_id if pre_db.exists() else None,
         "quick_check": restored_check,
         "restored_image_env": {
-            "BUBA_DASHBOARD_IMAGE": restore_env.get("BUBA_DASHBOARD_IMAGE"),
             "BUBA_RESEARCH_WORKER_IMAGE": restore_env.get("BUBA_RESEARCH_WORKER_IMAGE"),
         },
         "verification": verification,
     }, indent=2, sort_keys=True))
 except Exception:
     if stopped:
-        run([*COMPOSE, "up", "-d", "--no-build", "research-dashboard", "research-worker"], check=False)
+        run([*COMPOSE, "up", "-d", "--no-build", "research-worker"], check=False)
     raise
 '''
 
@@ -866,23 +742,14 @@ def write(name, content):
 def write_json(name, value):
     write(name, json.dumps(value, indent=2, sort_keys=True))
 
-write_json("manifest.json", {"bundle_id": bundle_id, "created_at_ms": now_ms(), "remote_root": str(ROOT)})
+write_json("manifest.json", {"bundle_id": bundle_id, "created_at_ms": now_ms(), "remote_root": str(ROOT), "role": "worker-only", "controlled_by": env_value("BUBA_RESEARCH_CONTROLLER_URL"), "managed_centrally": ["jobs", "reports", "queue", "templates", "retention"]})
 write_json("compose-ps.json", compose_ps())
 compose_config = run([*COMPOSE, "config", "--no-interpolate"])
 write("compose-config.txt", redact(compose_config["stdout"] + compose_config["stderr"]))
-write_json("health.json", health())
 env_path = ROOT / ".env"
 write("env.redacted", redact(env_path.read_text(encoding="utf-8") if env_path.exists() else ""))
-write("logs/dashboard.tail.log", (RUNTIME / "dashboard.log").read_text(encoding="utf-8", errors="replace")[-30000:] if (RUNTIME / "dashboard.log").exists() else "")
 write("logs/research-worker.tail.log", (RUNTIME / "research-worker.log").read_text(encoding="utf-8", errors="replace")[-30000:] if (RUNTIME / "research-worker.log").exists() else "")
-write_json("api/queue.json", api_json("/api/research/queue"))
-write_json("api/retention.json", api_json("/api/research/retention"))
-write_json("api/templates.json", api_json("/api/research/job-templates"))
-write_json("api/jobs.json", api_json("/api/research/jobs"))
-write_json("api/transfers.json", api_json("/api/research/transfers"))
-write_json("api/artifacts.json", api_json("/api/research/artifacts"))
-write_json("api/reports.json", api_json("/api/research/reports"))
-write_json("api/telemetry.json", api_json("/api/research/machines/research/telemetry"))
+write_json("telemetry.json", worker_telemetry())
 write("disk.txt", run(["df", "-h", str(RUNTIME), str(WORK)])["stdout"] + run(["du", "-sh", str(RUNTIME), str(WORK)])["stdout"])
 container_ids = run([*COMPOSE, "ps", "-q"])["stdout"].splitlines()
 inspect = run(["docker", "inspect", *container_ids])["stdout"] if container_ids else "[]"

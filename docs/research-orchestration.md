@@ -44,6 +44,15 @@ database. Controller-based control is the current production model: the deployed
 research worker leases and persists all job, step, transfer, report, and artifact
 work through its controller, not only heartbeats.
 
+The deployed topology uses the remote implementation exclusively. The research
+host runs the worker only, with no co-located research dashboard, and points
+`BUBA_RESEARCH_CONTROLLER_URL` at the central dashboard
+`https://buba.toksaitov.com`. That central dashboard is both the single operator
+UI for all research and the controller the worker leases from and reports to. The
+worker keeps a local SQLite DB only for its own telemetry, which the maintenance
+tooling reads directly. The local-database backend remains in the trait for local
+orchestration testing, but it is not the deployed model.
+
 ## Worker Token API And Authentication
 
 The remote backend calls worker endpoints under `/api/research/workers/` in
