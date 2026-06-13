@@ -8,6 +8,17 @@ fn test_db() -> DashboardDb {
     DashboardDb::from_connection(Connection::open_in_memory().unwrap())
 }
 
+/// Verifies that a freshly opened dashboard database has a non-zero SQLite busy timeout.
+#[tokio::test]
+async fn new_sets_busy_timeout_on_connection() {
+    let db = DashboardDb::new(":memory:").unwrap();
+    let conn = db.conn.lock().await;
+    let busy_timeout_ms: i64 = conn
+        .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+        .unwrap();
+    assert_eq!(busy_timeout_ms, 5_000);
+}
+
 /// Build a deterministic host identity for telemetry tests.
 fn telemetry_host() -> HostIdentity {
     HostIdentity {

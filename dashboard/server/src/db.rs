@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use buba_machine_telemetry::{HostIdentity, MachineSample, MachineSamplerHealth};
 use rusqlite::{Connection, OptionalExtension, params, types::Type};
@@ -705,6 +705,10 @@ impl DashboardDb {
         .map_err(|e| DashboardError::Internal(format!("opening database: {e}")))?;
 
         conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(DashboardError::Database)?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(DashboardError::Database)?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(DashboardError::Database)?;
         conn.execute_batch(SCHEMA)
             .map_err(DashboardError::Database)?;
