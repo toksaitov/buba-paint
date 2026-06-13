@@ -295,6 +295,53 @@ describe("ResearchOverviewPage", () => {
     expect(screen.getByText(/retention archive complete/i)).toBeInTheDocument();
   });
 
+  it("renders only eligible retention rows and keeps the empty state honest for all-ineligible groups", () => {
+    const base = retentionFixture();
+    mockUseRetention.mockReturnValue({
+      data: {
+        ...base,
+        jobs: [
+          base.jobs[0],
+          {
+            ...base.jobs[0],
+            job: { ...base.jobs[0].job, id: "fixture-job-ineligible" },
+            eligible: false,
+            skipped_reason: "active dependents",
+          },
+        ],
+        reports: [
+          {
+            ...base.reports[0],
+            report: {
+              ...base.reports[0].report,
+              id: "fixture-report-ineligible",
+            },
+            eligible: false,
+            skipped_reason: "retention window not elapsed",
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchRetention>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(screen.getByLabelText(/fixture-job-completed/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText("fixture-job-ineligible"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("fixture-report-ineligible"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("No report archive candidates."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("retention window not elapsed"),
+    ).not.toBeInTheDocument();
+  });
+
   it("creates and mutates shared templates from the manager", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ResearchOverviewPage />);

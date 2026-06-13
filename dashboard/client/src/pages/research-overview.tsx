@@ -691,7 +691,6 @@ function RetentionPanel({
           `${jobTypeLabel(candidate.job.job_type)} · ${formatBytes(candidate.scratch_bytes)}`
         }
         eligibleFor={(candidate) => candidate.eligible}
-        skipFor={(candidate) => candidate.skipped_reason}
       />
       <RetentionCandidateGroup
         title="Reports"
@@ -703,7 +702,6 @@ function RetentionPanel({
         labelFor={(candidate) => candidate.report.title}
         subFor={(candidate) => formatBytes(candidate.bytes)}
         eligibleFor={(candidate) => candidate.eligible}
-        skipFor={(candidate) => candidate.skipped_reason}
       />
       <RetentionCandidateGroup
         title="Artifacts"
@@ -719,7 +717,6 @@ function RetentionPanel({
           `${formatBytes(candidate.bytes)} · ${candidate.active_dependency_count} active deps`
         }
         eligibleFor={(candidate) => candidate.eligible}
-        skipFor={(candidate) => candidate.skipped_reason}
       />
     </div>
   );
@@ -735,7 +732,6 @@ function RetentionCandidateGroup<T>({
   labelFor,
   subFor,
   eligibleFor,
-  skipFor,
 }: {
   title: string;
   empty: string;
@@ -746,7 +742,6 @@ function RetentionCandidateGroup<T>({
   labelFor: (row: T) => string;
   subFor: (row: T) => string;
   eligibleFor: (row: T) => boolean;
-  skipFor: (row: T) => string | null;
 }) {
   const eligibleRows = rows.filter(eligibleFor);
   if (eligibleRows.length === 0) {
@@ -761,9 +756,8 @@ function RetentionCandidateGroup<T>({
     <div>
       <div className="mb-1 text-[12px] font-semibold">{title}</div>
       <div className="space-y-1.5">
-        {rows.map((row) => {
+        {eligibleRows.map((row) => {
           const id = idFor(row);
-          const eligible = eligibleFor(row);
           const checked = selectedIds.includes(id);
           return (
             <label
@@ -773,7 +767,6 @@ function RetentionCandidateGroup<T>({
               <input
                 type="checkbox"
                 checked={checked}
-                disabled={!eligible}
                 onChange={(event) => {
                   const next = event.currentTarget.checked
                     ? [...selectedIds, id]
@@ -787,7 +780,7 @@ function RetentionCandidateGroup<T>({
                   {labelFor(row)}
                 </span>
                 <span className="block text-[11px] text-muted">
-                  {eligible ? subFor(row) : skipFor(row)}
+                  {subFor(row)}
                 </span>
               </span>
             </label>
