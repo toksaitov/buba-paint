@@ -26,6 +26,10 @@ use crate::db::{
 };
 use crate::error::DashboardError;
 use crate::research_artifacts;
+use crate::research_constants::{
+    JOB_TYPE_CURRENT_PARAMS, JOB_TYPE_SWEEP, STATUS_BLOCKED, STATUS_CANCELLED, STATUS_COMPLETED,
+    STATUS_FAILED, STATUS_RETRYABLE,
+};
 use crate::research_pipeline::{
     ArchiveSummary, ResearchPipelineConfig, archive_scratch_dbs, write_report_files,
 };
@@ -1801,7 +1805,7 @@ pub async fn regenerate_job_report(
 
 /// Return whether a research job type can regenerate analysis outputs.
 fn supports_analysis_regeneration(job_type: &str) -> bool {
-    matches!(job_type, "current_params" | "sweep")
+    matches!(job_type, JOB_TYPE_CURRENT_PARAMS | JOB_TYPE_SWEEP)
 }
 
 /// `POST /api/research/jobs/:id/archive-scratch`
@@ -2451,12 +2455,12 @@ fn queue_step_for_job(
 
 /// Return whether a job status is terminal.
 fn is_job_terminal(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "cancelled")
+    matches!(status, STATUS_COMPLETED | STATUS_FAILED | STATUS_CANCELLED)
 }
 
 /// Return whether a transfer status is terminal.
 fn is_transfer_terminal(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "cancelled")
+    matches!(status, STATUS_COMPLETED | STATUS_FAILED | STATUS_CANCELLED)
 }
 
 /// Return whether a transfer has become stale.
@@ -2734,7 +2738,7 @@ struct RegeneratedReportPaths {
 fn can_regenerate_report_for_status(status: &str) -> bool {
     matches!(
         status,
-        "completed" | "blocked" | "failed" | "cancelled" | "retryable"
+        STATUS_COMPLETED | STATUS_BLOCKED | STATUS_FAILED | STATUS_CANCELLED | STATUS_RETRYABLE
     )
 }
 

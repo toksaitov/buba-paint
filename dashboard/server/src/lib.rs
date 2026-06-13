@@ -6,6 +6,7 @@ pub mod error;
 pub mod proxy;
 pub mod research_artifacts;
 pub mod research_backend;
+pub mod research_constants;
 pub mod research_controller_client;
 pub mod research_export;
 pub mod research_pipeline;

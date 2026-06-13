@@ -18,6 +18,7 @@ use crate::db::{ResearchArtifact, ResearchJob, ResearchJobStep};
 use crate::error::DashboardError;
 use crate::research_artifacts;
 use crate::research_backend::ResearchWorkBackend;
+use crate::research_constants::JOB_TYPE_SWEEP;
 use crate::research_reports;
 use crate::research_util::path_to_string;
 
@@ -273,7 +274,7 @@ impl ResearchPipelineConfig {
         }
         validate_string_list("set override", &raw.sets)?;
         validate_string_list("sweep dimension", &raw.sweeps)?;
-        if job.job_type == "sweep" && raw.sweeps.is_empty() {
+        if job.job_type == JOB_TYPE_SWEEP && raw.sweeps.is_empty() {
             return Err(DashboardError::BadRequest(
                 "sweep jobs require at least one sweep dimension".to_string(),
             ));
