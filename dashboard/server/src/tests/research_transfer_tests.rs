@@ -282,3 +282,24 @@ fn rsync_command_uses_resumable_compressed_flags() {
         "/research/artifacts/artifact-transfer-remote/"
     );
 }
+
+/// Verifies the operator stale recovery age is floored to the single-worker safety bound.
+#[test]
+fn operator_stale_after_ms_is_floored_to_safety_bound() {
+    assert_eq!(clamp_operator_stale_after_ms(None), None);
+    assert_eq!(
+        clamp_operator_stale_after_ms(Some(0)),
+        Some(MIN_SAFE_STALE_AFTER_MS)
+    );
+    assert_eq!(
+        clamp_operator_stale_after_ms(Some(MIN_SAFE_STALE_AFTER_MS - 1)),
+        Some(MIN_SAFE_STALE_AFTER_MS)
+    );
+    assert_eq!(
+        clamp_operator_stale_after_ms(Some(30 * 60 * 1_000)),
+        Some(MIN_SAFE_STALE_AFTER_MS)
+    );
+    let above = MIN_SAFE_STALE_AFTER_MS + 5;
+    assert_eq!(clamp_operator_stale_after_ms(Some(above)), Some(above));
+    assert!(MIN_SAFE_STALE_AFTER_MS > 30 * 60 * 1_000);
+}

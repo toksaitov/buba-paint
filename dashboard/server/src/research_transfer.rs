@@ -13,6 +13,18 @@ use crate::error::DashboardError;
 use crate::research_artifacts::{self, ArtifactManifest};
 use crate::research_backend::ResearchWorkBackend;
 
+/// Minimum operator-configured stale recovery age in milliseconds.
+///
+/// Stale recovery requeues a `running` transfer that any worker on the
+/// destination machine owns. The system runs exactly one transfer worker per
+/// research machine (see docs/deployment-and-ops.md), so a `running` row is the
+/// live worker's in-flight copy. The recovery age must clearly exceed the
+/// worst-case time for one single-file rsync so genuinely live transfers are
+/// never requeued and two writers never share one destination root. One hour
+/// is a conservative floor for a single large run artifact over SSH; values of
+/// zero stay disabled and are not affected by this floor.
+pub const MIN_SAFE_STALE_AFTER_MS: u64 = 60 * 60 * 1_000;
+
 /// Runtime configuration for artifact transfer execution.
 #[derive(Debug, Clone)]
 pub struct ArtifactTransferConfig {
@@ -658,6 +670,15 @@ fn same_path(left: &Path, right: &Path) -> Result<bool, DashboardError> {
 /// Convert a path to a stable lossy string.
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+/// Raise an operator-configured stale recovery age to the single-worker safety floor.
+///
+/// Returns `None` unchanged so a value of zero keeps automatic recovery disabled.
+/// Any nonzero age below `MIN_SAFE_STALE_AFTER_MS` is raised to the floor so a
+/// long single-file transfer owned by the one live worker is never requeued.
+pub fn clamp_operator_stale_after_ms(stale_after_ms: Option<u64>) -> Option<u64> {
+    stale_after_ms.map(|value| value.max(MIN_SAFE_STALE_AFTER_MS))
 }
 
 #[cfg(test)]

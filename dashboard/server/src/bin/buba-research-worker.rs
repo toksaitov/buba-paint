@@ -21,7 +21,9 @@ use buba_dashboard::research_controller_client::{ResearchControllerClient, Worke
 use buba_dashboard::research_pipeline::{
     BubaPaintCommand, ProcessCommandExecutor, ResearchPipelineConfig,
 };
-use buba_dashboard::research_transfer::{ArtifactTransferConfig, ArtifactTransferWorker};
+use buba_dashboard::research_transfer::{
+    ArtifactTransferConfig, ArtifactTransferWorker, clamp_operator_stale_after_ms,
+};
 use buba_dashboard::research_worker::LocalResearchWorker;
 
 /// Select the worker's work source from CLI configuration.
@@ -105,6 +107,9 @@ struct Cli {
     transfers_enabled: bool,
 
     /// Running transfer age in milliseconds before restart recovery requeues it; zero disables recovery.
+    ///
+    /// Nonzero values below the single-worker safety floor are raised to it so a
+    /// long live transfer owned by the one worker on this machine is never requeued.
     #[arg(
         long,
         env = "BUBA_RESEARCH_TRANSFER_STALE_MS",
@@ -434,14 +439,15 @@ fn build_pipeline(cli: &Cli) -> anyhow::Result<ResearchPipelineConfig> {
 
 /// Build the artifact transfer worker from CLI and environment values.
 fn build_transfer_worker(cli: &Cli) -> anyhow::Result<ArtifactTransferWorker> {
+    let requested_stale = if cli.transfer_stale_ms == 0 {
+        None
+    } else {
+        Some(cli.transfer_stale_ms)
+    };
     let config = ArtifactTransferConfig::new(resolve_root(&cli.work_root)?, &cli.machine_id)?
         .with_rsync_program(PathBuf::from(&cli.rsync_bin))
         .with_rsync_ssh(cli.rsync_ssh.clone())
-        .with_stale_after_ms(if cli.transfer_stale_ms == 0 {
-            None
-        } else {
-            Some(cli.transfer_stale_ms)
-        });
+        .with_stale_after_ms(clamp_operator_stale_after_ms(requested_stale));
     Ok(ArtifactTransferWorker::new(config))
 }
 
