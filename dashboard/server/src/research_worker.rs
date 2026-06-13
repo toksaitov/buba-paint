@@ -439,7 +439,14 @@ impl LocalResearchWorker {
             .await?;
         let output_json = command_step_output(step_kind, &command, &command_output)?;
         if command_output.cancelled {
-            db.cancel_research_job(&lease.job.id).await?;
+            if let Some(job) = db.get_research_job(&lease.job.id).await?
+                && job.status != "cancelled"
+            {
+                match db.cancel_research_job(&lease.job.id).await {
+                    Ok(_) | Err(DashboardError::NotFound(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
             db.append_research_job_event(
                 &lease.job.id,
                 Some(&lease.step.id),

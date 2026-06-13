@@ -1293,3 +1293,317 @@ async fn local_worker_skips_publish_and_archive_when_cancelled_after_persist() {
     assert!(prepared_db.exists());
     assert!(backtest_db.exists());
 }
+
+/// Backend wrapper that counts how many times a job is cancelled.
+struct CountCancelCalls {
+    inner: DashboardDb,
+    cancel_calls: AtomicUsize,
+}
+
+impl CountCancelCalls {
+    /// Wrap a local database to count cancel-job invocations.
+    fn new(inner: DashboardDb) -> Self {
+        Self {
+            inner,
+            cancel_calls: AtomicUsize::new(0),
+        }
+    }
+
+    /// Return how many times a job cancellation was requested.
+    fn cancel_calls(&self) -> usize {
+        self.cancel_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl ResearchWorkBackend for CountCancelCalls {
+    /// Lease the next step from the wrapped database.
+    async fn lease_next_research_step(
+        &self,
+        worker_id: &str,
+        lease_duration_ms: u64,
+    ) -> Result<Option<crate::db::ResearchStepLease>, DashboardError> {
+        self.inner
+            .lease_next_research_step(worker_id, lease_duration_ms)
+            .await
+    }
+
+    /// Refresh a step lease in the wrapped database.
+    async fn refresh_research_step_lease(
+        &self,
+        step_id: &str,
+        worker_id: &str,
+        lease_duration_ms: u64,
+    ) -> Result<crate::db::ResearchJobStep, DashboardError> {
+        self.inner
+            .refresh_research_step_lease(step_id, worker_id, lease_duration_ms)
+            .await
+    }
+
+    /// Mark a step running in the wrapped database.
+    async fn mark_research_step_running(
+        &self,
+        step_id: &str,
+        worker_id: &str,
+    ) -> Result<crate::db::ResearchJobStep, DashboardError> {
+        self.inner
+            .mark_research_step_running(step_id, worker_id)
+            .await
+    }
+
+    /// Complete a step in the wrapped database.
+    async fn complete_research_step(
+        &self,
+        step_id: &str,
+        worker_id: &str,
+        output_json: Option<&str>,
+    ) -> Result<crate::db::ResearchJobStep, DashboardError> {
+        self.inner
+            .complete_research_step(step_id, worker_id, output_json)
+            .await
+    }
+
+    /// Fail a step in the wrapped database.
+    async fn fail_research_step(
+        &self,
+        step_id: &str,
+        worker_id: &str,
+        error: &str,
+        retryable: bool,
+    ) -> Result<crate::db::ResearchJobStep, DashboardError> {
+        self.inner
+            .fail_research_step(step_id, worker_id, error, retryable)
+            .await
+    }
+
+    /// Block a step in the wrapped database.
+    async fn block_research_step(
+        &self,
+        step_id: &str,
+        worker_id: &str,
+        reason: &str,
+    ) -> Result<crate::db::ResearchJobStep, DashboardError> {
+        self.inner
+            .block_research_step(step_id, worker_id, reason)
+            .await
+    }
+
+    /// Append a job event to the wrapped database.
+    async fn append_research_job_event(
+        &self,
+        job_id: &str,
+        step_id: Option<&str>,
+        level: &str,
+        message: &str,
+        details_json: Option<&str>,
+    ) -> Result<crate::db::ResearchJobEvent, DashboardError> {
+        self.inner
+            .append_research_job_event(job_id, step_id, level, message, details_json)
+            .await
+    }
+
+    /// Fetch one job from the wrapped database.
+    async fn get_research_job(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::db::ResearchJob>, DashboardError> {
+        self.inner.get_research_job(id).await
+    }
+
+    /// Count and forward job cancellation to the wrapped database.
+    async fn cancel_research_job(
+        &self,
+        id: &str,
+    ) -> Result<crate::db::ResearchJob, DashboardError> {
+        self.cancel_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.cancel_research_job(id).await
+    }
+
+    /// Fetch job steps from the wrapped database.
+    async fn get_research_job_steps(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<crate::db::ResearchJobStep>, DashboardError> {
+        self.inner.get_research_job_steps(job_id).await
+    }
+
+    /// Report job cancellation from the wrapped database.
+    async fn is_job_cancelled(&self, job_id: &str) -> Result<bool, DashboardError> {
+        self.inner.is_job_cancelled(job_id).await
+    }
+
+    /// Fetch one artifact from the wrapped database.
+    async fn get_research_artifact(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::db::ResearchArtifact>, DashboardError> {
+        self.inner.get_research_artifact(id).await
+    }
+
+    /// Upsert an artifact in the wrapped database.
+    async fn upsert_research_artifact(
+        &self,
+        record: &crate::db::ResearchArtifactRecord<'_>,
+    ) -> Result<crate::db::ResearchArtifact, DashboardError> {
+        self.inner.upsert_research_artifact(record).await
+    }
+
+    /// Attach a produced artifact to its job in the wrapped database.
+    async fn attach_research_job_artifact(
+        &self,
+        job_id: &str,
+        artifact_id: &str,
+    ) -> Result<crate::db::ResearchJob, DashboardError> {
+        self.inner
+            .attach_research_job_artifact(job_id, artifact_id)
+            .await
+    }
+
+    /// Persist report metadata in the wrapped database.
+    async fn create_or_update_research_report(
+        &self,
+        record: &crate::db::ResearchReportRecord<'_>,
+    ) -> Result<crate::db::ResearchReport, DashboardError> {
+        self.inner.create_or_update_research_report(record).await
+    }
+
+    /// Forward report-document publishing to the wrapped database.
+    async fn store_research_report_documents(
+        &self,
+        report_id: &str,
+        report_json: &str,
+        report_csv: &str,
+    ) -> Result<(), DashboardError> {
+        self.inner
+            .store_research_report_documents(report_id, report_json, report_csv)
+            .await
+    }
+
+    /// Forward artifact-document publishing to the wrapped database.
+    async fn store_research_artifact_documents(
+        &self,
+        artifact_id: &str,
+        manifest_json: Option<&str>,
+        checksums_text: Option<&str>,
+    ) -> Result<(), DashboardError> {
+        self.inner
+            .store_research_artifact_documents(artifact_id, manifest_json, checksums_text)
+            .await
+    }
+
+    /// Claim the next queued transfer from the wrapped database.
+    async fn claim_next_artifact_transfer(
+        &self,
+        dest_machine_id: &str,
+    ) -> Result<Option<crate::db::ArtifactTransfer>, DashboardError> {
+        self.inner
+            .claim_next_artifact_transfer(dest_machine_id)
+            .await
+    }
+
+    /// Fetch one transfer from the wrapped database.
+    async fn get_artifact_transfer(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::db::ArtifactTransfer>, DashboardError> {
+        self.inner.get_artifact_transfer(id).await
+    }
+
+    /// Update transfer progress in the wrapped database.
+    async fn update_artifact_transfer_progress(
+        &self,
+        id: &str,
+        status: &str,
+        bytes_done: Option<u64>,
+        bytes_total: Option<u64>,
+        checksum_status: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<crate::db::ArtifactTransfer, DashboardError> {
+        self.inner
+            .update_artifact_transfer_progress(
+                id,
+                status,
+                bytes_done,
+                bytes_total,
+                checksum_status,
+                error,
+            )
+            .await
+    }
+
+    /// Recover stale running transfers in the wrapped database.
+    async fn recover_stale_artifact_transfers(
+        &self,
+        dest_machine_id: &str,
+        stale_after_ms: u64,
+    ) -> Result<usize, DashboardError> {
+        self.inner
+            .recover_stale_artifact_transfers(dest_machine_id, stale_after_ms)
+            .await
+    }
+
+    /// Fetch one machine from the wrapped database.
+    async fn get_research_machine(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::db::ResearchMachine>, DashboardError> {
+        self.inner.get_research_machine(id).await
+    }
+}
+
+/// Verifies a cancelled command does not redundantly re-cancel an already-cancelled job.
+#[tokio::test]
+async fn local_worker_skips_redundant_recancel_after_command_cancellation() {
+    let inner = test_db();
+    let artifact_dir = artifact_fixture();
+    let work_dir = tempfile::tempdir().unwrap();
+    let user = inner
+        .create_user("researcher", "hash", "admin")
+        .await
+        .unwrap();
+    let artifact = inner
+        .create_research_artifact(
+            Some("live"),
+            "readonly_run",
+            "available",
+            Some("live_readonly"),
+            Some(artifact_dir.path().join("manifest.json").to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+    let params = serde_json::json!({
+        "start": "1970-01-01T00:00:01Z",
+        "end": "1970-01-01T00:00:02Z"
+    });
+    let job = inner
+        .create_research_job(
+            "current_params",
+            Some(&artifact.id),
+            &user.id,
+            0,
+            Some(&params.to_string()),
+        )
+        .await
+        .unwrap();
+
+    let db = CountCancelCalls::new(inner);
+    let worker = LocalResearchWorker::new("local-worker", 1_000).unwrap();
+    let pipeline = test_pipeline(work_dir.path());
+    let executor = CancellingExecutor::new();
+
+    worker
+        .run_one_local_with_pipeline(&db, &pipeline, &executor)
+        .await
+        .unwrap()
+        .unwrap();
+    let cancelled = worker
+        .run_one_local_with_pipeline(&db, &pipeline, &executor)
+        .await
+        .unwrap()
+        .unwrap();
+    let stored_job = db.get_research_job(&job.id).await.unwrap().unwrap();
+
+    assert_eq!(cancelled.step.status, "cancelled");
+    assert!(cancelled.step.error.is_none());
+    assert_eq!(stored_job.status, "cancelled");
+    assert_eq!(db.cancel_calls(), 1);
+}
