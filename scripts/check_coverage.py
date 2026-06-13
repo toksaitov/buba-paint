@@ -12,6 +12,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CLIENT_DIR = ROOT / "dashboard" / "client"
 
+# The research-scoped server files have their own dedicated floor
+# (RESEARCH_RUST_MINIMUM below), so they are excluded from the general
+# buba-dashboard crate floor to avoid double-counting and an unsatisfiable
+# whole-crate target.
+DASHBOARD_GENERAL_IGNORE_RE = (
+    r"(main\.rs|research_[^/]*\.rs|api/research[^/]*\.rs"
+    r"|bin/buba-research-worker\.rs)$"
+)
+
 RUST_TARGETS = {
     "buba-paint": {
         "cmd": [
@@ -51,7 +60,7 @@ RUST_TARGETS = {
             "--lib",
             "--tests",
             "--ignore-filename-regex",
-            r"main\.rs$",
+            DASHBOARD_GENERAL_IGNORE_RE,
         ],
         "minimum": 90.0,
     },
@@ -155,6 +164,8 @@ def main() -> int:
                 f"{name} line coverage {line_pct:.2f}% is below {target['minimum']:.2f}%"
             )
 
+    research_summary_path = ROOT / "target" / "llvm-cov" / "research-summary.json"
+    research_summary_path.parent.mkdir(parents=True, exist_ok=True)
     run(
         [
             "cargo",
@@ -168,7 +179,7 @@ def main() -> int:
             "--bin",
             "buba-research-worker",
             "--output-path",
-            str(ROOT / "target" / "llvm-cov" / "research-summary.json"),
+            str(research_summary_path),
         ]
     )
     research_rust_pct = parse_research_rust_line_coverage()
