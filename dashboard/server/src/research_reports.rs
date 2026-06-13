@@ -999,8 +999,6 @@ fn parse_time_ms(value: &str) -> Option<u64> {
         .and_then(|dt| u64::try_from(dt.timestamp_millis()).ok())
 }
 
-
-
 /// Convert durable job steps into compact summaries.
 fn step_summaries(steps: &[ResearchJobStep]) -> Vec<StepSummary> {
     steps
@@ -1185,7 +1183,6 @@ fn count_where(conn: &Connection, table: &str, predicate: &str) -> Result<u64, D
 fn sqlite_ident(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
-
 
 #[cfg(test)]
 mod tests {

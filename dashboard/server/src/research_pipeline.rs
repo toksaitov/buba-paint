@@ -873,7 +873,6 @@ fn sqlite_family_paths(path: &Path) -> Vec<PathBuf> {
     ]
 }
 
-
 #[cfg(test)]
 #[path = "tests/research_pipeline_tests.rs"]
 mod tests;

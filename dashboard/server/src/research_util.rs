@@ -41,12 +41,15 @@ pub(crate) async fn research_artifact_for_job_id(
     let Some(artifact_id) = artifact_id else {
         return Ok(None);
     };
-    backend.get_research_artifact(artifact_id).await?.map_or_else(
-        || {
-            Err(DashboardError::NotFound(format!(
-                "artifact '{artifact_id}' not found"
-            )))
-        },
-        |artifact| Ok(Some(artifact)),
-    )
+    backend
+        .get_research_artifact(artifact_id)
+        .await?
+        .map_or_else(
+            || {
+                Err(DashboardError::NotFound(format!(
+                    "artifact '{artifact_id}' not found"
+                )))
+            },
+            |artifact| Ok(Some(artifact)),
+        )
 }

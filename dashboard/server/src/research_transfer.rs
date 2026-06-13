@@ -668,7 +668,6 @@ fn same_path(left: &Path, right: &Path) -> Result<bool, DashboardError> {
     Ok(normalize_path(left)? == normalize_path(right)?)
 }
 
-
 /// Raise an operator-configured stale recovery age to the single-worker safety floor.
 ///
 /// Returns `None` unchanged so a value of zero keeps automatic recovery disabled.

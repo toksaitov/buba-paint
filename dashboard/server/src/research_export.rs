@@ -651,7 +651,6 @@ fn now_ms() -> Result<u64, DashboardError> {
     Ok(duration.as_millis() as u64)
 }
 
-
 #[cfg(test)]
 #[path = "tests/research_export_tests.rs"]
 mod tests;

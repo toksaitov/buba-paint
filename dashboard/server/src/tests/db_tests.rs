@@ -2503,7 +2503,10 @@ fn artifact_to_record_round_trips_all_fields() {
     let record = artifact.to_record();
 
     assert_eq!(record.id, artifact.id);
-    assert_eq!(record.source_machine_id, artifact.source_machine_id.as_deref());
+    assert_eq!(
+        record.source_machine_id,
+        artifact.source_machine_id.as_deref()
+    );
     assert_eq!(record.kind, artifact.kind);
     assert_eq!(record.status, artifact.status);
     assert_eq!(record.run_mode, artifact.run_mode.as_deref());

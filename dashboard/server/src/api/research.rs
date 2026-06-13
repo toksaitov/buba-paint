@@ -2633,7 +2633,6 @@ fn json_u64(value: &serde_json::Value) -> Option<u64> {
         .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok()))
 }
 
-
 /// Return one artifact by ID or a route-level not found error.
 async fn research_artifact_by_id(
     state: &AppState,
@@ -3145,7 +3144,6 @@ fn normalize_path(path: &std::path::Path) -> Result<PathBuf, DashboardError> {
     }
     Ok(out)
 }
-
 
 /// Validate a manifest before trusting it as remote metadata.
 fn validate_artifact_manifest(
