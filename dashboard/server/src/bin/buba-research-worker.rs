@@ -444,10 +444,20 @@ fn build_transfer_worker(cli: &Cli) -> anyhow::Result<ArtifactTransferWorker> {
     } else {
         Some(cli.transfer_stale_ms)
     };
+    let clamped_stale = clamp_operator_stale_after_ms(requested_stale);
+    if let (Some(requested), Some(clamped)) = (requested_stale, clamped_stale)
+        && requested != clamped
+    {
+        tracing::warn!(
+            requested_ms = requested,
+            clamped_ms = clamped,
+            "transfer stale recovery age raised to the single-worker safety floor"
+        );
+    }
     let config = ArtifactTransferConfig::new(resolve_root(&cli.work_root)?, &cli.machine_id)?
         .with_rsync_program(PathBuf::from(&cli.rsync_bin))
         .with_rsync_ssh(cli.rsync_ssh.clone())
-        .with_stale_after_ms(clamp_operator_stale_after_ms(requested_stale));
+        .with_stale_after_ms(clamped_stale);
     Ok(ArtifactTransferWorker::new(config))
 }
 
