@@ -3467,3 +3467,33 @@ async fn report_file_routes_reject_paths_outside_work_root() {
     assert_eq!(delete.status(), StatusCode::BAD_REQUEST);
     assert_eq!(still_present.status(), StatusCode::OK);
 }
+
+/// Verifies a present-but-malformed report JSON file yields a client error, not a 500.
+#[tokio::test]
+async fn corrupt_report_json_file_yields_bad_request() {
+    let (app, db) = test_app();
+    let admin = admin_token(&db).await;
+    let fixture = report_file_fixture(&db).await;
+    std::fs::write(&fixture.report_json_path, b"{not valid json").unwrap();
+
+    let resp = app
+        .oneshot(auth_get(
+            &format!("/api/research/reports/{}/json", fixture.report.id),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = json_body(resp).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("report JSON file is corrupt"),
+        "expected corrupt-file message, got: {message}"
+    );
+    assert!(
+        message.contains(&fixture.report.id),
+        "expected report id in message, got: {message}"
+    );
+}

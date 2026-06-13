@@ -1968,8 +1968,11 @@ pub async fn get_report_json_file(
 ) -> Result<impl IntoResponse, DashboardError> {
     let report = research_report_by_id(&state, &id).await?;
     let text = read_report_file(&state, report.report_path.as_deref(), "report_path")?;
-    let value = serde_json::from_str::<serde_json::Value>(&text)
-        .map_err(|e| DashboardError::Internal(format!("parsing report JSON: {e}")))?;
+    let value = serde_json::from_str::<serde_json::Value>(&text).map_err(|e| {
+        DashboardError::BadRequest(format!(
+            "report JSON file is corrupt for report '{id}': {e}"
+        ))
+    })?;
     Ok(Json(value))
 }
 
