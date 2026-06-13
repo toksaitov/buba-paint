@@ -390,9 +390,12 @@ impl ResearchControllerClient {
         }
     }
 
-    /// Report whether a response content type is JSON for safe decoding.
+    /// Report whether a response content type permits JSON decoding.
+    ///
+    /// An absent content type is permitted so a header-stripping proxy does not
+    /// reject a valid JSON body; only an explicit non-JSON type is rejected.
     fn is_json_content_type(content_type: Option<&str>) -> bool {
-        content_type.is_some_and(|value| {
+        content_type.is_none_or(|value| {
             value
                 .split(';')
                 .next()

@@ -64,3 +64,18 @@ async fn send_accepts_json_2xx() {
 
     assert_eq!(machine.unwrap().id, "research");
 }
+
+/// Verifies the content-type guard permits an absent header but rejects known non-JSON.
+#[test]
+fn json_content_type_guard_permits_absent_header() {
+    assert!(ResearchControllerClient::is_json_content_type(None));
+    assert!(ResearchControllerClient::is_json_content_type(Some(
+        "application/json"
+    )));
+    assert!(ResearchControllerClient::is_json_content_type(Some(
+        "application/json; charset=utf-8"
+    )));
+    assert!(!ResearchControllerClient::is_json_content_type(Some(
+        "text/html"
+    )));
+}
