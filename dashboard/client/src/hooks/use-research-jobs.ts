@@ -1,9 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  getResearchJob,
-  listResearchJobEvents,
-  listResearchJobs,
-} from "../lib/research-api";
+import { getResearchJob, listResearchJobs } from "../lib/research-api";
 import { isJobTerminal } from "../lib/research-permissions";
 
 export function useResearchJobs() {
@@ -24,14 +20,5 @@ export function useResearchJob(id: string) {
       if (!data) return 5_000;
       return isJobTerminal(data.job.status) ? 10_000 : 3_000;
     },
-  });
-}
-
-export function useResearchJobEvents(id: string, enabled = false) {
-  return useQuery({
-    queryKey: ["research", "job", id, "events"],
-    queryFn: () => listResearchJobEvents(id),
-    enabled: !!id && enabled,
-    refetchInterval: 5_000,
   });
 }

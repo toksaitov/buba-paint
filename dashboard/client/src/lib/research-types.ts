@@ -428,23 +428,6 @@ export interface RegenerateReportResponse {
   csv_path: string;
 }
 
-export interface CreateMachineRequest {
-  id: string;
-  name: string;
-  role: MachineRole;
-  ssh_alias?: string;
-  status?: MachineStatus;
-  details?: Record<string, unknown>;
-}
-
-export interface UpdateMachineRequest {
-  name?: string;
-  role?: MachineRole;
-  ssh_alias?: string | null;
-  status?: MachineStatus;
-  details?: Record<string, unknown> | null;
-}
-
 export interface ImportArtifactRequest {
   artifact_root: string;
   artifact_id?: string;
@@ -474,14 +457,6 @@ export interface CreateTransferRequest {
   bytes_total?: number;
 }
 
-export interface TransferProgressRequest {
-  status: TransferStatus;
-  bytes_done?: number;
-  bytes_total?: number;
-  checksum_status?: TransferChecksumStatus;
-  error?: string;
-}
-
 export interface RetryTransferRequest {
   resume?: boolean;
 }
@@ -492,12 +467,6 @@ export interface CreateJobRequest {
   priority?: number;
   params?: Record<string, unknown>;
   template_id?: string;
-}
-
-export interface UpdateJobRequest {
-  artifact_id?: string | null;
-  priority?: number;
-  params?: Record<string, unknown> | null;
 }
 
 export interface CloneJobRequest {
@@ -511,6 +480,11 @@ export interface AppendEventRequest {
   level: EventLevel;
   message: string;
   details?: Record<string, unknown>;
+}
+
+export interface KeyValueRow {
+  key: string;
+  value: string;
 }
 
 export interface UpdateReportRequest {

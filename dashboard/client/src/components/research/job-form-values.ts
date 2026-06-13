@@ -1,6 +1,6 @@
-import type { KeyValueRow } from "./key-value-editor";
 import type { JobCreateFormInitialValues } from "./job-create-form";
 import type {
+  KeyValueRow,
   ResearchJob,
   ResearchJobTemplate,
 } from "../../lib/research-types";

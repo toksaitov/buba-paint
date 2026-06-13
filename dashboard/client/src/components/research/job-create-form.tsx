@@ -8,10 +8,10 @@ import {
   StatusChip,
   Textarea,
 } from "../ui/dashboard-primitives";
-import type { KeyValueRow } from "./key-value-editor";
 import type {
   CreateJobRequest,
   JobType,
+  KeyValueRow,
   ResearchArtifact,
 } from "../../lib/research-types";
 import { formatBytes, formatDateTime, formatDurationShort } from "../../lib/utils";

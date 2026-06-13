@@ -182,10 +182,6 @@ export function reportTone(status: ReportStatus): ChipTone {
   return status === "archived" ? "muted" : "success";
 }
 
-export function jobTypeTone(): ChipTone {
-  return "neutral";
-}
-
 export function jobTypeLabel(type: string): string {
   switch (type) {
     case "export":
@@ -207,33 +203,6 @@ export function progressTone(tone: ChipTone): ProgressTone | undefined {
   if (tone === "neutral") return "neutral";
   return undefined;
 }
-
-const ALL_ACTIONS: ResearchAction[] = [
-  "read",
-  "create",
-  "update",
-  "delete",
-  "delete_with_files",
-  "archive",
-  "restore",
-  "cancel",
-  "pause",
-  "resume",
-  "continue",
-  "retry",
-  "clone",
-  "verify",
-  "health",
-  "enable",
-  "disable",
-  "import",
-  "register",
-  "clear_lease",
-  "resolve_blocker",
-  "append_event",
-  "regenerate_report",
-  "archive_scratch",
-];
 
 export function getAllowedActions(
   entity: ResearchEntityKind,
@@ -420,5 +389,3 @@ export function permissionHint(action: ResearchAction): string {
   if (OBSERVER_ALLOWED.includes(action)) return "";
   return "Admin role required.";
 }
-
-export const RESEARCH_ACTIONS = ALL_ACTIONS;

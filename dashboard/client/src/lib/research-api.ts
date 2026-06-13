@@ -6,7 +6,6 @@ import type {
   ArtifactTransfer,
   CloneJobRequest,
   CreateJobRequest,
-  CreateMachineRequest,
   CreateTransferRequest,
   ImportArtifactRequest,
   ImportArtifactResponse,
@@ -27,11 +26,8 @@ import type {
   ResearchMachine,
   ResearchReport,
   RetryTransferRequest,
-  TransferProgressRequest,
   UpdateArtifactRequest,
-  UpdateJobRequest,
   UpsertJobTemplateRequest,
-  UpdateMachineRequest,
   UpdateReportRequest,
   VerifyArtifactResponse,
   VerifyTransferResponse,
@@ -43,41 +39,10 @@ export async function listResearchMachines(): Promise<{
   return get("/api/research/machines");
 }
 
-export async function createResearchMachine(
-  req: CreateMachineRequest,
-): Promise<ResearchMachine> {
-  return post("/api/research/machines", req);
-}
-
 export async function getResearchMachine(
   id: string,
 ): Promise<ResearchMachine> {
   return get(`/api/research/machines/${encodeURIComponent(id)}`);
-}
-
-export async function updateResearchMachine(
-  id: string,
-  req: UpdateMachineRequest,
-): Promise<ResearchMachine> {
-  return patch(`/api/research/machines/${encodeURIComponent(id)}`, req);
-}
-
-export async function disableResearchMachine(
-  id: string,
-): Promise<ResearchMachine> {
-  return post(`/api/research/machines/${encodeURIComponent(id)}/disable`);
-}
-
-export async function enableResearchMachine(
-  id: string,
-): Promise<ResearchMachine> {
-  return post(`/api/research/machines/${encodeURIComponent(id)}/enable`);
-}
-
-export async function deleteResearchMachine(
-  id: string,
-): Promise<ResearchMachine> {
-  return del(`/api/research/machines/${encodeURIComponent(id)}`);
 }
 
 export async function getResearchMachineHealth(
@@ -183,16 +148,6 @@ export async function getArtifactTransfer(
   return get(`/api/research/transfers/${encodeURIComponent(id)}`);
 }
 
-export async function updateArtifactTransferProgress(
-  id: string,
-  req: TransferProgressRequest,
-): Promise<ArtifactTransfer> {
-  return post(
-    `/api/research/transfers/${encodeURIComponent(id)}/progress`,
-    req,
-  );
-}
-
 export async function cancelArtifactTransfer(
   id: string,
 ): Promise<ArtifactTransfer> {
@@ -255,12 +210,6 @@ export async function createResearchJobTemplate(
   return post("/api/research/job-templates", req);
 }
 
-export async function getResearchJobTemplate(
-  id: string,
-): Promise<ResearchJobTemplate> {
-  return get(`/api/research/job-templates/${encodeURIComponent(id)}`);
-}
-
 export async function updateResearchJobTemplate(
   id: string,
   req: UpsertJobTemplateRequest,
@@ -302,13 +251,6 @@ export async function archiveResearchRetention(
 
 export async function getResearchJob(id: string): Promise<JobDetailResponse> {
   return get(`/api/research/jobs/${encodeURIComponent(id)}`);
-}
-
-export async function updateResearchJob(
-  id: string,
-  req: UpdateJobRequest,
-): Promise<JobDetailResponse> {
-  return patch(`/api/research/jobs/${encodeURIComponent(id)}`, req);
 }
 
 export async function cancelResearchJob(
@@ -364,12 +306,6 @@ export async function archiveResearchJobScratch(
   id: string,
 ): Promise<ArchiveScratchResponse> {
   return post(`/api/research/jobs/${encodeURIComponent(id)}/archive-scratch`);
-}
-
-export async function listResearchJobEvents(
-  id: string,
-): Promise<{ events: ResearchJobEvent[] }> {
-  return get(`/api/research/jobs/${encodeURIComponent(id)}/events`);
 }
 
 export async function appendResearchJobEvent(
