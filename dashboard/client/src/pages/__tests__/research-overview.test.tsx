@@ -274,6 +274,354 @@ describe("ResearchOverviewPage", () => {
     expect(screen.getAllByText("Fixture Report Available").length).toBeGreaterThan(0);
   });
 
+  function metricCard(label: string): HTMLElement {
+    const card = screen
+      .getByText(label, { selector: "span" })
+      .closest("div.border.border-border");
+    expect(card).not.toBeNull();
+    return card as HTMLElement;
+  }
+
+  it("derives metric card counts and reclaimable bytes from the queue counts", () => {
+    renderWithProviders(<ResearchOverviewPage />);
+
+    const active = metricCard("Active jobs");
+    expect(within(active).getByText("2")).toBeInTheDocument();
+    expect(within(active).getByText("0 waiting")).toBeInTheDocument();
+
+    const attention = metricCard("Attention");
+    expect(within(attention).getByText("2")).toBeInTheDocument();
+    expect(within(attention).getByText("0 stale leases")).toBeInTheDocument();
+
+    const transfers = metricCard("Transfers");
+    expect(within(transfers).getByText("1")).toBeInTheDocument();
+    expect(within(transfers).getByText("1 attention")).toBeInTheDocument();
+
+    const retention = metricCard("Retention candidates");
+    expect(within(retention).getByText("3")).toBeInTheDocument();
+    expect(
+      within(retention).getByText(/54\.0 B reclaimable/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the attention metric in a neutral tone when nothing needs attention", () => {
+    const queue = queueFixture();
+    mockUseQueue.mockReturnValue({
+      data: {
+        ...queue,
+        counts: {
+          ...queue.counts,
+          jobs_blocked: 0,
+          jobs_failed: 0,
+          jobs_retryable: 0,
+          stale_leases: 0,
+          transfers_attention: 0,
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchQueue>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    const attention = metricCard("Attention");
+    const value = within(attention).getByText("0", {
+      selector: "div.text-\\[22px\\]",
+    });
+    expect(value).not.toHaveClass("text-accent-red");
+  });
+
+  it("shows the idle queue message and empty transfer message when nothing is in flight", () => {
+    const queue = queueFixture();
+    mockUseQueue.mockReturnValue({
+      data: {
+        ...queue,
+        jobs: {
+          running: [],
+          waiting: [],
+          retryable: [],
+          blocked: [],
+          failed: [],
+          stale_leases: [],
+        },
+        transfers: { active: [], attention: [], stale: [] },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchQueue>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(screen.getByText(/the queue is idle/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no transfers are active or needing attention/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No jobs in this group.")).not.toBeInTheDocument();
+  });
+
+  it("renders per-group empty placeholders for queue groups and transfer groups without items", () => {
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(
+      screen.getAllByText("No jobs in this group.").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("No transfers in this group.").length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("renders the running step label and links queue jobs to their detail route", () => {
+    renderWithProviders(<ResearchOverviewPage />);
+
+    const runningLink = screen
+      .getByText("fixture-job-running")
+      .closest("a");
+    expect(runningLink).toHaveAttribute(
+      "href",
+      "/research/jobs/fixture-job-running",
+    );
+    expect(screen.getByText(/step 1: verify artifact/i)).toBeInTheDocument();
+  });
+
+  it("marks stale queue jobs and transfers with danger chips", () => {
+    const running = fixtureJobRunning();
+    const blocked = fixtureJobBlocked();
+    const staleTransfer = fixtureTransferRetryable();
+    const queue = queueFixture();
+    mockUseQueue.mockReturnValue({
+      data: {
+        ...queue,
+        jobs: {
+          ...queue.jobs,
+          running: [{ job: running.job, step: running.steps[0], stale: true }],
+          blocked: [{ job: blocked.job, step: blocked.steps[3], stale: false }],
+        },
+        transfers: {
+          active: [],
+          attention: [],
+          stale: [{ transfer: staleTransfer, stale: true }],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchQueue>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(screen.getByText("Stale lease")).toBeInTheDocument();
+    expect(screen.getAllByText("Stale").length).toBeGreaterThan(0);
+  });
+
+  it("links transfer attention rows to their transfer detail route", () => {
+    renderWithProviders(<ResearchOverviewPage />);
+
+    const transferLinks = screen
+      .getAllByText("fixture-artifact-available")
+      .map((node) => node.closest("a"))
+      .filter((node): node is HTMLAnchorElement => node != null);
+    expect(
+      transferLinks.some(
+        (link) =>
+          link.getAttribute("href") ===
+          "/research/transfers/fixture-transfer-retryable",
+      ),
+    ).toBe(true);
+  });
+
+  it("links disabled research hosts to their machine detail route", () => {
+    renderWithProviders(<ResearchOverviewPage />);
+
+    const hostLink = screen.getByText("Fixture Disabled Worker").closest("a");
+    expect(hostLink).toHaveAttribute(
+      "href",
+      "/research/machines/fixture-disabled",
+    );
+    expect(screen.getByText("0 active transfers")).toBeInTheDocument();
+  });
+
+  it("hides the disabled hosts section when no hosts are disabled", () => {
+    const queue = queueFixture();
+    mockUseQueue.mockReturnValue({
+      data: { ...queue, disabled_hosts: [] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchQueue>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(
+      screen.queryByText(/disabled research hosts/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("links recent reports and shows the empty state when there are none", () => {
+    renderWithProviders(<ResearchOverviewPage />);
+
+    const reportLink = screen
+      .getAllByText("Fixture Report Available")
+      .map((node) => node.closest("a"))
+      .find((node) => node != null);
+    expect(reportLink).toHaveAttribute(
+      "href",
+      "/research/reports/fixture-report-available",
+    );
+  });
+
+  it("shows the recent reports empty state when the queue has none", () => {
+    const queue = queueFixture();
+    mockUseQueue.mockReturnValue({
+      data: { ...queue, recent_reports: [] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchQueue>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(screen.getByText("No reports yet.")).toBeInTheDocument();
+  });
+
+  it("renders the loading state while the queue query is pending", () => {
+    mockUseQueue.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    } as ReturnType<typeof useResearchQueue>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(screen.getByText("Loading research queue")).toBeInTheDocument();
+    expect(screen.queryByText(/queue cockpit/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the error banner when the queue query fails", () => {
+    mockUseQueue.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("queue unreachable"),
+    } as ReturnType<typeof useResearchQueue>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(
+      screen.getByText("Could not load research queue"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("queue unreachable")).toBeInTheDocument();
+  });
+
+  it("renders the templates empty state when no templates exist", () => {
+    mockUseTemplates.mockReturnValue({
+      data: { templates: [] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJobTemplates>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(screen.getByText("No job templates yet.")).toBeInTheDocument();
+  });
+
+  it("renders the templates loading and error states from the templates query", () => {
+    mockUseTemplates.mockReturnValueOnce({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    } as ReturnType<typeof useResearchJobTemplates>);
+    const loadingView = renderWithProviders(<ResearchOverviewPage />);
+    expect(screen.getByText("Loading templates")).toBeInTheDocument();
+    loadingView.unmount();
+
+    mockUseTemplates.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("templates offline"),
+    } as ReturnType<typeof useResearchJobTemplates>);
+    renderWithProviders(<ResearchOverviewPage />);
+    expect(screen.getByText("Could not load templates")).toBeInTheDocument();
+    expect(screen.getByText("templates offline")).toBeInTheDocument();
+  });
+
+  it("renders the retention loading and error states from the retention query", () => {
+    mockUseRetention.mockReturnValueOnce({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    } as ReturnType<typeof useResearchRetention>);
+    const loadingView = renderWithProviders(<ResearchOverviewPage />);
+    expect(screen.getByText("Loading retention")).toBeInTheDocument();
+    loadingView.unmount();
+
+    mockUseRetention.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("retention offline"),
+    } as ReturnType<typeof useResearchRetention>);
+    renderWithProviders(<ResearchOverviewPage />);
+    expect(screen.getByText("Could not load retention")).toBeInTheDocument();
+    expect(screen.getByText("retention offline")).toBeInTheDocument();
+  });
+
+  it("renders the template usage metadata and last-used time", () => {
+    mockUseTemplates.mockReturnValue({
+      data: {
+        templates: [
+          templateFixture({
+            usage_count: 3,
+            last_used_at: FIXTURE_TIMESTAMP_MS,
+          }),
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJobTemplates>);
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(screen.getByText(/used 3 times/i)).toBeInTheDocument();
+    expect(screen.getByText(/last used/i)).toBeInTheDocument();
+  });
+
+  it("disables admin-only template and retention actions for observers", () => {
+    useAuthStore.setState({
+      token: "tok",
+      user: { id: "2", username: "obs", role: "observer" },
+    });
+
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(
+      screen.getByRole("button", { name: /new template/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /archive template short backtest/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /archive selected/i }),
+    ).toBeDisabled();
+  });
+
+  it("keeps the archive selected action disabled until a candidate is chosen", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ResearchOverviewPage />);
+
+    const archiveButton = screen.getByRole("button", {
+      name: /archive selected/i,
+    });
+    expect(archiveButton).toBeDisabled();
+
+    await user.click(screen.getByLabelText(/fixture-job-completed/i));
+    expect(archiveButton).toBeEnabled();
+  });
+
+  it("renders retention candidate sub-labels for each eligible group", () => {
+    renderWithProviders(<ResearchOverviewPage />);
+
+    expect(screen.getByText("Backtest · 12.0 B")).toBeInTheDocument();
+    expect(screen.getByText("32.0 B · 0 active deps")).toBeInTheDocument();
+  });
+
   it("archives selected retention candidates without selecting unrelated metadata", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ResearchOverviewPage />);

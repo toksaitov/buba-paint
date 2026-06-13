@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,13 +25,32 @@ vi.mock("../../hooks/use-research-reports", () => ({
   useResearchReports: vi.fn(() => ({ data: { reports: [] } })),
 }));
 
+vi.mock("../../lib/research-api", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/research-api")>(
+    "../../lib/research-api",
+  );
+  return {
+    ...actual,
+    importResearchArtifact: vi.fn(),
+    registerResearchArtifact: vi.fn(),
+  };
+});
+
 import { ResearchArtifactsPage } from "../research-artifacts";
 import { useResearchArtifacts } from "../../hooks/use-research-artifacts";
 import { useResearchMachines } from "../../hooks/use-research-machines";
 import { useAuthStore } from "../../stores/auth-store";
+import {
+  importResearchArtifact,
+  registerResearchArtifact,
+} from "../../lib/research-api";
+import { fixtureArtifactAvailable } from "../../lib/research-fixtures";
+import { formatBytes } from "../../lib/utils";
 
 const mockUseArtifacts = vi.mocked(useResearchArtifacts);
 const mockUseMachines = vi.mocked(useResearchMachines);
+const mockImportArtifact = vi.mocked(importResearchArtifact);
+const mockRegisterArtifact = vi.mocked(registerResearchArtifact);
 
 function makeArtifact(
   id: string,
@@ -64,6 +83,20 @@ beforeEach(() => {
   useAuthStore.setState({
     token: "token",
     user: { id: "1", username: "admin", role: "admin" },
+  });
+  mockImportArtifact.mockReset();
+  mockRegisterArtifact.mockReset();
+  mockImportArtifact.mockResolvedValue({
+    artifact: fixtureArtifactAvailable(),
+    verification: {} as never,
+  });
+  mockRegisterArtifact.mockResolvedValue({
+    artifact: fixtureArtifactAvailable(),
+    manifest_summary: {
+      artifact_id: "fixture-artifact-available",
+      files: 1,
+      bytes: 10,
+    },
   });
   mockUseArtifacts.mockReturnValue({
     data: {
@@ -224,5 +257,186 @@ describe("ResearchArtifactsPage", () => {
     const sourceField = screen.getByLabelText(/source machine/i);
     expect(sourceField).not.toBeRequired();
     expect(screen.getByText(/optional/i)).toBeInTheDocument();
+  });
+
+  it("revealing all artifacts via the preset shows archived rows alongside available", async () => {
+    renderArtifacts();
+
+    expect(screen.queryByText("archived-artifact")).not.toBeInTheDocument();
+
+    await userEvent.selectOptions(
+      screen.getByLabelText(/artifact preset/i),
+      "all",
+    );
+
+    expect(screen.getByText("available-artifact")).toBeInTheDocument();
+    expect(screen.getByText("archived-artifact")).toBeInTheDocument();
+  });
+
+  it("renders artifact row links, run mode, and byte formatting", () => {
+    renderArtifacts();
+
+    const link = screen.getByRole("link", { name: "available-artifact" });
+    expect(link).toHaveAttribute(
+      "href",
+      "/research/artifacts/available-artifact",
+    );
+    const row = link.closest("tr") as HTMLElement;
+    expect(within(row).getByText("Live readonly")).toBeInTheDocument();
+    expect(within(row).getByText(formatBytes(10))).toBeInTheDocument();
+  });
+
+  it("admin import dialog submits and closes on success", async () => {
+    renderArtifacts();
+
+    await userEvent.click(screen.getByRole("button", { name: /import local/i }));
+    await screen.findByRole("dialog");
+    await userEvent.type(
+      screen.getByLabelText(/artifact root/i),
+      "/research/artifacts/new-artifact",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/artifact id override/i),
+      "new-id",
+    );
+    await userEvent.selectOptions(
+      screen.getByLabelText(/source machine id/i),
+      "live",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Import" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(mockImportArtifact).toHaveBeenCalledWith({
+      artifact_root: "/research/artifacts/new-artifact",
+      artifact_id: "new-id",
+      source_machine_id: "live",
+    });
+  });
+
+  it("admin import dialog surfaces the API error and stays open on failure", async () => {
+    mockImportArtifact.mockRejectedValueOnce(new Error("root not found"));
+    renderArtifacts();
+
+    await userEvent.click(screen.getByRole("button", { name: /import local/i }));
+    await screen.findByRole("dialog");
+    await userEvent.type(
+      screen.getByLabelText(/artifact root/i),
+      "/research/artifacts/missing",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Import" }));
+
+    expect(await screen.findByText("root not found")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("admin register dialog parses manifest JSON, submits, and closes on success", async () => {
+    renderArtifacts();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /register remote/i }),
+    );
+    await screen.findByRole("dialog");
+    await userEvent.type(
+      screen.getByLabelText(/remote artifact root/i),
+      "/remote/host/artifact",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/manifest json/i),
+      '{{"schema_version":1}',
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Register" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(mockRegisterArtifact).toHaveBeenCalledWith({
+      artifact_root: "/remote/host/artifact",
+      manifest: { schema_version: 1 },
+      source_machine_id: undefined,
+    });
+  });
+
+  it("admin register dialog rejects invalid manifest JSON without calling the API", async () => {
+    renderArtifacts();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /register remote/i }),
+    );
+    await screen.findByRole("dialog");
+    await userEvent.type(
+      screen.getByLabelText(/remote artifact root/i),
+      "/remote/host/artifact",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/manifest json/i),
+      "not json",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Register" }));
+
+    expect(
+      await screen.findByText(/manifest json is invalid/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(mockRegisterArtifact).not.toHaveBeenCalled();
+  });
+
+  it("observers see the create buttons disabled with an admin hint", () => {
+    useAuthStore.setState({
+      token: "token",
+      user: { id: "2", username: "observer", role: "observer" },
+    });
+    renderArtifacts();
+
+    const importButton = screen.getByRole("button", { name: /import local/i });
+    const registerButton = screen.getByRole("button", {
+      name: /register remote/i,
+    });
+    expect(importButton).toBeDisabled();
+    expect(registerButton).toBeDisabled();
+    expect(importButton).toHaveAttribute("title", "Admin role required.");
+    expect(registerButton).toHaveAttribute("title", "Admin role required.");
+  });
+
+  it("renders the empty state when no artifacts match", () => {
+    mockUseArtifacts.mockReturnValue({
+      data: { artifacts: [] },
+      dataUpdatedAt: 2,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchArtifacts>);
+    renderArtifacts();
+
+    expect(
+      screen.getByText(/no artifacts match the selected filters/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("renders the loading state while artifacts are fetching", () => {
+    mockUseArtifacts.mockReturnValue({
+      data: undefined,
+      dataUpdatedAt: 0,
+      isLoading: true,
+      isError: false,
+    } as ReturnType<typeof useResearchArtifacts>);
+    renderArtifacts();
+
+    expect(screen.getByText("Loading artifacts")).toBeInTheDocument();
+  });
+
+  it("renders the error banner when the artifacts query fails", () => {
+    mockUseArtifacts.mockReturnValue({
+      data: undefined,
+      dataUpdatedAt: 0,
+      isLoading: false,
+      isError: true,
+      error: new Error("agent unreachable"),
+    } as ReturnType<typeof useResearchArtifacts>);
+    renderArtifacts();
+
+    expect(screen.getByText("Could not load artifacts")).toBeInTheDocument();
+    expect(screen.getByText("agent unreachable")).toBeInTheDocument();
   });
 });

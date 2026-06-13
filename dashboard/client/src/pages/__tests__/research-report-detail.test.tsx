@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { createElement } from "react";
@@ -21,6 +21,14 @@ vi.mock("../../hooks/use-research-reports", () => ({
   useResearchReport: vi.fn(),
   useResearchReportJson: vi.fn(),
   useResearchReportCsv: vi.fn(() => ({ isLoading: false, data: null })),
+}));
+
+vi.mock("../../lib/research-api", () => ({
+  archiveResearchReport: vi.fn(() => Promise.resolve({})),
+  restoreResearchReport: vi.fn(() => Promise.resolve({})),
+  deleteResearchReport: vi.fn(() => Promise.resolve({})),
+  updateResearchReport: vi.fn(() => Promise.resolve({})),
+  downloadResearchReportCsvFromText: vi.fn(),
 }));
 
 vi.mock("../../hooks/use-theme", () => ({
@@ -75,16 +83,31 @@ vi.mock("../../components/common/loading", () => ({
 import { ResearchReportDetailPage } from "../research-report-detail";
 import {
   useResearchReport,
+  useResearchReportCsv,
   useResearchReportJson,
 } from "../../hooks/use-research-reports";
+import {
+  archiveResearchReport,
+  deleteResearchReport,
+  restoreResearchReport,
+  updateResearchReport,
+} from "../../lib/research-api";
 import { useAuthStore } from "../../stores/auth-store";
 import {
+  fixtureReportArchived,
   fixtureReportAvailable,
+  fixtureReportCsvPayload,
+  fixtureReportJsonPayload,
   fixtureReportMissingFile,
 } from "../../lib/research-fixtures";
 
 const mockUseReport = vi.mocked(useResearchReport);
 const mockUseJson = vi.mocked(useResearchReportJson);
+const mockUseCsv = vi.mocked(useResearchReportCsv);
+const mockArchive = vi.mocked(archiveResearchReport);
+const mockRestore = vi.mocked(restoreResearchReport);
+const mockDelete = vi.mocked(deleteResearchReport);
+const mockUpdate = vi.mocked(updateResearchReport);
 
 function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -107,6 +130,11 @@ beforeEach(() => {
     data: undefined,
     isError: false,
   } as ReturnType<typeof useResearchReportJson>);
+  mockUseCsv.mockReturnValue({
+    isLoading: false,
+    data: null,
+    isError: false,
+  } as ReturnType<typeof useResearchReportCsv>);
 });
 
 describe("ResearchReportDetailPage - missing file", () => {
@@ -332,5 +360,295 @@ describe("ResearchReportDetailPage - missing file", () => {
     const containers = screen.getAllByTestId("responsive");
     expect(containers[0]).toHaveAttribute("data-height", "220");
     expect(containers[0]).toHaveAttribute("data-min-width", "280");
+  });
+});
+
+describe("ResearchReportDetailPage - admin action bar", () => {
+  it("admin archive button invokes the archive mutation", async () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: /^archive$/i }));
+
+    await waitFor(() => {
+      expect(mockArchive).toHaveBeenCalledWith("fixture-report-missing-file");
+    });
+  });
+
+  it("admin can open and confirm the rename form, calling update", async () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: /rename/i }));
+
+    const titleInput = screen.getByLabelText(/title/i);
+    expect(titleInput).toHaveValue("Fixture Report Missing File");
+
+    await userEvent.clear(titleInput);
+    await userEvent.type(titleInput, "Renamed Report");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalledWith("fixture-report-missing-file", {
+        title: "Renamed Report",
+      });
+    });
+  });
+
+  it("disables the rename Save button when the title is blank", async () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: /rename/i }));
+    await userEvent.clear(screen.getByLabelText(/title/i));
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("closes the rename form without saving when Cancel is clicked", async () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: /rename/i }));
+    expect(screen.getByText(/rename report/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByLabelText(/title/i)).not.toBeInTheDocument();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("gates delete-with-files behind an exact report id phrase", async () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /delete with files/i }),
+    );
+
+    const dialog = screen.getByRole("dialog", {
+      name: /delete report and files/i,
+    });
+    const confirm = within(dialog).getByRole("button", {
+      name: "Delete report and files",
+    });
+    expect(confirm).toBeDisabled();
+
+    await userEvent.type(
+      within(dialog).getByLabelText(
+        /type "fixture-report-missing-file" to confirm/i,
+      ),
+      "wrong-id",
+    );
+    expect(confirm).toBeDisabled();
+
+    await userEvent.clear(
+      within(dialog).getByLabelText(
+        /type "fixture-report-missing-file" to confirm/i,
+      ),
+    );
+    await userEvent.type(
+      within(dialog).getByLabelText(
+        /type "fixture-report-missing-file" to confirm/i,
+      ),
+      "fixture-report-missing-file",
+    );
+    expect(confirm).not.toBeDisabled();
+
+    await userEvent.click(confirm);
+    await waitFor(() => {
+      expect(mockDelete).toHaveBeenCalledWith(
+        "fixture-report-missing-file",
+        true,
+      );
+    });
+  });
+
+  it("fires the delete-record mutation once the phrase matches", async () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /delete record/i }),
+    );
+    const dialog = screen.getByRole("dialog", {
+      name: /delete report record/i,
+    });
+    await userEvent.type(
+      within(dialog).getByLabelText(
+        /type "fixture-report-missing-file" to confirm/i,
+      ),
+      "fixture-report-missing-file",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Delete record" }),
+    );
+
+    await waitFor(() => {
+      expect(mockDelete).toHaveBeenCalledWith(
+        "fixture-report-missing-file",
+        false,
+      );
+    });
+  });
+
+  it("does not render an Edit button inside the action bar", () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+    expect(
+      screen.queryByRole("button", { name: "Edit" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("ResearchReportDetailPage - archived report", () => {
+  beforeEach(() => {
+    mockUseReport.mockReturnValue({
+      data: fixtureReportArchived(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchReport>);
+  });
+
+  it("offers Restore in place of Archive for archived reports", () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+    expect(
+      screen.getByRole("button", { name: /^restore$/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^archive$/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("admin restore button invokes the restore mutation", async () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: /^restore$/i }));
+
+    await waitFor(() => {
+      expect(mockRestore).toHaveBeenCalledWith("fixture-report-missing-file");
+    });
+  });
+
+  it("renders the archived status chip", () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+    expect(screen.getByText("Archived")).toBeInTheDocument();
+  });
+});
+
+describe("ResearchReportDetailPage - observer gating", () => {
+  beforeEach(() => {
+    useAuthStore.setState({
+      token: "tok",
+      user: { id: "2", username: "obs", role: "observer" },
+    });
+  });
+
+  it("disables every destructive action and hides Rename", () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    expect(
+      screen.getByRole("button", { name: /^archive$/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /delete record/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /delete with files/i }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: /rename/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("attaches an admin-required hint to disabled actions", () => {
+    render(<ResearchReportDetailPage />, { wrapper });
+    expect(
+      screen.getByRole("button", { name: /^archive$/i }),
+    ).toHaveAttribute("title", "Admin role required.");
+  });
+});
+
+describe("ResearchReportDetailPage - collapsible sections", () => {
+  it("loads report JSON into the viewer after Show JSON", async () => {
+    mockUseJson.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: fixtureReportJsonPayload(),
+    } as ReturnType<typeof useResearchReportJson>);
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: "Show JSON" }));
+
+    expect(screen.getByText(/raw payload/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText("Report JSON is hidden."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders a CSV preview with a download button after Load CSV", async () => {
+    mockUseCsv.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: fixtureReportCsvPayload(),
+    } as ReturnType<typeof useResearchReportCsv>);
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: "Load CSV" }));
+
+    expect(
+      screen.getByRole("button", { name: "Download" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("net_pnl")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Hide CSV" }),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a CSV error banner when the CSV fetch fails", async () => {
+    mockUseCsv.mockReturnValue({
+      isLoading: false,
+      isError: true,
+      error: new Error("csv boom"),
+      data: undefined,
+    } as ReturnType<typeof useResearchReportCsv>);
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    await userEvent.click(screen.getByRole("button", { name: "Load CSV" }));
+
+    expect(screen.getByText(/could not load csv/i)).toBeInTheDocument();
+    expect(screen.getByText(/csv boom/i)).toBeInTheDocument();
+  });
+});
+
+describe("ResearchReportDetailPage - sweep section", () => {
+  it("renders a sweep ranking table from the report payload", () => {
+    mockUseJson.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: {
+        schema_version: 2,
+        provenance: { job_id: "fixture-job-completed" },
+        metrics: { net_pnl: 5 },
+        sweep: {
+          columns: ["edge_bps", "pnl"],
+          parameter_columns: ["edge_bps"],
+          metric_columns: ["pnl", "win_rate"],
+          ranked_by: "calibrated_pnl",
+          rows: [
+            {
+              rank: 1,
+              params: { edge_bps: 2.5 },
+              metrics: { pnl: 120.5, win_rate: 0.62 },
+            },
+            {
+              rank: 2,
+              params: { edge_bps: 3 },
+              metrics: { pnl: 90.25, win_rate: 0.5 },
+            },
+          ],
+          top_rows: [],
+        },
+      },
+    } as ReturnType<typeof useResearchReportJson>);
+    render(<ResearchReportDetailPage />, { wrapper });
+
+    expect(screen.getByText(/sweep ranking by/i)).toBeInTheDocument();
+    expect(screen.getByText(/sweep uses calibrated ranking/i)).toBeInTheDocument();
+    expect(screen.getByText("62.0%")).toBeInTheDocument();
+    expect(screen.getByText("2.5")).toBeInTheDocument();
   });
 });

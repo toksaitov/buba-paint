@@ -46,6 +46,17 @@ vi.mock("../../lib/research-api", async () => {
     appendResearchJobEvent: vi.fn(),
     cloneResearchJob: vi.fn(),
     createResearchJobTemplate: vi.fn(),
+    cancelResearchJob: vi.fn(),
+    pauseResearchJob: vi.fn(),
+    resumeResearchJob: vi.fn(),
+    continueResearchJob: vi.fn(),
+    retryResearchJob: vi.fn(),
+    deleteResearchJob: vi.fn(),
+    regenerateResearchJobReport: vi.fn(),
+    retryResearchStep: vi.fn(),
+    cancelResearchStep: vi.fn(),
+    clearResearchStepLease: vi.fn(),
+    resolveResearchStepBlocker: vi.fn(),
   };
 });
 
@@ -58,13 +69,24 @@ import {
   appendResearchJobEvent,
   cloneResearchJob,
   createResearchJobTemplate,
+  cancelResearchJob,
+  resumeResearchJob,
+  continueResearchJob,
+  retryResearchJob,
+  deleteResearchJob,
+  regenerateResearchJobReport,
+  retryResearchStep,
+  clearResearchStepLease,
+  resolveResearchStepBlocker,
 } from "../../lib/research-api";
 import {
   fixtureArtifactAvailable,
   fixtureJobBlocked,
   fixtureJobFailed,
   fixtureJobCompleted,
+  fixtureJobCancelled,
   fixtureJobRunning,
+  fixtureJobPaused,
 } from "../../lib/research-fixtures";
 
 const mockUseResearchArtifacts = vi.mocked(useResearchArtifacts);
@@ -73,6 +95,15 @@ const mockUseResearchReports = vi.mocked(useResearchReports);
 const mockCloneResearchJob = vi.mocked(cloneResearchJob);
 const mockAppendResearchJobEvent = vi.mocked(appendResearchJobEvent);
 const mockCreateTemplate = vi.mocked(createResearchJobTemplate);
+const mockCancelJob = vi.mocked(cancelResearchJob);
+const mockResumeJob = vi.mocked(resumeResearchJob);
+const mockContinueJob = vi.mocked(continueResearchJob);
+const mockRetryJob = vi.mocked(retryResearchJob);
+const mockDeleteJob = vi.mocked(deleteResearchJob);
+const mockRegenerateReport = vi.mocked(regenerateResearchJobReport);
+const mockRetryStep = vi.mocked(retryResearchStep);
+const mockClearStepLease = vi.mocked(clearResearchStepLease);
+const mockResolveStepBlocker = vi.mocked(resolveResearchStepBlocker);
 const startDateLabel = /^start(\s*required)?$/i;
 const endDateLabel = /^end(\s*required)?$/i;
 
@@ -640,5 +671,470 @@ describe("ResearchJobDetailPage - loading and error states", () => {
     } as ReturnType<typeof useResearchJob>);
     render(<ResearchJobDetailPage />, { wrapper });
     expect(screen.getByText(/could not load job/i)).toBeInTheDocument();
+  });
+});
+
+describe("ResearchJobDetailPage - running actions", () => {
+  it("exposes only cancel and add-note, with no resume or retry", () => {
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobRunning(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    const actions = within(
+      screen.getByRole("heading", { name: /^actions$/i }).closest("section") ??
+        document.body,
+    );
+    expect(actions.getByRole("button", { name: /^cancel$/i })).toBeInTheDocument();
+    expect(
+      actions.queryByRole("button", { name: /^resume$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      actions.queryByRole("button", { name: /^retry$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      actions.queryByRole("button", { name: /^clone$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /add note/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces the cancellation-in-flight banner once the cancel mutation is pending", async () => {
+    const user = userEvent.setup();
+    mockCancelJob.mockReturnValue(new Promise(() => undefined));
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobRunning(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    const dialog = screen.getByRole("dialog", { name: /^cancel job$/i });
+    await user.click(within(dialog).getByRole("button", { name: /cancel job/i }));
+
+    await waitFor(() =>
+      expect(mockCancelJob).toHaveBeenCalledWith("fixture-job-blocked"),
+    );
+    expect(
+      await screen.findByText(/cancellation in flight/i),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("ResearchJobDetailPage - paused actions", () => {
+  it("offers resume, cancel, and clone for a paused job", () => {
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobPaused(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    expect(
+      screen.getByRole("button", { name: /^resume$/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^clone$/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^retry$/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("resumes a paused job and stores the returned detail", async () => {
+    const user = userEvent.setup();
+    mockResumeJob.mockResolvedValue(fixtureJobRunning());
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobPaused(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+    await user.click(screen.getByRole("button", { name: /^resume$/i }));
+
+    await waitFor(() =>
+      expect(mockResumeJob).toHaveBeenCalledWith("fixture-job-blocked"),
+    );
+  });
+
+  it("surfaces the action-failed banner when resume rejects", async () => {
+    const user = userEvent.setup();
+    mockResumeJob.mockRejectedValue(new Error("worker offline"));
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobPaused(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+    await user.click(screen.getByRole("button", { name: /^resume$/i }));
+
+    expect(await screen.findByText(/action failed/i)).toBeInTheDocument();
+    expect(screen.getByText(/worker offline/i)).toBeInTheDocument();
+  });
+});
+
+describe("ResearchJobDetailPage - cancelled actions", () => {
+  it("offers continue, clone, and delete for a cancelled job without reports", () => {
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCancelled(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    expect(
+      screen.getByRole("button", { name: /^continue$/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^clone$/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /delete record/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("continues a cancelled job through the run-mutation path", async () => {
+    const user = userEvent.setup();
+    mockContinueJob.mockResolvedValue(fixtureJobRunning());
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCancelled(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+    await user.click(screen.getByRole("button", { name: /^continue$/i }));
+
+    await waitFor(() =>
+      expect(mockContinueJob).toHaveBeenCalledWith("fixture-job-blocked"),
+    );
+  });
+
+  it("explains that the cancelled job produced no report", () => {
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCancelled(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    expect(
+      screen.getByText(/this job did not complete, so no report was written/i),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("ResearchJobDetailPage - retryable actions", () => {
+  it("offers retry and cancel for a retryable job and retries it", async () => {
+    const user = userEvent.setup();
+    const data = fixtureJobRunning();
+    data.job.status = "retryable";
+    mockRetryJob.mockResolvedValue(fixtureJobRunning());
+    mockUseResearchJob.mockReturnValue({
+      data,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^clone$/i }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    await waitFor(() =>
+      expect(mockRetryJob).toHaveBeenCalledWith("fixture-job-blocked"),
+    );
+  });
+});
+
+describe("ResearchJobDetailPage - regenerate report", () => {
+  it("regenerates a completed job's report on click", async () => {
+    const user = userEvent.setup();
+    mockRegenerateReport.mockResolvedValue({} as never);
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+    await user.click(
+      screen.getByRole("button", { name: /regenerate report/i }),
+    );
+
+    await waitFor(() =>
+      expect(mockRegenerateReport).toHaveBeenCalledWith("fixture-job-blocked"),
+    );
+  });
+});
+
+describe("ResearchJobDetailPage - delete confirmation", () => {
+  it("keeps the delete disabled until the job id phrase is typed", async () => {
+    const user = userEvent.setup();
+    mockDeleteJob.mockResolvedValue(fixtureJobCompleted().job);
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+    await user.click(screen.getByRole("button", { name: /delete record/i }));
+
+    const dialog = screen.getByRole("dialog", { name: /^delete job$/i });
+    const confirm = within(dialog).getByRole("button", {
+      name: /^delete job$/i,
+    });
+    expect(confirm).toBeDisabled();
+
+    await user.type(
+      within(dialog).getByLabelText(/type .* to confirm/i),
+      "fixture-job-completed",
+    );
+    expect(confirm).not.toBeDisabled();
+    await user.click(confirm);
+
+    await waitFor(() =>
+      expect(mockDeleteJob).toHaveBeenCalledWith("fixture-job-blocked"),
+    );
+  });
+});
+
+describe("ResearchJobDetailPage - step controls", () => {
+  it("retries the blocked step from its expanded control bar", async () => {
+    const user = userEvent.setup();
+    mockRetryStep.mockResolvedValue(fixtureJobRunning());
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobBlocked(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    const toggle = screen.getByRole("button", {
+      name: /prepare backtest db/i,
+    });
+    await user.click(toggle);
+    const stepRow = toggle.closest("li");
+    expect(stepRow).not.toBeNull();
+    const row = within(stepRow as HTMLElement);
+
+    expect(
+      row.getByRole("button", { name: /resolve blocker/i }),
+    ).toBeInTheDocument();
+    await user.click(row.getByRole("button", { name: /^retry$/i }));
+
+    await waitFor(() =>
+      expect(mockRetryStep).toHaveBeenCalledWith(
+        "fixture-job-blocked",
+        "fixture-job-blocked-step-3",
+      ),
+    );
+    expect(mockRetryJob).not.toHaveBeenCalled();
+  });
+
+  it("resolves a blocked step's blocker", async () => {
+    const user = userEvent.setup();
+    mockResolveStepBlocker.mockResolvedValue(fixtureJobRunning());
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobBlocked(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    const toggle = screen.getByRole("button", {
+      name: /prepare backtest db/i,
+    });
+    await user.click(toggle);
+    const row = within(toggle.closest("li") as HTMLElement);
+    await user.click(row.getByRole("button", { name: /resolve blocker/i }));
+
+    await waitFor(() =>
+      expect(mockResolveStepBlocker).toHaveBeenCalledWith(
+        "fixture-job-blocked",
+        "fixture-job-blocked-step-3",
+      ),
+    );
+  });
+
+  it("offers a clear stale lease control for an expired leased step", async () => {
+    const user = userEvent.setup();
+    mockClearStepLease.mockResolvedValue(fixtureJobRunning());
+    const data = fixtureJobRunning();
+    data.steps[0] = {
+      ...data.steps[0],
+      status: "leased",
+      lease_owner: "fixture-worker",
+      leased_until_ms: 1,
+    };
+    mockUseResearchJob.mockReturnValue({
+      data,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    const toggle = screen.getByRole("button", { name: /verify artifact/i });
+    await user.click(toggle);
+    const row = within(toggle.closest("li") as HTMLElement);
+    await user.click(row.getByRole("button", { name: /clear stale lease/i }));
+
+    await waitFor(() =>
+      expect(mockClearStepLease).toHaveBeenCalledWith(
+        "fixture-job-blocked",
+        "fixture-job-running-step-0",
+      ),
+    );
+  });
+
+  it("always shows the unsupported skip-step placeholder in step controls", async () => {
+    const user = userEvent.setup();
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobBlocked(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    const toggle = screen.getByRole("button", {
+      name: /prepare backtest db/i,
+    });
+    await user.click(toggle);
+    const row = within(toggle.closest("li") as HTMLElement);
+    expect(row.getByText(/skip step: unsupported/i)).toBeInTheDocument();
+  });
+});
+
+describe("ResearchJobDetailPage - observer step controls", () => {
+  it("disables step actions for observers with an admin hint", async () => {
+    const user = userEvent.setup();
+    useAuthStore.setState({
+      token: "tok",
+      user: { id: "2", username: "obs", role: "observer" },
+    });
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobBlocked(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    const toggle = screen.getByRole("button", {
+      name: /prepare backtest db/i,
+    });
+    await user.click(toggle);
+    const row = within(toggle.closest("li") as HTMLElement);
+    const retry = row.getByRole("button", { name: /^retry$/i });
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveAttribute("title", expect.stringMatching(/admin/i));
+    expect(mockRetryStep).not.toHaveBeenCalled();
+  });
+});
+
+describe("ResearchJobDetailPage - operator note dialog", () => {
+  it("submits a warn-level note chosen from the level segment", async () => {
+    const user = userEvent.setup();
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    await user.click(screen.getByRole("button", { name: /add note/i }));
+    const dialog = screen.getByRole("dialog", { name: /add operator note/i });
+    await user.click(within(dialog).getByRole("radio", { name: /^warn$/i }));
+    await user.type(within(dialog).getByLabelText(/message/i), "watch leases");
+    await user.click(within(dialog).getByRole("button", { name: /save note/i }));
+
+    await waitFor(() =>
+      expect(mockAppendResearchJobEvent).toHaveBeenCalledWith(
+        "fixture-job-blocked",
+        { level: "warn", message: "watch leases" },
+      ),
+    );
+  });
+
+  it("disables save note while the message is empty", async () => {
+    const user = userEvent.setup();
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    await user.click(screen.getByRole("button", { name: /add note/i }));
+    const dialog = screen.getByRole("dialog", { name: /add operator note/i });
+    expect(
+      within(dialog).getByRole("button", { name: /save note/i }),
+    ).toBeDisabled();
+  });
+});
+
+describe("ResearchJobDetailPage - linked report", () => {
+  it("renders a link to the report when one references the job", () => {
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+    mockUseResearchReports.mockReturnValue({
+      data: {
+        reports: [
+          {
+            id: "report-77",
+            job_id: "fixture-job-blocked",
+            artifact_id: "fixture-artifact-available",
+            title: "Linked completed report",
+            status: "available",
+            summary_json: null,
+            report_path: "/tmp/report.json",
+            csv_path: "/tmp/report.csv",
+            created_at: 0,
+            updated_at: 0,
+          },
+        ],
+      },
+    } as ReturnType<typeof useResearchReports>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    const link = screen.getByRole("link", { name: /linked completed report/i });
+    expect(link).toHaveAttribute("href", "/research/reports/report-77");
+    expect(screen.getByText("report-77")).toBeInTheDocument();
+  });
+
+  it("prompts to regenerate when a completed job has no report", () => {
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    expect(
+      screen.getByText(/no report found for this completed job/i),
+    ).toBeInTheDocument();
   });
 });
