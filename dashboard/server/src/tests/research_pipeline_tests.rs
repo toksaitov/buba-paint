@@ -696,11 +696,18 @@ impl ResearchWorkBackend for FailingCancellationBackend {
         Err(DashboardError::Internal("unused".to_string()))
     }
 
-    /// Fails the step read used by the cancellation poll.
+    /// Fails the step read no longer used by the cancellation poll.
     async fn get_research_job_steps(
         &self,
         _job_id: &str,
     ) -> Result<Vec<ResearchJobStep>, DashboardError> {
+        Err(DashboardError::Internal(
+            "cancellation read failed".to_string(),
+        ))
+    }
+
+    /// Fails the lightweight cancellation poll so the loop treats it as non-fatal.
+    async fn is_job_cancelled(&self, _job_id: &str) -> Result<bool, DashboardError> {
         Err(DashboardError::Internal(
             "cancellation read failed".to_string(),
         ))

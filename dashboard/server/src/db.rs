@@ -2163,6 +2163,23 @@ impl DashboardDb {
         Ok(rows)
     }
 
+    /// Report whether a job is cancelled by reading only its status column.
+    ///
+    /// A missing job is reported as cancelled so a deleted job stops its
+    /// supervised command. This avoids loading the full job row plus every
+    /// step row on each cancellation poll.
+    pub async fn is_job_cancelled(&self, job_id: &str) -> Result<bool, DashboardError> {
+        let conn = self.conn.lock().await;
+        let status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM research_jobs WHERE id = ?1",
+                params![job_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(status.is_none_or(|status| status == "cancelled"))
+    }
+
     /// Update a queued research job before any step has started.
     pub async fn update_queued_research_job(
         &self,

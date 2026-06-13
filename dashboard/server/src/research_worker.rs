@@ -432,7 +432,7 @@ impl LocalResearchWorker {
                     job_id: &lease.job.id,
                     step_id: &lease.step.id,
                     worker_id: &self.worker_id,
-                    poll_interval: Duration::from_millis(500),
+                    poll_interval: Duration::from_secs(3),
                     lease_duration_ms: self.lease_duration_ms,
                 },
             )

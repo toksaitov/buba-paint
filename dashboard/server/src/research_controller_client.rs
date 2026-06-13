@@ -603,6 +603,17 @@ impl ResearchWorkBackend for ResearchControllerClient {
             .await
     }
 
+    /// Report job cancellation by reusing the controller job-fetch endpoint.
+    ///
+    /// A missing job is reported as cancelled, matching the local backend, and
+    /// the single job fetch replaces the prior job-plus-steps poll.
+    async fn is_job_cancelled(&self, job_id: &str) -> Result<bool, DashboardError> {
+        match self.get_research_job(job_id).await? {
+            Some(job) => Ok(job.status == "cancelled"),
+            None => Ok(true),
+        }
+    }
+
     /// Fetch one artifact from the controller.
     async fn get_research_artifact(
         &self,
@@ -972,6 +983,14 @@ impl ResearchWorkBackend for WorkerBackend {
         match self {
             WorkerBackend::Local(db) => db.as_ref().get_research_job_steps(job_id).await,
             WorkerBackend::Remote(client) => client.get_research_job_steps(job_id).await,
+        }
+    }
+
+    /// Report job cancellation.
+    async fn is_job_cancelled(&self, job_id: &str) -> Result<bool, DashboardError> {
+        match self {
+            WorkerBackend::Local(db) => db.as_ref().is_job_cancelled(job_id).await,
+            WorkerBackend::Remote(client) => client.is_job_cancelled(job_id).await,
         }
     }
 

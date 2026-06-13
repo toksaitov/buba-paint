@@ -102,18 +102,13 @@ pub struct CommandCancellation<'a, B: ResearchWorkBackend> {
 }
 
 impl<B: ResearchWorkBackend> CommandCancellation<'_, B> {
-    /// Return true once either the job or active step has been cancelled.
+    /// Return true once the owning job has been cancelled or deleted.
+    ///
+    /// Operator cancellation cancels the job and its active step together, so a
+    /// single job-status read is sufficient and avoids loading every step row
+    /// on each poll. A missing job is reported as cancelled.
     pub async fn is_cancelled(&self) -> Result<bool, DashboardError> {
-        let Some(job) = self.db.get_research_job(self.job_id).await? else {
-            return Ok(true);
-        };
-        if job.status == "cancelled" {
-            return Ok(true);
-        }
-        let steps = self.db.get_research_job_steps(self.job_id).await?;
-        Ok(steps
-            .iter()
-            .any(|step| step.id == self.step_id && step.status == "cancelled"))
+        self.db.is_job_cancelled(self.job_id).await
     }
 
     /// Extend the active step lease while its child process is still alive.

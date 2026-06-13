@@ -91,6 +91,16 @@ pub trait ResearchWorkBackend: Send + Sync {
         job_id: &str,
     ) -> impl Future<Output = Result<Vec<ResearchJobStep>, DashboardError>> + Send;
 
+    /// Report whether a job is cancelled without loading its full row set.
+    ///
+    /// A missing job is treated as cancelled so a deleted job stops its
+    /// supervised command. This is the cheap poll used while a command is
+    /// running, instead of fetching the full job plus every step row.
+    fn is_job_cancelled(
+        &self,
+        job_id: &str,
+    ) -> impl Future<Output = Result<bool, DashboardError>> + Send;
+
     /// Fetch one artifact for job context.
     fn get_research_artifact(
         &self,
@@ -265,6 +275,11 @@ impl ResearchWorkBackend for DashboardDb {
         job_id: &str,
     ) -> Result<Vec<ResearchJobStep>, DashboardError> {
         DashboardDb::get_research_job_steps(self, job_id).await
+    }
+
+    /// Report job cancellation from the local database.
+    async fn is_job_cancelled(&self, job_id: &str) -> Result<bool, DashboardError> {
+        DashboardDb::is_job_cancelled(self, job_id).await
     }
 
     /// Fetch one artifact from the local database.

@@ -984,6 +984,24 @@ async fn research_job_cancel_and_retry_updates_status() {
     assert!(retried_steps.iter().all(|step| step.status == "queued"));
 }
 
+/// Verifies is_job_cancelled tracks cancellation and treats a missing job as cancelled.
+#[tokio::test]
+async fn is_job_cancelled_reflects_status_and_missing_jobs() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let job = db
+        .create_research_job("export", None, &user.id, 0, None)
+        .await
+        .unwrap();
+
+    assert!(!db.is_job_cancelled(&job.id).await.unwrap());
+
+    db.cancel_research_job(&job.id).await.unwrap();
+    assert!(db.is_job_cancelled(&job.id).await.unwrap());
+
+    assert!(db.is_job_cancelled("missing-job").await.unwrap());
+}
+
 /// Verifies retry resumes after completed work instead of rerunning all steps.
 #[tokio::test]
 async fn research_job_retry_preserves_completed_steps() {

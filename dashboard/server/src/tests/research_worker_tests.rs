@@ -218,6 +218,11 @@ impl ResearchWorkBackend for CancelAtReportPersist {
         self.inner.get_research_job_steps(job_id).await
     }
 
+    /// Report job cancellation from the wrapped database.
+    async fn is_job_cancelled(&self, job_id: &str) -> Result<bool, DashboardError> {
+        self.inner.is_job_cancelled(job_id).await
+    }
+
     /// Fetch one artifact from the wrapped database.
     async fn get_research_artifact(
         &self,
