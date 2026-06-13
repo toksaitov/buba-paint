@@ -559,3 +559,68 @@ async fn worker_subtree_is_guarded_structurally() {
         .unwrap();
     assert_eq!(operator_with_jwt.status(), reqwest::StatusCode::OK);
 }
+
+/// Verifies the remote client maps controller error statuses to the matching
+/// `DashboardError` variant and recovers the bare `{"error": msg}` envelope
+/// message, mirroring the local `DashboardDb` backend outcomes.
+#[tokio::test]
+async fn worker_protocol_maps_error_status_to_variant_and_recovers_envelope() {
+    let work_root = unique_work_root();
+    let (base_url, _db) = spawn_controller(&work_root).await;
+    let client = ResearchControllerClient::new(&base_url, TEST_TOKEN).unwrap();
+
+    let not_found = client
+        .cancel_research_job("missing-job")
+        .await
+        .expect_err("cancelling a missing job should error");
+    match not_found {
+        crate::error::DashboardError::NotFound(message) => {
+            assert!(
+                message.contains("missing-job"),
+                "recovered NotFound message should name the job, got: {message}"
+            );
+            assert!(
+                !message.contains("\"error\""),
+                "envelope should be unwrapped, got: {message}"
+            );
+        }
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+
+    let bad_request = client
+        .upsert_research_artifact(&crate::db::ResearchArtifactRecord {
+            id: "../escape",
+            source_machine_id: None,
+            kind: "readonly_run",
+            status: "available",
+            run_mode: None,
+            artifact_root: None,
+            manifest_path: None,
+            bundle_path: None,
+            source_db_path: None,
+            interval_start_ms: None,
+            interval_end_ms: None,
+            bytes: None,
+            checksum: None,
+            replay_quality_class: None,
+            backtest_ready_class: None,
+            live_fidelity_class: None,
+        })
+        .await
+        .expect_err("an unsafe artifact id should error");
+    match bad_request {
+        crate::error::DashboardError::BadRequest(message) => {
+            assert!(
+                !message.is_empty(),
+                "recovered BadRequest message should be non-empty"
+            );
+            assert!(
+                !message.contains("\"error\""),
+                "envelope should be unwrapped, got: {message}"
+            );
+        }
+        other => panic!("expected BadRequest, got {other:?}"),
+    }
+
+    std::fs::remove_dir_all(&work_root).ok();
+}

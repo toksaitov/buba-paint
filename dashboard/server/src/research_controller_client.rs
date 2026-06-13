@@ -243,6 +243,14 @@ pub struct RecoverTransfersResponse {
     pub recovered: usize,
 }
 
+/// Error envelope returned by the controller, mirroring the dashboard
+/// `{"error": message}` JSON body so the client can recover the bare message.
+#[derive(Debug, Deserialize)]
+struct ErrorEnvelope {
+    /// Human-readable error message produced by the controller.
+    error: String,
+}
+
 /// HTTP client for the public controller's worker endpoints.
 #[derive(Debug, Clone)]
 pub struct ResearchControllerClient {
@@ -307,9 +315,7 @@ impl ResearchControllerClient {
             DashboardError::Internal(format!("reading controller response {path}: {error}"))
         })?;
         if !status.is_success() {
-            return Err(DashboardError::Internal(format!(
-                "controller {path} returned {status}: {text}"
-            )));
+            return Err(Self::status_to_error(path, status, &text));
         }
         let decoded: T = serde_json::from_str(&text).map_err(|error| {
             DashboardError::Internal(format!("decoding controller response {path}: {error}"))
@@ -325,7 +331,9 @@ impl ResearchControllerClient {
         body: Option<&impl Serialize>,
     ) -> Result<T, DashboardError> {
         self.send(method, path, body).await?.ok_or_else(|| {
-            DashboardError::Internal(format!("controller {path} returned no content"))
+            DashboardError::Proxy(format!(
+                "controller {path} returned 204 No Content for a request that requires a body"
+            ))
         })
     }
 
@@ -344,6 +352,30 @@ impl ResearchControllerClient {
             }
         }
         encoded
+    }
+
+    /// Recover the bare controller error message from a `{"error": msg}`
+    /// envelope, falling back to the raw body when it is not that shape.
+    fn recover_error_message(text: &str) -> String {
+        match serde_json::from_str::<ErrorEnvelope>(text) {
+            Ok(envelope) => envelope.error,
+            Err(_) => text.trim().to_string(),
+        }
+    }
+
+    /// Map a non-success controller status to the matching `DashboardError`
+    /// variant so the remote backend mirrors the local `DashboardDb` outcomes.
+    fn status_to_error(path: &str, status: reqwest::StatusCode, text: &str) -> DashboardError {
+        let message = Self::recover_error_message(text);
+        match status {
+            reqwest::StatusCode::NOT_FOUND => DashboardError::NotFound(message),
+            reqwest::StatusCode::BAD_REQUEST => DashboardError::BadRequest(message),
+            reqwest::StatusCode::UNAUTHORIZED => DashboardError::Unauthorized(message),
+            reqwest::StatusCode::FORBIDDEN => DashboardError::Forbidden(message),
+            _ => {
+                DashboardError::Internal(format!("controller {path} returned {status}: {message}"))
+            }
+        }
     }
 }
 
