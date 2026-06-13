@@ -107,4 +107,60 @@ describe("ResearchReportComparePage", () => {
     expect(screen.getByText(/source run net pnl/i)).toBeInTheDocument();
     expect(screen.getByText(/replay delta/i)).toBeInTheDocument();
   });
+
+  it("renders the loaded subset and warns when one report fails to load", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    function threeIdWrapper({ children }: { children: ReactNode }) {
+      return (
+        <QueryClientProvider client={qc}>
+          <MemoryRouter
+            initialEntries={["/research/reports/compare?ids=a,b,c"]}
+          >
+            {children}
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+    }
+    mockGetReport.mockImplementation(async (id: string) => {
+      if (id === "c") throw new Error("not found");
+      return report(id);
+    });
+    mockGetJson.mockImplementation(async (id: string) =>
+      payload(id, id === "a" ? 1 : 5),
+    );
+
+    render(<ResearchReportComparePage />, { wrapper: threeIdWrapper });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/some reports could not be loaded/i),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/comparing 2 of 3 reports/i)).toBeInTheDocument();
+    expect(screen.getByText(/could not load: c\./i)).toBeInTheDocument();
+    expect(screen.getByText("1. Report b")).toBeInTheDocument();
+    expect(screen.getByText("2. Report a")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/could not load comparison/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a fatal banner when fewer than two reports load", async () => {
+    mockGetReport.mockImplementation(async (id: string) => {
+      if (id === "b") throw new Error("archived");
+      return report(id);
+    });
+
+    render(<ResearchReportComparePage />, { wrapper });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/could not load comparison/i),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/could not load: b\./i)).toBeInTheDocument();
+    expect(screen.queryByText("1. Report a")).not.toBeInTheDocument();
+  });
 });

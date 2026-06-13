@@ -32,14 +32,22 @@ export function ResearchReportComparePage() {
   const uniqueIds = Array.from(new Set(ids));
   const comparisonQuery = useQuery({
     queryKey: ["research", "reports", "compare", uniqueIds],
-    queryFn: async () =>
-      Promise.all(
+    queryFn: async () => {
+      const settled = await Promise.allSettled(
         uniqueIds.map(async (id) => {
           const report = await getResearchReport(id);
           const payload = await getResearchReportJson(id);
           return { report, parsed: parseReportPayload(payload, report) };
         }),
-      ),
+      );
+      const loaded = settled.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      const failedIds = uniqueIds.filter(
+        (_, index) => settled[index]?.status === "rejected",
+      );
+      return { loaded, failedIds };
+    },
     enabled: uniqueIds.length >= 2,
     retry: false,
   });
@@ -52,15 +60,21 @@ export function ResearchReportComparePage() {
   if (comparisonQuery.isLoading) {
     return <Loading label="Loading comparison" />;
   }
-  if (comparisonQuery.isError) {
+  const loaded = comparisonQuery.data?.loaded ?? [];
+  const failedIds = comparisonQuery.data?.failedIds ?? [];
+
+  if (comparisonQuery.isError || loaded.length < 2) {
     return (
       <Banner tone="danger" title="Could not load comparison">
-        {(comparisonQuery.error as Error)?.message ?? "Unknown error"}
+        {comparisonQuery.isError
+          ? ((comparisonQuery.error as Error)?.message ?? "Unknown error")
+          : failedIds.length > 0
+            ? `Fewer than two reports loaded. Could not load: ${failedIds.join(", ")}.`
+            : "Fewer than two reports loaded."}
       </Banner>
     );
   }
 
-  const loaded = comparisonQuery.data ?? [];
   const ranked = [...loaded].sort(
     (a, b) =>
       metricForSort(b.parsed.metrics.net_pnl) -
@@ -79,6 +93,13 @@ export function ResearchReportComparePage() {
         </Link>
         <span className="text-[14px] font-semibold">Report comparison</span>
       </div>
+
+      {failedIds.length > 0 && (
+        <Banner tone="warning" title="Some reports could not be loaded">
+          Comparing {loaded.length} of {uniqueIds.length} reports. Could not
+          load: {failedIds.join(", ")}.
+        </Banner>
+      )}
 
       {warnings.length > 0 && (
         <Banner tone="warning" title="Compatibility warnings">
