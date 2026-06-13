@@ -45,6 +45,7 @@ vi.mock("../../lib/research-api", async () => {
     ...actual,
     appendResearchJobEvent: vi.fn(),
     cloneResearchJob: vi.fn(),
+    createResearchJobTemplate: vi.fn(),
   };
 });
 
@@ -53,7 +54,11 @@ import { useResearchArtifacts } from "../../hooks/use-research-artifacts";
 import { useResearchJob } from "../../hooks/use-research-jobs";
 import { useResearchReports } from "../../hooks/use-research-reports";
 import { useAuthStore } from "../../stores/auth-store";
-import { appendResearchJobEvent, cloneResearchJob } from "../../lib/research-api";
+import {
+  appendResearchJobEvent,
+  cloneResearchJob,
+  createResearchJobTemplate,
+} from "../../lib/research-api";
 import {
   fixtureArtifactAvailable,
   fixtureJobBlocked,
@@ -67,6 +72,7 @@ const mockUseResearchJob = vi.mocked(useResearchJob);
 const mockUseResearchReports = vi.mocked(useResearchReports);
 const mockCloneResearchJob = vi.mocked(cloneResearchJob);
 const mockAppendResearchJobEvent = vi.mocked(appendResearchJobEvent);
+const mockCreateTemplate = vi.mocked(createResearchJobTemplate);
 const startDateLabel = /^start(\s*required)?$/i;
 const endDateLabel = /^end(\s*required)?$/i;
 
@@ -583,6 +589,34 @@ describe("ResearchJobDetailPage - completed", () => {
       "Template from fixture-",
     );
     expect(within(dialog).getByLabelText(/description/i)).toHaveValue("");
+  });
+
+  it("saves the job as a template with its type and params", async () => {
+    const user = userEvent.setup();
+    mockUseResearchJob.mockReturnValue({
+      data: fixtureJobCompleted(),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useResearchJob>);
+    mockCreateTemplate.mockResolvedValue({ id: "tpl-1" } as never);
+
+    render(<ResearchJobDetailPage />, { wrapper });
+
+    await user.click(
+      screen.getByRole("button", { name: /save as template/i }),
+    );
+    const dialog = screen.getByRole("dialog", {
+      name: /save job as template/i,
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save template" }),
+    );
+
+    await waitFor(() =>
+      expect(mockCreateTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({ job_type: "current_params" }),
+      ),
+    );
   });
 });
 

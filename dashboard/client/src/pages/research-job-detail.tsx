@@ -200,21 +200,19 @@ export function ResearchJobDetailPage() {
   });
 
   const saveTemplateMutation = useMutation({
-    mutationFn: (req: { name: string; description?: string }) => {
-      const job = jobQuery.data?.job;
-      if (!job || (job.job_type !== "current_params" && job.job_type !== "sweep")) {
-        throw new Error("Only backtest and sweep jobs can be saved as templates.");
-      }
-      const jobType = job.job_type;
-      return createResearchJobTemplate({
+    mutationFn: (req: {
+      name: string;
+      description?: string;
+      job: ResearchJob;
+    }) =>
+      createResearchJobTemplate({
         name: req.name,
         description: req.description,
-        job_type: jobType,
-        artifact_id: job.artifact_id ?? undefined,
-        priority: job.priority,
-        params: parseRecord(job.params_json),
-      });
-    },
+        job_type: req.job.job_type === "sweep" ? "sweep" : "current_params",
+        artifact_id: req.job.artifact_id ?? undefined,
+        priority: req.job.priority,
+        params: parseRecord(req.job.params_json),
+      }),
     onSuccess: () => {
       setSaveTemplateOpen(false);
       queryClient.invalidateQueries({
@@ -651,7 +649,7 @@ export function ResearchJobDetailPage() {
                 "Could not save template")
               : null
           }
-          onSubmit={(req) => saveTemplateMutation.mutate(req)}
+          onSubmit={(req) => saveTemplateMutation.mutate({ ...req, job })}
           onClose={() => {
             setSaveTemplateOpen(false);
             saveTemplateMutation.reset();
