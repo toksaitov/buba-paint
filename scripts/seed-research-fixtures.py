@@ -17,6 +17,10 @@ import time
 from pathlib import Path
 
 
+FIXTURE_INTERVAL_START_MS = 1_779_000_000_000
+FIXTURE_INTERVAL_END_MS = 1_779_000_600_000
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -556,7 +560,121 @@ def insert_job(
 
 
 def report_payload(report_id: str, job_id: str, status: str) -> dict:
-    """Return representative chart-ready fixture report JSON."""
+    """Return the canonical schema_version 2 chart-ready fixture report JSON.
+
+    The shape mirrors the Rust ResearchReportDocument produced by
+    dashboard/server/src/research_reports.rs so the dashboard parser
+    parseReportPayload marks the report as analysis-capable.
+    """
+    return {
+        "schema_version": 2,
+        "generated_at_ms": FIXTURE_INTERVAL_END_MS,
+        "provenance": {
+            "job_id": job_id,
+            "job_type": "current_params",
+            "artifact_id": "fixture-artifact-available",
+            "start": "2026-05-14T18:41:19Z",
+            "end": "2026-05-17T07:57:06Z",
+            "start_ms": FIXTURE_INTERVAL_START_MS,
+            "end_ms": FIXTURE_INTERVAL_END_MS,
+            "balance": 200.0,
+            "sets": ["EDGE_BPS=2.5", "TAKE_PROFIT_BPS=18"],
+            "sweeps": [],
+            "dashboard_image_ref": None,
+            "research_worker_image_ref": None,
+        },
+        "metrics": {
+            "net_pnl": 284.25,
+            "gross_pnl": 301.1,
+            "total_fees": 16.85,
+            "final_balance": 484.25,
+            "trade_count": 43,
+            "wins": 25,
+            "losses": 18,
+            "win_rate": 0.58,
+            "max_drawdown": -91.4,
+            "max_drawdown_pct": -0.18,
+            "signal_count": 61,
+            "fill_count": 43,
+            "no_fill_count": 18,
+        },
+        "source_comparison": {
+            "status": "match",
+            "source": {
+                "net_pnl": 284.25,
+                "gross_pnl": 301.1,
+                "total_fees": 16.85,
+                "final_balance": 484.25,
+                "trade_count": 43,
+                "signal_count": 61,
+            },
+            "replay": {
+                "net_pnl": 284.25,
+                "gross_pnl": 301.1,
+                "total_fees": 16.85,
+                "final_balance": 484.25,
+                "trade_count": 43,
+                "signal_count": 61,
+            },
+            "delta": {
+                "net_pnl": 0.0,
+                "final_balance": 0.0,
+                "trade_count": 0,
+                "signal_count": 0,
+            },
+        },
+        "equity_curve": [
+            {"ts": FIXTURE_INTERVAL_START_MS, "equity": 200.0, "event": "start", "amount": 0.0},
+            {"ts": FIXTURE_INTERVAL_START_MS + 1_200_000, "equity": 274.5, "event": "trade", "amount": 74.5},
+            {"ts": FIXTURE_INTERVAL_START_MS + 2_400_000, "equity": 228.3, "event": "trade", "amount": -46.2},
+            {"ts": FIXTURE_INTERVAL_START_MS + 3_600_000, "equity": 312.9, "event": "trade", "amount": 84.6},
+            {"ts": FIXTURE_INTERVAL_START_MS + 4_800_000, "equity": 484.25, "event": "trade", "amount": 171.35},
+        ],
+        "drawdown_curve": [
+            {"ts": FIXTURE_INTERVAL_START_MS, "equity": 200.0, "high_water_mark": 200.0, "drawdown": 0.0, "drawdown_pct": 0.0},
+            {"ts": FIXTURE_INTERVAL_START_MS + 1_200_000, "equity": 274.5, "high_water_mark": 274.5, "drawdown": 0.0, "drawdown_pct": 0.0},
+            {"ts": FIXTURE_INTERVAL_START_MS + 2_400_000, "equity": 228.3, "high_water_mark": 274.5, "drawdown": -46.2, "drawdown_pct": -0.168},
+            {"ts": FIXTURE_INTERVAL_START_MS + 3_600_000, "equity": 312.9, "high_water_mark": 312.9, "drawdown": 0.0, "drawdown_pct": 0.0},
+            {"ts": FIXTURE_INTERVAL_START_MS + 4_800_000, "equity": 484.25, "high_water_mark": 484.25, "drawdown": 0.0, "drawdown_pct": 0.0},
+        ],
+        "rejection_reasons": [
+            {"reason": "spread_too_wide", "count": 12},
+            {"reason": "insufficient_edge", "count": 6},
+        ],
+        "diagnostics": [],
+        "sweep": None,
+        "steps": [
+            {"index": 0, "name": "verify_artifact", "status": "completed", "attempts": 1, "error": None},
+            {"index": 5, "name": "write_report", "status": "completed", "attempts": 1, "error": None},
+        ],
+    }
+
+
+def report_summary_payload(report_id: str, job_id: str, status: str) -> dict:
+    """Return the compact schema_version 2 summary stored in summary_json.
+
+    Mirrors the Rust ResearchReportSummary: the full report payload minus
+    the chart-only equity/drawdown/rejection/sweep arrays.
+    """
+    full = report_payload(report_id, job_id, status)
+    return {
+        "schema_version": full["schema_version"],
+        "generated_at_ms": full["generated_at_ms"],
+        "provenance": full["provenance"],
+        "metrics": full["metrics"],
+        "source_comparison": full["source_comparison"],
+        "diagnostics": full["diagnostics"],
+        "sweep_summary": None,
+        "steps": full["steps"],
+    }
+
+
+def legacy_report_payload(report_id: str, job_id: str, status: str) -> dict:
+    """Return the retained schema_version 1 legacy fixture report JSON.
+
+    Kept so the dashboard legacy-parse path stays covered while the
+    primary fixtures move to schema_version 2.
+    """
     return {
         "schema_version": 1,
         "fixture": True,
@@ -590,24 +708,50 @@ def report_payload(report_id: str, job_id: str, status: str) -> dict:
     }
 
 
-def write_report_files(work_root: Path, report_id: str, job_id: str, status: str) -> tuple[str, str]:
+def report_csv_text(legacy: bool) -> str:
+    """Return canonical or legacy fixture report CSV text."""
+    if legacy:
+        return (
+            "metric,value\n"
+            "net_pnl,284.25\n"
+            "max_drawdown,-91.4\n"
+            "win_rate,0.58\n"
+            "trade_count,43\n"
+        )
+    return (
+        "section,name,value\n"
+        "metric,net_pnl,284.25\n"
+        "metric,gross_pnl,301.1\n"
+        "metric,total_fees,16.85\n"
+        "metric,final_balance,484.25\n"
+        "metric,trade_count,43\n"
+        "metric,signal_count,61\n"
+        "metric,win_rate,0.58\n"
+        "metric,max_drawdown,-91.4\n"
+        "section,timestamp,equity,drawdown,drawdown_pct\n"
+        "equity,1779000000000,200.0,0.0,0.0\n"
+        "equity,1779001200000,274.5,0.0,0.0\n"
+        "equity,1779002400000,228.3,-46.2,-0.168\n"
+        "equity,1779003600000,312.9,0.0,0.0\n"
+        "equity,1779004800000,484.25,0.0,0.0\n"
+    )
+
+
+def write_report_files(
+    work_root: Path, report_id: str, job_id: str, status: str, legacy: bool = False
+) -> tuple[str, str]:
     """Write fixture report files and return their paths."""
     report_root = work_root / "jobs" / job_id
     report_root.mkdir(parents=True, exist_ok=True)
     report_path = report_root / f"{report_id}.json"
     csv_path = report_root / f"{report_id}.csv"
-    report_path.write_text(
-        json.dumps(report_payload(report_id, job_id, status), indent=2),
-        encoding="utf-8",
+    payload = (
+        legacy_report_payload(report_id, job_id, status)
+        if legacy
+        else report_payload(report_id, job_id, status)
     )
-    csv_path.write_text(
-        "metric,value\n"
-        "net_pnl,284.25\n"
-        "max_drawdown,-91.4\n"
-        "win_rate,0.58\n"
-        "trade_count,43\n",
-        encoding="utf-8",
-    )
+    report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    csv_path.write_text(report_csv_text(legacy), encoding="utf-8")
     return str(report_path), str(csv_path)
 
 
@@ -626,13 +770,15 @@ def insert_jobs_and_reports(
     for job_id, job_type, status in jobs:
         insert_job(conn, job_id, job_type, status, timestamp_ms)
     reports = [
-        ("fixture-report-available", "fixture-job-completed", "available", True),
-        ("fixture-report-archived", "fixture-job-failed", "archived", True),
-        ("fixture-report-missing-file", "fixture-job-blocked", "available", False),
+        ("fixture-report-available", "fixture-job-completed", "available", True, False),
+        ("fixture-report-archived", "fixture-job-failed", "archived", True, False),
+        ("fixture-report-missing-file", "fixture-job-blocked", "available", False, True),
     ]
-    for report_id, job_id, status, write_files in reports:
+    for report_id, job_id, status, write_files, legacy in reports:
         if write_files:
-            report_path, csv_path = write_report_files(work_root, report_id, job_id, status)
+            report_path, csv_path = write_report_files(
+                work_root, report_id, job_id, status, legacy
+            )
         else:
             missing_root = work_root / "jobs" / job_id
             report_path = str(missing_root / "missing-report.json")
@@ -649,7 +795,11 @@ def insert_jobs_and_reports(
                 job_id,
                 report_id.replace("-", " ").title(),
                 status,
-                json_text({"fixture": True, "job_id": job_id, "status": status}),
+                json_text(
+                    legacy_report_payload(report_id, job_id, status)
+                    if legacy
+                    else report_summary_payload(report_id, job_id, status)
+                ),
                 report_path,
                 csv_path,
                 timestamp_ms,

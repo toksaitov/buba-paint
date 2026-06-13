@@ -644,13 +644,7 @@ function baseReport(): Omit<
 > {
   return {
     artifact_id: "fixture-artifact-available",
-    summary_json: JSON.stringify({
-      fixture: true,
-      net_pnl: 284.25,
-      max_drawdown: -91.4,
-      win_rate: 0.58,
-      trade_count: 43,
-    }),
+    summary_json: JSON.stringify(fixtureReportSummaryJsonPayload()),
     created_at: FIXTURE_TIMESTAMP_MS,
     updated_at: FIXTURE_TIMESTAMP_MS,
   };
@@ -691,6 +685,7 @@ export function fixtureReportMissingFile(): ResearchReport {
     job_id: "fixture-job-blocked",
     title: "Fixture Report Missing File",
     status: "available",
+    summary_json: JSON.stringify(fixtureReportLegacyJsonPayload()),
     report_path: "/research/jobs/fixture-job-blocked/missing-report.json",
     csv_path: "/research/jobs/fixture-job-blocked/missing-report.csv",
   };
@@ -698,30 +693,110 @@ export function fixtureReportMissingFile(): ResearchReport {
 
 export function fixtureReportJsonPayload(): Record<string, unknown> {
   return {
-    fixture: true,
+    schema_version: 2,
+    generated_at_ms: FIXTURE_INTERVAL_END_MS,
+    provenance: {
+      job_id: "fixture-job-completed",
+      job_type: "current_params",
+      artifact_id: "fixture-artifact-available",
+      start: "2026-05-14T18:41:19Z",
+      end: "2026-05-17T07:57:06Z",
+      start_ms: FIXTURE_INTERVAL_START_MS,
+      end_ms: FIXTURE_INTERVAL_END_MS,
+      balance: 200,
+      sets: ["EDGE_BPS=2.5", "TAKE_PROFIT_BPS=18"],
+      sweeps: [],
+      dashboard_image_ref: null,
+      research_worker_image_ref: null,
+    },
     metrics: {
       net_pnl: 284.25,
-      max_drawdown: -91.4,
-      win_rate: 0.58,
+      gross_pnl: 301.1,
+      total_fees: 16.85,
+      final_balance: 484.25,
       trade_count: 43,
+      wins: 25,
+      losses: 18,
+      win_rate: 0.58,
+      max_drawdown: -91.4,
+      max_drawdown_pct: -0.18,
+      signal_count: 61,
+      fill_count: 43,
+      no_fill_count: 18,
     },
-    params: {
-      balance: 10000,
-      EDGE_BPS: 2.5,
-      TAKE_PROFIT_BPS: 18,
+    source_comparison: {
+      status: "match",
+      source: {
+        net_pnl: 284.25,
+        gross_pnl: 301.1,
+        total_fees: 16.85,
+        final_balance: 484.25,
+        trade_count: 43,
+        signal_count: 61,
+      },
+      replay: {
+        net_pnl: 284.25,
+        gross_pnl: 301.1,
+        total_fees: 16.85,
+        final_balance: 484.25,
+        trade_count: 43,
+        signal_count: 61,
+      },
+      delta: {
+        net_pnl: 0,
+        final_balance: 0,
+        trade_count: 0,
+        signal_count: 0,
+      },
     },
     equity_curve: [
-      { ts: FIXTURE_INTERVAL_START_MS, equity: 10000.0 },
-      { ts: FIXTURE_INTERVAL_START_MS + 1_200_000, equity: 10056.1 },
-      { ts: FIXTURE_INTERVAL_START_MS + 2_400_000, equity: 10142.9 },
-      { ts: FIXTURE_INTERVAL_START_MS + 3_600_000, equity: 10210.7 },
-      { ts: FIXTURE_INTERVAL_START_MS + 4_800_000, equity: 10284.25 },
+      { ts: FIXTURE_INTERVAL_START_MS, equity: 200.0, event: "start", amount: 0 },
+      { ts: FIXTURE_INTERVAL_START_MS + 1_200_000, equity: 274.5, event: "trade", amount: 74.5 },
+      { ts: FIXTURE_INTERVAL_START_MS + 2_400_000, equity: 228.3, event: "trade", amount: -46.2 },
+      { ts: FIXTURE_INTERVAL_START_MS + 3_600_000, equity: 312.9, event: "trade", amount: 84.6 },
+      { ts: FIXTURE_INTERVAL_START_MS + 4_800_000, equity: 484.25, event: "trade", amount: 171.35 },
     ],
-    sweep_points: [
-      { EDGE_BPS: 1.0, net_pnl: 122.4 },
-      { EDGE_BPS: 2.5, net_pnl: 284.25 },
-      { EDGE_BPS: 4.0, net_pnl: 198.7 },
+    drawdown_curve: [
+      { ts: FIXTURE_INTERVAL_START_MS, equity: 200.0, high_water_mark: 200.0, drawdown: 0, drawdown_pct: 0 },
+      { ts: FIXTURE_INTERVAL_START_MS + 1_200_000, equity: 274.5, high_water_mark: 274.5, drawdown: 0, drawdown_pct: 0 },
+      { ts: FIXTURE_INTERVAL_START_MS + 2_400_000, equity: 228.3, high_water_mark: 274.5, drawdown: -46.2, drawdown_pct: -0.168 },
+      { ts: FIXTURE_INTERVAL_START_MS + 3_600_000, equity: 312.9, high_water_mark: 312.9, drawdown: 0, drawdown_pct: 0 },
+      { ts: FIXTURE_INTERVAL_START_MS + 4_800_000, equity: 484.25, high_water_mark: 484.25, drawdown: 0, drawdown_pct: 0 },
     ],
+    rejection_reasons: [
+      { reason: "spread_too_wide", count: 12 },
+      { reason: "insufficient_edge", count: 6 },
+    ],
+    diagnostics: [],
+    sweep: null,
+    steps: [
+      { index: 0, name: "verify_artifact", status: "completed", attempts: 1, error: null },
+      { index: 5, name: "write_report", status: "completed", attempts: 1, error: null },
+    ],
+  };
+}
+
+export function fixtureReportSummaryJsonPayload(): Record<string, unknown> {
+  const full = fixtureReportJsonPayload();
+  return {
+    schema_version: full.schema_version,
+    generated_at_ms: full.generated_at_ms,
+    provenance: full.provenance,
+    metrics: full.metrics,
+    source_comparison: full.source_comparison,
+    diagnostics: full.diagnostics,
+    sweep_summary: null,
+    steps: full.steps,
+  };
+}
+
+export function fixtureReportLegacyJsonPayload(): Record<string, unknown> {
+  return {
+    fixture: true,
+    net_pnl: 284.25,
+    max_drawdown: -91.4,
+    win_rate: 0.58,
+    trade_count: 43,
   };
 }
 

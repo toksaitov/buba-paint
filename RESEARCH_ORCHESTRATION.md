@@ -582,3 +582,24 @@ Expected local warnings:
 * Use digest-pinned GHCR images for deploys.
 * Preserve live run backups and QA evidence on disk.
 * Do not commit generated local backup directories.
+
+## Fixture Seed Coverage
+
+`scripts/seed-research-fixtures.py` seeds the operator-facing research tables:
+users, sessions, research_machines, run_artifacts, artifact_transfers,
+research_jobs, research_job_steps, research_job_events, and research_reports.
+Its fixture reports are canonical `schema_version` 2 documents that match the
+Rust report shape in `dashboard/server/src/research_reports.rs`, with one
+explicit legacy `schema_version` 1 report retained for parse-path coverage.
+
+The seed schema intentionally omits three tables that
+`dashboard/server/src/db.rs` defines: `research_machine_telemetry_state`,
+`research_machine_telemetry_samples`, and `research_job_templates`. The
+dashboard exercises telemetry and templates through mocked query hooks in unit
+tests, not through the seeded SQLite database, and there is no template fixture
+consumer, so seeding those tables would add schema surface with no consumer.
+Telemetry fixtures live in TypeScript as `fixtureMachineTelemetryState` and
+`fixtureMachineTelemetryResponse` in
+`dashboard/client/src/lib/research-fixtures.ts`. If a future workflow needs the
+seeded DB to drive telemetry or templates end to end, extend the seed `SCHEMA`
+and add populate helpers that mirror those `db.rs` definitions.
