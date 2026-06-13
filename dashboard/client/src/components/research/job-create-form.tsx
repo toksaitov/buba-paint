@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Banner,
   Button,
@@ -1096,8 +1096,6 @@ function BacktestFields({
   onChange,
 }: BacktestFieldsProps) {
   const isSweep = kind === "sweep";
-  const startInputRef = useRef<HTMLInputElement | null>(null);
-  const endInputRef = useRef<HTMLInputElement | null>(null);
   const resetIntervalConfirmation = (next: BacktestState): BacktestState => ({
     ...next,
     confirm_interval: false,
@@ -1185,7 +1183,6 @@ function BacktestFields({
           <FormField label="Start" required>
             {({ id }) => (
               <Input
-                ref={startInputRef}
                 id={id}
                 type="datetime-local"
                 value={state.start_iso}
@@ -1213,7 +1210,6 @@ function BacktestFields({
           <FormField label="End" required>
             {({ id }) => (
               <Input
-                ref={endInputRef}
                 id={id}
                 type="datetime-local"
                 value={state.end_iso}
