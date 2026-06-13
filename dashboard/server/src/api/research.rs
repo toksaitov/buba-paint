@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path as StdPath, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Extension;
 use axum::Json;
@@ -31,7 +30,7 @@ use crate::research_pipeline::{
     ArchiveSummary, ResearchPipelineConfig, archive_scratch_dbs, write_report_files,
 };
 use crate::research_reports::{append_report_json_field, report_analysis_source_exists};
-use crate::research_util::path_to_string;
+use crate::research_util::{current_epoch_ms, path_to_string};
 
 /// Response body for `GET /api/research/machines`.
 #[derive(serde::Serialize)]
@@ -2646,13 +2645,6 @@ fn json_u64(value: &serde_json::Value) -> Option<u64> {
         .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok()))
 }
 
-/// Return the current wall-clock millisecond epoch.
-fn current_epoch_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// Return one artifact by ID or a route-level not found error.
 async fn research_artifact_by_id(

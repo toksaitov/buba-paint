@@ -27,6 +27,7 @@ use buba_dashboard::research_pipeline::{
 use buba_dashboard::research_transfer::{
     ArtifactTransferConfig, ArtifactTransferWorker, clamp_operator_stale_after_ms,
 };
+use buba_dashboard::research_util::optional_value;
 use buba_dashboard::research_worker::LocalResearchWorker;
 
 /// Select the worker's work source from CLI configuration.
@@ -667,14 +668,6 @@ async fn send_heartbeat(
     if let Err(error) = publish_heartbeat_once(db, heartbeat, sampler, activity).await {
         tracing::warn!(?error, "research worker heartbeat failed");
     }
-}
-
-/// Normalize optional string settings.
-fn optional_value(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]

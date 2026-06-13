@@ -15,6 +15,7 @@ use buba_dashboard::api::ws_proxy;
 use buba_dashboard::auth::{self, AuthState, hash_password};
 use buba_dashboard::config::DashboardConfig;
 use buba_dashboard::db::DashboardDb;
+use buba_dashboard::research_util::optional_env;
 
 #[derive(Parser)]
 #[command(name = "buba-dashboard", version)]
@@ -543,12 +544,4 @@ async fn sigterm_future() {
 #[allow(clippy::unused_async)]
 async fn health() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({ "ok": true }))
-}
-
-/// Read a non-empty environment value as an optional setting.
-fn optional_env(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }

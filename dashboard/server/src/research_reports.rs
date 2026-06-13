@@ -8,7 +8,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -17,7 +16,7 @@ use serde_json::Value;
 use crate::db::ResearchJobStep;
 use crate::error::DashboardError;
 use crate::research_pipeline::ResearchPipelinePlan;
-use crate::research_util::path_to_string;
+use crate::research_util::{current_epoch_ms, optional_env, path_to_string};
 
 /// Rendered report artifacts ready for disk and metadata persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1000,12 +999,6 @@ fn parse_time_ms(value: &str) -> Option<u64> {
         .and_then(|dt| u64::try_from(dt.timestamp_millis()).ok())
 }
 
-/// Read an optional environment value.
-fn optional_env(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-}
 
 
 /// Convert durable job steps into compact summaries.
@@ -1193,13 +1186,6 @@ fn sqlite_ident(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
-/// Return the current epoch milliseconds.
-fn current_epoch_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 #[cfg(test)]
 mod tests {
