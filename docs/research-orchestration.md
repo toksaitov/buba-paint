@@ -17,8 +17,9 @@ The worker executes the same job and step pipeline regardless of where durable
 state lives. The seam is the `ResearchWorkBackend` trait in `research_backend.rs`,
 which defines the async operations the worker needs: lease the next step, mark a
 step running, complete, fail, or block a step, append job events, check job
-cancellation, upsert and verify artifacts, store report and artifact documents,
-and claim, progress, and recover transfers.
+cancellation, fetch and upsert artifacts, store report and artifact documents,
+and claim, progress, and recover transfers. Artifact verification is not a trait
+operation; it is one of the allowlisted step actions the worker runs.
 
 Two implementations satisfy the trait:
 
