@@ -10,9 +10,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::db::{
-    ResearchArtifact, ResearchArtifactRecord, ResearchReportRecord, ResearchStepLease,
-};
+use crate::db::{ResearchArtifactRecord, ResearchReportRecord, ResearchStepLease};
 use crate::error::DashboardError;
 use crate::research_artifacts;
 use crate::research_backend::ResearchWorkBackend;
@@ -22,6 +20,7 @@ use crate::research_pipeline::{
     ResearchPipelineConfig, ResearchPipelinePlan, archive_scratch_dbs, write_report_files,
 };
 use crate::research_reports::append_report_json_field;
+use crate::research_util::research_artifact_for_job_id;
 
 /// Durable research step names understood by the local worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,7 +404,7 @@ impl LocalResearchWorker {
         lease: &ResearchStepLease,
         step_kind: ResearchStepKind,
     ) -> Result<String, DashboardError> {
-        let artifact = research_artifact_for_job(db, lease).await?;
+        let artifact = research_artifact_for_job_id(db, lease.job.artifact_id.as_deref()).await?;
         let plan = pipeline.plan_for_job(&lease.job, artifact.as_ref())?;
         let command_kind = step_kind.command_kind().ok_or_else(|| {
             DashboardError::BadRequest(format!(
@@ -496,7 +495,7 @@ impl LocalResearchWorker {
                 "write_report cancelled before report generation".to_string(),
             ));
         }
-        let artifact = research_artifact_for_job(db, lease).await?;
+        let artifact = research_artifact_for_job_id(db, lease.job.artifact_id.as_deref()).await?;
         let plan = pipeline.plan_for_job(&lease.job, artifact.as_ref())?;
         let mut steps = db.get_research_job_steps(&lease.job.id).await?;
         for step in &mut steps {
@@ -856,24 +855,6 @@ async fn complete_or_block_pipeline_step(
             }))
         }
     }
-}
-
-/// Return the artifact referenced by one leased job, if any.
-async fn research_artifact_for_job(
-    db: &impl ResearchWorkBackend,
-    lease: &ResearchStepLease,
-) -> Result<Option<ResearchArtifact>, DashboardError> {
-    let Some(artifact_id) = lease.job.artifact_id.as_deref() else {
-        return Ok(None);
-    };
-    db.get_research_artifact(artifact_id).await?.map_or_else(
-        || {
-            Err(DashboardError::NotFound(format!(
-                "artifact '{artifact_id}' not found"
-            )))
-        },
-        |artifact| Ok(Some(artifact)),
-    )
 }
 
 /// Return the fresh cancelled lease when the operator cancelled the active step.

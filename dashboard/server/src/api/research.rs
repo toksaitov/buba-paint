@@ -30,7 +30,7 @@ use crate::research_pipeline::{
     ArchiveSummary, ResearchPipelineConfig, archive_scratch_dbs, write_report_files,
 };
 use crate::research_reports::{append_report_json_field, report_analysis_source_exists};
-use crate::research_util::{current_epoch_ms, path_to_string};
+use crate::research_util::{current_epoch_ms, path_to_string, research_artifact_for_job_id};
 
 /// Response body for `GET /api/research/machines`.
 #[derive(serde::Serialize)]
@@ -1769,7 +1769,8 @@ pub async fn regenerate_job_report(
     }
     let report_paths = resolve_regenerated_report_paths(&state, &detail.job.id, existing.as_ref())?;
     let summary_json = if supports_analysis_regeneration(&detail.job.job_type) {
-        let artifact = research_artifact_for_job(&state, &detail.job).await?;
+        let artifact =
+            research_artifact_for_job_id(&*state.db, detail.job.artifact_id.as_deref()).await?;
         let pipeline = pipeline_for_archive(&state)?;
         let mut plan = pipeline.plan_for_job(&detail.job, artifact.as_ref())?;
         plan.report_json_path.clone_from(&report_paths.report_path);
@@ -2414,7 +2415,8 @@ async fn archive_job_scratch_for_id(
                 detail.job.id
             ))
         })?;
-    let artifact = research_artifact_for_job(state, &detail.job).await?;
+    let artifact =
+        research_artifact_for_job_id(&*state.db, detail.job.artifact_id.as_deref()).await?;
     let pipeline = pipeline_for_archive(state)?;
     let plan = pipeline.plan_for_job(&detail.job, artifact.as_ref())?;
     let archive = archive_scratch_dbs(&plan)?;
@@ -2495,7 +2497,7 @@ async fn estimate_job_scratch_bytes(
     state: &AppState,
     job: &ResearchJob,
 ) -> Result<u64, DashboardError> {
-    let artifact = research_artifact_for_job(state, job).await?;
+    let artifact = research_artifact_for_job_id(&*state.db, job.artifact_id.as_deref()).await?;
     let pipeline = pipeline_for_archive(state)?;
     let plan = pipeline.plan_for_job(job, artifact.as_ref())?;
     let paths = scratch_db_family_paths(&plan.prepared_db_output_path)
@@ -2880,28 +2882,6 @@ fn delete_report_files(state: &AppState, report: &ResearchReport) -> Result<(), 
     remove_report_file(state, report.report_path.as_deref(), "report_path")?;
     remove_report_file(state, report.csv_path.as_deref(), "csv_path")?;
     Ok(())
-}
-
-/// Return the artifact referenced by one job, if present.
-async fn research_artifact_for_job(
-    state: &AppState,
-    job: &ResearchJob,
-) -> Result<Option<ResearchArtifact>, DashboardError> {
-    let Some(artifact_id) = job.artifact_id.as_deref() else {
-        return Ok(None);
-    };
-    state
-        .db
-        .get_research_artifact(artifact_id)
-        .await?
-        .map_or_else(
-            || {
-                Err(DashboardError::NotFound(format!(
-                    "artifact '{artifact_id}' not found"
-                )))
-            },
-            |artifact| Ok(Some(artifact)),
-        )
 }
 
 /// Build a research pipeline config for post-run scratch archival.
