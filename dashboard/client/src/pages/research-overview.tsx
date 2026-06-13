@@ -4,18 +4,23 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Banner,
   Button,
-  FormField,
-  Input,
   MetricCard,
   RelativeTime,
   SectionCard,
   StateEmpty,
   StatusChip,
-  Textarea,
 } from "../components/ui/dashboard-primitives";
 import { Loading } from "../components/common/loading";
 import { ConfirmDialog } from "../components/research/confirm-dialog";
-import { Dialog } from "../components/ui/dialog";
+import {
+  TemplateDialog,
+  type TemplateDialogMode,
+} from "../components/research/template-dialog";
+import {
+  RetentionPanel,
+  RetentionResult,
+  type RetentionSelection,
+} from "../components/research/retention-panel";
 import { useResearchArtifacts } from "../hooks/use-research-artifacts";
 import {
   useResearchJobTemplates,
@@ -43,25 +48,14 @@ import type {
   ResearchQueueJobItem,
   ResearchQueueResponse,
   ResearchQueueTransferItem,
-  ResearchRetentionArtifactCandidate,
-  ResearchRetentionJobCandidate,
-  ResearchRetentionReportCandidate,
   RetentionArchiveResponse,
   UpsertJobTemplateRequest,
 } from "../lib/research-types";
 import { formatBytes, humanize } from "../lib/utils";
 
-type TemplateDialogMode = "create" | "edit";
-
 interface TemplateDialogState {
   mode: TemplateDialogMode;
   template: ResearchJobTemplate | null;
-}
-
-interface RetentionSelection {
-  jobIds: string[];
-  reportIds: string[];
-  artifactIds: string[];
 }
 
 const EMPTY_SELECTION: RetentionSelection = {
@@ -664,331 +658,3 @@ function TemplateRow({
   );
 }
 
-function RetentionPanel({
-  jobs,
-  reports,
-  artifacts,
-  selection,
-  setSelection,
-}: {
-  jobs: ResearchRetentionJobCandidate[];
-  reports: ResearchRetentionReportCandidate[];
-  artifacts: ResearchRetentionArtifactCandidate[];
-  selection: RetentionSelection;
-  setSelection: (selection: RetentionSelection) => void;
-}) {
-  return (
-    <div className="space-y-3">
-      <RetentionCandidateGroup
-        title="Scratch DBs"
-        empty="No completed job scratch candidates."
-        rows={jobs}
-        selectedIds={selection.jobIds}
-        onSelect={(jobIds) => setSelection({ ...selection, jobIds })}
-        idFor={(candidate) => candidate.job.id}
-        labelFor={(candidate) => candidate.job.id}
-        subFor={(candidate) =>
-          `${jobTypeLabel(candidate.job.job_type)} · ${formatBytes(candidate.scratch_bytes)}`
-        }
-        eligibleFor={(candidate) => candidate.eligible}
-      />
-      <RetentionCandidateGroup
-        title="Reports"
-        empty="No report archive candidates."
-        rows={reports}
-        selectedIds={selection.reportIds}
-        onSelect={(reportIds) => setSelection({ ...selection, reportIds })}
-        idFor={(candidate) => candidate.report.id}
-        labelFor={(candidate) => candidate.report.title}
-        subFor={(candidate) => formatBytes(candidate.bytes)}
-        eligibleFor={(candidate) => candidate.eligible}
-      />
-      <RetentionCandidateGroup
-        title="Artifacts"
-        empty="No artifact archive candidates."
-        rows={artifacts}
-        selectedIds={selection.artifactIds}
-        onSelect={(artifactIds) =>
-          setSelection({ ...selection, artifactIds })
-        }
-        idFor={(candidate) => candidate.artifact.id}
-        labelFor={(candidate) => candidate.artifact.id}
-        subFor={(candidate) =>
-          `${formatBytes(candidate.bytes)} · ${candidate.active_dependency_count} active deps`
-        }
-        eligibleFor={(candidate) => candidate.eligible}
-      />
-    </div>
-  );
-}
-
-function RetentionCandidateGroup<T>({
-  title,
-  empty,
-  rows,
-  selectedIds,
-  onSelect,
-  idFor,
-  labelFor,
-  subFor,
-  eligibleFor,
-}: {
-  title: string;
-  empty: string;
-  rows: T[];
-  selectedIds: string[];
-  onSelect: (ids: string[]) => void;
-  idFor: (row: T) => string;
-  labelFor: (row: T) => string;
-  subFor: (row: T) => string;
-  eligibleFor: (row: T) => boolean;
-}) {
-  const eligibleRows = rows.filter(eligibleFor);
-  if (eligibleRows.length === 0) {
-    return (
-      <div>
-        <div className="mb-1 text-[12px] font-semibold">{title}</div>
-        <StateEmpty message={empty} />
-      </div>
-    );
-  }
-  return (
-    <div>
-      <div className="mb-1 text-[12px] font-semibold">{title}</div>
-      <div className="space-y-1.5">
-        {eligibleRows.map((row) => {
-          const id = idFor(row);
-          const checked = selectedIds.includes(id);
-          return (
-            <label
-              key={id}
-              className="flex items-start gap-2 border border-border px-2 py-1.5 text-[12px]"
-            >
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={(event) => {
-                  const next = event.currentTarget.checked
-                    ? [...selectedIds, id]
-                    : selectedIds.filter((value) => value !== id);
-                  onSelect(next);
-                }}
-                className="mt-0.5"
-              />
-              <span className="min-w-0">
-                <span className="block truncate font-mono text-[11px]">
-                  {labelFor(row)}
-                </span>
-                <span className="block text-[11px] text-muted">
-                  {subFor(row)}
-                </span>
-              </span>
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function RetentionResult({ result }: { result: RetentionArchiveResponse }) {
-  const archived =
-    result.jobs.filter((row) => row.status === "archived").length +
-    result.reports.filter((row) => row.status === "archived").length +
-    result.artifacts.filter((row) => row.status === "archived").length;
-  const errors =
-    result.jobs.filter((row) => row.status === "error").length +
-    result.reports.filter((row) => row.status === "error").length +
-    result.artifacts.filter((row) => row.status === "error").length;
-  return (
-    <Banner
-      tone={errors > 0 ? "warning" : "success"}
-      title="Retention archive complete"
-    >
-      Archived {archived} item{archived === 1 ? "" : "s"}; {errors} error
-      {errors === 1 ? "" : "s"}.
-    </Banner>
-  );
-}
-
-function TemplateDialog({
-  open,
-  mode,
-  template,
-  artifacts,
-  pending,
-  error,
-  onSubmit,
-  onClose,
-}: {
-  open: boolean;
-  mode: TemplateDialogMode;
-  template: ResearchJobTemplate | null;
-  artifacts: { id: string; status: string }[];
-  pending: boolean;
-  error: string | null;
-  onSubmit: (req: UpsertJobTemplateRequest) => void;
-  onClose: () => void;
-}) {
-  const [name, setName] = useState(template?.name ?? "");
-  const [description, setDescription] = useState(template?.description ?? "");
-  const [jobType, setJobType] = useState<"current_params" | "sweep">(
-    template?.job_type ?? "current_params",
-  );
-  const [artifactId, setArtifactId] = useState(template?.artifact_id ?? "");
-  const [priority, setPriority] = useState(String(template?.priority ?? 0));
-  const [paramsJson, setParamsJson] = useState(template?.params_json ?? "{}");
-  const params = parseParams(paramsJson);
-  const priorityNumber = Number(priority);
-  const canSubmit =
-    name.trim().length > 0 &&
-    params.error == null &&
-    Number.isInteger(priorityNumber) &&
-    !pending;
-
-  return (
-    <Dialog
-      open={open}
-      onClose={pending ? () => undefined : onClose}
-      title={mode === "edit" ? "Edit template" : "Create template"}
-      description="Templates are shared defaults for backtest and sweep jobs. The easiest way to build one is to configure a job on the New Job page and click Save as template there."
-      width="lg"
-    >
-      <div className="space-y-3">
-        {error && (
-          <Banner tone="danger" title="Template save failed">
-            {error}
-          </Banner>
-        )}
-        <FormField label="Name" required>
-          {({ id }) => (
-            <Input
-              id={id}
-              value={name}
-              onChange={(event) => setName(event.currentTarget.value)}
-            />
-          )}
-        </FormField>
-        <FormField label="Description" hint="Optional">
-          {({ id }) => (
-            <Textarea
-              id={id}
-              value={description}
-              onChange={(event) => setDescription(event.currentTarget.value)}
-              minRows={3}
-            />
-          )}
-        </FormField>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <FormField label="Job type">
-            {({ id }) => (
-              <select
-                id={id}
-                value={jobType}
-                onChange={(event) =>
-                  setJobType(
-                    event.currentTarget.value as "current_params" | "sweep",
-                  )
-                }
-                className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
-              >
-                <option value="current_params">Backtest</option>
-                <option value="sweep">Sweep</option>
-              </select>
-            )}
-          </FormField>
-          <FormField label="Artifact" hint="Optional">
-            {({ id }) => (
-              <select
-                id={id}
-                value={artifactId}
-                onChange={(event) => setArtifactId(event.currentTarget.value)}
-                className="w-full border border-border bg-bg px-2 py-1.5 text-sm"
-              >
-                <option value="">None</option>
-                {artifacts
-                  .filter((artifact) => artifact.status === "available")
-                  .map((artifact) => (
-                    <option key={artifact.id} value={artifact.id}>
-                      {artifact.id}
-                    </option>
-                  ))}
-              </select>
-            )}
-          </FormField>
-          <FormField label="Priority">
-            {({ id }) => (
-              <Input
-                id={id}
-                value={priority}
-                inputMode="numeric"
-                onChange={(event) => setPriority(event.currentTarget.value)}
-              />
-            )}
-          </FormField>
-        </div>
-        <FormField label="Params JSON" required>
-          {({ id }) => (
-            <div className="space-y-1">
-              <Textarea
-                id={id}
-                value={paramsJson}
-                onChange={(event) => setParamsJson(event.currentTarget.value)}
-                minRows={8}
-              />
-              {params.error && (
-                <div className="text-[12px] text-accent-red">
-                  {params.error}
-                </div>
-              )}
-            </div>
-          )}
-        </FormField>
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose} disabled={pending}>
-            Cancel
-          </Button>
-          <Button
-            tone="accent"
-            disabled={!canSubmit}
-            state={pending ? "pending" : "idle"}
-            onClick={() =>
-              onSubmit({
-                name: name.trim(),
-                description: description.trim() || undefined,
-                job_type: jobType,
-                artifact_id: artifactId || undefined,
-                priority: priorityNumber,
-                params: params.value,
-              })
-            }
-          >
-            Save template
-          </Button>
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
-function parseParams(value: string): {
-  value: Record<string, unknown>;
-  error: string | null;
-} {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (
-      parsed == null ||
-      typeof parsed !== "object" ||
-      Array.isArray(parsed)
-    ) {
-      return { value: {}, error: "Params must be a JSON object." };
-    }
-    return { value: parsed as Record<string, unknown>, error: null };
-  } catch (error) {
-    return {
-      value: {},
-      error: error instanceof Error ? error.message : "Invalid JSON.",
-    };
-  }
-}
