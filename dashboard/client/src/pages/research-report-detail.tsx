@@ -52,6 +52,10 @@ import {
   reportTone,
 } from "../lib/research-permissions";
 import {
+  formatInteger,
+  formatMetricUsd,
+  formatPercent,
+  formatUsd,
   netPnlMetricLabel,
   parseReportPayload,
   parseReportSummary,
@@ -865,24 +869,6 @@ function formatChartAxisValue(value: number): string {
   if (abs >= 100) return `${sign}$${abs.toFixed(0)}`;
   if (abs >= 10) return `${sign}$${abs.toFixed(1)}`;
   return `${sign}$${abs.toFixed(2)}`;
-}
-
-function formatMetricUsd(value: number | null | undefined): string {
-  return typeof value === "number" ? formatSignedUsd(value) : "n/a";
-}
-
-function formatUsd(value: number | null | undefined): string {
-  return typeof value === "number"
-    ? formatSignedUsd(value).replace("+", "")
-    : "n/a";
-}
-
-function formatPercent(value: number | null | undefined): string {
-  return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "n/a";
-}
-
-function formatInteger(value: number | null | undefined): string {
-  return typeof value === "number" ? value.toLocaleString() : "n/a";
 }
 
 function formatSignedInteger(value: number | null | undefined): string {

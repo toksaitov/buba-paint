@@ -1,4 +1,5 @@
 import type { ResearchReport } from "./research-types";
+import { formatSignedUsd } from "./utils";
 
 export interface ReportProvenance {
   job_id?: string;
@@ -478,4 +479,22 @@ function metricDesc(
 
 function distinct(values: unknown[]): string[] {
   return Array.from(new Set(values.map((value) => JSON.stringify(value))));
+}
+
+export function formatMetricUsd(value: number | null | undefined): string {
+  return typeof value === "number" ? formatSignedUsd(value) : "n/a";
+}
+
+export function formatUsd(value: number | null | undefined): string {
+  return typeof value === "number"
+    ? formatSignedUsd(value).replace("+", "")
+    : "n/a";
+}
+
+export function formatPercent(value: number | null | undefined): string {
+  return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "n/a";
+}
+
+export function formatInteger(value: number | null | undefined): string {
+  return typeof value === "number" ? value.toLocaleString() : "n/a";
 }

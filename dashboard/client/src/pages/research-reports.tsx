@@ -19,6 +19,9 @@ import { StatusFilter } from "../components/research/status-filter";
 import { useResearchReports } from "../hooks/use-research-reports";
 import { useRememberResearchListReturn } from "../hooks/use-research-return-to";
 import {
+  formatInteger,
+  formatMetricUsd,
+  formatPercent,
   netPnlMetricLabel,
   parseReportSummary,
   reportHasSourceMismatch,
@@ -36,7 +39,7 @@ import {
   setQueryParam,
   updateQueryParam,
 } from "../lib/research-list-url-state";
-import { formatSignedUsd, humanize, truncateMiddle } from "../lib/utils";
+import { humanize, truncateMiddle } from "../lib/utils";
 
 const ALL_STATUSES: ReportStatus[] = ["available", "archived"];
 const JOB_TYPES: Array<"all" | JobType | "unknown"> = [
@@ -474,14 +477,3 @@ function setSelectedReportIds(params: URLSearchParams, ids: readonly string[]) {
   }
 }
 
-function formatMetricUsd(value: number | null | undefined): string {
-  return typeof value === "number" ? formatSignedUsd(value) : "n/a";
-}
-
-function formatPercent(value: number | null | undefined): string {
-  return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "n/a";
-}
-
-function formatInteger(value: number | null | undefined): string {
-  return typeof value === "number" ? value.toLocaleString() : "n/a";
-}

@@ -16,11 +16,14 @@ import {
 import {
   bestReportLabel,
   comparisonWarnings,
+  formatInteger,
+  formatMetricUsd,
+  formatPercent,
   netPnlMetricLabel,
   parseReportPayload,
   reportHasSourceMismatch,
 } from "../lib/research-report-analysis";
-import { formatDateTime, formatSignedUsd, humanize } from "../lib/utils";
+import { formatDateTime, humanize } from "../lib/utils";
 
 export function ResearchReportComparePage() {
   const [params] = useSearchParams();
@@ -219,14 +222,3 @@ function metricForSort(value: number | null | undefined): number {
     : Number.NEGATIVE_INFINITY;
 }
 
-function formatMetricUsd(value: number | null | undefined): string {
-  return typeof value === "number" ? formatSignedUsd(value) : "n/a";
-}
-
-function formatPercent(value: number | null | undefined): string {
-  return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "n/a";
-}
-
-function formatInteger(value: number | null | undefined): string {
-  return typeof value === "number" ? value.toLocaleString() : "n/a";
-}
