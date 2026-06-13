@@ -11,4 +11,5 @@ pub mod research_export;
 pub mod research_pipeline;
 pub mod research_reports;
 pub mod research_transfer;
+pub mod research_util;
 pub mod research_worker;

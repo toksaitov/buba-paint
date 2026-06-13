@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::db::ResearchJobStep;
 use crate::error::DashboardError;
 use crate::research_pipeline::ResearchPipelinePlan;
+use crate::research_util::path_to_string;
 
 /// Rendered report artifacts ready for disk and metadata persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1006,10 +1007,6 @@ fn optional_env(name: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-/// Convert path to lossy display string.
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
 
 /// Convert durable job steps into compact summaries.
 fn step_summaries(steps: &[ResearchJobStep]) -> Vec<StepSummary> {

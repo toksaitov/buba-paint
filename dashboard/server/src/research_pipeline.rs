@@ -19,6 +19,7 @@ use crate::error::DashboardError;
 use crate::research_artifacts;
 use crate::research_backend::ResearchWorkBackend;
 use crate::research_reports;
+use crate::research_util::path_to_string;
 
 /// Static configuration required to plan and run local research jobs.
 #[derive(Debug, Clone)]
@@ -872,10 +873,6 @@ fn sqlite_family_paths(path: &Path) -> Vec<PathBuf> {
     ]
 }
 
-/// Convert a path to a UTF-8-ish display string.
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
 
 #[cfg(test)]
 #[path = "tests/research_pipeline_tests.rs"]

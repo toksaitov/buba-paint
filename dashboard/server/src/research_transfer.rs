@@ -12,6 +12,7 @@ use crate::db::{ArtifactTransfer, ResearchArtifact, ResearchArtifactRecord, Rese
 use crate::error::DashboardError;
 use crate::research_artifacts::{self, ArtifactManifest};
 use crate::research_backend::ResearchWorkBackend;
+use crate::research_util::path_to_string;
 
 /// Minimum operator-configured stale recovery age in milliseconds.
 ///
@@ -667,10 +668,6 @@ fn same_path(left: &Path, right: &Path) -> Result<bool, DashboardError> {
     Ok(normalize_path(left)? == normalize_path(right)?)
 }
 
-/// Convert a path to a stable lossy string.
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
 
 /// Raise an operator-configured stale recovery age to the single-worker safety floor.
 ///

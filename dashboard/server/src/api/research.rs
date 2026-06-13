@@ -31,6 +31,7 @@ use crate::research_pipeline::{
     ArchiveSummary, ResearchPipelineConfig, archive_scratch_dbs, write_report_files,
 };
 use crate::research_reports::{append_report_json_field, report_analysis_source_exists};
+use crate::research_util::path_to_string;
 
 /// Response body for `GET /api/research/machines`.
 #[derive(serde::Serialize)]
@@ -3187,10 +3188,6 @@ fn normalize_path(path: &std::path::Path) -> Result<PathBuf, DashboardError> {
     Ok(out)
 }
 
-/// Convert a path to a display string for API storage and errors.
-fn path_to_string(path: &std::path::Path) -> String {
-    path.to_string_lossy().to_string()
-}
 
 /// Validate a manifest before trusting it as remote metadata.
 fn validate_artifact_manifest(

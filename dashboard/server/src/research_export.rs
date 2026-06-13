@@ -17,6 +17,7 @@ use crate::research_artifacts::{
     ArtifactFileSpec, ArtifactManifest, build_manifest, checksum_text, write_manifest_files,
 };
 use crate::research_pipeline::ResearchPipelineConfig;
+use crate::research_util::path_to_string;
 
 /// Validated plan for exporting one runtime data set into the research work root.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -650,10 +651,6 @@ fn now_ms() -> Result<u64, DashboardError> {
     Ok(duration.as_millis() as u64)
 }
 
-/// Convert a path to a display string.
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
 
 #[cfg(test)]
 #[path = "tests/research_export_tests.rs"]
