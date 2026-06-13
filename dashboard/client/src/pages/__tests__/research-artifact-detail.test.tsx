@@ -60,6 +60,8 @@ import {
   useResearchArtifactChecksums,
 } from "../../hooks/use-research-artifacts";
 import { useResearchMachines } from "../../hooks/use-research-machines";
+import { useResearchTransfers } from "../../hooks/use-research-transfers";
+import { useResearchJobs } from "../../hooks/use-research-jobs";
 import { verifyResearchArtifact } from "../../lib/research-api";
 import { useAuthStore } from "../../stores/auth-store";
 import {
@@ -71,6 +73,8 @@ import {
 const mockUseArtifact = vi.mocked(useResearchArtifact);
 const mockUseChecksums = vi.mocked(useResearchArtifactChecksums);
 const mockUseMachines = vi.mocked(useResearchMachines);
+const mockUseTransfers = vi.mocked(useResearchTransfers);
+const mockUseJobs = vi.mocked(useResearchJobs);
 const mockVerify = vi.mocked(verifyResearchArtifact);
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -208,5 +212,40 @@ describe("ResearchArtifactDetailPage - bad checksum", () => {
     expect(screen.getByLabelText(/source machine id/i)).toHaveValue(
       "fixture-live",
     );
+  });
+
+  it("humanizes linked transfer and job enums", () => {
+    mockUseTransfers.mockReturnValue({
+      data: {
+        transfers: [
+          {
+            id: "t-1",
+            artifact_id: "fixture-artifact-bad-checksum",
+            source_machine_id: "fixture-live",
+            dest_machine_id: "fixture-research",
+            status: "running",
+          },
+        ],
+      },
+    } as ReturnType<typeof useResearchTransfers>);
+    mockUseJobs.mockReturnValue({
+      data: {
+        jobs: [
+          {
+            id: "j-1",
+            artifact_id: "fixture-artifact-bad-checksum",
+            job_type: "current_params",
+            status: "completed",
+          },
+        ],
+      },
+    } as ReturnType<typeof useResearchJobs>);
+    render(<ResearchArtifactDetailPage />, { wrapper });
+
+    expect(screen.getAllByText("Running").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Backtest").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Completed").length).toBeGreaterThan(0);
+    expect(screen.queryByText("current_params")).not.toBeInTheDocument();
+    expect(screen.queryByText("running")).not.toBeInTheDocument();
   });
 });

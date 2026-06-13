@@ -43,6 +43,7 @@ import {
   checksumTone,
   getActionGateState,
   getAllowedActions,
+  jobTypeLabel,
   permissionHint,
 } from "../lib/research-permissions";
 import type {
@@ -453,7 +454,7 @@ export function ResearchArtifactDetailPage() {
                 <span className="ml-2 text-muted">
                   {t.source_machine_id ?? "-"} → {t.dest_machine_id ?? "-"}
                 </span>
-                <span className="ml-2 text-muted">{t.status}</span>
+                <span className="ml-2 text-muted">{humanize(t.status)}</span>
               </li>
             ))}
           </ul>
@@ -473,8 +474,10 @@ export function ResearchArtifactDetailPage() {
                 >
                   {j.id}
                 </Link>
-                <span className="ml-2 text-muted">{j.job_type}</span>
-                <span className="ml-2 text-muted">{j.status}</span>
+                <span className="ml-2 text-muted">
+                  {jobTypeLabel(j.job_type)}
+                </span>
+                <span className="ml-2 text-muted">{humanize(j.status)}</span>
               </li>
             ))}
           </ul>
