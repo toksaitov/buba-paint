@@ -1751,14 +1751,14 @@ pub async fn regenerate_job_report(
     require_admin(&claims)?;
     let detail = job_detail(&state, &id).await?;
     let existing = state.db.get_research_report_for_job(&id).await?;
-    if existing.is_none() && !can_regenerate_report_for_status(&detail.job.status) {
+    if existing.is_none() && !report_status_allows_regeneration(&detail.job.status) {
         return Err(DashboardError::BadRequest(format!(
             "research job '{}' is not ready for report regeneration from status '{}'",
             detail.job.id, detail.job.status
         )));
     }
     let report_paths = resolve_regenerated_report_paths(&state, &detail.job.id, existing.as_ref())?;
-    let summary_json = if supports_analysis_regeneration(&detail.job.job_type) {
+    let summary_json = if job_type_supports_report_regeneration(&detail.job.job_type) {
         let artifact =
             research_artifact_for_job_id(&*state.db, detail.job.artifact_id.as_deref()).await?;
         let pipeline = pipeline_for_archive(&state)?;
@@ -1804,8 +1804,16 @@ pub async fn regenerate_job_report(
 }
 
 /// Return whether a research job type can regenerate analysis outputs.
-fn supports_analysis_regeneration(job_type: &str) -> bool {
+fn job_type_supports_report_regeneration(job_type: &str) -> bool {
     matches!(job_type, JOB_TYPE_CURRENT_PARAMS | JOB_TYPE_SWEEP)
+}
+
+/// Return whether a job status is ready for report regeneration without execution.
+fn report_status_allows_regeneration(status: &str) -> bool {
+    matches!(
+        status,
+        STATUS_COMPLETED | STATUS_BLOCKED | STATUS_FAILED | STATUS_CANCELLED | STATUS_RETRYABLE
+    )
 }
 
 /// `POST /api/research/jobs/:id/archive-scratch`
@@ -2732,14 +2740,6 @@ struct RegeneratedReportPaths {
     report_path: PathBuf,
     /// CSV report path.
     csv_path: PathBuf,
-}
-
-/// Return whether a job status is ready for report regeneration without execution.
-fn can_regenerate_report_for_status(status: &str) -> bool {
-    matches!(
-        status,
-        STATUS_COMPLETED | STATUS_BLOCKED | STATUS_FAILED | STATUS_CANCELLED | STATUS_RETRYABLE
-    )
 }
 
 /// Resolve report paths from existing metadata or default job paths.
