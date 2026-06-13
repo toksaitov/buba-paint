@@ -266,6 +266,8 @@ pub async fn upsert_artifact(
 }
 
 /// `PUT /api/research/workers/artifacts/:id/documents`
+///
+/// Document bodies are stored verbatim; only the id is validated for path safety.
 pub async fn store_artifact_documents(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -340,6 +342,8 @@ pub async fn upsert_report(
 }
 
 /// `PUT /api/research/workers/reports/:id/documents`
+///
+/// Document bodies are stored verbatim; only the id is validated for path safety.
 pub async fn store_report_documents(
     State(state): State<AppState>,
     headers: HeaderMap,

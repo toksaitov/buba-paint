@@ -882,3 +882,172 @@ async fn worker_protocol_maps_internal_error_body_into_error() {
     }
     std::fs::remove_dir_all(&work_root).ok();
 }
+
+/// Percent-encode every byte of `id` so an unsafe document id arrives as a
+/// single axum path capture instead of extra route segments.
+fn encode_path_segment(id: &str) -> String {
+    use std::fmt::Write;
+    let mut encoded = String::with_capacity(id.len());
+    for byte in id.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                let _ = write!(encoded, "%{byte:02X}");
+            }
+        }
+    }
+    encoded
+}
+
+/// Verifies the artifact document upload route rejects path-unsafe ids with 400
+/// and writes nothing under the controller work root.
+#[tokio::test]
+async fn worker_protocol_rejects_unsafe_artifact_document_ids() {
+    let work_root = unique_work_root();
+    let (base_url, db) = spawn_controller(&work_root).await;
+    seed_backtest_job(&db).await;
+    let client = reqwest::Client::new();
+
+    for unsafe_id in ["../escape", ".hidden", "a/b"] {
+        let response = client
+            .put(format!(
+                "{base_url}/api/research/workers/artifacts/{}/documents",
+                encode_path_segment(unsafe_id)
+            ))
+            .header("x-buba-research-worker-token", TEST_TOKEN)
+            .json(&serde_json::json!({"manifest_json": "{\"files\":[]}"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "artifact document upload should reject id {unsafe_id}"
+        );
+    }
+
+    assert!(
+        !work_root.join("artifacts").exists(),
+        "rejected artifact uploads must not create any artifacts directory"
+    );
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
+/// Verifies the report document upload route rejects path-unsafe ids with 400
+/// and writes nothing under the controller work root.
+#[tokio::test]
+async fn worker_protocol_rejects_unsafe_report_document_ids() {
+    let work_root = unique_work_root();
+    let (base_url, db) = spawn_controller(&work_root).await;
+    seed_backtest_job(&db).await;
+    let client = reqwest::Client::new();
+
+    for unsafe_id in ["../escape", ".hidden", "a/b"] {
+        let response = client
+            .put(format!(
+                "{base_url}/api/research/workers/reports/{}/documents",
+                encode_path_segment(unsafe_id)
+            ))
+            .header("x-buba-research-worker-token", TEST_TOKEN)
+            .json(&serde_json::json!({
+                "report_json": "{\"net_pnl\":1.5}",
+                "report_csv": "metric,value\n",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "report document upload should reject id {unsafe_id}"
+        );
+    }
+
+    assert!(
+        !work_root.join("reports").exists(),
+        "rejected report uploads must not create any reports directory"
+    );
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
+/// Pins the documents-endpoint malformed-JSON product decision: `report_json`
+/// and `manifest_json` are stored verbatim (passthrough), not JSON-validated,
+/// so a non-JSON body for a safe id still writes and returns 200.
+#[tokio::test]
+async fn worker_protocol_documents_store_malformed_json_verbatim() {
+    let work_root = unique_work_root();
+    let (base_url, db) = spawn_controller(&work_root).await;
+    let job_id = seed_backtest_job(&db).await;
+    let client = reqwest::Client::new();
+
+    let malformed = "{not valid json";
+    let report = db
+        .create_or_update_research_report(&crate::db::ResearchReportRecord {
+            job_id: &job_id,
+            artifact_id: Some("artifact-1"),
+            title: "Malformed passthrough report",
+            status: "available",
+            summary_json: None,
+            report_path: None,
+            csv_path: None,
+        })
+        .await
+        .unwrap();
+
+    let response = client
+        .put(format!(
+            "{base_url}/api/research/workers/reports/{}/documents",
+            encode_path_segment(&report.id)
+        ))
+        .header("x-buba-research-worker-token", TEST_TOKEN)
+        .json(&serde_json::json!({
+            "report_json": malformed,
+            "report_csv": "metric,value\n",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "documents endpoint stores payloads verbatim and does not validate JSON"
+    );
+
+    let stored = db.get_research_report(&report.id).await.unwrap().unwrap();
+    let report_path = stored.report_path.expect("report path set");
+    assert_eq!(std::fs::read_to_string(&report_path).unwrap(), malformed);
+    std::fs::remove_dir_all(&work_root).ok();
+}
+
+/// Tabular check that `require_safe_document_id` accepts plain ids and rejects
+/// empty, dotfile, parent-escape, separator, and non-ASCII names.
+#[test]
+fn require_safe_document_id_accepts_and_rejects() {
+    let accepted = ["artifact-1", "report_2", "a.b.c", "ABC123", "x"];
+    for id in accepted {
+        assert!(
+            super::require_safe_document_id(id).is_ok(),
+            "expected '{id}' to be accepted"
+        );
+    }
+
+    let rejected = [
+        "",
+        ".hidden",
+        "..",
+        "../escape",
+        "a/b",
+        "a\\b",
+        "café",
+        "with space",
+    ];
+    for id in rejected {
+        let result = super::require_safe_document_id(id);
+        assert!(
+            matches!(result, Err(crate::error::DashboardError::BadRequest(_))),
+            "expected '{id}' to be rejected with BadRequest, got {result:?}"
+        );
+    }
+}
