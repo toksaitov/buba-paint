@@ -111,3 +111,12 @@ export function formatDurationShort(ms: number): string {
   }
   return `${seconds}s`;
 }
+
+const RANKED_BY_LABELS: Record<string, string> = {
+  pnl: "PnL",
+  calibrated_pnl: "Calibrated PnL",
+};
+
+export function rankedByLabel(key: string): string {
+  return RANKED_BY_LABELS[key] ?? key;
+}

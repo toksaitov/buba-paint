@@ -10,6 +10,7 @@ import {
   formatUsd,
   localTimeZoneLabel,
   pnlColor,
+  rankedByLabel,
 } from "../utils";
 
 describe("cn", () => {
@@ -127,5 +128,17 @@ describe("pnlColor", () => {
 
   test("zero returns muted", () => {
     expect(pnlColor(0)).toBe("text-muted");
+  });
+});
+
+describe("rankedByLabel", () => {
+  test("maps acronym ranking keys to cased labels", () => {
+    expect(rankedByLabel("pnl")).toBe("PnL");
+    expect(rankedByLabel("calibrated_pnl")).toBe("Calibrated PnL");
+  });
+
+  test("passes through unmapped keys unchanged", () => {
+    expect(rankedByLabel("win_rate")).toBe("win_rate");
+    expect(rankedByLabel("max_drawdown")).toBe("max_drawdown");
   });
 });

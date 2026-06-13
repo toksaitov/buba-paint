@@ -65,6 +65,7 @@ import {
   formatDateTime,
   formatSignedUsd,
   humanize,
+  rankedByLabel,
 } from "../lib/utils";
 
 function formatProvenanceInterval(
@@ -558,7 +559,7 @@ export function ResearchReportDetailPage() {
       </SectionCard>
 
       {sweep && (
-        <SectionCard title={`Sweep ranking by ${humanize(sweep.ranked_by)}`}>
+        <SectionCard title={`Sweep ranking by ${rankedByLabel(sweep.ranked_by)}`}>
           {sweep.rows.length === 0 ? (
             <StateEmpty message="No sweep rows are available." />
           ) : (
@@ -570,7 +571,7 @@ export function ResearchReportDetailPage() {
                     {[...sweep.parameter_columns, ...sweep.metric_columns].map(
                       (column) => (
                         <th key={column} className="px-2 py-1 font-semibold">
-                          {column}
+                          {rankedByLabel(column)}
                         </th>
                       ),
                     )}
