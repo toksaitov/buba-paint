@@ -114,7 +114,7 @@ gh auth refresh -s write:packages
 
 The generated research `.env` sets `BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh` and `BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`. That lets the worker container use the WSL SSH alias `buba-paint` for live-to-research artifact transfers and recover killed transfer workers after the stale window. The worker image includes `rsync` and `openssh-client`.
 
-The worker heartbeat path is token-authenticated with `BUBA_RESEARCH_WORKER_TOKEN`. In the temporary standalone research stack, `BUBA_RESEARCH_CONTROLLER_URL` points to `http://research-dashboard:3001`, so the worker updates the local research dashboard machine row. For the final central-control deployment, point `BUBA_RESEARCH_CONTROLLER_URL` at the main dashboard URL and configure the same `BUBA_RESEARCH_WORKER_TOKEN` on that dashboard.
+Controller-based central control is the current model. `BUBA_RESEARCH_CONTROLLER_URL` together with `BUBA_RESEARCH_WORKER_TOKEN` makes the worker lease and persist all job, step, transfer, report, and artifact work through that controller over the worker-token API and report telemetry to it; the token authenticates every worker-token endpoint, not only heartbeats. The research stack points `BUBA_RESEARCH_CONTROLLER_URL` at its co-located `http://research-dashboard:3001`. To run the worker against the main dashboard instead, point the URL there and configure the same `BUBA_RESEARCH_WORKER_TOKEN` on that dashboard. Without a controller URL the worker falls back to the shared local database.
 
 Remote research checks:
 
