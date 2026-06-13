@@ -1406,6 +1406,58 @@ async fn block_research_step_updates_job_state() {
     assert_eq!(job.status, "blocked");
 }
 
+/// Verifies that a step exceeding the attempt cap is failed on the next lease
+/// attempt rather than re-leased forever.
+#[tokio::test]
+async fn lease_next_research_step_fails_poison_step_at_attempt_cap() {
+    let db = test_db();
+    let user = db.create_user("researcher", "hash", "admin").await.unwrap();
+    let job = db
+        .create_research_job("export", None, &user.id, 0, None)
+        .await
+        .unwrap();
+
+    let mut now = 1_000;
+    let lease_duration = 500;
+    let mut step_id = String::new();
+    for expected_attempt in 1..=RESEARCH_STEP_MAX_ATTEMPTS {
+        let lease = db
+            .lease_next_research_step_at("worker-a", now, lease_duration)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(lease.step.attempts, expected_attempt);
+        assert_eq!(lease.step.status, "leased");
+        step_id = lease.step.id.clone();
+        now += lease_duration + 1;
+    }
+
+    let poisoned = db
+        .lease_next_research_step_at("worker-b", now, lease_duration)
+        .await
+        .unwrap();
+    assert!(poisoned.is_none());
+
+    let steps = db.get_research_job_steps(&job.id).await.unwrap();
+    let failed_step = steps
+        .iter()
+        .find(|step| step.id == step_id)
+        .expect("poison step present");
+    assert_eq!(failed_step.status, "failed");
+    assert_eq!(failed_step.attempts, RESEARCH_STEP_MAX_ATTEMPTS);
+    assert_eq!(failed_step.lease_owner, None);
+    assert_eq!(failed_step.leased_until_ms, None);
+    assert!(
+        failed_step
+            .error
+            .as_deref()
+            .is_some_and(|message| message.contains("maximum"))
+    );
+
+    let job = db.get_research_job(&job.id).await.unwrap().unwrap();
+    assert_eq!(job.status, "failed");
+}
+
 /// Verifies operator step retry, cancel, and blocker resolution controls.
 #[tokio::test]
 async fn research_step_retry_cancel_and_resolve_controls_update_job_state() {

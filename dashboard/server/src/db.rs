@@ -688,6 +688,14 @@ pub const RESEARCH_TELEMETRY_MAX_LIMIT: usize = 720;
 /// Retention window for research machine telemetry samples.
 pub const RESEARCH_TELEMETRY_RETENTION_MS: u64 = 6 * 60 * 60 * 1_000;
 
+/// Maximum number of lease attempts before a research step is failed as poison.
+///
+/// A step whose lease repeatedly expires before completion is re-leased on each
+/// expiry. Once its attempt count reaches this cap, the next lease pass fails the
+/// step and its job instead of re-leasing, so an unattended poison step converges
+/// to a terminal state. An operator can still call retry to reset and try again.
+pub const RESEARCH_STEP_MAX_ATTEMPTS: i64 = 5;
+
 impl DashboardDb {
     /// Open or create the dashboard database.
     pub fn new(db_path: &str) -> Result<Self, DashboardError> {
@@ -2722,9 +2730,9 @@ impl DashboardDb {
 
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction()?;
-        let candidate: Option<(String, String)> = tx
+        let candidate: Option<(String, String, i64)> = tx
             .query_row(
-                "SELECT s.id, s.job_id
+                "SELECT s.id, s.job_id, s.attempts
                  FROM research_job_steps s
                  JOIN research_jobs j ON j.id = s.job_id
                  WHERE j.status IN ('queued','running','retryable')
@@ -2746,14 +2754,35 @@ impl DashboardDb {
                  ORDER BY j.priority DESC, j.created_at, s.step_index
                  LIMIT 1",
                 params![now],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
 
-        let Some((step_id, job_id)) = candidate else {
+        let Some((step_id, job_id, attempts)) = candidate else {
             tx.commit()?;
             return Ok(None);
         };
+
+        if attempts >= RESEARCH_STEP_MAX_ATTEMPTS {
+            let poison_error = format!(
+                "step exceeded the maximum of {RESEARCH_STEP_MAX_ATTEMPTS} lease attempts without completing"
+            );
+            tx.execute(
+                "UPDATE research_job_steps
+                 SET status = 'failed', error = ?2, lease_owner = NULL, leased_until_ms = NULL,
+                     updated_at = ?3
+                 WHERE id = ?1",
+                params![step_id, poison_error, now],
+            )?;
+            tx.execute(
+                "UPDATE research_jobs
+                 SET status = 'failed', updated_at = ?2
+                 WHERE id = ?1",
+                params![job_id, now],
+            )?;
+            tx.commit()?;
+            return Ok(None);
+        }
 
         let lease_until = now.saturating_add(lease_duration_ms);
         tx.execute(
