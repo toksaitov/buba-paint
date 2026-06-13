@@ -1983,11 +1983,12 @@ async fn build_research_queue_response(
     state: &AppState,
 ) -> Result<ResearchQueueResponse, DashboardError> {
     let generated_at_ms = current_epoch_ms();
-    let jobs = state.db.list_research_jobs().await?;
+    let mut jobs = state.db.list_research_jobs().await?;
     let transfers = state.db.list_artifact_transfers().await?;
     let machines = state.db.list_research_machines().await?;
     let reports = state.db.list_research_reports().await?;
     let retention = build_research_retention_response(state).await?.totals;
+    humanize_job_audit(state, &mut jobs).await;
     let job_groups = build_queue_job_groups(state, &jobs, generated_at_ms).await?;
     let transfer_groups = build_queue_transfer_groups(&transfers, generated_at_ms);
     let disabled_hosts = build_disabled_host_items(state, machines).await?;

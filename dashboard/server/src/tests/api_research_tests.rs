@@ -2404,6 +2404,30 @@ async fn queue_and_retention_endpoints_summarize_operator_state() {
     assert!(report_csv.exists());
 }
 
+/// Verifies queue job groups humanize requested_by to the username rather than the raw user id.
+#[tokio::test]
+async fn queue_job_groups_humanize_requested_by_username() {
+    let (app, db) = test_app();
+    let _admin = admin_token(&db).await;
+    let observer = observer_token(&db).await;
+    let admin_user = db.get_user_by_username("admin").await.unwrap().unwrap();
+    db.create_research_job("export", None, &admin_user.id, 0, None)
+        .await
+        .unwrap();
+
+    let queue = json_body(
+        app.oneshot(auth_get("/api/research/queue", &observer))
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    let waiting = &queue["jobs"]["waiting"];
+    assert_eq!(waiting.as_array().unwrap().len(), 1);
+    assert_eq!(waiting[0]["job"]["requested_by"], "admin");
+    assert_ne!(waiting[0]["job"]["requested_by"], admin_user.id);
+}
+
 /// Verifies scratch archival rejects unsafe or premature lifecycle states.
 #[tokio::test]
 async fn archive_scratch_requires_admin_completed_job_and_report() {
