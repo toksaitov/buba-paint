@@ -91,4 +91,13 @@ describe("ResearchMachinesPage", () => {
     expect(screen.getAllByText(/fixture-worker/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText("8").length).toBeGreaterThan(0);
   });
+
+  it("throttles per-row telemetry polling to a slower cadence", () => {
+    renderPage();
+
+    expect(mockUseTelemetry).toHaveBeenCalled();
+    for (const call of mockUseTelemetry.mock.calls) {
+      expect(call[2]).toBe(20_000);
+    }
+  });
 });

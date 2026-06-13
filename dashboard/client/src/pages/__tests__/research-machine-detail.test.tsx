@@ -70,6 +70,14 @@ beforeEach(() => {
 });
 
 describe("ResearchMachineDetailPage", () => {
+  it("polls telemetry at the default detail cadence (no throttle override)", () => {
+    render(<ResearchMachineDetailPage />);
+
+    expect(mockUseTelemetry).toHaveBeenCalled();
+    const lastCall = mockUseTelemetry.mock.calls.at(-1);
+    expect(lastCall?.[2]).toBeUndefined();
+  });
+
   it("renders healthy host telemetry without machine management or runtime DB controls", () => {
     render(<ResearchMachineDetailPage />);
 

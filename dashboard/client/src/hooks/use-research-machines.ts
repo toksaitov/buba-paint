@@ -6,10 +6,11 @@ import {
   listResearchMachines,
 } from "../lib/research-api";
 
-export function useResearchMachines() {
+export function useResearchMachines(enabled = true) {
   return useQuery({
     queryKey: ["research", "machines"],
     queryFn: listResearchMachines,
+    enabled,
     refetchInterval: 10_000,
   });
 }
@@ -32,11 +33,15 @@ export function useResearchMachineHealth(id: string, enabled = true) {
   });
 }
 
-export function useResearchMachineTelemetry(id: string, enabled = true) {
+export function useResearchMachineTelemetry(
+  id: string,
+  enabled = true,
+  intervalMs = 5_000,
+) {
   return useQuery({
     queryKey: ["research", "machine", id, "telemetry"],
     queryFn: () => getResearchMachineTelemetry(id),
     enabled: !!id && enabled,
-    refetchInterval: 5_000,
+    refetchInterval: intervalMs,
   });
 }

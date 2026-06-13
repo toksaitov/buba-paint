@@ -128,7 +128,7 @@ function ResearchHostRow({
   machine: ResearchMachine;
   returnTo: string;
 }) {
-  const telemetryQuery = useResearchMachineTelemetry(machine.id);
+  const telemetryQuery = useResearchMachineTelemetry(machine.id, true, 20_000);
   const telemetry = telemetryQuery.data;
   const state = telemetry?.telemetry;
   const sampleCount = telemetry?.samples.length ?? 0;
