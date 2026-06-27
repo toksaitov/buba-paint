@@ -167,14 +167,16 @@ export function createServer(
         if (
           !isRecord(body) ||
           !isNonEmptyString(body.token_id) ||
-          !isNonEmptyString(body.account) ||
-          !/^[0-9]+$/.test(body.token_id.trim()) ||
-          !/^0x[0-9a-fA-F]{40}$/.test(body.account.trim())
+          !/^[0-9]+$/.test(body.token_id.trim())
         ) {
-          badRequest(
-            res,
-            "token_id (decimal string) and account (0x address) are required",
-          );
+          badRequest(res, "token_id (decimal string) is required");
+          return;
+        }
+        const account = isNonEmptyString(body.account)
+          ? body.account.trim()
+          : null;
+        if (account !== null && !/^0x[0-9a-fA-F]{40}$/.test(account)) {
+          badRequest(res, "account, when present, must be a 0x address");
           return;
         }
         json(
@@ -182,7 +184,7 @@ export function createServer(
           200,
           await provider.onchainPosition({
             token_id: body.token_id.trim(),
-            account: body.account.trim(),
+            account,
           }),
         );
         return;

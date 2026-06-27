@@ -32,7 +32,7 @@ use crate::live_persistence_writer::{
 };
 use crate::live_sidecar::{
     LiveAccountState, LiveActivityResponse, LiveCheckStatus, LiveOrderIntentRequest,
-    LiveOrderIntentResponse, LivePreflightResponse, LiveSidecarClient,
+    LiveOrderIntentResponse, LivePreflightResponse, LiveSidecarClient, OnchainPositionResponse,
 };
 use crate::live_storage::FeedEventStorageState;
 use crate::market_discovery::{self, MarketDiscoveryEvent};
@@ -419,6 +419,14 @@ async fn submit_live_orders_from_worker(
                 fill_price,
             } => {
                 successful += 1;
+                spawn_onchain_fill_verification(
+                    db_path,
+                    config,
+                    session_id,
+                    sidecar,
+                    order,
+                    accepted_size,
+                );
                 feedback.fills.push(LiveOrderFillFeedback {
                     signal_id: order.signal_id,
                     fill_price,
@@ -478,6 +486,235 @@ async fn submit_live_orders_from_worker(
         });
     }
     feedback
+}
+
+/// Maximum attempts to persist a critical on-chain reconciliation halt event.
+const ONCHAIN_HALT_PERSIST_ATTEMPTS: u32 = 5;
+
+/// Delay between failed attempts to persist an on-chain reconciliation halt.
+const ONCHAIN_HALT_PERSIST_RETRY_MS: u64 = 200;
+
+/// Immutable inputs for one detached post-fill on-chain CTF verification.
+struct OnchainFillVerification {
+    sidecar: LiveSidecarClient,
+    db_path: String,
+    session_id: i64,
+    token_id: String,
+    market_id: String,
+    signal_id: i64,
+    grace: Duration,
+    interval: Duration,
+    attempts: u32,
+    expected_raw: u128,
+    accepted_size: f64,
+}
+
+/// Outcome of the bounded on-chain read budget for one filled order.
+enum OnchainCheck {
+    Short { balance_raw: u128 },
+    Unconfirmed { reason: String },
+}
+
+/// Convert one filled share count into its 6-decimal collateral-scaled raw amount.
+///
+/// Returns None for non-finite, sub-unit, or implausibly large sizes. Real fills
+/// are tiny share counts already bounded by the order caps, so anything that does
+/// not fit safely below `u64::MAX` raw is treated as corrupt and skipped rather
+/// than arming a spurious reconciliation halt.
+fn onchain_expected_raw(accepted_size: f64) -> Option<u128> {
+    if !accepted_size.is_finite() || accepted_size <= 0.0 {
+        return None;
+    }
+    let raw = (accepted_size * 1_000_000.0).round();
+    if !raw.is_finite() || raw < 1.0 || raw > u64::MAX as f64 {
+        return None;
+    }
+    Some(raw as u128)
+}
+
+/// Parse one decimal on-chain raw-balance string into an unsigned integer.
+fn parse_onchain_balance_raw(balance_raw: &str) -> Option<u128> {
+    balance_raw.trim().parse::<u128>().ok()
+}
+
+/// Classify one on-chain CTF read against the expected filled raw amount.
+///
+/// A balance covering the expected amount confirms the fill (Ok). A smaller or
+/// unparseable balance, or an unexpected collateral scale, is Short or Unconfirmed
+/// so the caller can keep retrying before escalating. The check compares the
+/// absolute on-chain balance and assumes this fill is the only counted fill on the
+/// token id, which holds when at most one order fills a given leg per window (each
+/// window is a new market with new token ids and distinct up and down legs). If two
+/// strategies fill the same leg in one window, a prior real fill could mask a
+/// phantom second fill; that residual is accepted because the conjunction is rare
+/// and bounded by the per-order size cap, while the alternatives (cumulative-expected
+/// or a pre-fill delta snapshot) introduce false halts or a hot-path on-chain read.
+fn classify_onchain_read(
+    response: &OnchainPositionResponse,
+    expected_raw: u128,
+) -> Result<(), OnchainCheck> {
+    if response.collateral_decimals != 6 {
+        return Err(OnchainCheck::Unconfirmed {
+            reason: format!(
+                "unexpected collateral decimals {} (expected 6)",
+                response.collateral_decimals
+            ),
+        });
+    }
+    match parse_onchain_balance_raw(&response.balance_raw) {
+        Some(balance_raw) if balance_raw >= expected_raw => Ok(()),
+        Some(balance_raw) => Err(OnchainCheck::Short { balance_raw }),
+        None => Err(OnchainCheck::Unconfirmed {
+            reason: format!("unparseable on-chain balance '{}'", response.balance_raw),
+        }),
+    }
+}
+
+/// Spawn a detached, bounded on-chain CTF balance verification for one filled order.
+///
+/// The check runs only in live execution (or when explicitly enabled) and confirms
+/// that the venue fill is reflected on-chain. A short or unconfirmed read after the
+/// retry budget raises a critical reconciliation event, which the next remote-state
+/// refresh treats as a terminal halt. It assumes a fresh per-market token, which
+/// holds for the one-shot 5-minute crypto windows the bot trades.
+fn spawn_onchain_fill_verification(
+    db_path: &str,
+    config: &Config,
+    session_id: i64,
+    sidecar: &LiveSidecarClient,
+    order: &QueuedOrderIntent,
+    accepted_size: f64,
+) {
+    if !config.live_onchain_reconcile_enabled() {
+        return;
+    }
+    let Some(expected_raw) = onchain_expected_raw(accepted_size) else {
+        warn!(
+            "skipping on-chain reconciliation for non-positive fill size {accepted_size} on {}",
+            order.market_id
+        );
+        return;
+    };
+    let verification = OnchainFillVerification {
+        sidecar: sidecar.clone(),
+        db_path: db_path.to_string(),
+        session_id,
+        token_id: order.token_id.clone(),
+        market_id: order.market_id.clone(),
+        signal_id: order.signal_id,
+        grace: Duration::from_millis(config.live_onchain_reconcile_grace_ms),
+        interval: Duration::from_millis(config.live_onchain_reconcile_retry_interval_ms),
+        attempts: config.live_onchain_reconcile_max_attempts.max(1),
+        expected_raw,
+        accepted_size,
+    };
+    tokio::spawn(async move {
+        verify_onchain_fill(verification).await;
+    });
+}
+
+/// Run the bounded on-chain verification budget for one filled order.
+///
+/// Waits the settlement grace, then polls the sidecar for the on-chain CTF balance
+/// up to the configured attempt count. A confirming read returns early; otherwise
+/// the last short or unconfirmed status escalates to a critical reconciliation halt.
+async fn verify_onchain_fill(verification: OnchainFillVerification) {
+    tokio::time::sleep(verification.grace).await;
+    let mut last = OnchainCheck::Unconfirmed {
+        reason: "no on-chain read completed".to_string(),
+    };
+    for attempt in 0..verification.attempts {
+        if attempt > 0 {
+            tokio::time::sleep(verification.interval).await;
+        }
+        match verification
+            .sidecar
+            .onchain_position(&verification.token_id, None)
+            .await
+        {
+            Ok(response) => match classify_onchain_read(&response, verification.expected_raw) {
+                Ok(()) => return,
+                Err(status) => last = status,
+            },
+            Err(error) => {
+                last = OnchainCheck::Unconfirmed {
+                    reason: error.to_string(),
+                }
+            }
+        }
+    }
+    raise_onchain_reconciliation_halt(&verification, &last).await;
+}
+
+/// Persist a critical reconciliation event after on-chain verification fails.
+///
+/// The persisted critical event is the only signal the terminal-halt path consumes,
+/// so the write is retried with bounded backoff. A final unrecoverable failure is
+/// logged at critical level because this runs in a detached task with no caller to
+/// receive a Result and no other way to surface the lost detection.
+async fn raise_onchain_reconciliation_halt(
+    verification: &OnchainFillVerification,
+    status: &OnchainCheck,
+) {
+    let now = SystemClock.now();
+    let (event_type, remote_value, balance_detail, reason) = match status {
+        OnchainCheck::Short { balance_raw } => (
+            "onchain_fill_short",
+            Some(*balance_raw as f64 / 1_000_000.0),
+            Some(balance_raw.to_string()),
+            format!(
+                "on-chain balance {balance_raw} below expected {}",
+                verification.expected_raw
+            ),
+        ),
+        OnchainCheck::Unconfirmed { reason } => {
+            ("onchain_fill_unconfirmed", None, None, reason.clone())
+        }
+    };
+    let details = json!({
+        "market_id": verification.market_id,
+        "signal_id": verification.signal_id,
+        "token_id": verification.token_id,
+        "expected_raw": verification.expected_raw.to_string(),
+        "onchain_balance_raw": balance_detail,
+        "accepted_size": verification.accepted_size,
+        "reason": reason,
+    })
+    .to_string();
+    error!(
+        "on-chain reconciliation mismatch on {} ({event_type}): {reason}",
+        verification.market_id
+    );
+    let event = LiveReconciliationEvent {
+        id: None,
+        session_id: verification.session_id,
+        timestamp_ms: now,
+        severity: "critical".to_string(),
+        event_type: event_type.to_string(),
+        local_value: Some(verification.accepted_size),
+        remote_value,
+        details_json: Some(details),
+    };
+    for attempt in 0..ONCHAIN_HALT_PERSIST_ATTEMPTS {
+        match Database::open_runtime(&verification.db_path)
+            .and_then(|db| db.log_live_reconciliation_event(&event))
+        {
+            Ok(_) => return,
+            Err(error) => {
+                error!(
+                    "failed to persist on-chain reconciliation halt (attempt {}/{ONCHAIN_HALT_PERSIST_ATTEMPTS}): {error}",
+                    attempt + 1
+                );
+                if attempt + 1 < ONCHAIN_HALT_PERSIST_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_millis(ONCHAIN_HALT_PERSIST_RETRY_MS)).await;
+                }
+            }
+        }
+    }
+    error!(
+        "CRITICAL: on-chain reconciliation halt for {} could not be persisted after {ONCHAIN_HALT_PERSIST_ATTEMPTS} attempts; manual intervention required",
+        verification.market_id
+    );
 }
 
 /// Release not-yet-submitted reservations after a batch-level live blocker.
@@ -3360,6 +3597,47 @@ impl LiveTradingMonitor {
         Ok(())
     }
 
+    /// Halt immediately if a critical on-chain reconciliation event is recorded.
+    ///
+    /// Runs before remote refresh and regardless of armed state so a detached
+    /// post-fill verification that escalates after disarm, or during a sidecar
+    /// outage that would otherwise short-circuit the refresh, still drives a
+    /// terminal halt. Returns whether a halt is in effect for this session.
+    async fn refresh_onchain_reconciliation_halt(
+        &mut self,
+        db_path: &str,
+        clock: &dyn Clock,
+    ) -> anyhow::Result<bool> {
+        let critical = {
+            let db = Database::open_runtime(db_path)?;
+            let count = db.critical_live_reconciliation_count(self.session_id)?;
+            db.close();
+            count
+        };
+        if critical == 0 {
+            return Ok(false);
+        }
+        self.blocked_reason = Some("critical live reconciliation event present".to_string());
+        if self.state == "halted" {
+            return Ok(true);
+        }
+        let breach = live_terminal_breach(
+            "critical_reconciliation_halt",
+            "critical live reconciliation event present",
+            json!({ "session_id": self.session_id }),
+        );
+        self.terminal_halt(
+            db_path,
+            clock,
+            "system",
+            &breach.reason,
+            breach.event_type,
+            breach.details,
+        )
+        .await?;
+        Ok(true)
+    }
+
     /// Refresh preflight, account, and activity state from the sidecar.
     async fn refresh_remote_state(
         &mut self,
@@ -3367,6 +3645,12 @@ impl LiveTradingMonitor {
         config: &Config,
         clock: &dyn Clock,
     ) -> anyhow::Result<Vec<String>> {
+        if self
+            .refresh_onchain_reconciliation_halt(db_path, clock)
+            .await?
+        {
+            return Ok(self.blocked_reason.clone().into_iter().collect());
+        }
         let preflight = match self.sidecar.preflight(config).await {
             Ok(preflight) => preflight,
             Err(error) => {
@@ -3437,13 +3721,6 @@ impl LiveTradingMonitor {
                     breach = risk.update_from_account(account, config);
                     self.risk = Some(risk);
                 }
-            }
-            if breach.is_none() && db.critical_live_reconciliation_count(self.session_id)? > 0 {
-                breach = Some(live_terminal_breach(
-                    "critical_reconciliation_halt",
-                    "critical live reconciliation event present",
-                    json!({ "session_id": self.session_id }),
-                ));
             }
         } else if self.risk.is_none() {
             self.risk = self.account.as_ref().map(LiveRiskMonitor::new);
@@ -7194,5 +7471,267 @@ mod tests {
             blocked_reason: None,
             finished: false,
         }
+    }
+
+    /// Builds a runtime DB holding one live session and returns its file and id.
+    fn seed_onchain_reconcile_session() -> (NamedTempFile, i64) {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let session_id = db
+            .insert_live_session(&LiveSession {
+                id: None,
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                status: "armed".to_string(),
+                execution_mode: "live_trading".to_string(),
+                wallet_address: Some("0xwallet".to_string()),
+                proxy_wallet: Some("0xproxy".to_string()),
+                enabled_strategies_json: "[\"latency-arb\"]".to_string(),
+                config_fingerprint: "{}".to_string(),
+                cash_cap_usd: 100.0,
+                details_json: Some("{}".to_string()),
+            })
+            .unwrap();
+        db.close();
+        (tmp_db, session_id)
+    }
+
+    /// Builds verification inputs pointing at one mock sidecar with zero backoff.
+    fn onchain_verification_for_test(
+        server_uri: &str,
+        db_path: &str,
+        session_id: i64,
+        accepted_size: f64,
+        attempts: u32,
+    ) -> OnchainFillVerification {
+        OnchainFillVerification {
+            sidecar: LiveSidecarClient::new(server_uri),
+            db_path: db_path.to_string(),
+            session_id,
+            token_id: "12345".to_string(),
+            market_id: "mkt-onchain".to_string(),
+            signal_id: 7,
+            grace: Duration::ZERO,
+            interval: Duration::ZERO,
+            attempts,
+            expected_raw: onchain_expected_raw(accepted_size).unwrap(),
+            accepted_size,
+        }
+    }
+
+    /// Verifies that share counts scale to raw amounts and non-positive sizes are skipped.
+    #[test]
+    fn onchain_expected_raw_rejects_non_positive_and_scales_shares() {
+        assert_eq!(onchain_expected_raw(0.5), Some(500_000));
+        assert_eq!(onchain_expected_raw(1.0), Some(1_000_000));
+        assert_eq!(onchain_expected_raw(0.0), None);
+        assert_eq!(onchain_expected_raw(-1.0), None);
+        assert_eq!(onchain_expected_raw(f64::NAN), None);
+        assert_eq!(onchain_expected_raw(0.000_000_4), None);
+        assert_eq!(onchain_expected_raw(f64::INFINITY), None);
+        assert_eq!(onchain_expected_raw(1e25), None);
+    }
+
+    /// Verifies on-chain reconciliation never enables outside live execution.
+    #[test]
+    fn live_onchain_reconcile_gated_to_live_execution() {
+        let mut paper = Config::default();
+        paper.execution_mode = ExecutionMode::Paper;
+        paper.live_onchain_reconcile = true;
+        assert!(!paper.live_onchain_reconcile_enabled());
+
+        let mut live = Config::default();
+        live.execution_mode = ExecutionMode::LiveTrading;
+        live.live_onchain_reconcile = true;
+        assert!(live.live_onchain_reconcile_enabled());
+        live.live_onchain_reconcile = false;
+        assert!(!live.live_onchain_reconcile_enabled());
+    }
+
+    /// Verifies a read with non-6 collateral decimals is treated as unconfirmed.
+    #[test]
+    fn classify_onchain_read_rejects_unexpected_decimals() {
+        let response = OnchainPositionResponse {
+            token_id: "1".to_string(),
+            account: "0xacct".to_string(),
+            balance_raw: "500000".to_string(),
+            collateral_decimals: 18,
+        };
+        assert!(matches!(
+            classify_onchain_read(&response, 500_000),
+            Err(OnchainCheck::Unconfirmed { .. })
+        ));
+    }
+
+    /// Verifies that only plain decimal balances parse and everything else is rejected.
+    #[test]
+    fn parse_onchain_balance_raw_accepts_decimal_only() {
+        assert_eq!(parse_onchain_balance_raw(" 500000 "), Some(500_000));
+        assert_eq!(parse_onchain_balance_raw("0"), Some(0));
+        assert_eq!(parse_onchain_balance_raw("0x10"), None);
+        assert_eq!(parse_onchain_balance_raw(""), None);
+        assert_eq!(parse_onchain_balance_raw("12.5"), None);
+    }
+
+    /// Verifies the classification of confirmed, short, and unparseable on-chain reads.
+    #[test]
+    fn classify_onchain_read_distinguishes_confirmed_short_and_unconfirmed() {
+        let confirmed = OnchainPositionResponse {
+            token_id: "1".to_string(),
+            account: "0xacct".to_string(),
+            balance_raw: "500000".to_string(),
+            collateral_decimals: 6,
+        };
+        assert!(classify_onchain_read(&confirmed, 500_000).is_ok());
+        let short = OnchainPositionResponse {
+            balance_raw: "499999".to_string(),
+            ..confirmed.clone()
+        };
+        assert!(matches!(
+            classify_onchain_read(&short, 500_000),
+            Err(OnchainCheck::Short {
+                balance_raw: 499_999
+            })
+        ));
+        let bad = OnchainPositionResponse {
+            balance_raw: "not-a-number".to_string(),
+            ..confirmed
+        };
+        assert!(matches!(
+            classify_onchain_read(&bad, 500_000),
+            Err(OnchainCheck::Unconfirmed { .. })
+        ));
+    }
+
+    /// Verifies a short on-chain balance raises a critical reconciliation event.
+    #[tokio::test]
+    async fn verify_onchain_fill_short_balance_raises_critical_event() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/onchain-position"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token_id": "12345",
+                "account": "0xproxy",
+                "balance_raw": "1",
+                "collateral_decimals": 6,
+            })))
+            .mount(&server)
+            .await;
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        verify_onchain_fill(onchain_verification_for_test(
+            &server.uri(),
+            &db_path,
+            session_id,
+            0.5,
+            1,
+        ))
+        .await;
+        let db = Database::new(&db_path).unwrap();
+        assert_eq!(
+            db.critical_live_reconciliation_count(session_id).unwrap(),
+            1
+        );
+    }
+
+    /// Verifies a sufficient on-chain balance raises no reconciliation event.
+    #[tokio::test]
+    async fn verify_onchain_fill_confirmed_balance_raises_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/onchain-position"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token_id": "12345",
+                "account": "0xproxy",
+                "balance_raw": "500000",
+                "collateral_decimals": 6,
+            })))
+            .mount(&server)
+            .await;
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        verify_onchain_fill(onchain_verification_for_test(
+            &server.uri(),
+            &db_path,
+            session_id,
+            0.5,
+            3,
+        ))
+        .await;
+        let db = Database::new(&db_path).unwrap();
+        assert_eq!(
+            db.critical_live_reconciliation_count(session_id).unwrap(),
+            0
+        );
+    }
+
+    /// Verifies an unreachable on-chain read raises a critical event after retries.
+    #[tokio::test]
+    async fn verify_onchain_fill_unconfirmed_after_retries_raises_critical() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/onchain-position"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        verify_onchain_fill(onchain_verification_for_test(
+            &server.uri(),
+            &db_path,
+            session_id,
+            0.5,
+            2,
+        ))
+        .await;
+        let db = Database::new(&db_path).unwrap();
+        assert_eq!(
+            db.critical_live_reconciliation_count(session_id).unwrap(),
+            1
+        );
+    }
+
+    /// Verifies a critical reconciliation event halts even a disarmed session
+    /// eagerly, independent of armed state and remote-refresh success.
+    #[tokio::test]
+    async fn critical_reconciliation_halts_disarmed_session_eagerly() {
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        {
+            let db = Database::new(&db_path).unwrap();
+            db.log_live_reconciliation_event(&LiveReconciliationEvent {
+                id: None,
+                session_id,
+                timestamp_ms: 1_000,
+                severity: "critical".to_string(),
+                event_type: "onchain_fill_short".to_string(),
+                local_value: None,
+                remote_value: None,
+                details_json: None,
+            })
+            .unwrap();
+            db.close();
+        }
+        let mut monitor = LiveTradingMonitor {
+            sidecar: LiveSidecarClient::new("http://127.0.0.1:9"),
+            session_id,
+            state: "disarmed".to_string(),
+            preflight: None,
+            account: None,
+            activity: None,
+            risk: None,
+            degradation: LiveDegradationTracker::default(),
+            blocked_reason: None,
+            finished: false,
+        };
+        let clock = BacktestClock::new();
+        clock.set(2_000);
+        let halted = monitor
+            .refresh_onchain_reconciliation_halt(&db_path, &clock)
+            .await
+            .unwrap();
+        assert!(halted);
+        assert_eq!(monitor.state, "halted");
     }
 }

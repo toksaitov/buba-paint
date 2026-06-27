@@ -135,6 +135,15 @@ pub struct LiveRedemptionResponse {
     pub details_json: Option<String>,
 }
 
+/// One sidecar on-chain CTF position read for a single ERC-1155 token.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OnchainPositionResponse {
+    pub token_id: String,
+    pub account: String,
+    pub balance_raw: String,
+    pub collateral_decimals: u32,
+}
+
 /// One raw-safe live activity event returned by the sidecar.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LiveActivityEvent {
@@ -256,6 +265,27 @@ impl LiveSidecarClient {
     /// Trigger redemption for all currently redeemable positions.
     pub async fn redeem_all(&self) -> anyhow::Result<LiveRedemptionResponse> {
         self.post_json("/redeem-all", &serde_json::json!({})).await
+    }
+
+    /// Read the on-chain CTF balance for one token, defaulting to the sidecar wallet.
+    pub async fn onchain_position(
+        &self,
+        token_id: &str,
+        account: Option<&str>,
+    ) -> anyhow::Result<OnchainPositionResponse> {
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "token_id".to_string(),
+            serde_json::Value::String(token_id.to_string()),
+        );
+        if let Some(account) = account {
+            body.insert(
+                "account".to_string(),
+                serde_json::Value::String(account.to_string()),
+            );
+        }
+        self.post_json("/onchain-position", &serde_json::Value::Object(body))
+            .await
     }
 
     /// Issue one sidecar `GET` request and decode its JSON response.

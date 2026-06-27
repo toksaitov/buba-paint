@@ -94,7 +94,7 @@ export interface LiveRedemptionResponse {
 
 export interface OnchainPositionRequest {
   token_id: string;
-  account: string;
+  account?: string | null;
 }
 
 export interface OnchainPositionResponse {

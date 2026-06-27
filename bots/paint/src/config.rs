@@ -422,6 +422,10 @@ pub struct Config {
     pub live_allow_deposit_wallet: bool,
     pub live_expected_egress_ip: Option<String>,
     pub enforce_open_exposure_caps: bool,
+    pub live_onchain_reconcile: bool,
+    pub live_onchain_reconcile_grace_ms: u64,
+    pub live_onchain_reconcile_retry_interval_ms: u64,
+    pub live_onchain_reconcile_max_attempts: u32,
     pub feed_event_storage_profile: FeedEventStorageProfile,
     pub feed_event_writer_queue_capacity: usize,
     pub feed_event_writer_batch_size: usize,
@@ -511,6 +515,17 @@ impl Config {
         } else {
             None
         }
+    }
+
+    /// Return whether post-fill on-chain CTF reconciliation should run.
+    ///
+    /// Verification only ever runs in live execution modes. `live_onchain_reconcile`
+    /// is an operator kill-switch (default on) to disable it without changing mode,
+    /// for example during a known RPC outage. It can never enable verification in
+    /// paper or research backtests, which never reach a real fill.
+    #[must_use]
+    pub fn live_onchain_reconcile_enabled(&self) -> bool {
+        self.is_live_execution() && self.live_onchain_reconcile
     }
 
     /// Validate config invariants that should fail fast at startup.
@@ -950,6 +965,15 @@ impl Config {
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty()),
             enforce_open_exposure_caps: env_bool("ENFORCE_OPEN_EXPOSURE_CAPS", false),
+            live_onchain_reconcile: env_bool("LIVE_ONCHAIN_RECONCILE", true),
+            live_onchain_reconcile_grace_ms: env_u64("LIVE_ONCHAIN_RECONCILE_GRACE_MS", 6_000),
+            live_onchain_reconcile_retry_interval_ms: env_u64(
+                "LIVE_ONCHAIN_RECONCILE_RETRY_INTERVAL_MS",
+                3_000,
+            ),
+            live_onchain_reconcile_max_attempts: env_u64("LIVE_ONCHAIN_RECONCILE_MAX_ATTEMPTS", 5)
+                .clamp(1, u64::from(u32::MAX))
+                as u32,
             feed_event_storage_profile: FeedEventStorageProfile::from_env_value(
                 env::var("FEED_EVENT_STORAGE_PROFILE").ok().as_deref(),
             ),
@@ -1128,6 +1152,10 @@ impl Default for Config {
             live_allow_deposit_wallet: false,
             live_expected_egress_ip: None,
             enforce_open_exposure_caps: false,
+            live_onchain_reconcile: true,
+            live_onchain_reconcile_grace_ms: 6_000,
+            live_onchain_reconcile_retry_interval_ms: 3_000,
+            live_onchain_reconcile_max_attempts: 5,
             feed_event_storage_profile: FeedEventStorageProfile::ReplayGrade,
             feed_event_writer_queue_capacity: 50_000,
             feed_event_writer_batch_size: 500,

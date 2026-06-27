@@ -755,12 +755,12 @@ async function readOnchainPosition(
   config: SidecarConfig,
   request: OnchainPositionRequest,
 ): Promise<OnchainPositionResponse> {
-  const account = request.account.trim();
+  const account = (request.account ?? "").trim() || walletAddress(config) || "";
   const tokenId = request.token_id.trim();
   if (!account || !tokenId) {
     throw new ProviderStageError(
       "onchain_position",
-      "account and token_id are required for an on-chain position read",
+      "token_id is required and an account must be provided or configured for an on-chain position read",
     );
   }
   const client = createPublicClient({
@@ -787,6 +787,22 @@ async function readOnchainPosition(
     balance_raw: balance.toString(),
     collateral_decimals: 6,
   };
+}
+
+async function readProxyDeployed(config: SidecarConfig): Promise<boolean | null> {
+  if (config.signatureType === 0) {
+    return null;
+  }
+  const account = walletAddress(config);
+  if (!account) {
+    return null;
+  }
+  const client = createPublicClient({
+    chain: polygon,
+    transport: http(config.polygonRpcUrl),
+  });
+  const code = await client.getCode({ address: account as Hex });
+  return Boolean(code && code !== "0x");
 }
 
 function hasBuilderRelayerCredentials(config: SidecarConfig): boolean {
@@ -2022,6 +2038,19 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       }
     }
 
+    let proxyDeployed: boolean | null = null;
+    let proxyDeployCheckError: string | null = null;
+    try {
+      proxyDeployed = await readProxyDeployed(this.config);
+      if (proxyDeployed === false) {
+        errors.push(
+          `Configured trading wallet ${walletAddress(this.config) ?? ""} has no on-chain code; the proxy or Safe is not deployed.`,
+        );
+      }
+    } catch (error) {
+      proxyDeployCheckError = stringError(error);
+    }
+
     if (
       availableCashUsd != null &&
       availableCashUsd < request.budget_limits.min_required_cash_usd
@@ -2071,6 +2100,8 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         clob_contract_version: "v2",
         collateral_token: "pUSD",
         collateral_decimals: 6,
+        proxy_deployed: proxyDeployed,
+        proxy_deploy_check_error: proxyDeployCheckError,
         strategy_readiness: request.strategy_readiness,
         relayer_api_key_present: Boolean(this.config.relayerApiKey),
         geoblock,
