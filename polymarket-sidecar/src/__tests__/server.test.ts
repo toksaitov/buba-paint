@@ -173,6 +173,9 @@ describe("sidecar server", () => {
       redeemAll: async (): Promise<LiveRedemptionResponse> => {
         throw new Error("unexpected");
       },
+      onchainPosition: async () => {
+        throw new Error("unexpected");
+      },
       close: async () => undefined,
     };
 
@@ -317,6 +320,9 @@ describe("sidecar server", () => {
         submitted: 3,
         details_json: "{\"provider\":\"test\"}",
       }),
+      onchainPosition: async () => {
+        throw new Error("unexpected");
+      },
       close: async () => undefined,
     };
     const { url } = await startServer(provider);
@@ -405,6 +411,9 @@ describe("sidecar server", () => {
         throw new Error("unexpected");
       },
       redeemAll: async (): Promise<LiveRedemptionResponse> => {
+        throw new Error("unexpected");
+      },
+      onchainPosition: async () => {
         throw new Error("unexpected");
       },
       close,

@@ -162,6 +162,32 @@ export function createServer(
         return;
       }
 
+      if (req.method === "POST" && req.url === "/onchain-position") {
+        const body = parseJson<unknown>(await readBody(req));
+        if (
+          !isRecord(body) ||
+          !isNonEmptyString(body.token_id) ||
+          !isNonEmptyString(body.account) ||
+          !/^[0-9]+$/.test(body.token_id.trim()) ||
+          !/^0x[0-9a-fA-F]{40}$/.test(body.account.trim())
+        ) {
+          badRequest(
+            res,
+            "token_id (decimal string) and account (0x address) are required",
+          );
+          return;
+        }
+        json(
+          res,
+          200,
+          await provider.onchainPosition({
+            token_id: body.token_id.trim(),
+            account: body.account.trim(),
+          }),
+        );
+        return;
+      }
+
       json(res, 404, { error: "not found" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "internal error";

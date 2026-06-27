@@ -20,10 +20,13 @@ import {
 import builderRelayerClient from "@polymarket/builder-relayer-client";
 import { BuilderConfig } from "@polymarket/builder-signing-sdk";
 import {
+  createPublicClient,
   encodeFunctionData,
+  http,
   zeroHash,
   type Hex,
 } from "viem";
+import { polygon } from "viem/chains";
 import WebSocket, { type RawData } from "ws";
 import type {
   RelayerTransaction,
@@ -41,6 +44,8 @@ import type {
   LivePreflightRequest,
   LivePreflightResponse,
   LiveRedemptionResponse,
+  OnchainPositionRequest,
+  OnchainPositionResponse,
 } from "./types.js";
 import type { SidecarConfig } from "./config.js";
 import { logEvent, type LogLevel } from "./logging.js";
@@ -80,7 +85,8 @@ type SidecarErrorStage =
   | "order_submission"
   | "cancel_order"
   | "cancel_all"
-  | "redemption";
+  | "redemption"
+  | "onchain_position";
 type UserStreamLifecycle =
   | "idle"
   | "connecting"
@@ -729,6 +735,57 @@ function createRedeemTransaction(conditionId: string): Transaction {
       ],
     }),
     value: "0",
+  };
+}
+
+const ctfBalanceOfAbi = [
+  {
+    name: "balanceOf",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "account", type: "address" },
+      { name: "id", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+async function readOnchainPosition(
+  config: SidecarConfig,
+  request: OnchainPositionRequest,
+): Promise<OnchainPositionResponse> {
+  const account = request.account.trim();
+  const tokenId = request.token_id.trim();
+  if (!account || !tokenId) {
+    throw new ProviderStageError(
+      "onchain_position",
+      "account and token_id are required for an on-chain position read",
+    );
+  }
+  const client = createPublicClient({
+    chain: polygon,
+    transport: http(config.polygonRpcUrl),
+  });
+  let balance: bigint;
+  try {
+    balance = (await client.readContract({
+      address: CTF_ADDRESS as Hex,
+      abi: ctfBalanceOfAbi,
+      functionName: "balanceOf",
+      args: [account as Hex, BigInt(tokenId)],
+    })) as bigint;
+  } catch (error) {
+    throw new ProviderStageError(
+      "onchain_position",
+      `CTF balanceOf read failed: ${stringError(error)}`,
+    );
+  }
+  return {
+    token_id: tokenId,
+    account,
+    balance_raw: balance.toString(),
+    collateral_decimals: 6,
   };
 }
 
@@ -1636,6 +1693,9 @@ export interface SidecarProvider {
   cancelOrder(orderId: string): Promise<LiveCancellationResponse>;
   cancelAll(): Promise<LiveCancellationResponse>;
   redeemAll(): Promise<LiveRedemptionResponse>;
+  onchainPosition(
+    request: OnchainPositionRequest,
+  ): Promise<OnchainPositionResponse>;
   close(): Promise<void> | void;
 }
 
@@ -1783,6 +1843,12 @@ export class StubSidecarProvider implements SidecarProvider {
       submitted: 0,
       details_json: JSON.stringify({ provider: "stub", reason: "redemption not implemented" }),
     };
+  }
+
+  async onchainPosition(
+    request: OnchainPositionRequest,
+  ): Promise<OnchainPositionResponse> {
+    return readOnchainPosition(this.config, request);
   }
 
   close(): void {
@@ -2469,6 +2535,12 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         }),
       };
     }
+  }
+
+  async onchainPosition(
+    request: OnchainPositionRequest,
+  ): Promise<OnchainPositionResponse> {
+    return readOnchainPosition(this.config, request);
   }
 
   private rejectedOrder(

@@ -92,6 +92,18 @@ export interface LiveRedemptionResponse {
   details_json: string | null;
 }
 
+export interface OnchainPositionRequest {
+  token_id: string;
+  account: string;
+}
+
+export interface OnchainPositionResponse {
+  token_id: string;
+  account: string;
+  balance_raw: string;
+  collateral_decimals: number;
+}
+
 export interface LiveActivityEvent {
   timestamp_ms: number;
   source: "user_stream" | "clob_trades";

@@ -4,6 +4,7 @@ export interface SidecarConfig {
   geoblockUrl: string;
   clobHost: string;
   relayerHost: string;
+  polygonRpcUrl: string;
   clockDriftMaxMs: number;
   httpTimeoutMs: number;
   sdkTimeoutMs: number;
@@ -55,6 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     geoblockUrl: env.POLYMARKET_GEOBLOCK_URL ?? "https://polymarket.com/api/geoblock",
     clobHost: env.POLYMARKET_CLOB_HOST ?? "https://clob.polymarket.com",
     relayerHost: env.POLYMARKET_RELAYER_HOST ?? "https://relayer-v2.polymarket.com",
+    polygonRpcUrl: env.POLYMARKET_POLYGON_RPC_URL ?? "https://polygon-rpc.com",
     clockDriftMaxMs: envInt(env, "POLYMARKET_CLOCK_DRIFT_MAX_MS", 1500),
     httpTimeoutMs: envInt(env, "POLYMARKET_HTTP_TIMEOUT_MS", 5000),
     sdkTimeoutMs: envInt(env, "POLYMARKET_SDK_TIMEOUT_MS", 5000),

@@ -60,6 +60,9 @@ function createNoopProvider(close = vi.fn(async () => undefined)) {
     redeemAll: async (): Promise<LiveRedemptionResponse> => {
       throw new Error("unexpected");
     },
+    onchainPosition: async () => {
+      throw new Error("unexpected");
+    },
     activity: async (): Promise<LiveActivityResponse> => ({
       timestamp_ms: Date.now(),
       user_stream_status: "failed",
