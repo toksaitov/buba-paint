@@ -182,6 +182,15 @@ interface ActiveMarket {
   metadataError: string | null;
 }
 
+interface FeeRateMismatch {
+  conditionId: string;
+  observedRate: number;
+  observedExponent: number | null;
+  expectedRate: number;
+}
+
+const FEE_RATE_MISMATCH_TOLERANCE = 1e-6;
+
 interface ActiveMarketDiscovery {
   markets: ActiveMarket[];
   legalOrderMinUsd: number | null;
@@ -803,6 +812,28 @@ async function readProxyDeployed(config: SidecarConfig): Promise<boolean | null>
   });
   const code = await client.getCode({ address: account as Hex });
   return Boolean(code && code !== "0x");
+}
+
+function collectFeeRateMismatches(
+  markets: ActiveMarket[],
+  expectedRate: number,
+): FeeRateMismatch[] {
+  const mismatches: FeeRateMismatch[] = [];
+  for (const market of markets) {
+    const rate = market.feeDetails?.rate;
+    if (rate == null) {
+      continue;
+    }
+    if (Math.abs(rate - expectedRate) > FEE_RATE_MISMATCH_TOLERANCE) {
+      mismatches.push({
+        conditionId: market.conditionId,
+        observedRate: rate,
+        observedExponent: market.feeDetails?.exponent ?? null,
+        expectedRate,
+      });
+    }
+  }
+  return mismatches;
 }
 
 function hasBuilderRelayerCredentials(config: SidecarConfig): boolean {
@@ -1960,6 +1991,7 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
     let legalOrderMinUsd: number | null = null;
     let authState: AuthState | null = null;
     let discovery: ActiveMarketDiscovery | null = null;
+    const feeRateMismatches: FeeRateMismatch[] = [];
 
     try {
       authState = await this.getAuthState();
@@ -2005,6 +2037,23 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       } catch (error) {
         const failure = stageError("market_discovery", error);
         errors.push(`Active-market discovery failed: ${failure.message}`);
+      }
+
+      if (discovery) {
+        feeRateMismatches.push(
+          ...collectFeeRateMismatches(
+            discovery.markets,
+            this.config.expectedTakerFeeRate,
+          ),
+        );
+        for (const mismatch of feeRateMismatches) {
+          this.log("warn", "live_fee_rate_mismatch", {
+            condition_id: mismatch.conditionId,
+            observed_rate: mismatch.observedRate,
+            observed_exponent: mismatch.observedExponent,
+            expected_rate: mismatch.expectedRate,
+          });
+        }
       }
 
       if (discovery && discovery.markets.length > 0) {
@@ -2102,6 +2151,8 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         collateral_decimals: 6,
         proxy_deployed: proxyDeployed,
         proxy_deploy_check_error: proxyDeployCheckError,
+        expected_taker_fee_rate: this.config.expectedTakerFeeRate,
+        fee_rate_mismatches: feeRateMismatches,
         strategy_readiness: request.strategy_readiness,
         relayer_api_key_present: Boolean(this.config.relayerApiKey),
         geoblock,

@@ -6,6 +6,7 @@ export interface SidecarConfig {
   relayerHost: string;
   polygonRpcUrl: string;
   clockDriftMaxMs: number;
+  expectedTakerFeeRate: number;
   httpTimeoutMs: number;
   sdkTimeoutMs: number;
   userStreamConnectTimeoutMs: number;
@@ -36,6 +37,14 @@ function envInt(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+/// Parse one floating-point environment variable with a fallback.
+function envFloat(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+  const raw = env[key]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
 /// Read one string environment variable with an optional fallback.
 function envStr(
   env: NodeJS.ProcessEnv,
@@ -58,6 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     relayerHost: env.POLYMARKET_RELAYER_HOST ?? "https://relayer-v2.polymarket.com",
     polygonRpcUrl: env.POLYMARKET_POLYGON_RPC_URL ?? "https://polygon-rpc.com",
     clockDriftMaxMs: envInt(env, "POLYMARKET_CLOCK_DRIFT_MAX_MS", 1500),
+    expectedTakerFeeRate: envFloat(env, "POLYMARKET_EXPECTED_TAKER_FEE_RATE", 0.072),
     httpTimeoutMs: envInt(env, "POLYMARKET_HTTP_TIMEOUT_MS", 5000),
     sdkTimeoutMs: envInt(env, "POLYMARKET_SDK_TIMEOUT_MS", 5000),
     userStreamConnectTimeoutMs: envInt(

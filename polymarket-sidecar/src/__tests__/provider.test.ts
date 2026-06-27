@@ -92,6 +92,7 @@ describe("PolymarketReadonlyProvider", () => {
     relayerExecuteCalls?: Array<Record<string, unknown>>;
     relayerTerminalState?: string;
     builderCredentials?: boolean;
+    expectedTakerFeeRate?: string;
   }) {
     const config = loadConfig({
       POLYMARKET_PRIVATE_KEY:
@@ -109,6 +110,7 @@ describe("PolymarketReadonlyProvider", () => {
       POLYMARKET_BUILDER_PASSPHRASE: options?.builderCredentials
         ? "builder-passphrase"
         : undefined,
+      POLYMARKET_EXPECTED_TAKER_FEE_RATE: options?.expectedTakerFeeRate,
     });
     let connectedMarkets: string[] = [];
 
@@ -366,12 +368,32 @@ describe("PolymarketReadonlyProvider", () => {
     expect(response.details_json).toContain("\"collateral_token\":\"pUSD\"");
     expect(response.details_json).toContain("\"metadataSource\":\"clob_v2\"");
     expect(response.details_json).toContain("\"tokenId\":\"up-token\"");
+    expect(response.details_json).toContain("\"fee_rate_mismatches\":[]");
     expect(response.details_json).not.toContain("secret");
     expect(response.details_json).not.toContain("passphrase");
     expect(health.ready).toBe(true);
     expect(health.readiness_status).toBe("ready");
     expect(health.last_successful_account_refresh_at_ms).toBe(nowMs);
     expect(health.last_account_refresh_error).toBeNull();
+  });
+
+  it("flags a live taker-fee mismatch in preflight without blocking arming", async () => {
+    const provider = createProvider({ expectedTakerFeeRate: "0.07" });
+    const response = await provider.preflight(request);
+
+    expect(response.ok).toBe(true);
+    const details = JSON.parse(response.details_json ?? "{}") as {
+      expected_taker_fee_rate: number;
+      fee_rate_mismatches: Array<{
+        conditionId: string;
+        observedRate: number;
+        expectedRate: number;
+      }>;
+    };
+    expect(details.expected_taker_fee_rate).toBe(0.07);
+    expect(details.fee_rate_mismatches.length).toBeGreaterThan(0);
+    expect(details.fee_rate_mismatches[0].observedRate).toBe(0.072);
+    expect(details.fee_rate_mismatches[0].expectedRate).toBe(0.07);
   });
 
   it("sends a stable user agent on public Polymarket HTTP checks", async () => {
