@@ -403,7 +403,10 @@ Items:
 * Disarmed would-submit dry-run (nice-to-have). Add a live-trading dry-run that
   exercises every live gate and builds the order intent but never calls the
   sidecar `/orders` endpoint, so the full armed path can be rehearsed without a
-  real order.
+  real order. Deferred: this is the one open Phase 5 item. It adds a new branch to
+  the live submission worker (the most safety-critical bot path) and is best built
+  immediately before the canary as part of Phase 6 rehearsal, with operator input
+  on exactly what to rehearse. It is a rehearsal convenience, not a safety blocker.
 * ExchangeV3 watch (nice-to-have). ExchangeV3 (EIP-712 domain version 3) is merged
   into the client but not in production. Add a startup assertion of the expected
   exchange domain version and a note to watch the changelog, so a future V3
