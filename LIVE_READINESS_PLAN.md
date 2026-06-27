@@ -446,6 +446,15 @@ Items:
   a later sized-trading phase, which is out of scope for this plan. This is the
   only real order in the plan. With a real settled position now in hand, exercise
   the deferred live end-to-end redeem from Phase 3.
+* Reconciliation residuals to resolve before sustained unsupervised trading
+  (Phase 3 review findings, accepted for the supervised single-order canary):
+  durable startup re-drive of on-chain verification for fills still inside the
+  post-fill verify window when the process stopped or crashed (today a crash inside
+  that window loses detection silently); and the cumulative-balance masking case
+  where two strategies fill the same leg in one window, which the absolute
+  `balanceOf >= expected` check cannot isolate without a hot-path pre-fill snapshot.
+  Both are documented in `bots/paint/src/live.rs`; the canary is a single
+  operator-watched order, so neither bites until sustained trading.
 * Codex final review of the full set of changes since the plan started, for
   arming readiness.
 
@@ -478,11 +487,11 @@ autonomous execution.
 
 ## Phase Checklist
 
-* [ ] Preconditions (branch, fetch, Codex ready, review-gate setting)
-* [ ] Phase 0 - Facts, guards, and venue assumptions
-* [ ] Phase 1 - Risk-cap enforcement
-* [ ] Phase 2 - Order idempotency and timeout safety
-* [ ] Phase 3 - Settlement reconciliation, redemption, and restart windows
+* [x] Preconditions (branch, fetch, Codex ready, review-gate setting)
+* [x] Phase 0 - Facts, guards, and venue assumptions
+* [x] Phase 1 - Risk-cap enforcement
+* [x] Phase 2 - Order idempotency and timeout safety
+* [x] Phase 3 - Settlement reconciliation, redemption, and restart windows
 * [ ] Phase 4 - SDK currency and venue assumptions
 * [ ] Phase 5 - Observability and resilience
 * [ ] Phase 6 - Readiness validation and canary
