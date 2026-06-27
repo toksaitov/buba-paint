@@ -140,9 +140,10 @@ python3 scripts/research-maintenance.py live-safety --machine live
 `/home/testing/buba-paint-research/.docker/research/runtime/dashboard.db` and
 writes a manifest with size, SHA-256, `PRAGMA quick_check`, image refs, Compose
 status, and research row counts. `restore-db` stops only the `testing`
-research dashboard and worker, writes a pre-restore safety backup, replaces the
-DB, removes stale WAL/SHM sidecars, restarts with the image refs recorded in
-the backup manifest, and verifies health plus research API readability.
+research worker, writes a pre-restore safety backup, replaces the DB, removes
+stale WAL/SHM sidecars, restarts the worker with the image refs recorded in the
+backup manifest, and verifies the worker through Compose status and worker
+telemetry.
 `collect-diagnostics` writes a redacted tarball under `/tmp` on `testing`;
 it excludes DB files, artifacts, reports, SSH keys, and Docker auth configs.
 `rollback` deploys a previous digest lock, verifies health, and rolls forward

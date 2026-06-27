@@ -49,16 +49,17 @@ mkdir -p .docker/runtime
 docker compose -f docker-compose.yml -f docker-compose.paper.yml -f docker-compose.local.yml up -d --build
 ```
 
-Local research control plane:
+Local research worker:
 
 ```bash
 mkdir -p .docker/research/runtime .docker/research/work
 docker compose -f docker-compose.research.yml up -d --build
 ```
 
-This starts only the research dashboard backend and the local research worker.
-It does not start the trading bot, sidecar, agent, Caddy, or any remote host
-process.
+This starts only the local research worker. With no
+`BUBA_RESEARCH_CONTROLLER_URL` set, it uses its local SQLite database as the
+backend for local orchestration testing. It does not start the trading bot,
+sidecar, agent, Caddy, or any remote host process.
 
 The research worker can claim artifact transfer records. Same-machine transfers use resumable append copies. Remote transfers use `rsync` over SSH with partial append verification, compression, and protected remote path arguments. Set `BUBA_RESEARCH_SSH_DIR` when the worker container needs a specific SSH directory; it is mounted at `/home/buba/.ssh`. Running transfers older than `BUBA_RESEARCH_TRANSFER_STALE_MS` are moved back to `retryable` so a restarted worker can resume from the partial destination.
 
@@ -82,30 +83,33 @@ python3 scripts/deploy-machine.py --machine research
 The research deployment targets Ubuntu WSL on `testing`, uses digest-pinned
 private GHCR images from `ops/research-images.lock.json`, syncs only the
 research Compose file into `/home/testing/buba-paint-research`, preserves remote
-`.env` and `.docker/research`, and starts only `research-dashboard` and
-`research-worker`. The deploy runner sends the current `gh` token over SSH only
-for a temporary GHCR auth config and removes that config before the session
-exits. The generated `.env` includes `BUBA_RESEARCH_WORKER_TOKEN`,
-`BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh`,
-`BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`, and
-`BUBA_DASHBOARD_CONFIG_DIR=./.docker/research/config`; the worker uses the token
-when `BUBA_RESEARCH_CONTROLLER_URL` is set, uses the SSH directory for remote
-artifact transfers, and recovers stale running transfers after the configured
-window.
+`.env` and `.docker/research`, and starts only `research-worker`. The deploy
+runner sends the current `gh` token over SSH only for a temporary GHCR auth
+config and removes that config before the session exits. The generated `.env`
+includes `BUBA_RESEARCH_WORKER_TOKEN`,
+`BUBA_RESEARCH_CONTROLLER_URL=https://buba.toksaitov.com`,
+`BUBA_RESEARCH_SSH_DIR=/home/testing/.ssh`, and
+`BUBA_RESEARCH_TRANSFER_STALE_MS=1800000`; the worker uses the token and
+controller URL to lease and report all work centrally, uses the SSH directory
+for remote artifact transfers, and recovers stale running transfers after the
+configured window.
 
 In the current public operator setup, `https://buba.toksaitov.com` is the only
 dashboard URL. Caddy on `buba-paint` serves the live dashboard UI and API from
-the live dashboard container. The `testing` host runs the research worker and
-storage stack; it authenticates back to the public controller with
-`BUBA_RESEARCH_WORKER_TOKEN`. Operators should not need to open a second
-dashboard.
+the live dashboard container. The `testing` host runs the `research-worker`
+container only, plus its storage; it leases work from and reports to the public
+controller, authenticating with `BUBA_RESEARCH_WORKER_TOKEN`. There is no local
+research dashboard, so operators never open a second dashboard.
 
-Check the private research stack with:
+Check the private research worker with:
 
 ```bash
 ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/testing/buba-paint-research && docker compose -f docker-compose.research.yml ps'"
-ssh testing "curl.exe -s http://localhost:3002/health"
+ssh testing "wsl -d Ubuntu-24.04 -- bash -lc 'tail -n 20 /home/testing/buba-paint-research/.docker/research/runtime/research-worker.log'"
 ```
+
+The worker has no local health endpoint; confirm operator-facing health at
+`https://buba.toksaitov.com/health`.
 
 Stopped-live observability refresh on `buba-paint`:
 

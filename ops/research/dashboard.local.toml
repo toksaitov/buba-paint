@@ -1,3 +1,0 @@
-[server]
-port = 3001
-jwt_secret = "local-research-dashboard-dev-secret-change-for-shared-hosts"
