@@ -28,8 +28,10 @@ export interface LivePreflightResponse {
   mode: string;
   wallet_address: string | null;
   proxy_wallet: string | null;
+  signature_type: number;
   geoblock_status: LiveCheckStatus;
   geoblock_country_code: string | null;
+  geoblock_ip: string | null;
   auth_status: LiveCheckStatus;
   clock_status: LiveCheckStatus;
   allowance_status: LiveCheckStatus;

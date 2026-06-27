@@ -58,8 +58,12 @@ pub struct LivePreflightResponse {
     pub mode: String,
     pub wallet_address: Option<String>,
     pub proxy_wallet: Option<String>,
+    #[serde(default)]
+    pub signature_type: Option<i64>,
     pub geoblock_status: LiveCheckStatus,
     pub geoblock_country_code: Option<String>,
+    #[serde(default)]
+    pub geoblock_ip: Option<String>,
     pub auth_status: LiveCheckStatus,
     pub clock_status: LiveCheckStatus,
     pub allowance_status: LiveCheckStatus,

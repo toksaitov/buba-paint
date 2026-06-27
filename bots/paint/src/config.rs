@@ -418,6 +418,9 @@ pub struct Config {
     pub live_max_daily_loss_usd: f64,
     pub live_max_session_drawdown_usd: f64,
     pub live_min_required_cash_usd: f64,
+    pub live_expected_signature_type: Option<u32>,
+    pub live_allow_deposit_wallet: bool,
+    pub live_expected_egress_ip: Option<String>,
     pub feed_event_storage_profile: FeedEventStorageProfile,
     pub feed_event_writer_queue_capacity: usize,
     pub feed_event_writer_batch_size: usize,
@@ -536,6 +539,16 @@ impl Config {
             }
             if self.live_sidecar_emergency_timeout_ms == 0 {
                 bail!("LIVE_SIDECAR_EMERGENCY_TIMEOUT_MS must be > 0 for live execution modes");
+            }
+            if let Some(expected) = self.live_expected_signature_type
+                && expected > 3
+            {
+                bail!("LIVE_EXPECTED_SIGNATURE_TYPE must be one of 0, 1, 2, 3");
+            }
+            if let Some(ip) = &self.live_expected_egress_ip
+                && ip.parse::<std::net::IpAddr>().is_err()
+            {
+                bail!("LIVE_EXPECTED_EGRESS_IP must be a valid IP address, got {ip:?}");
             }
             validate_absolute_url("LIVE_SIDECAR_URL", &self.live_sidecar_url)?;
             validate_absolute_url("CLOB_API_URL", &self.clob_api_url)?;
@@ -892,6 +905,16 @@ impl Config {
             live_max_daily_loss_usd: env_f64("LIVE_MAX_DAILY_LOSS_USD", 15.0),
             live_max_session_drawdown_usd: env_f64("LIVE_MAX_SESSION_DRAWDOWN_USD", 20.0),
             live_min_required_cash_usd: env_f64("LIVE_MIN_REQUIRED_CASH_USD", 25.0),
+            live_expected_signature_type: env::var("LIVE_EXPECTED_SIGNATURE_TYPE")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .map(|v| v.parse::<u32>().unwrap_or(u32::MAX)),
+            live_allow_deposit_wallet: env_bool("LIVE_ALLOW_DEPOSIT_WALLET", false),
+            live_expected_egress_ip: env::var("LIVE_EXPECTED_EGRESS_IP")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
             feed_event_storage_profile: FeedEventStorageProfile::from_env_value(
                 env::var("FEED_EVENT_STORAGE_PROFILE").ok().as_deref(),
             ),
@@ -1066,6 +1089,9 @@ impl Default for Config {
             live_max_daily_loss_usd: 15.0,
             live_max_session_drawdown_usd: 20.0,
             live_min_required_cash_usd: 25.0,
+            live_expected_signature_type: None,
+            live_allow_deposit_wallet: false,
+            live_expected_egress_ip: None,
             feed_event_storage_profile: FeedEventStorageProfile::ReplayGrade,
             feed_event_writer_queue_capacity: 50_000,
             feed_event_writer_batch_size: 500,

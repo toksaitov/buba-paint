@@ -37,6 +37,8 @@ describe("StubSidecarProvider", () => {
     expect(response.proxy_wallet).toBe("0xproxy");
     expect(response.auth_status).toBe("ok");
     expect(response.geoblock_status).toBe("failed");
+    expect(response.signature_type).toBe(1);
+    expect(response.geoblock_ip).toBeNull();
     expect(response.allowance_status).toBe("failed");
     expect(response.user_stream_status).toBe("failed");
     expect(response.available_cash_usd).toBeNull();

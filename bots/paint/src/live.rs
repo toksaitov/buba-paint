@@ -4375,6 +4375,63 @@ fn live_account_snapshot(session_id: i64, account: &LiveAccountState) -> LiveAcc
     }
 }
 
+/// Return wallet signature-type arming blockers, failing closed on unknown or deposit-wallet types.
+///
+/// The type is the value the sidecar reports from its own configuration, not an on-chain-verified
+/// signature model; confirming the funded wallet matches it is the operator gate's responsibility.
+fn signature_type_issues(preflight: &LivePreflightResponse, config: &Config) -> Vec<String> {
+    let mut issues = Vec::new();
+    match preflight.signature_type {
+        None => issues.push(
+            "signature type unknown: the sidecar did not report a signature type".to_string(),
+        ),
+        Some(reported) => {
+            if !matches!(reported, 0..=3) {
+                issues.push(format!(
+                    "unsupported signature type {reported}: not a known Polymarket signature type"
+                ));
+            }
+            if reported == 3
+                && !(config.live_allow_deposit_wallet
+                    && config.live_expected_signature_type == Some(3))
+            {
+                issues.push(
+                    "deposit-wallet signature type 3 is not supported for live trading; set LIVE_ALLOW_DEPOSIT_WALLET and LIVE_EXPECTED_SIGNATURE_TYPE=3 to override".to_string(),
+                );
+            }
+            if let Some(expected) = config.live_expected_signature_type
+                && reported != i64::from(expected)
+            {
+                issues.push(format!(
+                    "signature type mismatch: expected {expected}, reported {reported}"
+                ));
+            }
+        }
+    }
+    issues
+}
+
+/// Return egress-IP arming blockers when an expected egress IP is pinned by the operator.
+fn egress_ip_issues(preflight: &LivePreflightResponse, config: &Config) -> Vec<String> {
+    let mut issues = Vec::new();
+    if let Some(expected_ip) = config.live_expected_egress_ip.as_deref() {
+        let observed = preflight
+            .geoblock_ip
+            .as_deref()
+            .and_then(|ip| ip.parse::<std::net::IpAddr>().ok());
+        match (expected_ip.parse::<std::net::IpAddr>().ok(), observed) {
+            (Some(exp), Some(obs)) if exp == obs => {}
+            (_, Some(obs)) => issues.push(format!(
+                "egress ip mismatch: expected {expected_ip}, observed {obs}"
+            )),
+            (_, None) => issues.push(format!(
+                "egress ip could not be confirmed against expected {expected_ip}"
+            )),
+        }
+    }
+    issues
+}
+
 /// Return all current arming blockers from venue and local safety state.
 fn live_gate_issues(
     preflight: &LivePreflightResponse,
@@ -4389,6 +4446,8 @@ fn live_gate_issues(
     if preflight.geoblock_status == LiveCheckStatus::Failed {
         issues.push("geoblock check failed".to_string());
     }
+    issues.extend(signature_type_issues(preflight, config));
+    issues.extend(egress_ip_issues(preflight, config));
     if preflight.auth_status == LiveCheckStatus::Failed {
         issues.push("auth bootstrap failed".to_string());
     }
@@ -5726,6 +5785,299 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.contains("replay-grade")));
     }
 
+    /// Verifies arming blocks when the sidecar does not report a signature type.
+    #[test]
+    fn live_gate_issues_block_missing_signature_type() {
+        let config = Config::default();
+        let mut preflight = test_preflight_response();
+        preflight.signature_type = None;
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("signature type unknown"))
+        );
+    }
+
+    /// Verifies arming blocks an unknown signature type.
+    #[test]
+    fn live_gate_issues_block_unknown_signature_type() {
+        let config = Config::default();
+        let mut preflight = test_preflight_response();
+        preflight.signature_type = Some(9);
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("unsupported signature type 9"))
+        );
+    }
+
+    /// Verifies a deposit-wallet (type 3) signature is blocked by default.
+    #[test]
+    fn live_gate_issues_block_deposit_wallet_by_default() {
+        let config = Config::default();
+        let mut preflight = test_preflight_response();
+        preflight.signature_type = Some(3);
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("deposit-wallet signature type 3"))
+        );
+    }
+
+    /// Verifies the two-key opt-in allows a deposit-wallet signature.
+    #[test]
+    fn live_gate_issues_allow_deposit_wallet_with_two_key_optin() {
+        let mut config = Config::default();
+        config.live_allow_deposit_wallet = true;
+        config.live_expected_signature_type = Some(3);
+        let mut preflight = test_preflight_response();
+        preflight.signature_type = Some(3);
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(!issues.iter().any(|issue| issue.contains("deposit-wallet")));
+        assert!(
+            !issues
+                .iter()
+                .any(|issue| issue.contains("signature type mismatch"))
+        );
+    }
+
+    /// Verifies an exact expected-signature-type mismatch blocks arming.
+    #[test]
+    fn live_gate_issues_block_signature_type_mismatch() {
+        let mut config = Config::default();
+        config.live_expected_signature_type = Some(1);
+        let mut preflight = test_preflight_response();
+        preflight.signature_type = Some(2);
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("signature type mismatch"))
+        );
+    }
+
+    /// Verifies a pinned egress IP mismatch blocks arming.
+    #[test]
+    fn live_gate_issues_block_egress_ip_mismatch() {
+        let mut config = Config::default();
+        config.live_expected_egress_ip = Some("203.0.113.10".to_string());
+        let mut preflight = test_preflight_response();
+        preflight.geoblock_ip = Some("198.51.100.5".to_string());
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("egress ip mismatch"))
+        );
+    }
+
+    /// Verifies a matching egress pin and allowed signature type yield no identity issue.
+    #[test]
+    fn live_gate_issues_pass_with_matching_egress_and_signature() {
+        let mut config = Config::default();
+        config.live_expected_signature_type = Some(1);
+        config.live_expected_egress_ip = Some("203.0.113.10".to_string());
+        let issues = live_gate_issues(
+            &test_preflight_response(),
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(!issues.iter().any(|issue| issue.contains("signature type")));
+        assert!(!issues.iter().any(|issue| issue.contains("egress ip")));
+    }
+
+    /// Verifies a failed geoblock status hard-blocks arming.
+    #[test]
+    fn live_gate_issues_block_when_geoblock_failed() {
+        let config = Config::default();
+        let mut preflight = test_preflight_response();
+        preflight.geoblock_status = LiveCheckStatus::Failed;
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("geoblock check failed"))
+        );
+    }
+
+    /// Verifies a preflight JSON missing signature_type deserializes to None and blocks arming.
+    #[test]
+    fn preflight_missing_signature_type_deserializes_none_and_blocks() {
+        let mut value = serde_json::to_value(test_preflight_response()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("signature_type");
+        object.remove("geoblock_ip");
+        let preflight: LivePreflightResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(preflight.signature_type, None);
+        assert_eq!(preflight.geoblock_ip, None);
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &Config::default(),
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("signature type unknown"))
+        );
+    }
+
+    /// Verifies config validation rejects a present-but-invalid expected signature type.
+    #[test]
+    fn config_rejects_invalid_expected_signature_type() {
+        let mut config = Config::default();
+        config.execution_mode = ExecutionMode::LiveTrading;
+        config.live_expected_signature_type = Some(99);
+        assert!(config.validate().is_err());
+    }
+
+    /// Verifies a pinned egress IP with no observed IP blocks arming.
+    #[test]
+    fn live_gate_issues_block_egress_ip_unconfirmed() {
+        let mut config = Config::default();
+        config.live_expected_egress_ip = Some("203.0.113.10".to_string());
+        let mut preflight = test_preflight_response();
+        preflight.geoblock_ip = None;
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(issues.iter().any(|issue| issue.contains("egress ip")));
+    }
+
+    /// Verifies egress IP comparison is parse-normalized across IPv6 textual forms.
+    #[test]
+    fn live_gate_issues_match_egress_ip_ipv6_normalized() {
+        let mut config = Config::default();
+        config.live_expected_egress_ip = Some("2001:db8::1".to_string());
+        let mut preflight = test_preflight_response();
+        preflight.geoblock_ip = Some("2001:0db8:0000:0000:0000:0000:0000:0001".to_string());
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(!issues.iter().any(|issue| issue.contains("egress ip")));
+    }
+
+    /// Verifies the deposit-wallet allow flag without the expected pin still blocks type 3.
+    #[test]
+    fn live_gate_issues_block_deposit_wallet_allow_without_expected() {
+        let mut config = Config::default();
+        config.live_allow_deposit_wallet = true;
+        let mut preflight = test_preflight_response();
+        preflight.signature_type = Some(3);
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("deposit-wallet signature type 3"))
+        );
+    }
+
+    /// Verifies the deposit-wallet expected pin without the allow flag still blocks type 3.
+    #[test]
+    fn live_gate_issues_block_deposit_wallet_expected_without_allow() {
+        let mut config = Config::default();
+        config.live_expected_signature_type = Some(3);
+        let mut preflight = test_preflight_response();
+        preflight.signature_type = Some(3);
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("deposit-wallet signature type 3"))
+        );
+    }
+
+    /// Verifies the deposit-wallet allow flag with a wrong expected pin still blocks type 3.
+    #[test]
+    fn live_gate_issues_block_deposit_wallet_allow_with_wrong_expected() {
+        let mut config = Config::default();
+        config.live_allow_deposit_wallet = true;
+        config.live_expected_signature_type = Some(2);
+        let mut preflight = test_preflight_response();
+        preflight.signature_type = Some(3);
+        let issues = live_gate_issues(
+            &preflight,
+            &test_account_state(),
+            &test_activity_response(),
+            &config,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("deposit-wallet signature type 3"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("signature type mismatch"))
+        );
+    }
+
+    /// Verifies config validation rejects a present-but-invalid expected egress IP.
+    #[test]
+    fn config_rejects_invalid_expected_egress_ip() {
+        let mut config = Config::default();
+        config.execution_mode = ExecutionMode::LiveTrading;
+        config.live_expected_egress_ip = Some("not-an-ip".to_string());
+        assert!(config.validate().is_err());
+    }
+
     /// Verifies that runtime capture metadata does not scan rows or claim offline sweep grade.
     #[test]
     fn runtime_capture_metadata_uses_incremental_health() {
@@ -6474,8 +6826,10 @@ mod tests {
             mode: "live_trading".to_string(),
             wallet_address: Some("0xwallet".to_string()),
             proxy_wallet: Some("0xproxy".to_string()),
+            signature_type: Some(1),
             geoblock_status: LiveCheckStatus::Ok,
             geoblock_country_code: Some("IE".to_string()),
+            geoblock_ip: Some("203.0.113.10".to_string()),
             auth_status: LiveCheckStatus::Ok,
             clock_status: LiveCheckStatus::Ok,
             allowance_status: LiveCheckStatus::Ok,
