@@ -11,9 +11,9 @@
   },
   "dependencies": {
     "@ethersproject/wallet": "^5.8.0",
-    "@polymarket/builder-relayer-client": "^0.0.9",
+    "@polymarket/builder-relayer-client": "^0.0.10",
     "@polymarket/builder-signing-sdk": "^1.0.0",
-    "@polymarket/clob-client-v2": "^1.0.3",
+    "@polymarket/clob-client-v2": "^1.0.6",
     "viem": "^2.48.8",
     "ws": "^8.20.0"
   },

@@ -225,6 +225,7 @@ describe("PolymarketReadonlyProvider", () => {
             fd: { r: 0.072, e: 1, to: true },
             mbf: 0,
             tbf: 0,
+            r: null,
           };
         },
         getTrades: async () => {
