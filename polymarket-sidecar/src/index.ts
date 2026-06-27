@@ -2,7 +2,11 @@ import http from "node:http";
 import { webcrypto } from "node:crypto";
 import { createServer } from "./server.js";
 import { loadConfig, type SidecarConfig } from "./config.js";
-import { createDefaultProvider, type SidecarProvider } from "./provider.js";
+import {
+  assertExpectedExchangeContracts,
+  createDefaultProvider,
+  type SidecarProvider,
+} from "./provider.js";
 import { installConsoleRedaction, logEvent } from "./logging.js";
 
 export interface SidecarRuntime {
@@ -28,6 +32,7 @@ export function startSidecar(
   provider: SidecarProvider = createDefaultProvider(config),
   proc: ProcessLike = process,
 ): SidecarRuntime {
+  assertExpectedExchangeContracts();
   const server = createServer(provider, config);
   let closed = false;
   let closePromise: Promise<void> | null = null;

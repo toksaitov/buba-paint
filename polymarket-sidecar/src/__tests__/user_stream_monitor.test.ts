@@ -51,8 +51,9 @@ describe("WsUserStreamMonitor", () => {
   function createMonitor() {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];
+    const clock = { now: 1_700_000_000_000 };
     const monitor = new WsUserStreamMonitor({
-      now: () => 1_700_000_000_000,
+      now: () => clock.now,
       createSocket: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -68,8 +69,9 @@ describe("WsUserStreamMonitor", () => {
       stableGraceMs: 10,
       reconnectBaseMs: 20,
       reconnectMaxMs: 100,
+      stalenessMs: 30_000,
     });
-    return { monitor, sockets };
+    return { monitor, sockets, clock };
   }
 
   async function connectMonitor(
@@ -85,6 +87,22 @@ describe("WsUserStreamMonitor", () => {
     sockets[0].message({ event_type: "subscribed" });
     await promise;
   }
+
+  it("forces reconnect when no inbound data arrives within the staleness window", async () => {
+    const { monitor, sockets, clock } = createMonitor();
+    await connectMonitor(monitor, sockets);
+    expect(sockets).toHaveLength(1);
+
+    clock.now += 40_000;
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sockets[0].closeCalls + sockets[0].terminateCalls).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(sockets.length).toBeGreaterThan(1);
+
+    monitor.close();
+    await vi.runAllTimersAsync();
+  });
 
   it("does not crash when closed during CONNECTING", async () => {
     const { monitor, sockets } = createMonitor();

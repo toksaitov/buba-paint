@@ -9,6 +9,7 @@ import {
   Side,
   createL1Headers,
   createL2Headers,
+  getContractConfig,
   type ApiKeyCreds,
   type MarketDetails,
   type OpenOrder,
@@ -54,6 +55,9 @@ const DEFAULT_GAMMA_API_URL = "https://gamma-api.polymarket.com";
 const DEFAULT_DATA_API_URL = "https://data-api.polymarket.com";
 const USER_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
 const CHAIN_ID = Chain.POLYGON;
+const EXPECTED_EXCHANGE_V2 = "0xE111180000d2663C0091e4f400237545B87B996B";
+const EXPECTED_NEG_RISK_EXCHANGE_V2 =
+  "0xe2222d279d744050d28e00520010520000310F59";
 const COLLATERAL_DECIMALS = 1_000_000;
 const POLYMARKET_HTTP_USER_AGENT = "buba-polymarket-sidecar/0.1.0";
 const PUSD_COLLATERAL_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
@@ -114,6 +118,7 @@ interface SidecarHealthResponse {
   last_user_stream_disconnect_at_ms: number | null;
   last_user_stream_disconnect_reason: string | null;
   consecutive_user_stream_failures: number;
+  last_clock_drift_ms: number | null;
 }
 
 interface GeoblockResponse {
@@ -271,6 +276,7 @@ interface ProviderHealthState {
   lastAccountRefreshError: string | null;
   lastDiscoveryError: string | null;
   lastDiscoveryFallbackUsedAtMs: number | null;
+  lastClockDriftMs: number | null;
 }
 
 interface ProviderDeps {
@@ -319,6 +325,7 @@ interface WsUserStreamMonitorDeps {
   stableGraceMs: number;
   reconnectBaseMs: number;
   reconnectMaxMs: number;
+  stalenessMs: number;
 }
 
 interface ConnectionAttempt {
@@ -836,6 +843,31 @@ function collectFeeRateMismatches(
   return mismatches;
 }
 
+export function assertExpectedExchangeContracts(): void {
+  const contracts = getContractConfig(CHAIN_ID);
+  const mismatches: string[] = [];
+  if (
+    contracts.exchangeV2.toLowerCase() !== EXPECTED_EXCHANGE_V2.toLowerCase()
+  ) {
+    mismatches.push(
+      `exchangeV2 ${contracts.exchangeV2} (expected ${EXPECTED_EXCHANGE_V2})`,
+    );
+  }
+  if (
+    contracts.negRiskExchangeV2.toLowerCase() !==
+    EXPECTED_NEG_RISK_EXCHANGE_V2.toLowerCase()
+  ) {
+    mismatches.push(
+      `negRiskExchangeV2 ${contracts.negRiskExchangeV2} (expected ${EXPECTED_NEG_RISK_EXCHANGE_V2})`,
+    );
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Unexpected Polymarket V2 exchange contracts; a possible ExchangeV3 cutover requires re-validation before trading: ${mismatches.join("; ")}`,
+    );
+  }
+}
+
 function hasBuilderRelayerCredentials(config: SidecarConfig): boolean {
   return Boolean(
     config.builderApiKey &&
@@ -1338,6 +1370,7 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
         this.state.status = "ok";
         this.state.lifecycle = "connected";
         this.state.lastConnectedAtMs = this.deps.now();
+        this.state.lastEventAtMs = this.deps.now();
         this.state.lastError = null;
         this.state.subscribedMarkets = [...attempt.markets];
         this.state.consecutiveFailures = 0;
@@ -1480,6 +1513,27 @@ export class WsUserStreamMonitor implements UserStreamMonitor {
     }
     attempt.heartbeatTimer = this.deps.setIntervalFn(() => {
       if (!this.isActiveAttempt(attempt) || attempt.socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      const lastEventAtMs = this.state.lastEventAtMs;
+      const effectiveStalenessMs =
+        this.deps.stalenessMs > 0
+          ? Math.max(this.deps.stalenessMs, USER_STREAM_PING_INTERVAL_MS * 2)
+          : 0;
+      const inactivityMs =
+        lastEventAtMs !== null ? this.deps.now() - lastEventAtMs : 0;
+      if (
+        effectiveStalenessMs > 0 &&
+        lastEventAtMs !== null &&
+        inactivityMs > effectiveStalenessMs
+      ) {
+        this.deps.log("warn", "user_stream_stale", {
+          last_event_at_ms: lastEventAtMs,
+          inactivity_ms: inactivityMs,
+          staleness_ms: effectiveStalenessMs,
+        });
+        this.markDisconnected("user stream stale: no inbound frame within staleness window");
+        safeCloseSocket(attempt.socket, this.deps.log);
         return;
       }
       try {
@@ -1714,6 +1768,7 @@ function defaultProviderDeps(): ProviderDeps {
         stableGraceMs: config.userStreamStableGraceMs,
         reconnectBaseMs: config.userStreamReconnectBaseMs,
         reconnectMaxMs: config.userStreamReconnectMaxMs,
+        stalenessMs: config.userStreamStalenessMs,
       }),
   };
 }
@@ -1770,6 +1825,7 @@ export class StubSidecarProvider implements SidecarProvider {
       last_user_stream_disconnect_at_ms: null,
       last_user_stream_disconnect_reason: null,
       consecutive_user_stream_failures: 0,
+      last_clock_drift_ms: null,
     };
   }
 
@@ -1920,6 +1976,7 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
     lastAccountRefreshError: null,
     lastDiscoveryError: null,
     lastDiscoveryFallbackUsedAtMs: null,
+    lastClockDriftMs: null,
   };
 
   constructor(
@@ -1969,6 +2026,7 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
       last_user_stream_disconnect_at_ms: stream.lastDisconnectedAtMs,
       last_user_stream_disconnect_reason: stream.lastDisconnectReason,
       consecutive_user_stream_failures: stream.consecutiveFailures,
+      last_clock_drift_ms: this.healthState.lastClockDriftMs,
     };
   }
 
@@ -2009,6 +2067,7 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
           ),
         );
         const driftMs = Math.abs(serverTimeMs - this.deps.nowMs());
+        this.healthState.lastClockDriftMs = driftMs;
         clockStatus = checkStatus(driftMs <= this.config.clockDriftMaxMs);
         if (clockStatus === "failed") {
           errors.push(

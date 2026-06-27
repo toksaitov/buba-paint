@@ -11,6 +11,7 @@ export interface SidecarConfig {
   sdkTimeoutMs: number;
   userStreamConnectTimeoutMs: number;
   userStreamStableGraceMs: number;
+  userStreamStalenessMs: number;
   userStreamReconnectBaseMs: number;
   userStreamReconnectMaxMs: number;
   redemptionPollIntervalMs: number;
@@ -79,6 +80,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
       env,
       "POLYMARKET_USER_STREAM_STABLE_GRACE_MS",
       1000,
+    ),
+    userStreamStalenessMs: envInt(
+      env,
+      "POLYMARKET_USER_STREAM_STALENESS_MS",
+      45000,
     ),
     userStreamReconnectBaseMs: envInt(
       env,

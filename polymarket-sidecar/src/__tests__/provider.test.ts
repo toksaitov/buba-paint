@@ -1,10 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  assertExpectedExchangeContracts,
   PolymarketReadonlyProvider,
   StubSidecarProvider,
 } from "../provider.js";
 import { loadConfig } from "../config.js";
 import type { LivePreflightRequest } from "../types.js";
+
+describe("assertExpectedExchangeContracts", () => {
+  it("accepts the exchange contract addresses pinned for the current SDK", () => {
+    expect(() => assertExpectedExchangeContracts()).not.toThrow();
+  });
+});
 
 describe("StubSidecarProvider", () => {
   it("keeps preflight in contract-only mode even with credentials", async () => {

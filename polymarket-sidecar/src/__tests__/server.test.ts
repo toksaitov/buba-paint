@@ -149,6 +149,7 @@ describe("sidecar server", () => {
         last_user_stream_disconnect_at_ms: null,
         last_user_stream_disconnect_reason: null,
         consecutive_user_stream_failures: 0,
+        last_clock_drift_ms: null,
       }),
       accountState: async (): Promise<LiveAccountState> => {
         throw new ProviderStageError("positions", "timed out");
@@ -277,6 +278,7 @@ describe("sidecar server", () => {
         last_user_stream_disconnect_at_ms: null,
         last_user_stream_disconnect_reason: null,
         consecutive_user_stream_failures: 0,
+        last_clock_drift_ms: null,
       }),
       accountState: async (): Promise<LiveAccountState> => {
         throw new Error("unexpected");
@@ -389,6 +391,7 @@ describe("sidecar server", () => {
         last_user_stream_disconnect_at_ms: null,
         last_user_stream_disconnect_reason: null,
         consecutive_user_stream_failures: 0,
+        last_clock_drift_ms: null,
       }),
       accountState: async (): Promise<LiveAccountState> => {
         throw new Error("unexpected");
