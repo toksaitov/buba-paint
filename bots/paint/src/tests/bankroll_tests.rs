@@ -163,6 +163,151 @@ fn reserve_capital_invalid_entry_price() {
     assert!((mgr.reserve_capital(1.5, 0.9, "x", &cfg, &clock) - 0.0).abs() < f64::EPSILON);
 }
 
+/// Verifies the open-exposure ceiling clamps total committed reservations to the configured cap.
+#[test]
+fn open_exposure_ceiling_clamps_reservation() {
+    let mut cfg = test_config();
+    cfg.enforce_open_exposure_caps = true;
+    cfg.live_max_open_notional_usd = 10.0;
+    cfg.live_session_cash_cap_usd = 1_000.0;
+    assert_eq!(cfg.open_exposure_ceiling_usd(), Some(10.0));
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    let mut total_cost = 0.0;
+    for _ in 0..50 {
+        let tokens = mgr.reserve_capital_with_reserve_price(
+            0.45,
+            0.45,
+            0.9,
+            "latency-arb",
+            StrategyFamily::LatencyArb,
+            &cfg,
+            &clock,
+        );
+        total_cost += tokens * 0.45;
+    }
+    assert!(
+        total_cost > 0.0,
+        "should reserve some capital under the ceiling"
+    );
+    assert!(
+        total_cost <= 10.0 + 1e-6,
+        "committed {total_cost} exceeds the $10 open-exposure ceiling"
+    );
+}
+
+/// Verifies reservations are unchanged when the open-exposure caps are not enforced.
+#[test]
+fn open_exposure_ceiling_inactive_without_flag() {
+    let cfg = test_config();
+    assert_eq!(cfg.open_exposure_ceiling_usd(), None);
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    let tokens = mgr.reserve_capital(0.45, 0.9, "latency-arb", &cfg, &clock);
+    assert!(
+        (tokens - 44.0).abs() < f64::EPSILON,
+        "baseline sizing changed without caps enforced: {tokens}"
+    );
+}
+
+/// Verifies the open-exposure ceiling getter activates for live modes and the fidelity flag.
+#[test]
+fn open_exposure_ceiling_getter_activation() {
+    let mut cfg = test_config();
+    cfg.live_max_open_notional_usd = 25.0;
+    cfg.live_session_cash_cap_usd = 100.0;
+    assert_eq!(cfg.open_exposure_ceiling_usd(), None);
+
+    cfg.enforce_open_exposure_caps = true;
+    assert_eq!(cfg.open_exposure_ceiling_usd(), Some(25.0));
+
+    cfg.enforce_open_exposure_caps = false;
+    cfg.execution_mode = crate::config::ExecutionMode::LiveTrading;
+    assert_eq!(cfg.open_exposure_ceiling_usd(), Some(25.0));
+}
+
+/// Verifies the open-exposure ceiling also clamps the spread (buy-both-sides) reserve path.
+#[test]
+fn open_exposure_ceiling_clamps_spread_reservation() {
+    let mut cfg = test_config();
+    cfg.enforce_open_exposure_caps = true;
+    cfg.spread_capture_max_position_fraction = Some(0.5);
+    cfg.live_max_open_notional_usd = 10.0;
+    cfg.live_session_cash_cap_usd = 1_000.0;
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    let mut total_cost = 0.0;
+    for _ in 0..50 {
+        let (up, down) = mgr.reserve_spread_capital_for_family(
+            0.45,
+            0.45,
+            0.9,
+            StrategyFamily::SpreadCapture,
+            &cfg,
+            &clock,
+        );
+        total_cost += up * 0.45 + down * 0.45;
+    }
+    assert!(
+        total_cost > 0.0,
+        "should reserve some spread capital under the ceiling"
+    );
+    assert!(
+        total_cost <= 10.0 + 1e-6,
+        "spread committed {total_cost} exceeds the $10 open-exposure ceiling"
+    );
+}
+
+/// Verifies the ceiling headroom uses full undiscounted committed exposure, ignoring the
+/// pending-settlement reserve discount, so the risky policy cannot loosen the safety cap.
+#[test]
+fn open_exposure_ceiling_uses_undiscounted_pending_reserved() {
+    let mut cfg = test_config();
+    cfg.enforce_open_exposure_caps = true;
+    cfg.live_max_open_notional_usd = 10.0;
+    cfg.live_session_cash_cap_usd = 1_000.0;
+    let (db, _tmp) = temp_db();
+    let clock = BacktestClock::new();
+    clock.set(1_000);
+    let mut mgr = make_manager(&cfg, &db, &clock);
+
+    mgr.pending_settlement_reserved_capital = 9.0;
+    mgr.reserved_capital = 9.0;
+
+    let tokens = mgr.reserve_capital_with_reserve_price(
+        0.45,
+        0.45,
+        0.9,
+        "latency-arb",
+        StrategyFamily::LatencyArb,
+        &cfg,
+        &clock,
+    );
+    let cost = tokens * 0.45;
+    assert!(
+        cost <= 1.0 + 1e-6,
+        "headroom used discounted pending exposure; reserved {cost} exceeds the $1 left under the $10 ceiling"
+    );
+}
+
+/// Verifies config validation fails fast on a non-positive cap when the ceiling is enforced.
+#[test]
+fn config_rejects_nonpositive_caps_when_ceiling_enforced() {
+    let mut cfg = test_config();
+    cfg.enforce_open_exposure_caps = true;
+    cfg.live_max_open_notional_usd = 0.0;
+    assert!(cfg.validate().is_err());
+}
+
 /// Verifies that min bet floor activates.
 #[test]
 fn min_bet_floor_activates() {

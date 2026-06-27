@@ -421,6 +421,7 @@ pub struct Config {
     pub live_expected_signature_type: Option<u32>,
     pub live_allow_deposit_wallet: bool,
     pub live_expected_egress_ip: Option<String>,
+    pub enforce_open_exposure_caps: bool,
     pub feed_event_storage_profile: FeedEventStorageProfile,
     pub feed_event_writer_queue_capacity: usize,
     pub feed_event_writer_batch_size: usize,
@@ -494,6 +495,24 @@ impl Config {
         self.execution_mode.uses_live_sidecar()
     }
 
+    /// Return the hard open-exposure ceiling in USD, or None when the caps are not enforced.
+    ///
+    /// The ceiling is the tighter of the open-notional and session-cash caps and is applied to
+    /// total committed open exposure at reservation time. It is active in live execution modes and,
+    /// for live-fidelity backtests, whenever `enforce_open_exposure_caps` is set; otherwise it is
+    /// None so research backtests size exactly as before.
+    #[must_use]
+    pub fn open_exposure_ceiling_usd(&self) -> Option<f64> {
+        if self.is_live_execution() || self.enforce_open_exposure_caps {
+            Some(
+                self.live_max_open_notional_usd
+                    .min(self.live_session_cash_cap_usd),
+            )
+        } else {
+            None
+        }
+    }
+
     /// Validate config invariants that should fail fast at startup.
     pub fn validate(&self) -> anyhow::Result<()> {
         let _ = self.pending_settlement_policy()?;
@@ -505,6 +524,21 @@ impl Config {
         }
         if self.clob_no_message_reconnect_ms == 0 {
             bail!("CLOB_NO_MESSAGE_RECONNECT_MS must be > 0");
+        }
+        if self.open_exposure_ceiling_usd().is_some() {
+            if !(self.live_max_open_notional_usd.is_finite()
+                && self.live_max_open_notional_usd > 0.0)
+            {
+                bail!(
+                    "LIVE_MAX_OPEN_NOTIONAL_USD must be a positive finite number when the open-exposure ceiling is enforced"
+                );
+            }
+            if !(self.live_session_cash_cap_usd.is_finite() && self.live_session_cash_cap_usd > 0.0)
+            {
+                bail!(
+                    "LIVE_SESSION_CASH_CAP_USD must be a positive finite number when the open-exposure ceiling is enforced"
+                );
+            }
         }
         if self.is_live_execution() {
             if self.live_session_cash_cap_usd <= 0.0 {
@@ -915,6 +949,7 @@ impl Config {
                 .ok()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty()),
+            enforce_open_exposure_caps: env_bool("ENFORCE_OPEN_EXPOSURE_CAPS", false),
             feed_event_storage_profile: FeedEventStorageProfile::from_env_value(
                 env::var("FEED_EVENT_STORAGE_PROFILE").ok().as_deref(),
             ),
@@ -1092,6 +1127,7 @@ impl Default for Config {
             live_expected_signature_type: None,
             live_allow_deposit_wallet: false,
             live_expected_egress_ip: None,
+            enforce_open_exposure_caps: false,
             feed_event_storage_profile: FeedEventStorageProfile::ReplayGrade,
             feed_event_writer_queue_capacity: 50_000,
             feed_event_writer_batch_size: 500,

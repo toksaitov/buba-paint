@@ -209,7 +209,8 @@ impl BankrollManager {
 
         let available = self
             .available_single_budget(family, config)
-            .min(self.current_balance - self.effective_reserved_capital(config));
+            .min(self.current_balance - self.effective_reserved_capital(config))
+            .min(self.open_exposure_headroom(config));
         if available <= 0.0 {
             return 0.0;
         }
@@ -290,7 +291,8 @@ impl BankrollManager {
 
         let available = self
             .available_spread_budget_for_family(family, config)
-            .min(self.current_balance - self.effective_reserved_capital(config));
+            .min(self.current_balance - self.effective_reserved_capital(config))
+            .min(self.open_exposure_headroom(config));
         if available <= 0.0 {
             return zero;
         }
@@ -842,6 +844,21 @@ impl BankrollManager {
         }
         self.active_reserved_capital
             + self.pending_settlement_reserved_capital * pending_policy.global_reserve_fraction
+    }
+
+    /// Return remaining open-exposure headroom under the configured ceiling, or infinity when uncapped.
+    ///
+    /// Uses the full undiscounted committed exposure (active plus pending-settlement reserved) so the
+    /// safety ceiling cannot be loosened by the pending-settlement reserve policy. Returns infinity
+    /// when no ceiling is configured, leaving research-backtest sizing identical to before.
+    fn open_exposure_headroom(&self, config: &Config) -> f64 {
+        config
+            .open_exposure_ceiling_usd()
+            .map_or(f64::INFINITY, |ceiling| {
+                let committed =
+                    self.active_reserved_capital + self.pending_settlement_reserved_capital;
+                (ceiling - committed).max(0.0)
+            })
     }
 
     /// Return the config-weighted family reserve used for sleeve checks.
