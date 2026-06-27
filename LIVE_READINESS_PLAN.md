@@ -492,7 +492,7 @@ autonomous execution.
 * [x] Phase 1 - Risk-cap enforcement
 * [x] Phase 2 - Order idempotency and timeout safety
 * [x] Phase 3 - Settlement reconciliation, redemption, and restart windows
-* [ ] Phase 4 - SDK currency and venue assumptions
+* [x] Phase 4 - SDK currency and venue assumptions
 * [ ] Phase 5 - Observability and resilience
 * [ ] Phase 6 - Readiness validation and canary
 
