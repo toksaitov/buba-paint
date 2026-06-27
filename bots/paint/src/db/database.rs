@@ -84,6 +84,14 @@ pub struct LiveOrderStatusUpdate<'a> {
     pub details_json: Option<&'a str>,
 }
 
+/// Durable submission marker for one intent: the existing live order row, if any.
+#[derive(Debug, Clone)]
+pub struct ExistingLiveOrder {
+    pub id: i64,
+    pub status: String,
+    pub venue_order_id: Option<String>,
+}
+
 /// Signal evidence that must be durable before a funded live order reaches the venue.
 pub struct LiveDecisionEvidence<'a> {
     pub signal_id: i64,
@@ -1550,6 +1558,59 @@ impl Database {
             live_order_id,
         ])?;
         Ok(())
+    }
+
+    /// Return whether the durable one-order-per-intent idempotency schema is fully installed.
+    ///
+    /// Requires both the live-orders uniqueness index and the intent venue-attempt marker column,
+    /// so a database missing either is refused at arm time rather than failing per-order at submit.
+    pub fn live_order_idempotency_ready(&self) -> anyhow::Result<bool> {
+        let index_present: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_live_orders_intent_unique')",
+            [],
+            |row| row.get(0),
+        )?;
+        let column_present: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('live_order_intents') WHERE name = 'venue_attempted_at_ms')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(index_present && column_present)
+    }
+
+    /// Atomically mark one intent as having crossed the venue-submission boundary.
+    ///
+    /// Returns true when this call set the marker (the caller may submit), and false when the
+    /// marker was already set (a prior attempt exists, so the caller must not submit again). The
+    /// `WHERE ... IS NULL` clause makes this a durable compare-and-set that survives restart and
+    /// cannot double-submit one intent.
+    pub fn mark_intent_venue_attempted(&self, intent_id: i64, now_ms: u64) -> anyhow::Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE live_order_intents SET venue_attempted_at_ms = ?2 \
+             WHERE id = ?1 AND venue_attempted_at_ms IS NULL",
+            params![intent_id, now_ms],
+        )?;
+        Ok(updated == 1)
+    }
+
+    /// Return the existing live order row for one intent, if any (durable submission marker).
+    pub fn find_live_order_by_intent(
+        &self,
+        intent_id: i64,
+    ) -> anyhow::Result<Option<ExistingLiveOrder>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, status, venue_order_id FROM live_orders WHERE intent_id = ?1 LIMIT 1",
+        )?;
+        let existing = stmt
+            .query_row(params![intent_id], |row| {
+                Ok(ExistingLiveOrder {
+                    id: row.get(0)?,
+                    status: row.get(1)?,
+                    venue_order_id: row.get(2)?,
+                })
+            })
+            .optional()?;
+        Ok(existing)
     }
 
     /// Insert one live fill and return its row ID.

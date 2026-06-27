@@ -998,6 +998,52 @@ fn unresolved_open_trade_markets_returns_only_ended_unresolved_rows() {
     assert_eq!(rows[0].open_trade_count, 1);
 }
 
+/// Verifies the live-order idempotency primitives: index presence, intent lookup, and the
+/// durable venue-attempt compare-and-set.
+#[test]
+fn live_order_idempotency_primitives() {
+    let (db, _tmp) = temp_db();
+    assert!(db.live_order_idempotency_ready().unwrap());
+    let session_id = db
+        .insert_live_session(&crate::types::LiveSession {
+            id: None,
+            started_at_ms: 1_000,
+            ended_at_ms: None,
+            status: "armed".into(),
+            execution_mode: "live_trading".into(),
+            wallet_address: Some("0xwallet".into()),
+            proxy_wallet: Some("0xproxy".into()),
+            enabled_strategies_json: "[]".into(),
+            config_fingerprint: "fp".into(),
+            cash_cap_usd: 100.0,
+            details_json: Some("{}".into()),
+        })
+        .unwrap();
+    let intent_id = db
+        .log_live_order_intent(&crate::types::LiveOrderIntent {
+            id: None,
+            session_id,
+            signal_id: None,
+            market_id: "mkt-1".into(),
+            strategy: "latency-arb".into(),
+            side: "BUY".into(),
+            order_type: "FOK".into(),
+            status: "submitted".into(),
+            created_at_ms: 1_050,
+            requested_price: Some(0.51),
+            requested_size: Some(5.0),
+            limit_price: Some(0.51),
+            fee_schedule_json: None,
+            token_fee_rates_json: None,
+            execution_group_id: None,
+            details_json: None,
+        })
+        .unwrap();
+    assert!(db.find_live_order_by_intent(intent_id).unwrap().is_none());
+    assert!(db.mark_intent_venue_attempted(intent_id, 1_100).unwrap());
+    assert!(!db.mark_intent_venue_attempted(intent_id, 1_200).unwrap());
+}
+
 /// Verifies that live session/account/order tables accept compact live telemetry.
 #[test]
 fn live_telemetry_tables_store_rows() {

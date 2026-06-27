@@ -88,8 +88,32 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     ensure_additive_tables(conn);
     ensure_feed_event_columns(conn);
     ensure_signal_metric_columns(conn);
+    ensure_live_order_idempotency(conn);
 
     Ok(())
+}
+
+/// Install the durable one-order-per-intent idempotency schema when the data allows it.
+///
+/// Adds the intent venue-attempt marker column and the live-orders uniqueness index. Runs after the
+/// additive tables exist. Tolerant on purpose: if a legacy runtime database already holds duplicate
+/// `intent_id` rows the unique-index creation fails, which leaves the constraint absent rather than
+/// aborting database open. Live arming separately refuses to arm whenever the index is missing, so a
+/// database that cannot install it is observable and blocked rather than silently unprotected.
+fn ensure_live_order_idempotency(conn: &rusqlite::Connection) {
+    add_column_if_missing(
+        conn,
+        "live_order_intents",
+        "venue_attempted_at_ms",
+        "INTEGER",
+    );
+    if let Err(error) = conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_live_orders_intent_unique ON live_orders(intent_id)",
+    ) {
+        tracing::warn!(
+            "live order idempotency index not installed (live arming will refuse): {error}"
+        );
+    }
 }
 
 /// Apply the static SQL migration list inside one transaction.

@@ -574,6 +574,11 @@ async fn submit_one_live_order_from_worker(
             release: order.reserved_cost,
         };
     }
+    if let Err(blocked) =
+        reserve_live_order_submission(input.db_path, input.session_id, intent_id, input.now_ms)
+    {
+        return blocked;
+    }
     let request =
         build_live_order_request_from_worker(input.session_id, intent_id, order, notional);
     match input.sidecar.submit_order_intent(&request).await {
@@ -832,7 +837,8 @@ fn classify_accepted_live_size(
     if accepted_size <= 0.0 {
         return Ok(None);
     }
-    if accepted_size > order.requested_size + f64::EPSILON {
+    let fill_tolerance = f64::EPSILON.max(order.requested_size.abs() * 4.0 * f64::EPSILON);
+    if accepted_size > order.requested_size + fill_tolerance {
         let details = response.details_json.clone().unwrap_or_else(|| {
             json!({
                 "accepted_size": accepted_size,
@@ -845,6 +851,23 @@ fn classify_accepted_live_size(
             session_id,
             now_ms,
             "venue response accepted more size than requested",
+            Some(details.as_str()),
+            None,
+        ));
+    }
+    if accepted_size + fill_tolerance < order.requested_size {
+        let details = response.details_json.clone().unwrap_or_else(|| {
+            json!({
+                "accepted_size": accepted_size,
+                "requested_size": order.requested_size,
+            })
+            .to_string()
+        });
+        return Err(block_live_response_with_state(
+            db_path,
+            session_id,
+            now_ms,
+            "FOK order returned a partial fill; reconcile before any retry",
             Some(details.as_str()),
             None,
         ));
@@ -876,6 +899,76 @@ fn block_live_response_with_state(
         state: "unknown_order",
         reason: reason.to_string(),
         release,
+    }
+}
+
+/// Refuse to cross the venue-submission boundary twice for one intent (durable idempotency).
+///
+/// Returns Ok only when this call is the first to claim the intent for venue submission. Returns a
+/// blocking result when a prior submission attempt or order row already exists, so a retry or a
+/// post-restart re-run cannot send a second real order for the same intent. The compare-and-set on
+/// the venue-attempt marker is the authoritative gate and survives process restart; the existing
+/// live-order lookup is a secondary reconcile signal and must not be relied on alone.
+fn reserve_live_order_submission(
+    db_path: &str,
+    session_id: i64,
+    intent_id: i64,
+    now_ms: u64,
+) -> Result<(), LiveSubmissionOrderResult> {
+    let db = match Database::open_runtime(db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            return Err(LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                reason: format!(
+                    "failed to open database for submission idempotency check: {error}"
+                ),
+                release: None,
+            });
+        }
+    };
+    match db.find_live_order_by_intent(intent_id) {
+        Err(error) => {
+            db.close();
+            Err(LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                reason: format!("failed to check existing live order for idempotency: {error}"),
+                release: None,
+            })
+        }
+        Ok(Some(order)) => {
+            db.close();
+            Err(block_live_response_with_state(
+                db_path,
+                session_id,
+                now_ms,
+                "intent already has a live order; reconcile before any retry",
+                Some(
+                    &json!({ "intent_id": intent_id, "existing_status": order.status }).to_string(),
+                ),
+                None,
+            ))
+        }
+        Ok(None) => {
+            let marked = db.mark_intent_venue_attempted(intent_id, now_ms);
+            db.close();
+            match marked {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(block_live_response_with_state(
+                    db_path,
+                    session_id,
+                    now_ms,
+                    "intent already attempted venue submission; reconcile before any retry",
+                    Some(&json!({ "intent_id": intent_id }).to_string()),
+                    None,
+                )),
+                Err(error) => Err(LiveSubmissionOrderResult::Blocked {
+                    state: "unknown_order",
+                    reason: format!("failed to mark intent venue attempt: {error}"),
+                    release: None,
+                }),
+            }
+        }
     }
 }
 
@@ -3313,6 +3406,11 @@ impl LiveTradingMonitor {
         self.persist_activity_recovery(&db, &activity)?;
         let mut issues = live_gate_issues(&preflight, &account, &activity, config);
         issues.extend(runtime_capture_issues_for_live(&db, config, clock.now())?);
+        if !db.live_order_idempotency_ready()? {
+            issues.push(
+                "live order idempotency schema is not installed; refusing to arm".to_string(),
+            );
+        }
         issues.sort();
         issues.dedup();
         self.preflight = Some(preflight);
@@ -6423,6 +6521,112 @@ mod tests {
                 state: "unknown_order",
                 ..
             }
+        ));
+    }
+
+    /// Verifies a partial FOK fill is treated as a blocking anomaly, not a normal fill.
+    #[test]
+    fn live_partial_fok_fill_blocks() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let session_id = db
+            .insert_live_session(&LiveSession {
+                id: None,
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                status: "armed".to_string(),
+                execution_mode: "live_trading".to_string(),
+                wallet_address: Some("0xwallet".to_string()),
+                proxy_wallet: Some("0xproxy".to_string()),
+                enabled_strategies_json: "[]".to_string(),
+                config_fingerprint: "{}".to_string(),
+                cash_cap_usd: 100.0,
+                details_json: Some("{}".to_string()),
+            })
+            .unwrap();
+        db.close();
+        let order = test_queued_order();
+        let evidence = test_critical_signal_event(order.signal_id);
+        let (intent_id, reject_reason) =
+            persist_live_order_intent_from_worker(&LiveIntentPersistenceInput {
+                db_path,
+                config: &Config::default(),
+                session_id,
+                window: &test_market_window(),
+                order: &order,
+                decision_event: Some(&evidence),
+                now_ms: 2_000,
+                notional: order.requested_price * order.requested_size,
+            })
+            .unwrap();
+        assert_eq!(reject_reason, None);
+        let response = LiveOrderIntentResponse {
+            ok: true,
+            venue_order_id: Some("venue-1".to_string()),
+            client_order_id: "client-1".to_string(),
+            status: "matched".to_string(),
+            status_reason: None,
+            accepted_size: Some(order.requested_size / 2.0),
+            details_json: None,
+        };
+
+        let result = handle_live_order_response_from_worker(
+            db_path, session_id, &order, intent_id, 2_100, &response,
+        );
+
+        assert!(matches!(
+            result,
+            LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                ..
+            }
+        ));
+    }
+
+    /// Verifies the submission reservation blocks a second venue attempt for one intent.
+    #[test]
+    fn reserve_live_order_submission_blocks_second_attempt() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let session_id = db
+            .insert_live_session(&LiveSession {
+                id: None,
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                status: "armed".to_string(),
+                execution_mode: "live_trading".to_string(),
+                wallet_address: Some("0xwallet".to_string()),
+                proxy_wallet: Some("0xproxy".to_string()),
+                enabled_strategies_json: "[]".to_string(),
+                config_fingerprint: "{}".to_string(),
+                cash_cap_usd: 100.0,
+                details_json: Some("{}".to_string()),
+            })
+            .unwrap();
+        let order = test_queued_order();
+        let evidence = test_critical_signal_event(order.signal_id);
+        let (intent_id, _reject) =
+            persist_live_order_intent_from_worker(&LiveIntentPersistenceInput {
+                db_path,
+                config: &Config::default(),
+                session_id,
+                window: &test_market_window(),
+                order: &order,
+                decision_event: Some(&evidence),
+                now_ms: 2_000,
+                notional: order.requested_price * order.requested_size,
+            })
+            .unwrap();
+        assert!(reserve_live_order_submission(db_path, session_id, intent_id, 2_100).is_ok());
+        let blocked = reserve_live_order_submission(db_path, session_id, intent_id, 2_200);
+        assert!(matches!(
+            blocked,
+            Err(LiveSubmissionOrderResult::Blocked {
+                state: "unknown_order",
+                ..
+            })
         ));
     }
 
