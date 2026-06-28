@@ -1,3 +1,12 @@
+# Live-trading deployment overlay for the supervised single-order canary.
+#
+# Money safety is layered and on by default. LIVE_DRY_RUN defaults to true, so a
+# plain `--mode live-trading` deploy builds order intents but never contacts the
+# venue. The bot also always boots disarmed, so even with dry-run off no order can
+# be placed until an explicit arm control command. The session caps default to the
+# 5 USD canary envelope. The real canary deploy must explicitly override
+# LIVE_DRY_RUN=false and the data-chosen strategy values via deploy-docker.py
+# --env-set; see docs/canary-config.md and CANARY_RUNBOOK.md.
 services:
   sidecar:
     build:
@@ -32,14 +41,26 @@ services:
 
   paint:
     environment:
-      EXECUTION_MODE: live_readonly
+      EXECUTION_MODE: live_trading
       LIVE_SIDECAR_URL: http://sidecar:3210
       FEED_EVENT_STORAGE_PROFILE: replay_grade
+      LIVE_DRY_RUN: "${LIVE_DRY_RUN:-true}"
+      LIVE_SESSION_CASH_CAP_USD: "${LIVE_SESSION_CASH_CAP_USD:-100}"
+      LIVE_MAX_SINGLE_ORDER_USD: "${LIVE_MAX_SINGLE_ORDER_USD:-7}"
+      LIVE_MAX_OPEN_NOTIONAL_USD: "${LIVE_MAX_OPEN_NOTIONAL_USD:-7}"
+      LIVE_MAX_DAILY_LOSS_USD: "${LIVE_MAX_DAILY_LOSS_USD:-7}"
+      LIVE_MAX_SESSION_DRAWDOWN_USD: "${LIVE_MAX_SESSION_DRAWDOWN_USD:-7}"
+      LIVE_MIN_REQUIRED_CASH_USD: "${LIVE_MIN_REQUIRED_CASH_USD:-5}"
+      LIVE_MAX_SESSION_ORDERS: "${LIVE_MAX_SESSION_ORDERS:-3}"
+      LIVE_MAX_SESSION_FILLS: "${LIVE_MAX_SESSION_FILLS:-1}"
+      LIVE_EXPECTED_SIGNATURE_TYPE: "${LIVE_EXPECTED_SIGNATURE_TYPE:-1}"
+      LIVE_EXPECTED_EGRESS_IP: "${LIVE_EXPECTED_EGRESS_IP:-}"
+      LIVE_ONCHAIN_RECONCILE: "${LIVE_ONCHAIN_RECONCILE:-true}"
       LATENCY_ARB_ENABLED: "true"
-      LATENCY_ARB_MOMENTUM_THRESHOLD: "0.0008"
-      LATENCY_ARB_MIN_ASK: "0.30"
-      LATENCY_ARB_MAX_ASK: "0.60"
-      LATENCY_ARB_COOLDOWN_MS: "60000"
+      LATENCY_ARB_MOMENTUM_THRESHOLD: "${LATENCY_ARB_MOMENTUM_THRESHOLD:-0.0008}"
+      LATENCY_ARB_MIN_ASK: "${LATENCY_ARB_MIN_ASK:-0.50}"
+      LATENCY_ARB_MAX_ASK: "${LATENCY_ARB_MAX_ASK:-0.60}"
+      LATENCY_ARB_COOLDOWN_MS: "${LATENCY_ARB_COOLDOWN_MS:-60000}"
       LATENCY_ARB_ADAPTIVE_WINDOW_MS: "1800000"
       LATENCY_ARB_MAX_POSITION_FRACTION: "0.125"
       SPREAD_CAPTURE_ENABLED: "false"

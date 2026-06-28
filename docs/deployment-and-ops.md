@@ -59,6 +59,52 @@ Requirements:
 * `.secrets/buba-paint-live-sidecar.env` exists locally and remains uncommitted.
 * the operator understands whether old runtime data should be preserved or deleted.
 
+## Live-Trading Canary Mode
+
+`--mode live-trading` is the supervised single-order canary path. It uses
+`docker-compose.live-trading.yml` and stays money-safe by default:
+
+* `LIVE_DRY_RUN` defaults to `true`, so the bot builds order intents but never calls
+  the venue.
+* the bot always boots disarmed, so no order can be placed without an explicit arm
+  control command even with dry-run off.
+* the order sizes to about 5 USD using the production position fractions, and
+  exposure is bounded by `LIVE_MAX_SINGLE_ORDER_USD=7` and
+  `LIVE_MAX_OPEN_NOTIONAL_USD=7`, with `LIVE_MAX_SESSION_ORDERS=3` and
+  `LIVE_MAX_SESSION_FILLS=1` bounding the run to one fill. The cash cap stays at the
+  production 100 USD because the fractions need that bankroll to size a 5 USD order;
+  see [../docs/canary-config.md](../docs/canary-config.md).
+
+The Ireland host cannot build images, so live-trading deploys pull digest-pinned
+images with `--use-locked-images`. Publish first so the lock matches the committed
+source (`python3 scripts/publish-live-images.py`).
+
+Rehearsal deploy (dry-run, no venue contact, safe to run any time):
+
+```bash
+python3 scripts/deploy-docker.py --host buba-paint --domain buba.toksaitov.com \
+  --mode live-trading --use-locked-images \
+  --env-set LATENCY_ARB_MOMENTUM_THRESHOLD=<relaxed-from-data> \
+  --env-set LATENCY_ARB_COOLDOWN_MS=15000
+```
+
+Real canary deploy (only on the operator GO; places at most one real order):
+
+```bash
+python3 scripts/deploy-docker.py --host buba-paint --domain buba.toksaitov.com \
+  --mode live-trading --use-locked-images \
+  --env-set LIVE_DRY_RUN=false \
+  --env-set LATENCY_ARB_MOMENTUM_THRESHOLD=<chosen-from-data> \
+  --env-set LIVE_EXPECTED_EGRESS_IP=<server-egress-ip>
+```
+
+`--env-set KEY=VALUE` injects compose interpolation values into the generated
+`.env`; it rejects deploy-reserved keys (`BUBA_*`, `COMPOSE_*`, secrets) and values
+with newlines. `LIVE_DRY_RUN` is seeded to true in `.env` for live-trading unless
+overridden. The exact canary overlay, the data-driven threshold method, and the
+revert steps live in [../docs/canary-config.md](../docs/canary-config.md) and
+[../CANARY_RUNBOOK.md](../CANARY_RUNBOOK.md).
+
 ## Local Stacks
 
 Local paper stack:

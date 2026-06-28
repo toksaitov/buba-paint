@@ -18,12 +18,12 @@ unless the canary overlay sets them:
   order row, written synchronously when the venue response is handled), checked
   atomically in the same reservation. With the order cap this gives "a few attempts
   to land one fill, then stop." At-most-one-fill is a layered guarantee, not the fill
-  cap alone: the `LIVE_MAX_OPEN_NOTIONAL_USD=5` ceiling lets only one 5 USD
-  reservation be in flight at a time (a filled order keeps its reservation committed
-  until settlement), so the next order cannot reserve until the prior fill is already
-  recorded, at which point the fill cap blocks it. The fill cap, the single in-flight
-  reservation, and the bot's sequential submission together bound the canary to one
-  fill.
+  cap alone: the `LIVE_MAX_OPEN_NOTIONAL_USD=7` ceiling, which is below twice a
+  minimum order, lets only one reservation be in flight at a time (a filled order
+  keeps its reservation committed until settlement), so the next order cannot reserve
+  until the prior fill is already recorded, at which point the fill cap blocks it. The
+  fill cap, the single in-flight reservation, and the bot's sequential submission
+  together bound the canary to one fill.
 
 No strategy or decision code or default constant changed. `git diff origin/master --
 bots/paint/src/strategies bots/paint/src/decision` stays empty.
@@ -31,7 +31,12 @@ bots/paint/src/strategies bots/paint/src/decision` stays empty.
 ## The canary overlay (pure config; production default in parentheses)
 
 Set these as environment variables or `--set KEY=VALUE` for the canary run only.
-Each lists the production default to revert to.
+Each lists the production default to revert to. On the Docker host the overlay is
+applied with `scripts/deploy-docker.py --mode live-trading`, which uses
+`docker-compose.live-trading.yml` (dry-run, disarmed, and the 5 USD caps are the
+safe defaults there) plus `--env-set KEY=VALUE` for the values that change per run
+(`LIVE_DRY_RUN`, the data-chosen threshold, the egress pin). Reverting is a
+redeploy with `--mode live-readonly`.
 
 Safety and mode:
 
@@ -39,12 +44,27 @@ Safety and mode:
 * `LIVE_DRY_RUN=true` for the rehearsal, `false` for the real canary (default false)
 * `LIVE_MAX_SESSION_ORDERS=3` (default 0): at most three venue attempts to land one fill
 * `LIVE_MAX_SESSION_FILLS=1` (default 0): stop after the first fill
-* `LIVE_SESSION_CASH_CAP_USD=5` (default 100)
-* `LIVE_MAX_SINGLE_ORDER_USD=5` (default 10)
-* `LIVE_MAX_OPEN_NOTIONAL_USD=5` (default 25)
-* `LIVE_MAX_DAILY_LOSS_USD=5` (default 15)
-* `LIVE_MAX_SESSION_DRAWDOWN_USD=5` (default 20)
+* `LIVE_SESSION_CASH_CAP_USD=100` (default 100): the sizing bankroll, kept at the
+  production value so the order sizes naturally to about 5 USD (see sizing note)
+* `LIVE_MAX_SINGLE_ORDER_USD=7` (default 10): hard pre-submit ceiling on one order
+* `LIVE_MAX_OPEN_NOTIONAL_USD=7` (default 25): the binding exposure ceiling
+* `LIVE_MAX_DAILY_LOSS_USD=7` (default 15)
+* `LIVE_MAX_SESSION_DRAWDOWN_USD=7` (default 20)
+* `LIVE_MIN_REQUIRED_CASH_USD=5` (default 25): preflight cash floor, must be <= cash cap
 * `LIVE_EXPECTED_SIGNATURE_TYPE=1` and `LIVE_EXPECTED_EGRESS_IP=<server egress>`
+
+Sizing note (why the cash cap stays at 100, not 5): the position-fraction knobs are
+production values (`MAX_POSITION_FRACTION=0.05`, `LATENCY_ARB_MAX_POSITION_FRACTION=0.125`,
+`MAX_POSITION_USD_FRACTION=0.20`). A single order is sized as bankroll times these
+fractions, so a roughly 5 USD order needs a bankroll near 100 USD; on a 5 USD
+bankroll the fractions starve the order below the 5 USD minimum bet and nothing is
+ever queued. Keeping the bankroll at 100 with the production fractions reproduces the
+exact production sizing (about 5 USD), and exposure is bounded instead by
+`LIVE_MAX_OPEN_NOTIONAL_USD=7` and `LIVE_MAX_SINGLE_ORDER_USD=7`. The 7 (not 5)
+accounts for whole-share rounding: a 5 USD min-bet order buys `ceil(5 / price)` shares,
+which costs slightly more than 5 USD (for example 10 shares at 0.52 is 5.20 USD). The
+ceiling stays below twice the minimum order, so only one reservation is ever in flight,
+preserving the at-most-one-fill guarantee.
 
 Strategy relaxation (only to make a real signal fire on a quiet day; reverts to the
 production values below):
@@ -60,9 +80,16 @@ production values below):
 * `LATENCY_ARB_COOLDOWN_MS` (default `60000`): optionally lower (for example
   `15000`) so a no-fill can retry within the five-minute window, bounded by
   `LIVE_MAX_SESSION_ORDERS`.
-* `LATENCY_ARB_MAX_ASK` (default `0.60`) and `LATENCY_ARB_MIN_ASK` (default `0.30`):
-  widen only if needed so the order is marketable enough to fill on the active
-  market; for BTC 5-minute up/down the defaults are usually sufficient.
+* `LATENCY_ARB_MAX_ASK` (default `0.60`) and `LATENCY_ARB_MIN_ASK` (production
+  `0.30`, canary `0.50`): the canary narrows the ask band to `0.50..0.60`. The bot
+  sizes the order at the current ask but reserves capital at the limit price
+  (`LATENCY_ARB_MAX_ASK=0.60`), so a low ask needs many shares to reach the 5 USD
+  minimum bet and the reservation at 0.60 would exceed the 7 USD ceiling and reject
+  the order before it queues. With `MIN_ASK=0.50` the worst case is
+  `ceil(5 / 0.50) = 10` shares reserved at 0.60, which is 6.00 USD and fits under 7,
+  while `2 x` the smallest reservation (about 5.40 USD) stays above 7, so only one
+  reservation is ever in flight. This narrows what counts as marketable but does not
+  change what the canary validates (a real order on a near-even BTC 5-minute market).
 
 The relaxation makes the canary fire on a more sensitive trigger than the production
 default. Everything else stays real: real feed, real book, real features, real
@@ -71,10 +98,15 @@ reconciliation, real settlement, real redeem, real fee.
 
 ## Defense in depth on exposure
 
-Reduce the on-chain allowance and spendable balance to about 5 USD plus dust before
-the real canary (or use a fresh isolated wallet funded with about 5 USD), so the
-venue cannot pull more than the canary size regardless of any software fault. The
-software caps above are defense in depth, not the primary ceiling.
+Reduce the on-chain CTF exchange allowance (the ERC-20 approval, not the wallet
+balance) to about 8 to 10 USD before the real canary, so the venue contract cannot
+pull more than roughly one canary order regardless of any software fault. Do not
+reduce the spendable balance to about 5 USD: the production position-fraction sizing
+needs a bankroll near 100 USD to size a 5 USD order, so a 5 USD balance would starve
+the order entirely (see the sizing note above). Keep the real balance and rely on the
+allowance plus the 7 USD software caps as the layered ceiling. If a fresh isolated
+wallet is preferred, fund it with about 100 USD and set its exchange allowance to
+about 8 to 10 USD.
 
 ## Revert (bring back the real strategy)
 

@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import re
 import secrets
 import shlex
 import socket
@@ -16,8 +18,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from research_images import all_image_input_hashes  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SECRET_ENV = REPO_ROOT / ".secrets" / "buba-paint-live-sidecar.env"
+DEFAULT_LOCK_FILE = REPO_ROOT / "ops" / "live-images.lock.json"
+LIVE_IMAGE_ENVS = {
+    "dashboard": "BUBA_DASHBOARD_IMAGE",
+    "agent": "BUBA_AGENT_IMAGE",
+    "paint": "BUBA_PAINT_IMAGE",
+    "sidecar": "BUBA_SIDECAR_IMAGE",
+}
+LOCK_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 COMPOSE_FILES = {
     "paper": ["docker-compose.yml", "docker-compose.paper.yml", "docker-compose.prod.yml"],
@@ -26,7 +39,14 @@ COMPOSE_FILES = {
         "docker-compose.live-readonly.yml",
         "docker-compose.prod.yml",
     ],
+    "live-trading": [
+        "docker-compose.yml",
+        "docker-compose.live-trading.yml",
+        "docker-compose.prod.yml",
+    ],
 }
+
+SIDECAR_MODES = ("live-readonly", "live-trading")
 
 
 @dataclass(frozen=True)
@@ -37,6 +57,69 @@ class RemoteLayout:
     config: str
     caddy_data: str
     caddy_config: str
+
+
+ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+RESERVED_ENV_PREFIXES = ("BUBA_", "COMPOSE_")
+RESERVED_ENV_KEYS = {"AGENT_SECRET", "JWT_SECRET", "ADMIN_USER", "ADMIN_PASSWORD"}
+
+
+def parse_env_set(pairs: list[str]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise ValueError(f"invalid --env-set {pair!r}; expected KEY=VALUE")
+        if not ENV_KEY_RE.fullmatch(key):
+            raise ValueError(f"invalid --env-set key {key!r}; expected ^[A-Z][A-Z0-9_]*$")
+        if key.startswith(RESERVED_ENV_PREFIXES) or key in RESERVED_ENV_KEYS:
+            raise ValueError(f"--env-set may not set deploy-reserved key {key!r}")
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"--env-set value for {key!r} may not contain newlines")
+        parsed[key] = value
+    return parsed
+
+
+def load_image_lock(path: Path) -> dict:
+    lock = json.loads(path.read_text(encoding="utf-8"))
+    images = lock.get("images")
+    if not isinstance(images, dict):
+        raise ValueError(f"{path} missing images object")
+    missing = sorted(set(LIVE_IMAGE_ENVS) - set(images))
+    if missing:
+        raise ValueError(f"{path} missing image refs for: {', '.join(missing)}")
+    current_hashes = all_image_input_hashes(REPO_ROOT, tuple(LIVE_IMAGE_ENVS))
+    if lock.get("input_hashes") != current_hashes:
+        raise ValueError(f"{path} is stale; run scripts/publish-live-images.py")
+    for key in LIVE_IMAGE_ENVS:
+        image = images.get(key)
+        if not isinstance(image, dict):
+            raise ValueError(f"{path} image {key} must be an object")
+        ref = image.get("ref")
+        digest = image.get("digest")
+        if not isinstance(ref, str) or "@sha256:" not in ref:
+            raise ValueError(f"{path} image {key} must contain a digest-pinned ref")
+        if not isinstance(digest, str) or not LOCK_DIGEST_RE.fullmatch(digest):
+            raise ValueError(f"{path} image {key} has invalid digest")
+    return lock
+
+
+def locked_image_env(lock: dict) -> dict[str, str]:
+    return {env_name: lock["images"][key]["ref"] for key, env_name in LIVE_IMAGE_ENVS.items()}
+
+
+def ghcr_pull_token() -> str:
+    result = subprocess.run(
+        ["gh", "api", "-i", "/user"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    )
+    scopes: set[str] = set()
+    for line in result.stdout.splitlines():
+        if line.lower().startswith("x-oauth-scopes:"):
+            scopes.update(s.strip() for s in line.split(":", 1)[1].split(",") if s.strip())
+    if "read:packages" not in scopes and "write:packages" not in scopes:
+        raise RuntimeError("gh token lacks read:packages; run `gh auth refresh -s read:packages`")
+    return capture(["gh", "auth", "token"]).strip()
 
 
 def run(cmd: list[str], *, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -206,6 +289,8 @@ def write_secret_files(
     gid: str,
     sidecar_env: Path,
     balance: str,
+    extra_env: dict[str, str],
+    locked_images: dict[str, str] | None = None,
 ) -> dict[str, str]:
     agent_secret = secrets.token_urlsafe(48)
     jwt_secret = secrets.token_urlsafe(64)
@@ -249,6 +334,16 @@ secret = {json.dumps(agent_secret)}
         "LOG_LEVEL": "info",
         "RUST_LOG": "info",
     }
+    managed_collisions = sorted(set(extra_env) & set(env))
+    if managed_collisions:
+        raise ValueError(
+            f"--env-set may not override deploy-managed keys: {', '.join(managed_collisions)}"
+        )
+    if mode == "live-trading":
+        env["LIVE_DRY_RUN"] = "true"
+    if locked_images:
+        env.update(locked_images)
+    env.update(extra_env)
     (tmp / ".env").write_text(
         "\n".join(f"{key}={value}" for key, value in env.items()) + "\n",
         encoding="utf-8",
@@ -319,19 +414,22 @@ def upload_runtime_config(host: str, layout: RemoteLayout, tmp: Path) -> None:
     )
 
 
-def compose_files(mode: str) -> str:
-    return " ".join(f"-f {shlex.quote(name)}" for name in COMPOSE_FILES[mode])
+def compose_files(mode: str, *, use_locked: bool = False) -> str:
+    files = list(COMPOSE_FILES[mode])
+    if use_locked:
+        files.append("docker-compose.live-stopped.yml")
+    return " ".join(f"-f {shlex.quote(name)}" for name in files)
 
 
 def build_services(mode: str) -> str:
     services = ["dashboard", "agent", "paint"]
-    if mode == "live-readonly":
+    if mode in SIDECAR_MODES:
         services.insert(0, "sidecar")
     return " ".join(shlex.quote(service) for service in services)
 
 
-def stop_old_processes(host: str, layout: RemoteLayout, mode: str) -> None:
-    files = compose_files(mode)
+def stop_old_processes(host: str, layout: RemoteLayout, mode: str, *, use_locked: bool = False) -> None:
+    files = compose_files(mode, use_locked=use_locked)
     ssh(
         host,
         f"""
@@ -346,25 +444,47 @@ fi
     )
 
 
-def start_stack(host: str, layout: RemoteLayout, mode: str) -> None:
-    files = compose_files(mode)
+def start_stack(host: str, layout: RemoteLayout, mode: str, *, lock: dict | None = None, token: str | None = None) -> None:
+    files = compose_files(mode, use_locked=lock is not None)
     services = build_services(mode)
+    if lock is None:
+        ssh(
+            host,
+            f"""
+set -euo pipefail
+cd {shlex.quote(layout.release)}
+base="sudo env COMPOSE_PARALLEL_LIMIT=1 docker compose --env-file .env {files}"
+for service in {services}; do
+  $base build "$service"
+done
+$base up -d --no-build
+""",
+        )
+        return
+    token_b64 = base64.b64encode((token or "").encode("utf-8")).decode("ascii")
+    namespace = lock.get("namespace") or "toksaitov"
     ssh(
         host,
         f"""
 set -euo pipefail
 cd {shlex.quote(layout.release)}
-export COMPOSE_PARALLEL_LIMIT=1
-for service in {services}; do
-  sudo -E docker compose --env-file .env {files} build "$service"
-done
-sudo -E docker compose --env-file .env {files} up -d --no-build
+docker_config=$(mktemp -d /tmp/buba-live-ghcr.XXXXXX)
+cleanup() {{ sudo env DOCKER_CONFIG="$docker_config" docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf "$docker_config" >/dev/null 2>&1 || true; }}
+trap cleanup EXIT
+printf '%s' {shlex.quote(token_b64)} | base64 -d \
+  | sudo env DOCKER_CONFIG="$docker_config" docker login ghcr.io -u {shlex.quote(namespace)} --password-stdin >/dev/null
+base="sudo env COMPOSE_PARALLEL_LIMIT=1 DOCKER_CONFIG=$docker_config docker compose --env-file .env {files}"
+$base config --quiet
+$base pull {services}
+$base up -d --no-build
 """,
     )
 
 
-def remote_compose(host: str, layout: RemoteLayout, mode: str, args: str, *, check: bool = True) -> str:
-    files = compose_files(mode)
+def remote_compose(
+    host: str, layout: RemoteLayout, mode: str, args: str, *, check: bool = True, use_locked: bool = False
+) -> str:
+    files = compose_files(mode, use_locked=use_locked)
     return ssh_capture(
         host,
         f"set -euo pipefail; cd {shlex.quote(layout.release)}; sudo docker compose --env-file .env {files} {args}",
@@ -372,33 +492,20 @@ def remote_compose(host: str, layout: RemoteLayout, mode: str, args: str, *, che
     )
 
 
-def verify(host: str, layout: RemoteLayout, mode: str, domain: str) -> dict[str, object]:
+def verify(host: str, layout: RemoteLayout, mode: str, domain: str, *, use_locked: bool = False) -> dict[str, object]:
+    def rc(args: str, *, check: bool = True) -> str:
+        return remote_compose(host, layout, mode, args, check=check, use_locked=use_locked)
+
     checks: dict[str, object] = {}
-    checks["compose_ps"] = remote_compose(host, layout, mode, "ps")
-    checks["sidecar_health"] = remote_compose(
-        host,
-        layout,
-        mode,
+    checks["compose_ps"] = rc("ps")
+    checks["sidecar_health"] = rc(
         "exec -T sidecar curl -fsS http://localhost:3210/health",
-        check=mode == "live-readonly",
+        check=mode in SIDECAR_MODES,
     )
-    checks["agent_health"] = remote_compose(
-        host,
-        layout,
-        mode,
-        "exec -T agent curl -fsS http://localhost:9090/health",
-    )
-    checks["dashboard_health"] = remote_compose(
-        host,
-        layout,
-        mode,
-        "exec -T dashboard curl -fsS http://localhost:3001/health",
-    )
-    checks["db_quick_check"] = remote_compose(
-        host,
-        layout,
-        mode,
-        "exec -T paint sqlite3 /runtime/paint.db 'PRAGMA quick_check;'",
+    checks["agent_health"] = rc("exec -T agent curl -fsS http://localhost:9090/health")
+    checks["dashboard_health"] = rc("exec -T dashboard curl -fsS http://localhost:3001/health")
+    checks["db_quick_check"] = rc(
+        "exec -T paint sqlite3 /runtime/paint.db 'PRAGMA quick_check;'"
     ).strip()
     checks["public_http"] = capture(["curl", "-I", "--max-time", "20", f"http://{domain}"], check=False)
     checks["public_https"] = capture(["curl", "-fsS", "--max-time", "20", f"https://{domain}/health"], check=False)
@@ -410,10 +517,7 @@ def verify(host: str, layout: RemoteLayout, mode: str, domain: str) -> dict[str,
         ],
         check=False,
     )
-    checks["zero_live_writes"] = remote_compose(
-        host,
-        layout,
-        mode,
+    checks["live_table_counts"] = rc(
         "exec -T paint sqlite3 /runtime/paint.db \"SELECT 'live_order_intents', count(*) FROM live_order_intents UNION ALL SELECT 'live_orders', count(*) FROM live_orders UNION ALL SELECT 'live_redemptions', count(*) FROM live_redemptions UNION ALL SELECT 'live_control_commands', count(*) FROM live_control_commands;\"",
         check=False,
     )
@@ -435,6 +539,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-name")
     parser.add_argument("--balance", default="100")
     parser.add_argument("--sidecar-env", type=Path, default=DEFAULT_SECRET_ENV)
+    parser.add_argument(
+        "--env-set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="inject KEY=VALUE into the generated .env (compose interpolation); repeatable",
+    )
+    parser.add_argument(
+        "--use-locked-images",
+        action="store_true",
+        help="pull digest-pinned images from the lock instead of building on the host",
+    )
+    parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK_FILE)
     parser.add_argument("--install-docker", action="store_true")
     parser.add_argument("--ensure-swap-gb", type=int, default=4)
     parser.add_argument("--skip-dns-check", action="store_true")
@@ -445,7 +562,27 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    try:
+        extra_env = parse_env_set(args.env_set)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if args.dry_run:
+        live_dry_run = extra_env.get(
+            "LIVE_DRY_RUN", "true (explicit .env seed)" if args.mode == "live-trading" else "n/a"
+        )
+        lock_status: dict | str
+        if args.use_locked_images:
+            try:
+                lk = load_image_lock(args.lock_file)
+                lock_status = {"ok": True, "commit": lk.get("commit"), "tag": lk.get("tag")}
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                lock_status = {"ok": False, "error": str(exc)}
+        else:
+            lock_status = "not used (host build)"
+        files = list(COMPOSE_FILES[args.mode])
+        if args.use_locked_images:
+            files.append("docker-compose.live-stopped.yml")
         print(
             json.dumps(
                 {
@@ -454,17 +591,33 @@ def main() -> int:
                     "mode": args.mode,
                     "install_docker": args.install_docker,
                     "ensure_swap_gb": args.ensure_swap_gb,
-                    "compose_files": COMPOSE_FILES[args.mode],
+                    "compose_files": files,
+                    "use_locked_images": args.use_locked_images,
+                    "lock": lock_status,
                     "sidecar_env_exists": args.sidecar_env.exists(),
+                    "env_set": extra_env,
+                    "live_dry_run_effective": live_dry_run,
                 },
                 indent=2,
             )
         )
         return 0
 
-    if args.mode == "live-readonly" and not args.sidecar_env.is_file():
+    if args.mode in SIDECAR_MODES and not args.sidecar_env.is_file():
         print(f"missing sidecar env: {args.sidecar_env}", file=sys.stderr)
         return 2
+
+    lock: dict | None = None
+    token: str | None = None
+    locked_images: dict[str, str] | None = None
+    if args.use_locked_images:
+        try:
+            lock = load_image_lock(args.lock_file)
+            token = ghcr_pull_token()
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            print(f"locked-image deploy unavailable: {exc}", file=sys.stderr)
+            return 2
+        locked_images = locked_image_env(lock)
 
     if not args.skip_dns_check:
         try:
@@ -495,12 +648,15 @@ def main() -> int:
             gid=gid,
             sidecar_env=args.sidecar_env,
             balance=args.balance,
+            extra_env=extra_env,
+            locked_images=locked_images,
         )
         upload_runtime_config(args.host, layout, tmp)
 
-    stop_old_processes(args.host, layout, args.mode)
-    start_stack(args.host, layout, args.mode)
-    checks = verify(args.host, layout, args.mode, args.domain)
+    use_locked = lock is not None
+    stop_old_processes(args.host, layout, args.mode, use_locked=use_locked)
+    start_stack(args.host, layout, args.mode, lock=lock, token=token)
+    checks = verify(args.host, layout, args.mode, args.domain, use_locked=use_locked)
 
     evidence_dir = REPO_ROOT / "data" / "experiments" / f"docker-deploy-{stamp}"
     evidence_dir.mkdir(parents=True, exist_ok=True)

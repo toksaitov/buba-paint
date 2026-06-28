@@ -43,32 +43,38 @@ exist:
   in-process latch checked atomically in the venue-attempt reservation. The order cap
   bounds attempts (a fill-or-kill no-fill leaves no position and would otherwise need
   a retry), and the fill cap blocks further submissions once a fill is recorded.
-  At-most-one-fill is layered, not the fill cap alone: the `LIVE_MAX_OPEN_NOTIONAL_USD=5`
-  ceiling lets only one 5 USD reservation be in flight at a time (a filled order keeps
-  its reservation committed until settlement), so the next order cannot reserve until
-  the prior fill is recorded, at which point the fill cap stops it. Together with the
-  bot's sequential submission this bounds the canary to one fill regardless of
-  operator reaction time. The caps fail closed, are durable per session, and never
-  reset on a no-fill or a disarm; clearing them requires a new session and run DB.
-* `LIVE_MAX_SINGLE_ORDER_USD=5`
-* `LIVE_MAX_OPEN_NOTIONAL_USD=5` (the shared bankroll ceiling makes only one 5 USD
-  position fit at a time)
-* `LIVE_SESSION_CASH_CAP_USD=5`
-* `LIVE_MAX_DAILY_LOSS_USD` and `LIVE_MAX_SESSION_DRAWDOWN_USD` set low so any
-  breach halts immediately.
+  At-most-one-fill is layered, not the fill cap alone: the `LIVE_MAX_OPEN_NOTIONAL_USD=7`
+  ceiling, which is below twice a minimum order, lets only one reservation be in flight
+  at a time (a filled order keeps its reservation committed until settlement), so the
+  next order cannot reserve until the prior fill is recorded, at which point the fill
+  cap stops it. Together with the bot's sequential submission this bounds the canary to
+  one fill regardless of operator reaction time. The caps fail closed, are durable per
+  session, and never reset on a no-fill or a disarm; clearing them requires a new
+  session and run DB.
+* `LIVE_MAX_SINGLE_ORDER_USD=7`: hard pre-submit ceiling on one order.
+* `LIVE_MAX_OPEN_NOTIONAL_USD=7`: the binding exposure ceiling.
+* `LIVE_SESSION_CASH_CAP_USD=100`: the sizing bankroll, left at the production value
+  so the order sizes naturally to about 5 USD with the production position fractions.
+  A 5 USD bankroll would starve the order below the minimum bet and queue nothing;
+  exposure is bounded by the 7 USD ceilings, not by the cash cap. See
+  [canary-config.md](./docs/canary-config.md).
+* `LIVE_MAX_DAILY_LOSS_USD=7` and `LIVE_MAX_SESSION_DRAWDOWN_USD=7` so any breach
+  halts immediately.
 
-A 5 USD order means at most about 5 USD of spend, fill-or-kill, with the
-strategy's worst-price limit and a small dust tolerance on the exact filled
-notional. Maximum realistic exposure is about 5 USD (the stake, lost only if the
-position resolves against us) plus pennies of fee.
+The order is about 5 USD (the production-sized stake), fill-or-kill, with the
+strategy's worst-price limit. Whole-share rounding makes the exact cost slightly more
+than 5 USD, so the 7 USD ceiling leaves headroom; maximum realistic exposure is under
+7 USD (the stake, lost only if the position resolves against us) plus pennies of fee.
 
-Defense in depth, strongest first: the on-chain allowance and spendable balance are
-reduced to about 5 USD plus dust before the canary (or a fresh isolated wallet is
-used), so the venue itself cannot pull more than the canary size even if the bot
-misbehaves; the fill-cap latch bounds it to one filled position;
-fill-or-kill cannot leave a resting order; the bot halts on any anomaly; and there
-is no leverage. The software caps alone are not treated as the hard ceiling while
-the full wallet is spendable; the reduced allowance is.
+Defense in depth, strongest first: the on-chain CTF exchange allowance is reduced to
+about 8 to 10 USD before the canary (the ERC-20 approval, not the wallet balance), so
+the venue itself cannot pull more than roughly one order even if the bot misbehaves;
+the 7 USD software ceilings bound a single order and total open exposure; the fill-cap
+latch bounds it to one filled position; fill-or-kill cannot leave a resting order; the
+bot halts on any anomaly; and there is no leverage. The wallet balance is left at the
+production value because the position-fraction sizing needs it to size a 5 USD order;
+the reduced allowance plus the software ceilings are the hard limit, not a 5 USD
+balance.
 
 ## Preconditions
 
@@ -98,9 +104,58 @@ Real canary only:
 * `LIVE_DRY_RUN=false`, confirmed explicitly in preflight.
 * The dry-run rehearsal completed clean on this host with the same code and config
   fingerprint, differing only in `LIVE_DRY_RUN` and the runtime DB.
-* The on-chain allowance and spendable balance are reduced to about 5 USD plus dust
-  (or a fresh isolated wallet is funded with about 5 USD), so the venue cannot pull
-  more than the canary size.
+* The on-chain CTF exchange allowance is reduced to about 8 to 10 USD (the ERC-20
+  approval, not the wallet balance), so the venue cannot pull more than roughly one
+  order. The balance stays at the production value because the position-fraction
+  sizing needs it to size a 5 USD order; see [canary-config.md](./docs/canary-config.md).
+
+## Deploy And Control Commands
+
+The Ireland host is too small to build images, so the deploy pulls digest-pinned
+images from `ops/live-images.lock.json`. Publish first (the lock must match the
+committed source), then deploy with `--use-locked-images`:
+
+```bash
+python3 scripts/publish-live-images.py        # rebuild + push, refresh the lock
+git add ops/live-images.lock.json && git commit -m "Publish live images"
+```
+
+Bring up the dry-run stack (money-safe; `LIVE_DRY_RUN` is seeded true in the
+generated `.env`, the bot boots disarmed, caps default to the canary envelope of
+about 5 USD with a 7 USD hard ceiling):
+
+```bash
+python3 scripts/deploy-docker.py --host buba-paint --domain buba.toksaitov.com \
+  --mode live-trading --use-locked-images \
+  --env-set LATENCY_ARB_MOMENTUM_THRESHOLD=<relaxed-from-data> \
+  --env-set LATENCY_ARB_COOLDOWN_MS=15000
+```
+
+Control commands run inside the paint container and write durable rows the bot's
+control worker consumes:
+
+```bash
+COMPOSE="cd ~/buba-paint-live/current && sudo docker compose --env-file .env \
+  -f docker-compose.yml -f docker-compose.live-trading.yml -f docker-compose.prod.yml \
+  -f docker-compose.live-stopped.yml"
+ssh buba-paint "$COMPOSE exec -T paint buba-paint live-control \
+  --db-path /runtime/paint.db preflight --actor claude --reason canary"
+ssh buba-paint "$COMPOSE exec -T paint buba-paint live-control \
+  --db-path /runtime/paint.db arm --actor claude --reason canary"
+ssh buba-paint "$COMPOSE exec -T paint buba-paint live-control \
+  --db-path /runtime/paint.db stop_after_flat --actor claude --reason canary"
+ssh buba-paint "$COMPOSE exec -T paint buba-paint live-control \
+  --db-path /runtime/paint.db disarm --actor claude --reason canary"
+```
+
+Emergency kill (Codex or operator): replace the action with `kill_switch`, then
+`cancel_all` and `redeem_all` as needed.
+
+The real canary deploy is the same `deploy-docker.py --use-locked-images` command
+with `--env-set LIVE_DRY_RUN=false`, the data-chosen threshold, and
+`--env-set LIVE_EXPECTED_EGRESS_IP=<server-egress-ip>`. It runs only on the operator
+GO. Return to the safe posture afterward by redeploying
+`--mode live-readonly --use-locked-images`.
 
 ## The Dry-Run Rehearsal (step b, no real money)
 
@@ -129,7 +184,8 @@ The rehearsal must pass cleanly before any real canary.
 ## The Canary Runbook (one real order)
 
 1. Freeze the ticket envelope: market family BTC 5-minute up/down, the discovered
-   active market, 5 USD max spend, fill-or-kill only, worst-price limit from the
+   active market, about 5 USD spend with a 7 USD hard ceiling, fill-or-kill only,
+   worst-price limit from the
    strategy, one filled order only via `LIVE_MAX_SESSION_FILLS=1` with up to three
    attempts via `LIVE_MAX_SESSION_ORDERS=3`, the data-chosen relaxed latency-arb
    threshold from [canary-config.md](./docs/canary-config.md), config fingerprint and
@@ -149,9 +205,10 @@ The rehearsal must pass cleanly before any real canary.
    Arm acknowledgement is treated as unsafe: Claude issues KillSwitch and confirms
    the session is halted before any further step.
 5. Order: with the relaxed threshold, a real latency-arb signal fires on the live
-   market and the bot submits one 5 USD fill-or-kill order. Healthy fill is exactly
-   one matched order at 5 USD on the expected token, no sibling orders, open notional
-   at most 5 USD. A no-fill is harmless (no position, capital released) and the bot
+   market and the bot submits one fill-or-kill order of about 5 USD. Healthy fill is
+   exactly one matched order of about 5 USD on the expected token, no sibling orders,
+   open notional at most 7 USD. A no-fill is harmless (no position, capital released)
+   and the bot
    may attempt again on the next signal up to `LIVE_MAX_SESSION_ORDERS`; once one
    order fills, `LIVE_MAX_SESSION_FILLS=1` stops all further submissions.
 6. Contain: immediately after the order is terminal, Claude issues StopAfterFlat so
