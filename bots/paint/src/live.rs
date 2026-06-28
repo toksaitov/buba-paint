@@ -934,6 +934,7 @@ async fn submit_one_live_order_from_worker(
         intent_id,
         input.now_ms,
         input.config.live_max_session_orders,
+        input.config.live_max_session_fills,
         order.reserved_cost,
     ) {
         return blocked;
@@ -1292,6 +1293,7 @@ fn reserve_live_order_submission(
     intent_id: i64,
     now_ms: u64,
     max_session_orders: u32,
+    max_session_fills: u32,
     reserved_cost: f64,
 ) -> Result<(), LiveSubmissionOrderResult> {
     let db = match Database::open_runtime(db_path) {
@@ -1329,8 +1331,13 @@ fn reserve_live_order_submission(
             ))
         }
         Ok(None) => {
-            let outcome =
-                db.try_reserve_venue_attempt(intent_id, now_ms, session_id, max_session_orders);
+            let outcome = db.try_reserve_venue_attempt(
+                intent_id,
+                now_ms,
+                session_id,
+                max_session_orders,
+                max_session_fills,
+            );
             db.close();
             match outcome {
                 Ok(VenueAttemptOutcome::Reserved) => Ok(()),
@@ -1346,8 +1353,9 @@ fn reserve_live_order_submission(
                     warn!(
                         intent_id,
                         session_id,
-                        cap = max_session_orders,
-                        "live session order cap reached; refusing further submission"
+                        order_cap = max_session_orders,
+                        fill_cap = max_session_fills,
+                        "live session order or fill cap reached; refusing further submission"
                     );
                     Err(LiveSubmissionOrderResult::Rejected {
                         release: reserved_cost,
@@ -7069,9 +7077,10 @@ mod tests {
             })
             .unwrap();
         assert!(
-            reserve_live_order_submission(db_path, session_id, intent_id, 2_100, 0, 0.0).is_ok()
+            reserve_live_order_submission(db_path, session_id, intent_id, 2_100, 0, 0, 0.0).is_ok()
         );
-        let blocked = reserve_live_order_submission(db_path, session_id, intent_id, 2_200, 0, 0.0);
+        let blocked =
+            reserve_live_order_submission(db_path, session_id, intent_id, 2_200, 0, 0, 0.0);
         assert!(matches!(
             blocked,
             Err(LiveSubmissionOrderResult::Blocked {
@@ -7294,27 +7303,89 @@ mod tests {
         let intent_a = make_intent(&db, 1_000);
         let intent_b = make_intent(&db, 2_000);
         assert_eq!(
-            db.try_reserve_venue_attempt(intent_a, 1_100, session_id, 1)
+            db.try_reserve_venue_attempt(intent_a, 1_100, session_id, 1, 0)
                 .unwrap(),
             VenueAttemptOutcome::Reserved
         );
         assert_eq!(
-            db.try_reserve_venue_attempt(intent_a, 1_150, session_id, 1)
+            db.try_reserve_venue_attempt(intent_a, 1_150, session_id, 1, 0)
                 .unwrap(),
             VenueAttemptOutcome::AlreadyAttempted
         );
         assert_eq!(
-            db.try_reserve_venue_attempt(intent_b, 2_100, session_id, 1)
+            db.try_reserve_venue_attempt(intent_b, 2_100, session_id, 1, 0)
                 .unwrap(),
             VenueAttemptOutcome::CapReached
         );
         assert_eq!(db.session_venue_attempted_count(session_id).unwrap(), 1);
         assert_eq!(
-            db.try_reserve_venue_attempt(intent_b, 2_200, session_id, 0)
+            db.try_reserve_venue_attempt(intent_b, 2_200, session_id, 0, 0)
                 .unwrap(),
             VenueAttemptOutcome::Reserved
         );
         assert_eq!(db.session_venue_attempted_count(session_id).unwrap(), 2);
+        db.close();
+    }
+
+    /// Verifies the fill cap blocks a new venue attempt once an order in the session has filled.
+    #[test]
+    fn session_fill_cap_blocks_after_first_fill() {
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let intent_a = db
+            .log_live_order_intent(&LiveOrderIntent {
+                id: None,
+                session_id,
+                signal_id: None,
+                market_id: "mkt".to_string(),
+                strategy: "latency-arb".to_string(),
+                side: "buy".to_string(),
+                order_type: "FOK".to_string(),
+                status: "submitted".to_string(),
+                created_at_ms: 1_000,
+                requested_price: Some(0.5),
+                requested_size: Some(10.0),
+                limit_price: Some(0.5),
+                fee_schedule_json: None,
+                token_fee_rates_json: None,
+                execution_group_id: None,
+                details_json: None,
+            })
+            .unwrap();
+        let intent_b = db
+            .log_live_order_intent(&LiveOrderIntent {
+                id: None,
+                session_id,
+                signal_id: None,
+                market_id: "mkt".to_string(),
+                strategy: "latency-arb".to_string(),
+                side: "buy".to_string(),
+                order_type: "FOK".to_string(),
+                status: "submitted".to_string(),
+                created_at_ms: 2_000,
+                requested_price: Some(0.5),
+                requested_size: Some(10.0),
+                limit_price: Some(0.5),
+                fee_schedule_json: None,
+                token_fee_rates_json: None,
+                execution_group_id: None,
+                details_json: None,
+            })
+            .unwrap();
+        assert_eq!(
+            db.try_reserve_venue_attempt(intent_a, 1_100, session_id, 3, 1)
+                .unwrap(),
+            VenueAttemptOutcome::Reserved
+        );
+        db.close();
+        seed_matched_live_order(db_path, session_id, "tok-a", 0.5, 1_200);
+        let db = Database::new(db_path).unwrap();
+        assert_eq!(
+            db.try_reserve_venue_attempt(intent_b, 2_100, session_id, 3, 1)
+                .unwrap(),
+            VenueAttemptOutcome::CapReached
+        );
         db.close();
     }
 

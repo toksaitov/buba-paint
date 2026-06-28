@@ -1606,27 +1606,38 @@ impl Database {
         Ok(updated == 1)
     }
 
-    /// Atomically reserve one venue submission, enforcing the per-session order cap.
+    /// Atomically reserve one venue submission, enforcing the per-session order and fill caps.
     ///
     /// A single guarded UPDATE marks the intent venue-attempted only if it was not
-    /// already attempted and, when `max_session_orders` is nonzero, fewer than that
-    /// many intents in the session are already attempted. Because `SQLite` serializes
-    /// writers, two concurrent submissions cannot both pass the cap, so the canary's
-    /// one-order limit holds without relying on sequential worker processing.
+    /// already attempted, and, when nonzero, fewer than `max_session_orders` intents in
+    /// the session are already attempted and fewer than `max_session_fills` orders in the
+    /// session have filled. Because `SQLite` serializes writers, the attempt cap is
+    /// race-free. The fill cap blocks further submissions once a fill is recorded
+    /// (`live_orders.accepted_size > 0`), which stops a session after a fill even when
+    /// the order cap still has attempts left for the no-fill retry case. The fill cap is
+    /// not on its own a guarantee against concurrent in-flight orders both filling; for
+    /// the canary that is supplied by the single in-flight reservation the open-notional
+    /// ceiling allows (a filled order keeps its reservation committed until settlement,
+    /// so the next order cannot reserve until the fill is already recorded).
     pub fn try_reserve_venue_attempt(
         &self,
         intent_id: i64,
         now_ms: u64,
         session_id: i64,
         max_session_orders: u32,
+        max_session_fills: u32,
     ) -> anyhow::Result<VenueAttemptOutcome> {
-        let cap = i64::from(max_session_orders);
+        let order_cap = i64::from(max_session_orders);
+        let fill_cap = i64::from(max_session_fills);
         let updated = self.conn.execute(
             "UPDATE live_order_intents SET venue_attempted_at_ms = ?2 \
              WHERE id = ?1 AND session_id = ?3 AND venue_attempted_at_ms IS NULL \
              AND (?4 = 0 OR (SELECT COUNT(*) FROM live_order_intents \
-                             WHERE session_id = ?3 AND venue_attempted_at_ms IS NOT NULL) < ?4)",
-            params![intent_id, now_ms, session_id, cap],
+                             WHERE session_id = ?3 AND venue_attempted_at_ms IS NOT NULL) < ?4) \
+             AND (?5 = 0 OR (SELECT COUNT(*) FROM live_orders \
+                             WHERE session_id = ?3 AND accepted_size IS NOT NULL \
+                             AND accepted_size > 0.0) < ?5)",
+            params![intent_id, now_ms, session_id, order_cap, fill_cap],
         )?;
         if updated == 1 {
             return Ok(VenueAttemptOutcome::Reserved);
