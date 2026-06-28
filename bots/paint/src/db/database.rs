@@ -92,6 +92,14 @@ pub struct ExistingLiveOrder {
     pub venue_order_id: Option<String>,
 }
 
+/// Outcome of an atomic per-session venue-submission reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VenueAttemptOutcome {
+    Reserved,
+    AlreadyAttempted,
+    CapReached,
+}
+
 /// Signal evidence that must be durable before a funded live order reaches the venue.
 pub struct LiveDecisionEvidence<'a> {
     pub signal_id: i64,
@@ -1596,6 +1604,63 @@ impl Database {
             params![intent_id, now_ms],
         )?;
         Ok(updated == 1)
+    }
+
+    /// Atomically reserve one venue submission, enforcing the per-session order cap.
+    ///
+    /// A single guarded UPDATE marks the intent venue-attempted only if it was not
+    /// already attempted and, when `max_session_orders` is nonzero, fewer than that
+    /// many intents in the session are already attempted. Because `SQLite` serializes
+    /// writers, two concurrent submissions cannot both pass the cap, so the canary's
+    /// one-order limit holds without relying on sequential worker processing.
+    pub fn try_reserve_venue_attempt(
+        &self,
+        intent_id: i64,
+        now_ms: u64,
+        session_id: i64,
+        max_session_orders: u32,
+    ) -> anyhow::Result<VenueAttemptOutcome> {
+        let cap = i64::from(max_session_orders);
+        let updated = self.conn.execute(
+            "UPDATE live_order_intents SET venue_attempted_at_ms = ?2 \
+             WHERE id = ?1 AND session_id = ?3 AND venue_attempted_at_ms IS NULL \
+             AND (?4 = 0 OR (SELECT COUNT(*) FROM live_order_intents \
+                             WHERE session_id = ?3 AND venue_attempted_at_ms IS NOT NULL) < ?4)",
+            params![intent_id, now_ms, session_id, cap],
+        )?;
+        if updated == 1 {
+            return Ok(VenueAttemptOutcome::Reserved);
+        }
+        let already_attempted: bool = self
+            .conn
+            .query_row(
+                "SELECT venue_attempted_at_ms IS NOT NULL FROM live_order_intents WHERE id = ?1",
+                params![intent_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if already_attempted {
+            Ok(VenueAttemptOutcome::AlreadyAttempted)
+        } else {
+            Ok(VenueAttemptOutcome::CapReached)
+        }
+    }
+
+    /// Count intents in one session that have crossed the venue-submission boundary.
+    ///
+    /// A nonzero `LIVE_MAX_SESSION_ORDERS` cap compares against this so the canary can
+    /// be limited to exactly one venue submission per session, structurally rather than
+    /// by operator reaction. Counts both real submissions and dry-run attempts because
+    /// both mark the intent venue-attempted before the submit step.
+    pub fn session_venue_attempted_count(&self, session_id: i64) -> anyhow::Result<u64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM live_order_intents \
+             WHERE session_id = ?1 AND venue_attempted_at_ms IS NOT NULL",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
     }
 
     /// Return the existing live order row for one intent, if any (durable submission marker).

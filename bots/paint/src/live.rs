@@ -14,7 +14,7 @@ use crate::backtest::momentum::MomentumCalculator;
 use crate::bankroll::BankrollStats;
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, FeedEventStorageProfile};
-use crate::db::database::{Database, LiveDecisionEvidence};
+use crate::db::database::{Database, LiveDecisionEvidence, VenueAttemptOutcome};
 use crate::executor::{
     OrderOutcomeDisposition, ProcessedOrderOutcome, QueuedOrderIntent, SubmissionOutcome,
 };
@@ -435,7 +435,8 @@ async fn submit_live_orders_from_worker(
                     filled_size: accepted_size,
                 });
             }
-            LiveSubmissionOrderResult::Rejected { release } => {
+            LiveSubmissionOrderResult::Rejected { release }
+            | LiveSubmissionOrderResult::DryRun { release } => {
                 feedback.releases.push((order.strategy.clone(), release));
                 feedback.rejected_signal_ids.push(order.signal_id);
             }
@@ -810,6 +811,9 @@ enum LiveSubmissionOrderResult {
         reason: String,
         release: Option<f64>,
     },
+    DryRun {
+        release: f64,
+    },
 }
 
 /// Worker-side immutable context for one live order submission.
@@ -834,6 +838,54 @@ struct LiveIntentPersistenceInput<'a> {
     decision_event: Option<&'a LivePersistenceEvent>,
     now_ms: u64,
     notional: f64,
+}
+
+/// Record a would-submit dry-run outcome for one live order without contacting the venue.
+///
+/// Exercises the full armed path up to the built order request, then logs the would-be
+/// order and a durable info reconciliation event, releases the capital reservation, and
+/// returns a dry-run result. It never calls the sidecar, so no real order, fill, or
+/// on-chain reconciliation is produced. Used to rehearse the armed path before a canary.
+fn dry_run_live_order_outcome(
+    db_path: &str,
+    session_id: i64,
+    intent_id: i64,
+    order: &QueuedOrderIntent,
+    request: &LiveOrderIntentRequest,
+    now_ms: u64,
+) -> LiveSubmissionOrderResult {
+    warn!(
+        "LIVE_DRY_RUN active: would submit intent {intent_id} on {} token {} side {:?} size {} price {} (no venue call)",
+        order.market_id, order.token_id, order.side, request.size, request.limit_price
+    );
+    if let Ok(db) = Database::open_runtime(db_path) {
+        if let Err(error) = db.log_live_reconciliation_event(&LiveReconciliationEvent {
+            id: None,
+            session_id,
+            timestamp_ms: now_ms,
+            severity: "info".to_string(),
+            event_type: "dry_run_would_submit".to_string(),
+            local_value: Some(request.size),
+            remote_value: None,
+            details_json: Some(
+                json!({
+                    "intent_id": intent_id,
+                    "market_id": order.market_id,
+                    "token_id": order.token_id,
+                    "side": format!("{:?}", order.side),
+                    "size": request.size,
+                    "limit_price": request.limit_price,
+                })
+                .to_string(),
+            ),
+        }) {
+            error!("failed to log dry-run would-submit event: {error}");
+        }
+        db.close();
+    }
+    LiveSubmissionOrderResult::DryRun {
+        release: order.reserved_cost,
+    }
 }
 
 /// Submit one live order intent from the submission worker.
@@ -876,13 +928,28 @@ async fn submit_one_live_order_from_worker(
             release: order.reserved_cost,
         };
     }
-    if let Err(blocked) =
-        reserve_live_order_submission(input.db_path, input.session_id, intent_id, input.now_ms)
-    {
+    if let Err(blocked) = reserve_live_order_submission(
+        input.db_path,
+        input.session_id,
+        intent_id,
+        input.now_ms,
+        input.config.live_max_session_orders,
+        order.reserved_cost,
+    ) {
         return blocked;
     }
     let request =
         build_live_order_request_from_worker(input.session_id, intent_id, order, notional);
+    if input.config.live_dry_run {
+        return dry_run_live_order_outcome(
+            input.db_path,
+            input.session_id,
+            intent_id,
+            order,
+            &request,
+            input.now_ms,
+        );
+    }
     match input.sidecar.submit_order_intent(&request).await {
         Ok(response) => handle_live_order_response_from_worker(
             input.db_path,
@@ -1224,6 +1291,8 @@ fn reserve_live_order_submission(
     session_id: i64,
     intent_id: i64,
     now_ms: u64,
+    max_session_orders: u32,
+    reserved_cost: f64,
 ) -> Result<(), LiveSubmissionOrderResult> {
     let db = match Database::open_runtime(db_path) {
         Ok(db) => db,
@@ -1260,11 +1329,12 @@ fn reserve_live_order_submission(
             ))
         }
         Ok(None) => {
-            let marked = db.mark_intent_venue_attempted(intent_id, now_ms);
+            let outcome =
+                db.try_reserve_venue_attempt(intent_id, now_ms, session_id, max_session_orders);
             db.close();
-            match marked {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(block_live_response_with_state(
+            match outcome {
+                Ok(VenueAttemptOutcome::Reserved) => Ok(()),
+                Ok(VenueAttemptOutcome::AlreadyAttempted) => Err(block_live_response_with_state(
                     db_path,
                     session_id,
                     now_ms,
@@ -1272,9 +1342,20 @@ fn reserve_live_order_submission(
                     Some(&json!({ "intent_id": intent_id }).to_string()),
                     None,
                 )),
+                Ok(VenueAttemptOutcome::CapReached) => {
+                    warn!(
+                        intent_id,
+                        session_id,
+                        cap = max_session_orders,
+                        "live session order cap reached; refusing further submission"
+                    );
+                    Err(LiveSubmissionOrderResult::Rejected {
+                        release: reserved_cost,
+                    })
+                }
                 Err(error) => Err(LiveSubmissionOrderResult::Blocked {
                     state: "unknown_order",
-                    reason: format!("failed to mark intent venue attempt: {error}"),
+                    reason: format!("failed to reserve venue attempt: {error}"),
                     release: None,
                 }),
             }
@@ -6987,8 +7068,10 @@ mod tests {
                 notional: order.requested_price * order.requested_size,
             })
             .unwrap();
-        assert!(reserve_live_order_submission(db_path, session_id, intent_id, 2_100).is_ok());
-        let blocked = reserve_live_order_submission(db_path, session_id, intent_id, 2_200);
+        assert!(
+            reserve_live_order_submission(db_path, session_id, intent_id, 2_100, 0, 0.0).is_ok()
+        );
+        let blocked = reserve_live_order_submission(db_path, session_id, intent_id, 2_200, 0, 0.0);
         assert!(matches!(
             blocked,
             Err(LiveSubmissionOrderResult::Blocked {
@@ -7110,6 +7193,129 @@ mod tests {
             .unwrap();
         db.close();
         assert_eq!(intent_count, 0);
+    }
+
+    /// Verifies dry-run mode builds the intent and records evidence but never contacts the venue.
+    #[tokio::test]
+    async fn live_dry_run_builds_intent_without_venue_call() {
+        let tmp_db = NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let session_id = db
+            .insert_live_session(&LiveSession {
+                id: None,
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                status: "armed".to_string(),
+                execution_mode: "live_trading".to_string(),
+                wallet_address: None,
+                proxy_wallet: None,
+                enabled_strategies_json: "[]".to_string(),
+                config_fingerprint: "{}".to_string(),
+                cash_cap_usd: 100.0,
+                details_json: Some("{}".to_string()),
+            })
+            .unwrap();
+        db.close();
+        let mut config = Config::default();
+        config.execution_mode = ExecutionMode::LiveTrading;
+        config.live_dry_run = true;
+        let sidecar = LiveSidecarClient::new("http://127.0.0.1:9");
+        let window = test_market_window();
+        let order = test_queued_order();
+        let evidence = test_critical_signal_event(order.signal_id);
+        let result = submit_one_live_order_from_worker(LiveOrderWorkerSubmission {
+            db_path,
+            config: &config,
+            session_id,
+            sidecar: &sidecar,
+            window: &window,
+            order: &order,
+            decision_event: Some(&evidence),
+            now_ms: 2_000,
+        })
+        .await;
+
+        assert!(matches!(result, LiveSubmissionOrderResult::DryRun { .. }));
+        let db = Database::new(db_path).unwrap();
+        let intent_count: u64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM live_order_intents", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let dry_run_events: u64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM live_reconciliation_events WHERE event_type = 'dry_run_would_submit'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let order_count: u64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM live_orders", [], |row| row.get(0))
+            .unwrap();
+        let critical = db.critical_live_reconciliation_count(session_id).unwrap();
+        db.close();
+        assert_eq!(intent_count, 1);
+        assert_eq!(dry_run_events, 1);
+        assert_eq!(order_count, 0);
+        assert_eq!(critical, 0);
+    }
+
+    /// Verifies the atomic per-session order cap reserves once then blocks further attempts.
+    #[test]
+    fn session_order_cap_reserves_once_then_blocks() {
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        let make_intent = |db: &Database, created: u64| {
+            db.log_live_order_intent(&LiveOrderIntent {
+                id: None,
+                session_id,
+                signal_id: None,
+                market_id: "mkt".to_string(),
+                strategy: "latency-arb".to_string(),
+                side: "buy".to_string(),
+                order_type: "FOK".to_string(),
+                status: "submitted".to_string(),
+                created_at_ms: created,
+                requested_price: Some(0.5),
+                requested_size: Some(10.0),
+                limit_price: Some(0.5),
+                fee_schedule_json: None,
+                token_fee_rates_json: None,
+                execution_group_id: None,
+                details_json: None,
+            })
+            .unwrap()
+        };
+        let intent_a = make_intent(&db, 1_000);
+        let intent_b = make_intent(&db, 2_000);
+        assert_eq!(
+            db.try_reserve_venue_attempt(intent_a, 1_100, session_id, 1)
+                .unwrap(),
+            VenueAttemptOutcome::Reserved
+        );
+        assert_eq!(
+            db.try_reserve_venue_attempt(intent_a, 1_150, session_id, 1)
+                .unwrap(),
+            VenueAttemptOutcome::AlreadyAttempted
+        );
+        assert_eq!(
+            db.try_reserve_venue_attempt(intent_b, 2_100, session_id, 1)
+                .unwrap(),
+            VenueAttemptOutcome::CapReached
+        );
+        assert_eq!(db.session_venue_attempted_count(session_id).unwrap(), 1);
+        assert_eq!(
+            db.try_reserve_venue_attempt(intent_b, 2_200, session_id, 0)
+                .unwrap(),
+            VenueAttemptOutcome::Reserved
+        );
+        assert_eq!(db.session_venue_attempted_count(session_id).unwrap(), 2);
+        db.close();
     }
 
     /// Verifies remote refresh cannot overwrite a newer operator control state.

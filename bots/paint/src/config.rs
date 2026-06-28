@@ -426,6 +426,8 @@ pub struct Config {
     pub live_onchain_reconcile_grace_ms: u64,
     pub live_onchain_reconcile_retry_interval_ms: u64,
     pub live_onchain_reconcile_max_attempts: u32,
+    pub live_dry_run: bool,
+    pub live_max_session_orders: u32,
     pub feed_event_storage_profile: FeedEventStorageProfile,
     pub feed_event_writer_queue_capacity: usize,
     pub feed_event_writer_batch_size: usize,
@@ -974,6 +976,9 @@ impl Config {
             live_onchain_reconcile_max_attempts: env_u64("LIVE_ONCHAIN_RECONCILE_MAX_ATTEMPTS", 5)
                 .clamp(1, u64::from(u32::MAX))
                 as u32,
+            live_dry_run: env_bool("LIVE_DRY_RUN", false),
+            live_max_session_orders: env_u64("LIVE_MAX_SESSION_ORDERS", 0).min(u64::from(u32::MAX))
+                as u32,
             feed_event_storage_profile: FeedEventStorageProfile::from_env_value(
                 env::var("FEED_EVENT_STORAGE_PROFILE").ok().as_deref(),
             ),
@@ -1156,6 +1161,8 @@ impl Default for Config {
             live_onchain_reconcile_grace_ms: 6_000,
             live_onchain_reconcile_retry_interval_ms: 3_000,
             live_onchain_reconcile_max_attempts: 5,
+            live_dry_run: false,
+            live_max_session_orders: 0,
             feed_event_storage_profile: FeedEventStorageProfile::ReplayGrade,
             feed_event_writer_queue_capacity: 50_000,
             feed_event_writer_batch_size: 500,
