@@ -231,7 +231,7 @@ describe("PolymarketReadonlyProvider", () => {
             ],
             mts: 0.01,
             nr: false,
-            fd: { r: 0.072, e: 1, to: true },
+            fd: { r: 0.07, e: 1, to: true },
             mbf: 0,
             tbf: 0,
             r: null,
@@ -385,7 +385,7 @@ describe("PolymarketReadonlyProvider", () => {
   });
 
   it("flags a live taker-fee mismatch in preflight without blocking arming", async () => {
-    const provider = createProvider({ expectedTakerFeeRate: "0.07" });
+    const provider = createProvider({ expectedTakerFeeRate: "0.072" });
     const response = await provider.preflight(request);
 
     expect(response.ok).toBe(true);
@@ -397,10 +397,10 @@ describe("PolymarketReadonlyProvider", () => {
         expectedRate: number;
       }>;
     };
-    expect(details.expected_taker_fee_rate).toBe(0.07);
+    expect(details.expected_taker_fee_rate).toBe(0.072);
     expect(details.fee_rate_mismatches.length).toBeGreaterThan(0);
-    expect(details.fee_rate_mismatches[0].observedRate).toBe(0.072);
-    expect(details.fee_rate_mismatches[0].expectedRate).toBe(0.07);
+    expect(details.fee_rate_mismatches[0].observedRate).toBe(0.07);
+    expect(details.fee_rate_mismatches[0].expectedRate).toBe(0.072);
   });
 
   it("sends a stable user agent on public Polymarket HTTP checks", async () => {

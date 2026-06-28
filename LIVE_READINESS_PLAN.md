@@ -349,13 +349,12 @@ Items:
   `@polymarket/builder-relayer-client` 0.0.9 to 0.0.10. Re-run all sidecar gates
   and re-validate FOK and FAK dollar and share sizing after the bump.
 * Live-fee assumptions check, numeric-sensitive and operator-gated (should-fix).
-  Official docs now show a crypto taker rate of 0.07 while
-  `bots/paint/src/config.rs:875` defaults `taker_fee_rate` to 0.072
-  (`bots/paint/src/fees.rs:83`). Add a check that reads live `fd.r` and `fd.e` and
-  logs or alerts on mismatch with the configured constant. Do not change the
-  edge, decision, or backtest fee model. Changing `taker_fee_rate` is
-  numeric-sensitive and excluded from autonomous execution; surface a recommended
-  value for explicit operator approval only.
+  Official docs show a crypto taker rate of 0.07. The preflight check that reads
+  live `fd.r` and `fd.e` and logs a mismatch against the configured constant is
+  implemented. With explicit operator approval the bot `taker_fee_rate` constant
+  (and the `crypto_fee_params` post-changeover rate) were updated from 0.072 to
+  0.07; the runtime still reads live per-market fees at match time. The edge and
+  decision formulas were not changed, only the fee-rate constant.
 * Cap bulk cancels at 1000 order IDs per request (nice-to-have), matching the
   2026-06-15 venue limit, on the cancel-all path.
 * Gamma market discovery hardening (nice-to-have). Pass `closed=true` explicitly

@@ -69,7 +69,7 @@ fn market_fee_schedule_params(market: &MarketWindow) -> Option<FeeParams> {
 pub fn crypto_fee_params(timestamp_ms: u64) -> FeeParams {
     if timestamp_ms >= CRYPTO_FEE_CHANGEOVER_MS {
         FeeParams {
-            fee_rate: 0.072,
+            fee_rate: 0.07,
             exponent: 1,
         }
     } else {

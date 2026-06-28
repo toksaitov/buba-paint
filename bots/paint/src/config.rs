@@ -935,7 +935,7 @@ impl Config {
             taker_fee_rate: taker_fee_rate_override
                 .as_deref()
                 .and_then(|v| v.parse::<f64>().ok())
-                .unwrap_or(0.072),
+                .unwrap_or(0.07),
             taker_fee_exponent: taker_fee_exponent_override
                 .as_deref()
                 .and_then(|v| v.parse::<f64>().ok())
@@ -1134,7 +1134,7 @@ impl Default for Config {
 
             max_position_usd: 500.0,
 
-            taker_fee_rate: 0.072,
+            taker_fee_rate: 0.07,
             taker_fee_exponent: 1,
             taker_fee_override_explicit: false,
 
