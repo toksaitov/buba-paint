@@ -39,14 +39,17 @@ independently. Real-time safety is the bot's in-process job, not the agents'.
 The canary runs with caps tuned so one minimum order is the only thing that can
 exist:
 
-* `LIVE_MAX_SESSION_ORDERS=1`: a structural in-process latch. After one venue
-  submission attempt the bot refuses every further submission for the session, so
-  exactly one order can occur regardless of operator or agent reaction time. This
-  closes the gap that a fill-or-kill no-fill leaves no open notional and could
-  otherwise allow a second order on the next signal. It fails closed: if the count
-  cannot be read, the submission is refused. The count is durable per session and
-  never resets on a no-fill or a disarm; clearing it requires a new session and run
-  DB, so the one-order limit cannot be reset mid-session.
+* `LIVE_MAX_SESSION_FILLS=1` with `LIVE_MAX_SESSION_ORDERS=3`: a structural
+  in-process latch checked atomically in the venue-attempt reservation. The order cap
+  bounds attempts (a fill-or-kill no-fill leaves no position and would otherwise need
+  a retry), and the fill cap blocks further submissions once a fill is recorded.
+  At-most-one-fill is layered, not the fill cap alone: the `LIVE_MAX_OPEN_NOTIONAL_USD=5`
+  ceiling lets only one 5 USD reservation be in flight at a time (a filled order keeps
+  its reservation committed until settlement), so the next order cannot reserve until
+  the prior fill is recorded, at which point the fill cap stops it. Together with the
+  bot's sequential submission this bounds the canary to one fill regardless of
+  operator reaction time. The caps fail closed, are durable per session, and never
+  reset on a no-fill or a disarm; clearing them requires a new session and run DB.
 * `LIVE_MAX_SINGLE_ORDER_USD=5`
 * `LIVE_MAX_OPEN_NOTIONAL_USD=5` (the shared bankroll ceiling makes only one 5 USD
   position fit at a time)
@@ -62,7 +65,7 @@ position resolves against us) plus pennies of fee.
 Defense in depth, strongest first: the on-chain allowance and spendable balance are
 reduced to about 5 USD plus dust before the canary (or a fresh isolated wallet is
 used), so the venue itself cannot pull more than the canary size even if the bot
-misbehaves; the `LIVE_MAX_SESSION_ORDERS=1` latch bounds it to one submission;
+misbehaves; the fill-cap latch bounds it to one filled position;
 fill-or-kill cannot leave a resting order; the bot halts on any anomaly; and there
 is no leverage. The software caps alone are not treated as the hard ceiling while
 the full wallet is spendable; the reduced allowance is.
@@ -77,7 +80,9 @@ Shared (both the dry-run and the real canary):
   funder `0xE7C092ffa4c73EA874d8309cFC0e8915cb348616`, on-chain a deployed proxy.
 * `LIVE_EXPECTED_EGRESS_IP` pinned to the host's current egress, read live, and the
   geoblock returns blocked false for Ireland.
-* The canary caps above, including `LIVE_MAX_SESSION_ORDERS=1`.
+* The canary caps above, including `LIVE_MAX_SESSION_ORDERS=3` and
+  `LIVE_MAX_SESSION_FILLS=1`. See [canary-config.md](./docs/canary-config.md) for the
+  full reversible overlay and revert steps.
 * Preflight returns auth ok, clock ok, allowance ok, available cash at least the
   order minimum, contract version v2, collateral pUSD, and at least one BTC
   5-minute market accepting orders.
@@ -125,11 +130,13 @@ The rehearsal must pass cleanly before any real canary.
 
 1. Freeze the ticket envelope: market family BTC 5-minute up/down, the discovered
    active market, 5 USD max spend, fill-or-kill only, worst-price limit from the
-   strategy, one order only via `LIVE_MAX_SESSION_ORDERS=1`, no retry, config
-   fingerprint and bot version recorded. The side is determined by the strategy
-   signal that fires after Arm and cannot be frozen in advance; the bot only trades
-   within this envelope and the latch bounds it to one order, so verification is of
-   the envelope and the single-order outcome, not of a future side.
+   strategy, one filled order only via `LIVE_MAX_SESSION_FILLS=1` with up to three
+   attempts via `LIVE_MAX_SESSION_ORDERS=3`, the data-chosen relaxed latency-arb
+   threshold from [canary-config.md](./docs/canary-config.md), config fingerprint and
+   bot version recorded. The side is determined by the strategy signal that fires
+   after Arm and cannot be frozen in advance; the bot only trades within this
+   envelope and the latch bounds it to one fill, so verification is of the envelope
+   and the single-fill outcome, not of a future side.
 2. Preflight, read-only: Claude issues Preflight; both agents independently confirm
    every precondition above, including `LIVE_DRY_RUN=false` and the reduced
    allowance. Any mismatch is a no-go.
@@ -141,10 +148,12 @@ The rehearsal must pass cleanly before any real canary.
    extra intent or order was created, and state is armed. A missing or ambiguous
    Arm acknowledgement is treated as unsafe: Claude issues KillSwitch and confirms
    the session is halted before any further step.
-5. Order: the bot submits one 5 USD fill-or-kill order on the next signal. Healthy
-   fill is exactly one matched order at 5 USD on the expected token, no sibling
-   orders, open notional at most 5 USD. A no-fill is a clean terminal no-trade, not
-   a retry.
+5. Order: with the relaxed threshold, a real latency-arb signal fires on the live
+   market and the bot submits one 5 USD fill-or-kill order. Healthy fill is exactly
+   one matched order at 5 USD on the expected token, no sibling orders, open notional
+   at most 5 USD. A no-fill is harmless (no position, capital released) and the bot
+   may attempt again on the next signal up to `LIVE_MAX_SESSION_ORDERS`; once one
+   order fills, `LIVE_MAX_SESSION_FILLS=1` stops all further submissions.
 6. Contain: immediately after the order is terminal, Claude issues StopAfterFlat so
    no new position can open.
 7. On-chain reconcile: require the venue trade, a transaction hash, a confirmed
