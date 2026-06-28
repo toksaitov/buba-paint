@@ -1575,7 +1575,12 @@ impl Database {
             [],
             |row| row.get(0),
         )?;
-        Ok(index_present && column_present)
+        let reconcile_column_present: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('live_orders') WHERE name = 'onchain_reconcile_status')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(index_present && column_present && reconcile_column_present)
     }
 
     /// Atomically mark one intent as having crossed the venue-submission boundary.
@@ -1611,6 +1616,91 @@ impl Database {
             })
             .optional()?;
         Ok(existing)
+    }
+
+    /// Mark one live order's on-chain reconciliation status (pending, confirmed, or failed).
+    ///
+    /// Set to pending synchronously when a fill is recorded so a crash before the
+    /// detached verifier completes still leaves a durable marker that startup refuses
+    /// to trade past. Errors when no row matched so a stale id cannot silently
+    /// confirm nothing and blind the startup gate.
+    pub fn set_live_order_reconcile_status(
+        &self,
+        live_order_id: i64,
+        status: &str,
+    ) -> anyhow::Result<()> {
+        let updated = self.conn.execute(
+            "UPDATE live_orders SET onchain_reconcile_status = ?2 WHERE id = ?1",
+            params![live_order_id, status],
+        )?;
+        if updated != 1 {
+            anyhow::bail!(
+                "set reconcile status {status} updated {updated} rows for live order {live_order_id} (expected 1)"
+            );
+        }
+        Ok(())
+    }
+
+    /// Count filled live orders not yet confirmed on-chain across all sessions.
+    ///
+    /// A fill is any order with a positive accepted size. With `include_unmarked`
+    /// false, only orders explicitly marked `pending` or `failed` count; those
+    /// markers are written only by an enabled verifier, so they block a restart even
+    /// if reconciliation is currently disabled (the operator cannot toggle the flag
+    /// off to trade past an unresolved prior fill). With `include_unmarked` true,
+    /// null also counts, which closes the window where the synchronous pending write
+    /// itself failed; callers pass true only when reconciliation is currently
+    /// enabled, so a never-reconciled run is not blocked by its own null fills.
+    pub fn unconfirmed_onchain_fill_count(&self, include_unmarked: bool) -> anyhow::Result<u64> {
+        let sql = if include_unmarked {
+            "SELECT COUNT(*) FROM live_orders \
+             WHERE accepted_size IS NOT NULL AND accepted_size > 0.0 \
+             AND COALESCE(onchain_reconcile_status, '') != 'confirmed'"
+        } else {
+            "SELECT COUNT(*) FROM live_orders \
+             WHERE accepted_size IS NOT NULL AND accepted_size > 0.0 \
+             AND onchain_reconcile_status IN ('pending', 'failed')"
+        };
+        let count: i64 = self.conn.query_row(sql, [], |row| row.get(0))?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// Sum the accepted size of filled orders on one token up to and including one order.
+    ///
+    /// Used by on-chain reconciliation to compare the cumulative expected position against
+    /// the live balance, so a phantom fill cannot hide behind an earlier real fill on the
+    /// same token. A fill is identified by a positive accepted size rather than the raw
+    /// venue status string. The bound orders by `(created_at_ms, id)` up to the target, so
+    /// a later or same-millisecond sibling never retroactively changes an earlier fill's
+    /// expectation while a phantom is still caught; this relies on `created_at_ms` being the
+    /// wall-clock fill time (non-decreasing) with `id` as the deterministic tiebreak.
+    ///
+    /// The sum is scoped to one session on purpose: each 5-minute market has a unique token
+    /// id traded within a single session and resolved minutes later, so the account-wide
+    /// on-chain balance for the token equals this session's fills during its window. Scoping
+    /// account-wide would instead over-expect once an unrelated prior-session position on a
+    /// reused token had resolved to zero. The sum also assumes buy-only, hold-to-resolution
+    /// fills: the live path submits BUY orders and does not sell before settlement, so the
+    /// on-chain balance only grows with fills.
+    pub fn matched_size_for_token_up_to_order(
+        &self,
+        session_id: i64,
+        token_id: &str,
+        live_order_id: i64,
+    ) -> anyhow::Result<f64> {
+        let total: f64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(accepted_size), 0.0) FROM live_orders \
+             WHERE session_id = ?1 AND token_id = ?2 \
+             AND accepted_size IS NOT NULL AND accepted_size > 0.0 \
+             AND ( \
+                 created_at_ms < (SELECT created_at_ms FROM live_orders WHERE id = ?3) \
+                 OR (created_at_ms = (SELECT created_at_ms FROM live_orders WHERE id = ?3) \
+                     AND id <= ?3) \
+             )",
+            params![session_id, token_id, live_order_id],
+            |row| row.get(0),
+        )?;
+        Ok(total)
     }
 
     /// Insert one live fill and return its row ID.

@@ -107,6 +107,7 @@ fn ensure_live_order_idempotency(conn: &rusqlite::Connection) {
         "venue_attempted_at_ms",
         "INTEGER",
     );
+    add_column_if_missing(conn, "live_orders", "onchain_reconcile_status", "TEXT");
     if let Err(error) = conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_live_orders_intent_unique ON live_orders(intent_id)",
     ) {

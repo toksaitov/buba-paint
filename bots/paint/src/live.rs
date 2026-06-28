@@ -417,6 +417,7 @@ async fn submit_live_orders_from_worker(
             LiveSubmissionOrderResult::Filled {
                 accepted_size,
                 fill_price,
+                live_order_id,
             } => {
                 successful += 1;
                 spawn_onchain_fill_verification(
@@ -426,6 +427,7 @@ async fn submit_live_orders_from_worker(
                     sidecar,
                     order,
                     accepted_size,
+                    live_order_id,
                 );
                 feedback.fills.push(LiveOrderFillFeedback {
                     signal_id: order.signal_id,
@@ -502,10 +504,10 @@ struct OnchainFillVerification {
     token_id: String,
     market_id: String,
     signal_id: i64,
+    live_order_id: i64,
     grace: Duration,
     interval: Duration,
     attempts: u32,
-    expected_raw: u128,
     accepted_size: f64,
 }
 
@@ -541,14 +543,10 @@ fn parse_onchain_balance_raw(balance_raw: &str) -> Option<u128> {
 ///
 /// A balance covering the expected amount confirms the fill (Ok). A smaller or
 /// unparseable balance, or an unexpected collateral scale, is Short or Unconfirmed
-/// so the caller can keep retrying before escalating. The check compares the
-/// absolute on-chain balance and assumes this fill is the only counted fill on the
-/// token id, which holds when at most one order fills a given leg per window (each
-/// window is a new market with new token ids and distinct up and down legs). If two
-/// strategies fill the same leg in one window, a prior real fill could mask a
-/// phantom second fill; that residual is accepted because the conjunction is rare
-/// and bounded by the per-order size cap, while the alternatives (cumulative-expected
-/// or a pre-fill delta snapshot) introduce false halts or a hot-path on-chain read.
+/// so the caller can keep retrying before escalating. The expected amount is the
+/// cumulative raw position the token should hold up to this fill (see
+/// `compute_onchain_expected_raw`), so a phantom fill cannot hide behind an earlier
+/// real fill on the same token.
 fn classify_onchain_read(
     response: &OnchainPositionResponse,
     expected_raw: u128,
@@ -584,17 +582,18 @@ fn spawn_onchain_fill_verification(
     sidecar: &LiveSidecarClient,
     order: &QueuedOrderIntent,
     accepted_size: f64,
+    live_order_id: i64,
 ) {
     if !config.live_onchain_reconcile_enabled() {
         return;
     }
-    let Some(expected_raw) = onchain_expected_raw(accepted_size) else {
+    if !(accepted_size.is_finite() && accepted_size > 0.0) {
         warn!(
             "skipping on-chain reconciliation for non-positive fill size {accepted_size} on {}",
             order.market_id
         );
         return;
-    };
+    }
     let verification = OnchainFillVerification {
         sidecar: sidecar.clone(),
         db_path: db_path.to_string(),
@@ -602,10 +601,10 @@ fn spawn_onchain_fill_verification(
         token_id: order.token_id.clone(),
         market_id: order.market_id.clone(),
         signal_id: order.signal_id,
+        live_order_id,
         grace: Duration::from_millis(config.live_onchain_reconcile_grace_ms),
         interval: Duration::from_millis(config.live_onchain_reconcile_retry_interval_ms),
         attempts: config.live_onchain_reconcile_max_attempts.max(1),
-        expected_raw,
         accepted_size,
     };
     tokio::spawn(async move {
@@ -613,13 +612,69 @@ fn spawn_onchain_fill_verification(
     });
 }
 
+/// Compute the cumulative expected raw on-chain balance for one filled order.
+///
+/// Sums the accepted size of every matched order on the token up to this order,
+/// so a phantom fill cannot hide behind an earlier real fill on the same token.
+/// Returns None on a DB error or a non-representable total so the caller fails
+/// closed rather than silently confirming.
+fn compute_onchain_expected_raw(verification: &OnchainFillVerification) -> Option<u128> {
+    let db = Database::open_runtime(&verification.db_path).ok()?;
+    let cumulative = db
+        .matched_size_for_token_up_to_order(
+            verification.session_id,
+            &verification.token_id,
+            verification.live_order_id,
+        )
+        .ok()?;
+    db.close();
+    onchain_expected_raw(cumulative)
+}
+
+/// Set the durable on-chain reconciliation status for one filled order with retries.
+///
+/// Runs in the detached verifier, so a transient DB error is retried with bounded
+/// backoff. A persisted `confirmed` clears the pending marker that startup refuses
+/// to trade past; a final failure leaves the marker pending, which is fail-closed.
+async fn mark_onchain_reconcile_status(verification: &OnchainFillVerification, status: &str) {
+    for attempt in 0..ONCHAIN_HALT_PERSIST_ATTEMPTS {
+        match Database::open_runtime(&verification.db_path)
+            .and_then(|db| db.set_live_order_reconcile_status(verification.live_order_id, status))
+        {
+            Ok(()) => return,
+            Err(error) => {
+                error!(
+                    "failed to set live order {} reconcile status {status} (attempt {}/{ONCHAIN_HALT_PERSIST_ATTEMPTS}): {error}",
+                    verification.live_order_id,
+                    attempt + 1
+                );
+                if attempt + 1 < ONCHAIN_HALT_PERSIST_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_millis(ONCHAIN_HALT_PERSIST_RETRY_MS)).await;
+                }
+            }
+        }
+    }
+}
+
 /// Run the bounded on-chain verification budget for one filled order.
 ///
-/// Waits the settlement grace, then polls the sidecar for the on-chain CTF balance
-/// up to the configured attempt count. A confirming read returns early; otherwise
-/// the last short or unconfirmed status escalates to a critical reconciliation halt.
+/// Waits the settlement grace, computes the cumulative expected position, then polls
+/// the sidecar for the on-chain CTF balance up to the configured attempt count. A
+/// confirming read marks the order confirmed and returns; otherwise the last short
+/// or unconfirmed status escalates to a critical reconciliation halt.
 async fn verify_onchain_fill(verification: OnchainFillVerification) {
     tokio::time::sleep(verification.grace).await;
+    let Some(expected_raw) = compute_onchain_expected_raw(&verification) else {
+        raise_onchain_reconciliation_halt(
+            &verification,
+            0,
+            &OnchainCheck::Unconfirmed {
+                reason: "could not compute cumulative expected on-chain position".to_string(),
+            },
+        )
+        .await;
+        return;
+    };
     let mut last = OnchainCheck::Unconfirmed {
         reason: "no on-chain read completed".to_string(),
     };
@@ -632,8 +687,11 @@ async fn verify_onchain_fill(verification: OnchainFillVerification) {
             .onchain_position(&verification.token_id, None)
             .await
         {
-            Ok(response) => match classify_onchain_read(&response, verification.expected_raw) {
-                Ok(()) => return,
+            Ok(response) => match classify_onchain_read(&response, expected_raw) {
+                Ok(()) => {
+                    mark_onchain_reconcile_status(&verification, "confirmed").await;
+                    return;
+                }
                 Err(status) => last = status,
             },
             Err(error) => {
@@ -643,17 +701,18 @@ async fn verify_onchain_fill(verification: OnchainFillVerification) {
             }
         }
     }
-    raise_onchain_reconciliation_halt(&verification, &last).await;
+    raise_onchain_reconciliation_halt(&verification, expected_raw, &last).await;
 }
 
 /// Persist a critical reconciliation event after on-chain verification fails.
 ///
 /// The persisted critical event is the only signal the terminal-halt path consumes,
-/// so the write is retried with bounded backoff. A final unrecoverable failure is
-/// logged at critical level because this runs in a detached task with no caller to
-/// receive a Result and no other way to surface the lost detection.
+/// so the write is retried with bounded backoff. The order is also marked failed for
+/// startup visibility. A final unrecoverable failure is logged at critical level
+/// because this runs in a detached task with no caller to receive a Result.
 async fn raise_onchain_reconciliation_halt(
     verification: &OnchainFillVerification,
+    expected_raw: u128,
     status: &OnchainCheck,
 ) {
     let now = SystemClock.now();
@@ -662,10 +721,7 @@ async fn raise_onchain_reconciliation_halt(
             "onchain_fill_short",
             Some(*balance_raw as f64 / 1_000_000.0),
             Some(balance_raw.to_string()),
-            format!(
-                "on-chain balance {balance_raw} below expected {}",
-                verification.expected_raw
-            ),
+            format!("on-chain balance {balance_raw} below expected {expected_raw}"),
         ),
         OnchainCheck::Unconfirmed { reason } => {
             ("onchain_fill_unconfirmed", None, None, reason.clone())
@@ -675,7 +731,8 @@ async fn raise_onchain_reconciliation_halt(
         "market_id": verification.market_id,
         "signal_id": verification.signal_id,
         "token_id": verification.token_id,
-        "expected_raw": verification.expected_raw.to_string(),
+        "live_order_id": verification.live_order_id,
+        "expected_raw": expected_raw.to_string(),
         "onchain_balance_raw": balance_detail,
         "accepted_size": verification.accepted_size,
         "reason": reason,
@@ -695,11 +752,15 @@ async fn raise_onchain_reconciliation_halt(
         remote_value,
         details_json: Some(details),
     };
+    let mut persisted = false;
     for attempt in 0..ONCHAIN_HALT_PERSIST_ATTEMPTS {
         match Database::open_runtime(&verification.db_path)
             .and_then(|db| db.log_live_reconciliation_event(&event))
         {
-            Ok(_) => return,
+            Ok(_) => {
+                persisted = true;
+                break;
+            }
             Err(error) => {
                 error!(
                     "failed to persist on-chain reconciliation halt (attempt {}/{ONCHAIN_HALT_PERSIST_ATTEMPTS}): {error}",
@@ -711,10 +772,13 @@ async fn raise_onchain_reconciliation_halt(
             }
         }
     }
-    error!(
-        "CRITICAL: on-chain reconciliation halt for {} could not be persisted after {ONCHAIN_HALT_PERSIST_ATTEMPTS} attempts; manual intervention required",
-        verification.market_id
-    );
+    if !persisted {
+        error!(
+            "CRITICAL: on-chain reconciliation halt for {} could not be persisted after {ONCHAIN_HALT_PERSIST_ATTEMPTS} attempts; manual intervention required",
+            verification.market_id
+        );
+    }
+    mark_onchain_reconcile_status(verification, "failed").await;
 }
 
 /// Release not-yet-submitted reservations after a batch-level live blocker.
@@ -736,6 +800,7 @@ enum LiveSubmissionOrderResult {
     Filled {
         accepted_size: f64,
         fill_price: f64,
+        live_order_id: i64,
     },
     Rejected {
         release: f64,
@@ -821,6 +886,7 @@ async fn submit_one_live_order_from_worker(
     match input.sidecar.submit_order_intent(&request).await {
         Ok(response) => handle_live_order_response_from_worker(
             input.db_path,
+            input.config,
             input.session_id,
             order,
             intent_id,
@@ -968,6 +1034,7 @@ fn build_live_order_request_from_worker(
 /// Persist one worker-side live order response.
 fn handle_live_order_response_from_worker(
     db_path: &str,
+    config: &Config,
     session_id: i64,
     order: &QueuedOrderIntent,
     intent_id: i64,
@@ -1043,10 +1110,16 @@ fn handle_live_order_response_from_worker(
     ) {
         error!("failed to persist live response fill: {error}");
     }
+    if config.live_onchain_reconcile_enabled()
+        && let Err(error) = db.set_live_order_reconcile_status(live_order_id, "pending")
+    {
+        error!("failed to mark live order pending on-chain reconciliation: {error}");
+    }
     db.close();
     LiveSubmissionOrderResult::Filled {
         accepted_size,
         fill_price,
+        live_order_id,
     }
 }
 
@@ -4661,6 +4734,12 @@ async fn bootstrap_live_trading_runtime(
             "live_trading cannot start against a DB with a halted or unknown-order live session; run live-closeout and start a new run DB"
         );
     }
+    let unconfirmed = db.unconfirmed_onchain_fill_count(config.live_onchain_reconcile_enabled())?;
+    if unconfirmed > 0 {
+        bail!(
+            "live_trading cannot start: {unconfirmed} filled live orders are not confirmed on-chain (a prior verifier did not finish); investigate the fills on-chain, then start a new run DB"
+        );
+    }
     let enabled_strategies = serde_json::to_string(&config.enabled_strategy_names())
         .context("serializing strategies")?;
     let session_id = db.insert_live_session(&LiveSession {
@@ -6789,7 +6868,13 @@ mod tests {
         };
 
         let result = handle_live_order_response_from_worker(
-            db_path, session_id, &order, intent_id, 2_100, &response,
+            db_path,
+            &Config::default(),
+            session_id,
+            &order,
+            intent_id,
+            2_100,
+            &response,
         );
 
         assert!(matches!(
@@ -6849,7 +6934,13 @@ mod tests {
         };
 
         let result = handle_live_order_response_from_worker(
-            db_path, session_id, &order, intent_id, 2_100, &response,
+            db_path,
+            &Config::default(),
+            session_id,
+            &order,
+            intent_id,
+            2_100,
+            &response,
         );
 
         assert!(matches!(
@@ -7497,6 +7588,62 @@ mod tests {
         (tmp_db, session_id)
     }
 
+    /// Inserts one matched live order for a token and returns its row id.
+    fn seed_matched_live_order(
+        db_path: &str,
+        session_id: i64,
+        token_id: &str,
+        accepted_size: f64,
+        created_at_ms: u64,
+    ) -> i64 {
+        let db = Database::new(db_path).unwrap();
+        let intent_id = db
+            .log_live_order_intent(&LiveOrderIntent {
+                id: None,
+                session_id,
+                signal_id: None,
+                market_id: "mkt-onchain".to_string(),
+                strategy: "latency-arb".to_string(),
+                side: "buy".to_string(),
+                order_type: "FOK".to_string(),
+                status: "submitted".to_string(),
+                created_at_ms,
+                requested_price: Some(0.5),
+                requested_size: Some(accepted_size),
+                limit_price: Some(0.5),
+                fee_schedule_json: None,
+                token_fee_rates_json: None,
+                execution_group_id: None,
+                details_json: None,
+            })
+            .unwrap();
+        let id = db
+            .log_live_order(&LiveOrder {
+                id: None,
+                session_id,
+                intent_id,
+                venue_order_id: Some("venue-1".to_string()),
+                client_order_id: Some("client-1".to_string()),
+                market_id: "mkt-onchain".to_string(),
+                token_id: Some(token_id.to_string()),
+                side: "buy".to_string(),
+                order_type: "FOK".to_string(),
+                status: "matched".to_string(),
+                status_reason: None,
+                created_at_ms,
+                acknowledged_at_ms: None,
+                updated_at_ms: created_at_ms,
+                requested_price: Some(0.5),
+                limit_price: Some(0.5),
+                requested_size: Some(accepted_size),
+                accepted_size: Some(accepted_size),
+                details_json: None,
+            })
+            .unwrap();
+        db.close();
+        id
+    }
+
     /// Builds verification inputs pointing at one mock sidecar with zero backoff.
     fn onchain_verification_for_test(
         server_uri: &str,
@@ -7505,6 +7652,8 @@ mod tests {
         accepted_size: f64,
         attempts: u32,
     ) -> OnchainFillVerification {
+        let live_order_id =
+            seed_matched_live_order(db_path, session_id, "12345", accepted_size, 2_000);
         OnchainFillVerification {
             sidecar: LiveSidecarClient::new(server_uri),
             db_path: db_path.to_string(),
@@ -7512,10 +7661,10 @@ mod tests {
             token_id: "12345".to_string(),
             market_id: "mkt-onchain".to_string(),
             signal_id: 7,
+            live_order_id,
             grace: Duration::ZERO,
             interval: Duration::ZERO,
             attempts,
-            expected_raw: onchain_expected_raw(accepted_size).unwrap(),
             accepted_size,
         }
     }
@@ -7689,6 +7838,116 @@ mod tests {
         assert_eq!(
             db.critical_live_reconciliation_count(session_id).unwrap(),
             1
+        );
+    }
+
+    /// Verifies a phantom second fill on a token is caught via the cumulative balance.
+    #[tokio::test]
+    async fn verify_onchain_fill_catches_phantom_second_fill_via_cumulative() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/onchain-position"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token_id": "12345",
+                "account": "0xproxy",
+                "balance_raw": "500000",
+                "collateral_decimals": 6,
+            })))
+            .mount(&server)
+            .await;
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        seed_matched_live_order(&db_path, session_id, "12345", 0.5, 1_000);
+        let second_id = seed_matched_live_order(&db_path, session_id, "12345", 0.5, 2_000);
+        let verification = OnchainFillVerification {
+            sidecar: LiveSidecarClient::new(&server.uri()),
+            db_path: db_path.clone(),
+            session_id,
+            token_id: "12345".to_string(),
+            market_id: "mkt-onchain".to_string(),
+            signal_id: 7,
+            live_order_id: second_id,
+            grace: Duration::ZERO,
+            interval: Duration::ZERO,
+            attempts: 1,
+            accepted_size: 0.5,
+        };
+        verify_onchain_fill(verification).await;
+        let db = Database::new(&db_path).unwrap();
+        assert_eq!(
+            db.critical_live_reconciliation_count(session_id).unwrap(),
+            1
+        );
+    }
+
+    /// Verifies a confirmed fill clears its pending reconciliation marker.
+    #[tokio::test]
+    async fn verify_onchain_fill_confirm_clears_pending_marker() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/onchain-position"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token_id": "12345",
+                "account": "0xproxy",
+                "balance_raw": "500000",
+                "collateral_decimals": 6,
+            })))
+            .mount(&server)
+            .await;
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        let verification =
+            onchain_verification_for_test(&server.uri(), &db_path, session_id, 0.5, 1);
+        let order_id = verification.live_order_id;
+        {
+            let db = Database::new(&db_path).unwrap();
+            db.set_live_order_reconcile_status(order_id, "pending")
+                .unwrap();
+            assert_eq!(db.unconfirmed_onchain_fill_count(true).unwrap(), 1);
+            db.close();
+        }
+        verify_onchain_fill(verification).await;
+        let db = Database::new(&db_path).unwrap();
+        assert_eq!(db.unconfirmed_onchain_fill_count(true).unwrap(), 0);
+    }
+
+    /// Verifies the startup gate counts non-confirmed fills, and that the unmarked
+    /// (null) ones count only when reconciliation is currently enabled.
+    #[test]
+    fn unconfirmed_onchain_fill_count_counts_non_confirmed_fills() {
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        let null_id = seed_matched_live_order(&db_path, session_id, "tok-a", 0.5, 1_000);
+        let pending_id = seed_matched_live_order(&db_path, session_id, "tok-b", 0.5, 1_000);
+        let confirmed_id = seed_matched_live_order(&db_path, session_id, "tok-c", 0.5, 1_000);
+        let db = Database::new(&db_path).unwrap();
+        db.set_live_order_reconcile_status(pending_id, "pending")
+            .unwrap();
+        db.set_live_order_reconcile_status(confirmed_id, "confirmed")
+            .unwrap();
+        assert_eq!(db.unconfirmed_onchain_fill_count(true).unwrap(), 2);
+        assert_eq!(db.unconfirmed_onchain_fill_count(false).unwrap(), 1);
+        db.set_live_order_reconcile_status(pending_id, "failed")
+            .unwrap();
+        assert_eq!(db.unconfirmed_onchain_fill_count(true).unwrap(), 2);
+        assert_eq!(db.unconfirmed_onchain_fill_count(false).unwrap(), 1);
+        db.set_live_order_reconcile_status(null_id, "confirmed")
+            .unwrap();
+        db.set_live_order_reconcile_status(pending_id, "confirmed")
+            .unwrap();
+        assert_eq!(db.unconfirmed_onchain_fill_count(true).unwrap(), 0);
+        assert_eq!(db.unconfirmed_onchain_fill_count(false).unwrap(), 0);
+    }
+
+    /// Verifies setting a reconcile status for an unknown order id is an error, not a silent no-op.
+    #[test]
+    fn set_reconcile_status_errors_on_unknown_order() {
+        let (tmp_db, _session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap();
+        let db = Database::new(db_path).unwrap();
+        assert!(
+            db.set_live_order_reconcile_status(999_999, "confirmed")
+                .is_err()
         );
     }
 

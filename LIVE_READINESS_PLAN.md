@@ -448,15 +448,16 @@ Items:
   a later sized-trading phase, which is out of scope for this plan. This is the
   only real order in the plan. With a real settled position now in hand, exercise
   the deferred live end-to-end redeem from Phase 3.
-* Reconciliation residuals to resolve before sustained unsupervised trading
-  (Phase 3 review findings, accepted for the supervised single-order canary):
-  durable startup re-drive of on-chain verification for fills still inside the
-  post-fill verify window when the process stopped or crashed (today a crash inside
-  that window loses detection silently); and the cumulative-balance masking case
-  where two strategies fill the same leg in one window, which the absolute
-  `balanceOf >= expected` check cannot isolate without a hot-path pre-fill snapshot.
-  Both are documented in `bots/paint/src/live.rs`; the canary is a single
-  operator-watched order, so neither bites until sustained trading.
+* Reconciliation residuals (Phase 3 review findings) are now resolved in code, not
+  just deferred. The crash-window gap is closed by a durable per-fill
+  `onchain_reconcile_status` marker set synchronously at fill time, with
+  `live_trading` refusing to start while any filled order is not `confirmed`. The
+  cumulative-balance masking case is closed by comparing the on-chain balance
+  against the cumulative expected position for the token (ordered by creation time
+  then id), so a phantom second fill on a leg cannot hide behind an earlier real
+  fill. Both were reviewed by Codex and two reviewers; remaining items there were
+  fixed (fail-closed on a failed marker write, exactly-one-row status updates,
+  same-millisecond tie-break, event-before-marker ordering).
 * Codex final review of the full set of changes since the plan started, for
   arming readiness.
 
