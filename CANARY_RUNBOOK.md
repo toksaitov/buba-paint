@@ -143,13 +143,13 @@ ssh buba-paint "$COMPOSE exec -T paint buba-paint live-control \
 ssh buba-paint "$COMPOSE exec -T paint buba-paint live-control \
   --db-path /runtime/paint.db arm --actor claude --reason canary"
 ssh buba-paint "$COMPOSE exec -T paint buba-paint live-control \
-  --db-path /runtime/paint.db stop_after_flat --actor claude --reason canary"
+  --db-path /runtime/paint.db stop-after-flat --actor claude --reason canary"
 ssh buba-paint "$COMPOSE exec -T paint buba-paint live-control \
   --db-path /runtime/paint.db disarm --actor claude --reason canary"
 ```
 
-Emergency kill (Codex or operator): replace the action with `kill_switch`, then
-`cancel_all` and `redeem_all` as needed.
+Emergency kill (Codex or operator): replace the action with `kill-switch`, then
+`cancel-all` and `redeem-all` as needed.
 
 The real canary deploy is the same `deploy-docker.py --use-locked-images` command
 with `--env-set LIVE_DRY_RUN=false`, the data-chosen threshold, and
@@ -257,7 +257,7 @@ Abort channels, any one of which is sufficient:
 * Codex emergency KillSwitch or CancelAll.
 * Claude Disarm, StopAfterFlat, or KillSwitch.
 * Operator from the phone: the dashboard kill or cancel control, an SSH session
-  running `buba-paint live-control ... kill_switch`, a direct Polymarket cancel, or
+  running `buba-paint live-control ... kill-switch`, a direct Polymarket cancel, or
   as final containment revoking the API key and reducing the allowance.
 
 ## Failure Modes And Mitigations
