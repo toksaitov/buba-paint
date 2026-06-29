@@ -195,6 +195,7 @@ interface FeeRateMismatch {
 }
 
 const FEE_RATE_MISMATCH_TOLERANCE = 1e-6;
+const FEE_RATE_BLOCK_MARGIN = 0.02;
 
 interface ActiveMarketDiscovery {
   markets: ActiveMarket[];
@@ -2113,6 +2114,19 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
             expected_rate: mismatch.expectedRate,
           });
         }
+        const materialFeeExcess = feeRateMismatches.filter(
+          (mismatch) =>
+            mismatch.observedRate >
+            mismatch.expectedRate + FEE_RATE_BLOCK_MARGIN,
+        );
+        if (materialFeeExcess.length > 0) {
+          const worst = materialFeeExcess.reduce((a, b) =>
+            b.observedRate > a.observedRate ? b : a,
+          );
+          errors.push(
+            `Venue taker fee ${worst.observedRate} on market ${worst.conditionId} exceeds the expected ${worst.expectedRate} by more than ${FEE_RATE_BLOCK_MARGIN}; re-validate the fee model before trading.`,
+          );
+        }
       }
 
       if (discovery && discovery.markets.length > 0) {
@@ -2367,6 +2381,18 @@ export class PolymarketReadonlyProvider implements SidecarProvider {
         side === Side.BUY
           ? "BUY market orders require positive amount_usd."
           : "SELL market orders require positive size.",
+        { received_at_ms: receivedAtMs },
+      );
+    }
+    if (
+      side === Side.BUY &&
+      this.config.maxOrderUsd > 0 &&
+      orderAmount > this.config.maxOrderUsd
+    ) {
+      return this.rejectedOrder(
+        request,
+        "validation_failed",
+        `BUY amount_usd ${orderAmount} exceeds the sidecar order cap ${this.config.maxOrderUsd}.`,
         { received_at_ms: receivedAtMs },
       );
     }

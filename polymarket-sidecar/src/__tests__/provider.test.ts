@@ -100,6 +100,7 @@ describe("PolymarketReadonlyProvider", () => {
     relayerTerminalState?: string;
     builderCredentials?: boolean;
     expectedTakerFeeRate?: string;
+    maxOrderUsd?: string;
   }) {
     const config = loadConfig({
       POLYMARKET_PRIVATE_KEY:
@@ -118,6 +119,7 @@ describe("PolymarketReadonlyProvider", () => {
         ? "builder-passphrase"
         : undefined,
       POLYMARKET_EXPECTED_TAKER_FEE_RATE: options?.expectedTakerFeeRate,
+      SIDECAR_MAX_ORDER_USD: options?.maxOrderUsd,
     });
     let connectedMarkets: string[] = [];
 
@@ -401,6 +403,37 @@ describe("PolymarketReadonlyProvider", () => {
     expect(details.fee_rate_mismatches.length).toBeGreaterThan(0);
     expect(details.fee_rate_mismatches[0].observedRate).toBe(0.07);
     expect(details.fee_rate_mismatches[0].expectedRate).toBe(0.072);
+  });
+
+  it("blocks arming when the venue taker fee materially exceeds the expected rate", async () => {
+    const provider = createProvider({ expectedTakerFeeRate: "0.04" });
+    const response = await provider.preflight(request);
+
+    expect(response.ok).toBe(false);
+    expect(response.errors.some((message) => message.includes("taker fee"))).toBe(
+      true,
+    );
+  });
+
+  it("rejects a BUY whose amount_usd exceeds the sidecar order cap", async () => {
+    const provider = createProvider({ maxOrderUsd: "8" });
+    await provider.preflight(request);
+    const order = await provider.submitOrderIntent({
+      session_id: 1,
+      intent_id: 2,
+      market_id: "0xcondition",
+      token_id: "up-token",
+      side: "BUY",
+      order_type: "FOK",
+      limit_price: 0.51,
+      size: 100,
+      amount_usd: 50,
+      client_order_id: "client-cap",
+      details_json: null,
+    });
+
+    expect(order.status).toBe("validation_failed");
+    expect(order.status_reason).toContain("sidecar order cap");
   });
 
   it("sends a stable user agent on public Polymarket HTTP checks", async () => {

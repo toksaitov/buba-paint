@@ -1674,6 +1674,83 @@ impl Database {
         Ok(count.max(0) as u64)
     }
 
+    /// Mark one intent as a resolved dry-run attempt so it is never mistaken for an
+    /// orphaned real submission.
+    ///
+    /// Dry-run attempts cross the venue-attempt boundary (to exercise the reservation)
+    /// but never call the venue and never write a `live_orders` row, so without this
+    /// marker they would look identical to a real submission that crashed before its
+    /// response was persisted. The status string lives only in this module so the
+    /// marker and [`Database::orphaned_venue_attempt_count`] cannot drift apart.
+    pub fn mark_live_order_intent_dry_run(&self, intent_id: i64) -> anyhow::Result<()> {
+        let updated = self.conn.execute(
+            "UPDATE live_order_intents SET status = 'dry_run' WHERE id = ?1",
+            params![intent_id],
+        )?;
+        if updated != 1 {
+            bail!(
+                "expected to mark exactly one intent dry-run, updated {updated} for id {intent_id}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Mark one intent `submitting` immediately before the real venue call.
+    ///
+    /// This is the durable marker that the venue boundary is being crossed for real, so
+    /// [`Database::orphaned_venue_attempt_count`] flags only a true crash between the
+    /// venue call and persisting its response. An intent that reserved but crashed before
+    /// this marker (no venue call yet) is therefore not mistaken for an orphan.
+    ///
+    /// Errors unless exactly one row is updated, so a missing intent id fails closed
+    /// (the caller blocks the submission) rather than letting an unmarked order through.
+    pub fn mark_live_order_intent_submitting(&self, intent_id: i64) -> anyhow::Result<()> {
+        let updated = self.conn.execute(
+            "UPDATE live_order_intents SET status = 'submitting' WHERE id = ?1",
+            params![intent_id],
+        )?;
+        if updated != 1 {
+            bail!(
+                "expected to mark exactly one intent submitting, updated {updated} for id {intent_id}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Count all recorded live venue submissions (any `live_orders` row) in the DB.
+    ///
+    /// The canary makes exactly one venue submission per run DB, so a nonzero count at
+    /// bootstrap means this DB already submitted in a prior session. Because the at-most-
+    /// one-fill caps are per session and reset on restart, and a confirmed fill stops
+    /// blocking startup once reconciled, restarting on the same DB and re-arming could
+    /// place a second order while a prior position still exists. Bootstrap fails closed on
+    /// any nonzero count so a new live session always starts from a fresh DB.
+    pub fn live_order_count(&self) -> anyhow::Result<u64> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM live_orders", [], |row| row.get(0))?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// Count intents that crossed the venue-attempt boundary with no recorded outcome.
+    ///
+    /// An intent marked `submitting` (set immediately before the venue call) with no
+    /// `live_orders` row means a real submission reached the venue but the process died
+    /// before persisting the response. The order may have filled with no local record, so
+    /// bootstrap must fail closed on any nonzero count rather than let a new armed session
+    /// place a second order. Reserved-but-not-yet-submitting intents and dry-run intents
+    /// are excluded because the venue was never called for them.
+    pub fn orphaned_venue_attempt_count(&self) -> anyhow::Result<u64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM live_order_intents i \
+             WHERE i.status = 'submitting' \
+             AND NOT EXISTS (SELECT 1 FROM live_orders o WHERE o.intent_id = i.id)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
+    }
+
     /// Return the existing live order row for one intent, if any (durable submission marker).
     pub fn find_live_order_by_intent(
         &self,

@@ -39,16 +39,19 @@ independently. Real-time safety is the bot's in-process job, not the agents'.
 The canary runs with caps tuned so one minimum order is the only thing that can
 exist:
 
-* `LIVE_MAX_SESSION_FILLS=1` with `LIVE_MAX_SESSION_ORDERS=3`: a structural
-  in-process latch checked atomically in the venue-attempt reservation. The order cap
-  bounds attempts (a fill-or-kill no-fill leaves no position and would otherwise need
-  a retry), and the fill cap blocks further submissions once a fill is recorded.
-  At-most-one-fill is layered, not the fill cap alone: the `LIVE_MAX_OPEN_NOTIONAL_USD=7`
-  ceiling, which is below twice a minimum order, lets only one reservation be in flight
-  at a time (a filled order keeps its reservation committed until settlement), so the
-  next order cannot reserve until the prior fill is recorded, at which point the fill
-  cap stops it. Together with the bot's sequential submission this bounds the canary to
-  one fill regardless of operator reaction time. The caps fail closed, are durable per
+* `LIVE_MAX_SESSION_ORDERS=1` with `LIVE_MAX_SESSION_FILLS=1`: a structural in-process
+  latch checked atomically in the venue-attempt reservation. The order cap allows
+  exactly one venue submission per session (the canary places one order and does not
+  retry a no-fill), and the fill cap blocks any further submission once a fill is
+  recorded. At-most-one-fill is layered, not the fill cap alone: the
+  `LIVE_MAX_OPEN_NOTIONAL_USD=7` ceiling, which is below twice a minimum order, lets
+  only one reservation be in flight at a time (a filled order keeps its reservation
+  committed until settlement), so a second order cannot reserve before the first fill
+  is recorded, at which point the fill cap stops it. Bootstrap also fails closed if a
+  prior submission has no recorded outcome (a crash between the venue call and
+  persisting the response), so a real fill can never be orphaned and then repeated on a
+  restart. Together with the bot's sequential submission this bounds the canary to one
+  fill regardless of operator reaction time. The caps fail closed, are durable per
   session, and never reset on a no-fill or a disarm; clearing them requires a new
   session and run DB.
 * `LIVE_MAX_SINGLE_ORDER_USD=7`: hard pre-submit ceiling on one order.
@@ -86,7 +89,7 @@ Shared (both the dry-run and the real canary):
   funder `0xE7C092ffa4c73EA874d8309cFC0e8915cb348616`, on-chain a deployed proxy.
 * `LIVE_EXPECTED_EGRESS_IP` pinned to the host's current egress, read live, and the
   geoblock returns blocked false for Ireland.
-* The canary caps above, including `LIVE_MAX_SESSION_ORDERS=3` and
+* The canary caps above, including `LIVE_MAX_SESSION_ORDERS=1` and
   `LIVE_MAX_SESSION_FILLS=1`. See [canary-config.md](./docs/canary-config.md) for the
   full reversible overlay and revert steps.
 * Preflight returns auth ok, clock ok, allowance ok, available cash at least the
@@ -186,8 +189,8 @@ The rehearsal must pass cleanly before any real canary.
 1. Freeze the ticket envelope: market family BTC 5-minute up/down, the discovered
    active market, about 5 USD spend with a 7 USD hard ceiling, fill-or-kill only,
    worst-price limit from the
-   strategy, one filled order only via `LIVE_MAX_SESSION_FILLS=1` with up to three
-   attempts via `LIVE_MAX_SESSION_ORDERS=3`, the data-chosen relaxed latency-arb
+   strategy, exactly one venue submission via `LIVE_MAX_SESSION_ORDERS=1` and one fill
+   via `LIVE_MAX_SESSION_FILLS=1`, the data-chosen relaxed latency-arb
    threshold from [canary-config.md](./docs/canary-config.md), config fingerprint and
    bot version recorded. The side is determined by the strategy signal that fires
    after Arm and cannot be frozen in advance; the bot only trades within this
@@ -207,10 +210,10 @@ The rehearsal must pass cleanly before any real canary.
 5. Order: with the relaxed threshold, a real latency-arb signal fires on the live
    market and the bot submits one fill-or-kill order of about 5 USD. Healthy fill is
    exactly one matched order of about 5 USD on the expected token, no sibling orders,
-   open notional at most 7 USD. A no-fill is harmless (no position, capital released)
-   and the bot
-   may attempt again on the next signal up to `LIVE_MAX_SESSION_ORDERS`; once one
-   order fills, `LIVE_MAX_SESSION_FILLS=1` stops all further submissions.
+   open notional at most 7 USD. A no-fill is harmless (no position, capital released);
+   with `LIVE_MAX_SESSION_ORDERS=1` the session does not retry, and once any order
+   fills `LIVE_MAX_SESSION_FILLS=1` also blocks all further submissions. To retry after
+   a no-fill, start a new session on a fresh run DB.
 6. Contain: immediately after the order is terminal, Claude issues StopAfterFlat so
    no new position can open.
 7. On-chain reconcile: require the venue trade, a transaction hash, a confirmed

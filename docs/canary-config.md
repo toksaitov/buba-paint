@@ -16,8 +16,9 @@ unless the canary overlay sets them:
 * `LIVE_MAX_SESSION_FILLS` (default 0, unlimited): stop further submissions once
   this many orders in the session have filled (a fill is `accepted_size > 0` on the
   order row, written synchronously when the venue response is handled), checked
-  atomically in the same reservation. With the order cap this gives "a few attempts
-  to land one fill, then stop." At-most-one-fill is a layered guarantee, not the fill
+  atomically in the same reservation. With `LIVE_MAX_SESSION_ORDERS=1` this gives
+  "one venue submission, then stop, whether it fills or not." At-most-one-fill is a
+  layered guarantee, not the fill
   cap alone: the `LIVE_MAX_OPEN_NOTIONAL_USD=7` ceiling, which is below twice a
   minimum order, lets only one reservation be in flight at a time (a filled order
   keeps its reservation committed until settlement), so the next order cannot reserve
@@ -33,8 +34,9 @@ bots/paint/src/strategies bots/paint/src/decision` stays empty.
 Set these as environment variables or `--set KEY=VALUE` for the canary run only.
 Each lists the production default to revert to. On the Docker host the overlay is
 applied with `scripts/deploy-docker.py --mode live-trading`, which uses
-`docker-compose.live-trading.yml` (dry-run, disarmed, and the 5 USD caps are the
-safe defaults there) plus `--env-set KEY=VALUE` for the values that change per run
+`docker-compose.live-trading.yml` (dry-run, disarmed, and the canary caps with the
+7 USD ceiling are the safe defaults there) plus `--env-set KEY=VALUE` for the values
+that change per run
 (`LIVE_DRY_RUN`, the data-chosen threshold, the egress pin). Reverting is a
 redeploy with `--mode live-readonly`.
 
@@ -42,8 +44,14 @@ Safety and mode:
 
 * `EXECUTION_MODE=live_trading` (deployment default: `live_readonly`)
 * `LIVE_DRY_RUN=true` for the rehearsal, `false` for the real canary (default false)
-* `LIVE_MAX_SESSION_ORDERS=3` (default 0): at most three venue attempts to land one fill
+* `LIVE_MAX_SESSION_ORDERS=1` (default 0): exactly one venue submission per session;
+  the canary places one order and does not retry a no-fill (matches the runbook scope
+  "no retry after a no-fill"). A no-fill leaves no position; to try again, start a new
+  session on a fresh run DB.
 * `LIVE_MAX_SESSION_FILLS=1` (default 0): stop after the first fill
+* `LIVE_ARMED_FEED_OUTAGE_HALT_MS=120000` (default 120000): while armed, halt if a
+  critical decision feed (Binance or CLOB) is in a continuous outage past this many
+  ms; brief reconnect blips only block orders, a sustained outage halts the session
 * `LIVE_SESSION_CASH_CAP_USD=100` (default 100): the sizing bankroll, kept at the
   production value so the order sizes naturally to about 5 USD (see sizing note)
 * `LIVE_MAX_SINGLE_ORDER_USD=7` (default 10): hard pre-submit ceiling on one order
@@ -77,9 +85,10 @@ production values below):
   captured momentum on a comparable quiet period and set the base just below a level
   that occurs every few minutes, so a real, small signal fires within the test
   window. Do not hardcode a guess; pick it from recent capture at canary time.
-* `LATENCY_ARB_COOLDOWN_MS` (default `60000`): optionally lower (for example
-  `15000`) so a no-fill can retry within the five-minute window, bounded by
-  `LIVE_MAX_SESSION_ORDERS`.
+* `LATENCY_ARB_COOLDOWN_MS` (default `60000`): for the dry-run rehearsal, optionally
+  lower (for example `15000`) so a would-submit fires sooner. For the real canary with
+  `LIVE_MAX_SESSION_ORDERS=1` there is no retry, so the cooldown only affects how soon
+  the single eligible signal can fire.
 * `LATENCY_ARB_MAX_ASK` (default `0.60`) and `LATENCY_ARB_MIN_ASK` (production
   `0.30`, canary `0.50`): the canary narrows the ask band to `0.50..0.60`. The bot
   sizes the order at the current ask but reserves capital at the limit price

@@ -859,6 +859,9 @@ fn dry_run_live_order_outcome(
         order.market_id, order.token_id, order.side, request.size, request.limit_price
     );
     if let Ok(db) = Database::open_runtime(db_path) {
+        if let Err(error) = db.mark_live_order_intent_dry_run(intent_id) {
+            error!("failed to mark intent {intent_id} dry-run: {error}");
+        }
         if let Err(error) = db.log_live_reconciliation_event(&LiveReconciliationEvent {
             id: None,
             session_id,
@@ -886,6 +889,37 @@ fn dry_run_live_order_outcome(
     LiveSubmissionOrderResult::DryRun {
         release: order.reserved_cost,
     }
+}
+
+/// Durably mark one intent `submitting` immediately before its venue call, or return a
+/// `Blocked` result if the marker cannot be written.
+///
+/// Writing the marker before the sidecar call means a crash during submission leaves a
+/// detectable orphan, while a failure to write it fails closed (no order is submitted
+/// without a durable record that the venue boundary was crossed).
+fn mark_intent_submitting_or_block(
+    db_path: &str,
+    intent_id: i64,
+    reserved_cost: f64,
+) -> Option<LiveSubmissionOrderResult> {
+    let result = match Database::open_runtime(db_path) {
+        Ok(db) => {
+            let marked = db.mark_live_order_intent_submitting(intent_id);
+            db.close();
+            marked
+                .err()
+                .map(|error| format!("failed to record submitting marker: {error}"))
+        }
+        Err(error) => Some(format!("failed to open db for submitting marker: {error}")),
+    };
+    result.map(|reason| {
+        error!("intent {intent_id} not submitted: {reason}");
+        LiveSubmissionOrderResult::Blocked {
+            state: "disarmed",
+            reason,
+            release: Some(reserved_cost),
+        }
+    })
 }
 
 /// Submit one live order intent from the submission worker.
@@ -950,6 +984,11 @@ async fn submit_one_live_order_from_worker(
             &request,
             input.now_ms,
         );
+    }
+    if let Some(blocked) =
+        mark_intent_submitting_or_block(input.db_path, intent_id, order.reserved_cost)
+    {
+        return blocked;
     }
     match input.sidecar.submit_order_intent(&request).await {
         Ok(response) => handle_live_order_response_from_worker(
@@ -2122,6 +2161,25 @@ impl FeedHealthTracker {
                 cause_class: cause_class.to_string(),
             },
         );
+    }
+
+    /// Return the longest current active outage among critical decision feeds, if any.
+    ///
+    /// Reads live disconnect state without draining the rollup window, so a frequent
+    /// watchdog can detect a sustained Binance or CLOB outage between the much coarser
+    /// periodic rollups. A feed that has already reconnected has no active outage and is
+    /// not reported, which is correct: a recovered feed needs no halt.
+    fn active_critical_outage_ms(&self, now_ms: u64) -> Option<(String, u64)> {
+        self.active
+            .iter()
+            .filter(|(source, _)| is_critical_decision_feed(source))
+            .map(|(source, disconnect)| {
+                (
+                    source.clone(),
+                    now_ms.saturating_sub(disconnect.started_at_ms),
+                )
+            })
+            .max_by_key(|(_, outage_ms)| *outage_ms)
     }
 
     /// Drain the current rollup window into operator-facing rows while preserving active outages.
@@ -3539,6 +3597,20 @@ async fn run_live_runtime(
                             );
                             live_control_inflight = true;
                         }
+                        let critical_outage =
+                            feed_health_tracker.active_critical_outage_ms(clock.now());
+                        if let Some(monitor) = live_trading_monitor.as_mut()
+                            && let Err(error) = monitor
+                                .refresh_armed_feed_outage_halt(
+                                    db_path,
+                                    &clock,
+                                    config.live_armed_feed_outage_halt_ms,
+                                    critical_outage,
+                                )
+                                .await
+                        {
+                            error!("failed to evaluate armed feed-outage halt: {error}");
+                        }
                     }
                     RuntimeCommand::Timer(RuntimeTimerCommand::LiveRemotePoll) => {
                         if !live_remote_refresh_inflight
@@ -3787,6 +3859,47 @@ impl LiveTradingMonitor {
             "critical_reconciliation_halt",
             "critical live reconciliation event present",
             json!({ "session_id": self.session_id }),
+        );
+        self.terminal_halt(
+            db_path,
+            clock,
+            "system",
+            &breach.reason,
+            breach.event_type,
+            breach.details,
+        )
+        .await?;
+        Ok(true)
+    }
+
+    /// Halt an armed session when a critical decision feed has been in a continuous
+    /// outage past the configured threshold.
+    ///
+    /// A brief reconnect blip only blocks decisions, so no order is placed on stale
+    /// data; a sustained outage of Binance or CLOB while armed means the bot is blind
+    /// to the market, so the session is halted rather than left armed indefinitely.
+    /// Inert when disarmed, already halted, or when the threshold is zero.
+    async fn refresh_armed_feed_outage_halt(
+        &mut self,
+        db_path: &str,
+        clock: &dyn Clock,
+        threshold_ms: u64,
+        outage: Option<(String, u64)>,
+    ) -> anyhow::Result<bool> {
+        if threshold_ms == 0 || self.state != "armed" {
+            return Ok(false);
+        }
+        let Some((feed, outage_ms)) = outage.filter(|(_, ms)| *ms >= threshold_ms) else {
+            return Ok(false);
+        };
+        let breach = live_terminal_breach(
+            "armed_feed_outage_halt",
+            "armed session lost a critical decision feed",
+            json!({
+                "feed": feed,
+                "active_outage_ms": outage_ms,
+                "threshold_ms": threshold_ms,
+            }),
         );
         self.terminal_halt(
             db_path,
@@ -4804,6 +4917,42 @@ fn merge_live_remote_refresh_state(target: &mut LiveTradingMonitor, updated: Liv
     }
 }
 
+/// Fail closed before starting a live session on any prior live-trading state that a
+/// restart could turn into a duplicate order or fill.
+///
+/// The four hazards: a terminal halt or unknown-order session; an unconfirmed on-chain
+/// fill (a verifier did not finish); any prior `live_orders` row at all, because the
+/// at-most-one-fill caps are per session and reset on restart so a confirmed prior
+/// position could be doubled (the canary makes one submission per run DB); and an
+/// orphaned `submitting` attempt with no recorded outcome. The remedy in every case is a
+/// fresh run DB.
+fn ensure_live_bootstrap_clean(db: &Database, config: &Config) -> anyhow::Result<()> {
+    if db.terminal_live_trading_halt_exists()? {
+        bail!(
+            "live_trading cannot start against a DB with a halted or unknown-order live session; run live-closeout and start a new run DB"
+        );
+    }
+    let unconfirmed = db.unconfirmed_onchain_fill_count(config.live_onchain_reconcile_enabled())?;
+    if unconfirmed > 0 {
+        bail!(
+            "live_trading cannot start: {unconfirmed} filled live orders are not confirmed on-chain (a prior verifier did not finish); investigate the fills on-chain, then start a new run DB"
+        );
+    }
+    let prior_orders = db.live_order_count()?;
+    if prior_orders > 0 {
+        bail!(
+            "live_trading cannot start: this DB already recorded {prior_orders} live venue submission(s); the at-most-one-fill caps are per session and would reset on restart, so a prior live position could be doubled. Archive this run DB and start a fresh one"
+        );
+    }
+    let orphaned = db.orphaned_venue_attempt_count()?;
+    if orphaned > 0 {
+        bail!(
+            "live_trading cannot start: {orphaned} venue submission(s) have no recorded outcome (a prior process died between submitting and persisting the response); the order(s) may have filled, so investigate venue activity on-chain, then start a new run DB"
+        );
+    }
+    Ok(())
+}
+
 /// Bootstrap a disarmed live-trading runtime session.
 async fn bootstrap_live_trading_runtime(
     config: &Config,
@@ -4818,17 +4967,7 @@ async fn bootstrap_live_trading_runtime(
             "live_trading requires replay-grade feed capture; FEED_EVENT_STORAGE_PROFILE=compact is descriptive-only"
         )
     }
-    if db.terminal_live_trading_halt_exists()? {
-        bail!(
-            "live_trading cannot start against a DB with a halted or unknown-order live session; run live-closeout and start a new run DB"
-        );
-    }
-    let unconfirmed = db.unconfirmed_onchain_fill_count(config.live_onchain_reconcile_enabled())?;
-    if unconfirmed > 0 {
-        bail!(
-            "live_trading cannot start: {unconfirmed} filled live orders are not confirmed on-chain (a prior verifier did not finish); investigate the fills on-chain, then start a new run DB"
-        );
-    }
+    ensure_live_bootstrap_clean(&db, config)?;
     let enabled_strategies = serde_json::to_string(&config.enabled_strategy_names())
         .context("serializing strategies")?;
     let session_id = db.insert_live_session(&LiveSession {
@@ -5045,6 +5184,15 @@ fn live_session_details_json(monitor: &LiveTradingMonitor) -> String {
         "degradation": monitor.degradation.active.as_ref().map(live_degradation_json),
     })
     .to_string()
+}
+
+/// Return whether a feed-health source is a critical latency-arb decision feed.
+///
+/// Binance supplies the momentum signal and CLOB supplies the order book, so either
+/// going dark blinds the decision. Chainlink only feeds settlement, so a chainlink
+/// outage never gates order decisions and is not treated as critical here.
+fn is_critical_decision_feed(source: &str) -> bool {
+    source == "binance" || source == "clob"
 }
 
 /// Build one terminal breach without coupling it to account risk arithmetic.
@@ -8269,5 +8417,113 @@ mod tests {
             .unwrap();
         assert!(halted);
         assert_eq!(monitor.state, "halted");
+    }
+
+    /// Verifies a sustained critical-feed outage halts an armed session, while a
+    /// disarmed session, a non-critical feed, a sub-threshold outage, and a zero
+    /// threshold never halt.
+    #[tokio::test]
+    async fn armed_feed_outage_halts_only_when_armed_and_sustained() {
+        let make_monitor = |session_id: i64, state: &str| LiveTradingMonitor {
+            sidecar: LiveSidecarClient::new("http://127.0.0.1:9"),
+            session_id,
+            state: state.to_string(),
+            preflight: None,
+            account: None,
+            activity: None,
+            risk: None,
+            degradation: LiveDegradationTracker::default(),
+            blocked_reason: None,
+            finished: false,
+        };
+        let clock = BacktestClock::new();
+        clock.set(5_000);
+        let (tmp_db, session_id) = seed_onchain_reconcile_session();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+        let mut armed = make_monitor(session_id, "armed");
+        let halted = armed
+            .refresh_armed_feed_outage_halt(
+                &db_path,
+                &clock,
+                120_000,
+                Some(("binance".to_string(), 150_000)),
+            )
+            .await
+            .unwrap();
+        assert!(halted);
+        assert_eq!(armed.state, "halted");
+
+        let mut disarmed = make_monitor(session_id, "disarmed");
+        assert!(
+            !disarmed
+                .refresh_armed_feed_outage_halt(
+                    &db_path,
+                    &clock,
+                    120_000,
+                    Some(("clob".to_string(), 150_000)),
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(disarmed.state, "disarmed");
+
+        let mut armed_no_outage = make_monitor(session_id, "armed");
+        assert!(
+            !armed_no_outage
+                .refresh_armed_feed_outage_halt(&db_path, &clock, 120_000, None)
+                .await
+                .unwrap()
+        );
+
+        let mut armed_short = make_monitor(session_id, "armed");
+        assert!(
+            !armed_short
+                .refresh_armed_feed_outage_halt(
+                    &db_path,
+                    &clock,
+                    120_000,
+                    Some(("binance".to_string(), 30_000)),
+                )
+                .await
+                .unwrap()
+        );
+
+        let mut armed_disabled = make_monitor(session_id, "armed");
+        assert!(
+            !armed_disabled
+                .refresh_armed_feed_outage_halt(
+                    &db_path,
+                    &clock,
+                    0,
+                    Some(("binance".to_string(), 150_000)),
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    /// Verifies the feed-health tracker reports the longest active critical-feed outage
+    /// and ignores non-critical feeds and reconnected feeds.
+    #[test]
+    fn active_critical_outage_ms_reports_worst_critical_feed() {
+        let mut tracker = FeedHealthTracker::default();
+        assert_eq!(tracker.active_critical_outage_ms(10_000), None);
+
+        tracker.note_disconnected("chainlink", "websocket_error", 1_000);
+        assert_eq!(tracker.active_critical_outage_ms(10_000), None);
+
+        tracker.note_disconnected("binance", "websocket_error", 2_000);
+        tracker.note_disconnected("clob", "websocket_error", 5_000);
+        assert_eq!(
+            tracker.active_critical_outage_ms(10_000),
+            Some(("binance".to_string(), 8_000)),
+        );
+
+        tracker.note_connected("binance", 9_000);
+        assert_eq!(
+            tracker.active_critical_outage_ms(10_000),
+            Some(("clob".to_string(), 5_000)),
+        );
     }
 }

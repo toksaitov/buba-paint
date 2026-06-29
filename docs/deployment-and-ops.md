@@ -70,8 +70,9 @@ Requirements:
   control command even with dry-run off.
 * the order sizes to about 5 USD using the production position fractions, and
   exposure is bounded by `LIVE_MAX_SINGLE_ORDER_USD=7` and
-  `LIVE_MAX_OPEN_NOTIONAL_USD=7`, with `LIVE_MAX_SESSION_ORDERS=3` and
-  `LIVE_MAX_SESSION_FILLS=1` bounding the run to one fill. The cash cap stays at the
+  `LIVE_MAX_OPEN_NOTIONAL_USD=7`, with `LIVE_MAX_SESSION_ORDERS=1` and
+  `LIVE_MAX_SESSION_FILLS=1` bounding the run to one venue submission and one fill. The
+  cash cap stays at the
   production 100 USD because the fractions need that bankroll to size a 5 USD order;
   see [../docs/canary-config.md](../docs/canary-config.md).
 

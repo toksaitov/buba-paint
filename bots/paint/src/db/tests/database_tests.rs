@@ -1044,6 +1044,103 @@ fn live_order_idempotency_primitives() {
     assert!(!db.mark_intent_venue_attempted(intent_id, 1_200).unwrap());
 }
 
+/// Verifies that only an intent marked `submitting` with no `live_orders` row counts as
+/// an orphaned submission, so bootstrap fails closed on a crash between the venue call and
+/// persisting the response while ignoring reserved-but-not-submitted, dry-run, and
+/// resolved orders.
+#[test]
+fn orphaned_venue_attempt_count_isolates_crash_orphans() {
+    let (db, _tmp) = temp_db();
+    let session_id = db
+        .insert_live_session(&crate::types::LiveSession {
+            id: None,
+            started_at_ms: 1_000,
+            ended_at_ms: None,
+            status: "armed".into(),
+            execution_mode: "live_trading".into(),
+            wallet_address: Some("0xwallet".into()),
+            proxy_wallet: Some("0xproxy".into()),
+            enabled_strategies_json: "[]".into(),
+            config_fingerprint: "fp".into(),
+            cash_cap_usd: 100.0,
+            details_json: Some("{}".into()),
+        })
+        .unwrap();
+    let make_intent = |status: &str, created: u64| crate::types::LiveOrderIntent {
+        id: None,
+        session_id,
+        signal_id: None,
+        market_id: "mkt-1".into(),
+        strategy: "latency-arb".into(),
+        side: "BUY".into(),
+        order_type: "FOK".into(),
+        status: status.into(),
+        created_at_ms: created,
+        requested_price: Some(0.51),
+        requested_size: Some(10.0),
+        limit_price: Some(0.60),
+        fee_schedule_json: None,
+        token_fee_rates_json: None,
+        execution_group_id: None,
+        details_json: None,
+    };
+
+    let orphan = db
+        .log_live_order_intent(&make_intent("submitted", 1_010))
+        .unwrap();
+    assert!(db.mark_intent_venue_attempted(orphan, 1_011).unwrap());
+    db.mark_live_order_intent_submitting(orphan).unwrap();
+
+    let reserved_only = db
+        .log_live_order_intent(&make_intent("approved", 1_015))
+        .unwrap();
+    assert!(
+        db.mark_intent_venue_attempted(reserved_only, 1_016)
+            .unwrap()
+    );
+
+    let dry_run = db
+        .log_live_order_intent(&make_intent("submitted", 1_020))
+        .unwrap();
+    assert!(db.mark_intent_venue_attempted(dry_run, 1_021).unwrap());
+    db.mark_live_order_intent_dry_run(dry_run).unwrap();
+
+    let resolved = db
+        .log_live_order_intent(&make_intent("submitted", 1_030))
+        .unwrap();
+    assert!(db.mark_intent_venue_attempted(resolved, 1_031).unwrap());
+    db.log_live_order(&crate::types::LiveOrder {
+        id: None,
+        session_id,
+        intent_id: resolved,
+        venue_order_id: Some("venue-1".into()),
+        client_order_id: Some("client-1".into()),
+        market_id: "mkt-1".into(),
+        token_id: Some("tok-up".into()),
+        side: "BUY".into(),
+        order_type: "FOK".into(),
+        status: "matched".into(),
+        status_reason: None,
+        created_at_ms: 1_032,
+        acknowledged_at_ms: Some(1_033),
+        updated_at_ms: 1_033,
+        requested_price: Some(0.51),
+        limit_price: Some(0.60),
+        requested_size: Some(10.0),
+        accepted_size: Some(10.0),
+        details_json: None,
+    })
+    .unwrap();
+
+    let not_attempted = db
+        .log_live_order_intent(&make_intent("approved", 1_040))
+        .unwrap();
+    let _ = not_attempted;
+
+    assert_eq!(db.orphaned_venue_attempt_count().unwrap(), 1);
+    assert_eq!(db.live_order_count().unwrap(), 1);
+}
+
 /// Verifies that live session/account/order tables accept compact live telemetry.
 #[test]
 fn live_telemetry_tables_store_rows() {

@@ -7,6 +7,7 @@ export interface SidecarConfig {
   polygonRpcUrl: string;
   clockDriftMaxMs: number;
   expectedTakerFeeRate: number;
+  maxOrderUsd: number;
   httpTimeoutMs: number;
   sdkTimeoutMs: number;
   userStreamConnectTimeoutMs: number;
@@ -69,6 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     polygonRpcUrl: env.POLYMARKET_POLYGON_RPC_URL ?? "https://polygon-rpc.com",
     clockDriftMaxMs: envInt(env, "POLYMARKET_CLOCK_DRIFT_MAX_MS", 1500),
     expectedTakerFeeRate: envFloat(env, "POLYMARKET_EXPECTED_TAKER_FEE_RATE", 0.07),
+    maxOrderUsd: envFloat(env, "SIDECAR_MAX_ORDER_USD", 0),
     httpTimeoutMs: envInt(env, "POLYMARKET_HTTP_TIMEOUT_MS", 5000),
     sdkTimeoutMs: envInt(env, "POLYMARKET_SDK_TIMEOUT_MS", 5000),
     userStreamConnectTimeoutMs: envInt(

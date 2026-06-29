@@ -429,6 +429,7 @@ pub struct Config {
     pub live_dry_run: bool,
     pub live_max_session_orders: u32,
     pub live_max_session_fills: u32,
+    pub live_armed_feed_outage_halt_ms: u64,
     pub feed_event_storage_profile: FeedEventStorageProfile,
     pub feed_event_writer_queue_capacity: usize,
     pub feed_event_writer_batch_size: usize,
@@ -982,6 +983,7 @@ impl Config {
                 as u32,
             live_max_session_fills: env_u64("LIVE_MAX_SESSION_FILLS", 0).min(u64::from(u32::MAX))
                 as u32,
+            live_armed_feed_outage_halt_ms: env_u64("LIVE_ARMED_FEED_OUTAGE_HALT_MS", 120_000),
             feed_event_storage_profile: FeedEventStorageProfile::from_env_value(
                 env::var("FEED_EVENT_STORAGE_PROFILE").ok().as_deref(),
             ),
@@ -1167,6 +1169,7 @@ impl Default for Config {
             live_dry_run: false,
             live_max_session_orders: 0,
             live_max_session_fills: 0,
+            live_armed_feed_outage_halt_ms: 120_000,
             feed_event_storage_profile: FeedEventStorageProfile::ReplayGrade,
             feed_event_writer_queue_capacity: 50_000,
             feed_event_writer_batch_size: 500,
