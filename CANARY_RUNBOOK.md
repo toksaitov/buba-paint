@@ -69,15 +69,24 @@ strategy's worst-price limit. Whole-share rounding makes the exact cost slightly
 than 5 USD, so the 7 USD ceiling leaves headroom; maximum realistic exposure is under
 7 USD (the stake, lost only if the position resolves against us) plus pennies of fee.
 
-Defense in depth, strongest first: the on-chain CTF exchange allowance is reduced to
-about 8 to 10 USD before the canary (the ERC-20 approval, not the wallet balance), so
-the venue itself cannot pull more than roughly one order even if the bot misbehaves;
-the 7 USD software ceilings bound a single order and total open exposure; the fill-cap
-latch bounds it to one filled position; fill-or-kill cannot leave a resting order; the
-bot halts on any anomaly; and there is no leverage. The wallet balance is left at the
+Defense in depth: the primary and sufficient ceiling is software, and it is layered
+across independent components. The bot rejects any order over the 7 USD single-order
+cap; the sidecar independently rejects any BUY over `SIDECAR_MAX_ORDER_USD` (8 USD for
+the canary) at the venue boundary, so the cap holds even if the bot misbehaves; the
+open-notional ceiling bounds total exposure; the fill-cap latch bounds it to one filled
+position; bootstrap fails closed on any prior submission so a restart cannot place a
+second order; fill-or-kill cannot leave a resting order; the bot halts on any anomaly;
+and there is no leverage. These were reviewed and signed off for the canary.
+
+Reducing the on-chain CTF exchange allowance to about 8 to 10 USD (the ERC-20 approval,
+not the wallet balance) is an optional extra on-chain backstop, not a precondition. It
+is also impractical on this account: the funds sit in a Magic-link proxy wallet, which
+is not a normal wallet that can be connected to a token-approval tool, and Polymarket's
+interface does not expose a raw allowance setting. The wallet balance is left at the
 production value because the position-fraction sizing needs it to size a 5 USD order;
-the reduced allowance plus the software ceilings are the hard limit, not a 5 USD
-balance.
+do not reduce the balance. If a fresh isolated wallet with a directly settable
+allowance is ever used, capping its allowance near 8 to 10 USD is the strongest single
+backstop, but it is not required given the software ceilings above.
 
 ## Preconditions
 
@@ -107,10 +116,12 @@ Real canary only:
 * `LIVE_DRY_RUN=false`, confirmed explicitly in preflight.
 * The dry-run rehearsal completed clean on this host with the same code and config
   fingerprint, differing only in `LIVE_DRY_RUN` and the runtime DB.
-* The on-chain CTF exchange allowance is reduced to about 8 to 10 USD (the ERC-20
-  approval, not the wallet balance), so the venue cannot pull more than roughly one
-  order. The balance stays at the production value because the position-fraction
-  sizing needs it to size a 5 USD order; see [canary-config.md](./docs/canary-config.md).
+* The balance stays at the production value (the position-fraction sizing needs it to
+  size a 5 USD order); do not reduce the balance.
+* Optional: a reduced on-chain CTF exchange allowance (about 8 to 10 USD) as an extra
+  backstop. This is not a precondition and is impractical on the Magic-link proxy
+  wallet; the layered software ceilings are the primary limit. See
+  [canary-config.md](./docs/canary-config.md).
 
 ## Deploy And Control Commands
 
@@ -197,8 +208,8 @@ The rehearsal must pass cleanly before any real canary.
    envelope and the latch bounds it to one fill, so verification is of the envelope
    and the single-fill outcome, not of a future side.
 2. Preflight, read-only: Claude issues Preflight; both agents independently confirm
-   every precondition above, including `LIVE_DRY_RUN=false` and the reduced
-   allowance. Any mismatch is a no-go.
+   every precondition above, including `LIVE_DRY_RUN=false`, the 7 USD bot cap, and the
+   sidecar `SIDECAR_MAX_ORDER_USD` cap. Any mismatch is a no-go.
 3. Operator GO: exactly one human GO that names the ticket ("BTC 5-minute, 5 USD
    max, fill-or-kill, one order only, go"). No implicit GO from earlier chat. If the
    config fingerprint, feed freshness, or clock drift changed between Preflight and
@@ -260,8 +271,9 @@ Abort channels, any one of which is sufficient:
 * Codex emergency KillSwitch or CancelAll.
 * Claude Disarm, StopAfterFlat, or KillSwitch.
 * Operator from the phone: the dashboard kill or cancel control, an SSH session
-  running `buba-paint live-control ... kill-switch`, a direct Polymarket cancel, or
-  as final containment revoking the API key and reducing the allowance.
+  running `buba-paint live-control ... kill-switch`, a direct Polymarket cancel, or as
+  final containment revoking the relayer API key (and, if a wallet with a settable
+  allowance is in use, reducing its allowance).
 
 ## Failure Modes And Mitigations
 

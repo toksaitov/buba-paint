@@ -107,15 +107,24 @@ reconciliation, real settlement, real redeem, real fee.
 
 ## Defense in depth on exposure
 
-Reduce the on-chain CTF exchange allowance (the ERC-20 approval, not the wallet
-balance) to about 8 to 10 USD before the real canary, so the venue contract cannot
-pull more than roughly one canary order regardless of any software fault. Do not
-reduce the spendable balance to about 5 USD: the production position-fraction sizing
-needs a bankroll near 100 USD to size a 5 USD order, so a 5 USD balance would starve
-the order entirely (see the sizing note above). Keep the real balance and rely on the
-allowance plus the 7 USD software caps as the layered ceiling. If a fresh isolated
-wallet is preferred, fund it with about 100 USD and set its exchange allowance to
-about 8 to 10 USD.
+The primary ceiling is software, layered across independent components: the bot
+rejects any order over `LIVE_MAX_SINGLE_ORDER_USD=7`, the sidecar independently
+rejects any BUY over `SIDECAR_MAX_ORDER_USD` (8 for the canary) at the venue boundary,
+the open-notional ceiling bounds total exposure, the fill cap stops after one fill,
+and bootstrap fails closed on any prior submission so a restart cannot place a second
+order. These were reviewed and signed off for the canary.
+
+Do not reduce the spendable balance: the production position-fraction sizing needs a
+bankroll near 100 USD to size a 5 USD order, so a small balance would starve the order
+entirely (see the sizing note above). Keep the real balance.
+
+Reducing the on-chain CTF exchange allowance (the ERC-20 approval, not the balance) to
+about 8 to 10 USD is an optional extra backstop, not a precondition. On the current
+account it is impractical: the funds are in a Magic-link proxy wallet, which is not a
+normal wallet that connects to a token-approval tool, and Polymarket does not expose a
+raw allowance setting. Only if a fresh isolated wallet with a directly settable
+allowance is used does capping its allowance near 8 to 10 USD become the strongest
+single backstop; it is otherwise not required given the software ceilings.
 
 ## Revert (bring back the real strategy)
 
