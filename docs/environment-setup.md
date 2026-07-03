@@ -47,18 +47,23 @@ Install these first. Homebrew is the simplest source for most of them.
   git lfs install
   ```
 
-## Moving An Existing Checkout (do this, not a fresh clone)
+## Moving To A New Machine
 
-If you are moving to a new machine to continue this work, copy the whole working
-directory. Do not re-clone. The active work is on the `live-readiness` branch,
-which is not pushed to any remote (it is about 25 commits ahead of
-`origin/master`). A plain `git clone` gives you `master`, which does not contain
-the canary, the `live_trading` compose, the hardened live bootstrap, or these
-handoff docs. A clone also drops the gitignored `.secrets/` directory and any
-local run evidence.
+The canary work is on `master` and pushed to `origin`, so a plain clone of
+`master` has everything (the canary, the `live_trading` compose, the hardened
+live bootstrap, and these handoff docs). The one thing git never carries is the
+gitignored `.secrets/` directory, which you must copy out-of-band on either
+path.
 
-Copy the entire directory including `.git` and `.secrets`, skipping only the
-large regenerable build outputs:
+Simplest path (fresh clone): follow the Clone And Per-Package Install section
+below, then copy `.secrets/buba-paint-live-sidecar.env` onto the new machine
+out-of-band (from a secure transfer or your password manager) and
+`chmod 600` it. This is enough to continue the work.
+
+Byte-for-byte path (whole-directory copy): use this if you also want uncommitted
+local run evidence or your local Docker/runtime state to travel, or you just
+prefer an exact copy. Copy the whole directory including `.git` and `.secrets`,
+skipping only the large regenerable build outputs:
 
 ```bash
 rsync -aH --info=progress2 \
@@ -69,14 +74,13 @@ rsync -aH --info=progress2 \
   /path/to/buba-paint/ new-machine:/Users/<you>/Desktop/buba-paint/
 ```
 
-`.git` carries the unpushed `live-readiness` branch and full history; `.secrets/`
-carries the live sidecar env, so keep the transfer secure. On the new machine,
-confirm the state before doing anything else:
+`.secrets/` carries the live sidecar env, so keep the transfer secure. On the
+new machine, confirm the state before doing anything else:
 
 ```bash
 cd buba-paint
-git status                # expect: On branch live-readiness, working tree clean
-git log --oneline -3      # expect the latest live-readiness commits
+git status                # expect: On branch master, working tree clean
+git log --oneline -3      # expect the latest canary/handoff commits
 chmod 600 .secrets/buba-paint-live-sidecar.env
 ```
 
@@ -85,15 +89,6 @@ Then run the per-package install below to rebuild `target/` and `node_modules/`
 [LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md) (the handoff block at the top)
 and the read order in [CLAUDE.md](../CLAUDE.md).
 
-If you prefer git over a whole-directory copy, push the branch from the old
-machine first (`git push -u origin live-readiness`) and clone it explicitly
-(`git clone -b live-readiness ...`); you still must copy `.secrets/`
-out-of-band because it is gitignored. Caution: a push plus clone carries only
-committed history. Run `git status` on the old machine first and commit or stash
-any modified or untracked files (and copy any local run evidence separately), or
-the clone silently loses them. The whole-directory rsync above avoids this
-because it copies the working tree as-is.
-
 ## Clone And Per-Package Install
 
 If you moved an existing checkout with the rsync above, skip the `git clone` and
@@ -101,7 +96,7 @@ If you moved an existing checkout with the rsync above, skip the `git clone` and
 fresh setup, clone with LFS active, then install each crate and package.
 
 ```bash
-git clone -b live-readiness https://github.com/toksaitov/buba-paint.git
+git clone https://github.com/toksaitov/buba-paint.git
 cd buba-paint
 git lfs pull
 

@@ -21,11 +21,12 @@ As of 2026-07-03. This is the live pickup point; the phase plan below is history
   `dashboard`, and `caddy` are up. The sidecar authenticates on demand but reads
   "not ready" while parked because the parked bot does not poll it; it becomes ready
   when the bot runs at GO. Reverting to `live_readonly` is a redeploy.
-* Repository state: this work exists only on the unpushed `live-readiness` branch
-  (about 25 commits ahead of `origin/master`, which does not have the canary). On a
-  new machine, confirm you are on `live-readiness` before continuing; do not check out
-  `master` or re-clone expecting the canary artifacts. See
-  [docs/environment-setup.md](./docs/environment-setup.md) for the safe move procedure.
+* Repository state: this work is merged into `master` and pushed to `origin`, so a
+  normal clone of `master` (or the whole-directory copy) has the canary and these
+  handoff docs. The only thing git does not carry is the gitignored `.secrets/`
+  directory, which must be copied out-of-band. See
+  [docs/environment-setup.md](./docs/environment-setup.md) for setup and the move
+  procedure.
 * To go live at GO: redeploy without `--parked` and with
   `--env-set LIVE_DRY_RUN=false` plus the data-chosen threshold and the live egress
   pin, then arm per the runbook. Reducing the on-chain allowance is optional; the

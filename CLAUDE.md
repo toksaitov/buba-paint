@@ -18,7 +18,7 @@ Do not rely on chat history. Rebuild context from repository files:
 
 ## Current Effort
 
-The active work is live-money readiness for the Polymarket 5-minute crypto canary. All phase code is complete and hardened and was reviewed SAFE FOR CANARY; the only remaining gate is an explicit operator GO, which then runs a final supervised dry-run rehearsal and the single ~5 USD real order per the runbook. This work lives on the unpushed `live-readiness` branch (about 25 commits ahead of `origin/master`, which does not have the canary). The live host is currently staged in the `live_trading` plus `LIVE_DRY_RUN=true` disarmed canary stack, parked (bot sleeping, no capture, no DB growth). Full detail and the pickup point are in the [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md) handoff block.
+The active work is live-money readiness for the Polymarket 5-minute crypto canary. All phase code is complete and hardened and was reviewed SAFE FOR CANARY; the only remaining gate is an explicit operator GO, which then runs a final supervised dry-run rehearsal and the single ~5 USD real order per the runbook. This work is merged into `master` and pushed to `origin`. The live host is currently staged in the `live_trading` plus `LIVE_DRY_RUN=true` disarmed canary stack, parked (bot sleeping, no capture, no DB growth). Full detail and the pickup point are in the [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md) handoff block.
 
 Use executable truth for factual claims: `Makefile`, Compose files, `bots/paint/src/config.rs`, `bots/paint/src/cli.rs`, dashboard route/API files, agent routes, sidecar config/server files, DB schema, validators, and current official Polymarket docs for venue behavior.
 

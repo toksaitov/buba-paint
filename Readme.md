@@ -4,7 +4,7 @@ Buba is a trading system for short-horizon prediction markets. Its goal is to ru
 
 The current implementation focuses on Polymarket BTC 5-minute Up/Down markets. It can run paper sessions, run authenticated readonly sessions against Polymarket, collect replay-grade market data, show an operator dashboard, and run offline backtests and parameter sweeps. No real money has traded: the live-trading path is real-venue capable but ships disarmed and dry-run by default.
 
-Active effort: live-money readiness is in progress on the `live-readiness` branch. All phase code is complete and hardened and was reviewed SAFE FOR CANARY; the only remaining gate is an explicit operator GO, which then runs a final supervised dry-run rehearsal and one small real canary order. The live host is currently staged in the disarmed, dry-run canary stack, parked. Start from the "Current State And Handoff" block at the top of [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md).
+Active effort: live-money readiness. All phase code is on `master` (pushed to `origin`), complete and hardened, and was reviewed SAFE FOR CANARY; the only remaining gate is an explicit operator GO, which then runs a final supervised dry-run rehearsal and one small real canary order. The live host is currently staged in the disarmed, dry-run canary stack, parked. Start from the "Current State And Handoff" block at the top of [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md).
 
 ## System Overview
 
