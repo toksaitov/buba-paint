@@ -414,10 +414,12 @@ def upload_runtime_config(host: str, layout: RemoteLayout, tmp: Path) -> None:
     )
 
 
-def compose_files(mode: str, *, use_locked: bool = False) -> str:
+def compose_files(mode: str, *, use_locked: bool = False, parked: bool = False) -> str:
     files = list(COMPOSE_FILES[mode])
     if use_locked:
         files.append("docker-compose.live-stopped.yml")
+    if parked:
+        files.append("docker-compose.parked.yml")
     return " ".join(f"-f {shlex.quote(name)}" for name in files)
 
 
@@ -428,8 +430,10 @@ def build_services(mode: str) -> str:
     return " ".join(shlex.quote(service) for service in services)
 
 
-def stop_old_processes(host: str, layout: RemoteLayout, mode: str, *, use_locked: bool = False) -> None:
-    files = compose_files(mode, use_locked=use_locked)
+def stop_old_processes(
+    host: str, layout: RemoteLayout, mode: str, *, use_locked: bool = False, parked: bool = False
+) -> None:
+    files = compose_files(mode, use_locked=use_locked, parked=parked)
     ssh(
         host,
         f"""
@@ -444,8 +448,16 @@ fi
     )
 
 
-def start_stack(host: str, layout: RemoteLayout, mode: str, *, lock: dict | None = None, token: str | None = None) -> None:
-    files = compose_files(mode, use_locked=lock is not None)
+def start_stack(
+    host: str,
+    layout: RemoteLayout,
+    mode: str,
+    *,
+    lock: dict | None = None,
+    token: str | None = None,
+    parked: bool = False,
+) -> None:
+    files = compose_files(mode, use_locked=lock is not None, parked=parked)
     services = build_services(mode)
     if lock is None:
         ssh(
@@ -482,9 +494,16 @@ $base up -d --no-build
 
 
 def remote_compose(
-    host: str, layout: RemoteLayout, mode: str, args: str, *, check: bool = True, use_locked: bool = False
+    host: str,
+    layout: RemoteLayout,
+    mode: str,
+    args: str,
+    *,
+    check: bool = True,
+    use_locked: bool = False,
+    parked: bool = False,
 ) -> str:
-    files = compose_files(mode, use_locked=use_locked)
+    files = compose_files(mode, use_locked=use_locked, parked=parked)
     return ssh_capture(
         host,
         f"set -euo pipefail; cd {shlex.quote(layout.release)}; sudo docker compose --env-file .env {files} {args}",
@@ -492,9 +511,11 @@ def remote_compose(
     )
 
 
-def verify(host: str, layout: RemoteLayout, mode: str, domain: str, *, use_locked: bool = False) -> dict[str, object]:
+def verify(
+    host: str, layout: RemoteLayout, mode: str, domain: str, *, use_locked: bool = False, parked: bool = False
+) -> dict[str, object]:
     def rc(args: str, *, check: bool = True) -> str:
-        return remote_compose(host, layout, mode, args, check=check, use_locked=use_locked)
+        return remote_compose(host, layout, mode, args, check=check, use_locked=use_locked, parked=parked)
 
     checks: dict[str, object] = {}
     checks["compose_ps"] = rc("ps")
@@ -552,6 +573,12 @@ def parse_args() -> argparse.Namespace:
         help="pull digest-pinned images from the lock instead of building on the host",
     )
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK_FILE)
+    parser.add_argument(
+        "--parked",
+        action="store_true",
+        help="battle-mode staging: bring the stack up but init the DB and sleep the paint bot "
+        "(no live trading, no feed capture, no DB growth); redeploy without --parked to go live",
+    )
     parser.add_argument("--install-docker", action="store_true")
     parser.add_argument("--ensure-swap-gb", type=int, default=4)
     parser.add_argument("--skip-dns-check", action="store_true")
@@ -583,6 +610,8 @@ def main() -> int:
         files = list(COMPOSE_FILES[args.mode])
         if args.use_locked_images:
             files.append("docker-compose.live-stopped.yml")
+        if args.parked:
+            files.append("docker-compose.parked.yml")
         print(
             json.dumps(
                 {
@@ -593,6 +622,7 @@ def main() -> int:
                     "ensure_swap_gb": args.ensure_swap_gb,
                     "compose_files": files,
                     "use_locked_images": args.use_locked_images,
+                    "parked": args.parked,
                     "lock": lock_status,
                     "sidecar_env_exists": args.sidecar_env.exists(),
                     "env_set": extra_env,
@@ -654,9 +684,9 @@ def main() -> int:
         upload_runtime_config(args.host, layout, tmp)
 
     use_locked = lock is not None
-    stop_old_processes(args.host, layout, args.mode, use_locked=use_locked)
-    start_stack(args.host, layout, args.mode, lock=lock, token=token)
-    checks = verify(args.host, layout, args.mode, args.domain, use_locked=use_locked)
+    stop_old_processes(args.host, layout, args.mode, use_locked=use_locked, parked=args.parked)
+    start_stack(args.host, layout, args.mode, lock=lock, token=token, parked=args.parked)
+    checks = verify(args.host, layout, args.mode, args.domain, use_locked=use_locked, parked=args.parked)
 
     evidence_dir = REPO_ROOT / "data" / "experiments" / f"docker-deploy-{stamp}"
     evidence_dir.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,22 @@
+# Parked (battle-mode staging) overlay.
+#
+# Keeps the full stack up and ready without running the live bot, so nothing
+# captures replay-grade feed data and the runtime DB cannot grow. The paint
+# container initializes an empty DB (so the agent has something to monitor and
+# the healthcheck passes) and then sleeps instead of running `buba-paint live`.
+# Sidecar, agent, dashboard, and caddy run normally.
+#
+# Use for long unattended waits (e.g. before a canary GO). To go live, redeploy
+# WITHOUT this overlay so the paint container runs the live bot again. See
+# docs/deployment-and-ops.md.
+services:
+  paint:
+    command:
+      - |
+        mkdir -p /runtime
+        touch "$$BUBA_PAINT_LOG_PATH"
+        if [ ! -f "$$DB_PATH" ]; then
+          buba-paint init-db --db-path "$$DB_PATH" --balance "$$STARTING_BALANCE" >> "$$BUBA_PAINT_LOG_PATH" 2>&1
+        fi
+        echo "[parked] paint DB initialized; live bot NOT started (battle-mode staging: no capture, no DB growth)" >> "$$BUBA_PAINT_LOG_PATH"
+        exec sleep infinity
