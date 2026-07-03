@@ -13,6 +13,12 @@ Do not rely on chat history. Rebuild context from repository files:
 5. [docs/data-and-replay.md](./docs/data-and-replay.md)
 6. [docs/deployment-and-ops.md](./docs/deployment-and-ops.md)
 7. [docs/testing-and-validation.md](./docs/testing-and-validation.md)
+8. [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md) for the current active effort. Read its "Current State And Handoff" block first: it states what is deployed on the live host right now and what the only remaining gate is. Then [CANARY_RUNBOOK.md](./CANARY_RUNBOOK.md) (live pickup) and [docs/canary-config.md](./docs/canary-config.md) (reversible config).
+9. [docs/environment-setup.md](./docs/environment-setup.md) when setting up a new machine or moving this checkout, and [docs/polymarket-live-constraints.md](./docs/polymarket-live-constraints.md) for venue and operator truths that are not obvious from code (jurisdiction and egress, Chainlink settlement, venue timing, liquidity, fees).
+
+## Current Effort
+
+The active work is live-money readiness for the Polymarket 5-minute crypto canary. All phase code is complete and hardened and was reviewed SAFE FOR CANARY; the only remaining gate is an explicit operator GO, which then runs a final supervised dry-run rehearsal and the single ~5 USD real order per the runbook. This work lives on the unpushed `live-readiness` branch (about 25 commits ahead of `origin/master`, which does not have the canary). The live host is currently staged in the `live_trading` plus `LIVE_DRY_RUN=true` disarmed canary stack, parked (bot sleeping, no capture, no DB growth). Full detail and the pickup point are in the [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md) handoff block.
 
 Use executable truth for factual claims: `Makefile`, Compose files, `bots/paint/src/config.rs`, `bots/paint/src/cli.rs`, dashboard route/API files, agent routes, sidecar config/server files, DB schema, validators, and current official Polymarket docs for venue behavior.
 
@@ -23,13 +29,19 @@ Use executable truth for factual claims: `Makefile`, Compose files, `bots/paint/
 * `agent`: read-only monitor over the bot DB, runtime logs, process control, and machine state.
 * `dashboard/server`: authenticated dashboard backend and agent proxy.
 * `dashboard/client`: React operator dashboard.
+* `crates/buba-machine-telemetry`: shared crate for host machine metrics, consumed by the agent and dashboard.
+* `tools/rust-comment-policy`: the Rust comment-policy linter enforced by `make lint` (rustdoc-on-every-fn, no inline body comments).
 * `docs/`: stable system documentation.
 * `ops/`: deployment artifacts, with Docker/Caddy preferred and systemd retained as legacy reference.
 * `scripts/`: repo automation, deploy runners, audits, profiling, and smoke gates.
 * `runs/`: primary run data. Do not edit manually.
 * `data/`: derived experiments, sweeps, caches, and reports.
 
-Current operating posture: `paper` and Docker/Caddy `live_readonly` are normal. Real-money trading is deferred and requires a fresh explicit plan before arming.
+Root-level docs: [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md) (active effort and handoff), [CANARY_RUNBOOK.md](./CANARY_RUNBOOK.md) (canary procedure), and [RESEARCH_ORCHESTRATION.md](./RESEARCH_ORCHESTRATION.md) (research sweep orchestration).
+
+Compose files select the mode: `docker-compose.paper.yml`, `docker-compose.live-readonly.yml`, `docker-compose.live-trading.yml` (the canary), `docker-compose.live-stopped.yml`, and the `docker-compose.parked.yml` overlay (full stack up but the bot sleeps, so nothing captures and the DB cannot grow). `docker-compose.yml`, `.local.yml`, `.prod.yml`, `.research.yml`, and `.smoke.yml` cover local, production base, research, and smoke.
+
+Design operating posture: `paper` and Docker/Caddy `live_readonly` are the normal steady state, and real-money trading requires a fresh explicit plan and an operator GO before arming. Note that the live host is currently staged off that steady state in the disarmed, parked canary stack; see the Current Effort section above and the [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md) handoff block for the actual deployed state.
 
 ## Build And Test
 

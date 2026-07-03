@@ -1,6 +1,6 @@
 # Polymarket Live Constraints
 
-This chapter records venue facts that affect the sidecar and any future funded trading plan. These facts are unstable by nature. Re-check official Polymarket docs before changing venue code or arming real money.
+These are current-truth operational constraints for live trading, with the place each is enforced in code or config called out inline. They are load-bearing yet easy to get wrong and are not obvious from the code. Several are unstable by nature, so re-check official Polymarket docs before changing venue code or arming real money.
 
 Official docs referenced by this chapter:
 
@@ -8,8 +8,77 @@ Official docs referenced by this chapter:
 * [CLOB V2 migration](https://docs.polymarket.com/v2-migration)
 * [pUSD](https://docs.polymarket.com/concepts/pusd)
 * [Create order](https://docs.polymarket.com/trading/orders/create)
+* [Fees](https://docs.polymarket.com/trading/fees)
 * [Matching-engine restarts](https://docs.polymarket.com/trading/matching-engine)
 * [User channel](https://docs.polymarket.com/market-data/websocket/user-channel)
+
+## Jurisdiction And Geoblock Reality
+
+The operator is based in Kyrgyzstan. The live host runs on AWS `eu-west-1` (Ireland). Ireland was chosen for network latency to Polymarket (about 30 ms p50 from Ireland versus about 135 ms from a residential path), not as a geo workaround. Kyrgyzstan is not on Polymarket's US or sanctioned blocklist, so this is latency optimization, not geoblock circumvention.
+
+Polymarket's geoblock is egress-based: it inspects the connecting IP, not the operator's residence. From the Ireland host, live preflight returns `blocked=false` with `country=IE`, which is a normal allowed region. This is a directly connected hosted AWS instance, not a VPN, so the egress is a genuine AWS Ireland datacenter IP. This topology is settled and should not be re-litigated. Authoritative host evidence lives under `data/experiments/replay-grade-readonly-soak-001` through `data/experiments/replay-grade-readonly-soak-003` (observed `blocked=false`, `country=IE`, geoblock status ok, with hundreds of successful authenticated CLOB V2 reads and zero failures).
+
+The pinned egress IP must still be read live at canary time. AWS egress IPs can reassign, so a previously observed address is not durable. Read the server's current egress at arm time and pin it into `LIVE_EXPECTED_EGRESS_IP` rather than assuming a fixed value.
+
+Geoblock and readiness checks must run from the actual deployment host. A local laptop pass does not prove the AWS host is allowed, and an AWS pass does not prove a different region or provider is allowed. Any funded soak or canary must record host geoblock result, sidecar health, account and preflight state, market metadata evidence, user-stream and activity state, and replay-grade capture health. If Gamma, CLOB, account, or user activity endpoints are blocked from the host, stop and resolve that before considering funded trading.
+
+Enforced in code and config:
+
+* `bots/paint/src/config.rs` validates `LIVE_EXPECTED_EGRESS_IP` as a real IP address.
+* `egress_ip_issues` in `bots/paint/src/live.rs` blocks arming when the pinned egress IP does not match, or cannot be confirmed against, the observed geoblock IP.
+* The canary egress-pin step is described in [deployment-and-ops.md](./deployment-and-ops.md) and [canary-config.md](./canary-config.md).
+
+## Settlement Oracle
+
+Polymarket resolves BTC 5-minute Up/Down markets on Chainlink, not on Binance. Any provisional Binance-derived settlement the runtime computes is observability only. It has historically disagreed with the real outcome about a third of the time. Run 008 is the reference example: a roughly 74% local win rate sat against a roughly 50% real win rate on the same trades, because provisional Binance settlements captured at imprecise moments diverged from the Chainlink outcome at the true window boundary.
+
+Because of that gap, bankroll and PnL must update only on the authoritative Gamma resolution, never on the provisional Binance signal. Any run's parameters must be verified against Polymarket's actual outcomes before they are taken seriously.
+
+Enforced in code and config:
+
+* `run_verify_settlements` in `bots/paint/src/verify.rs` (the `verify-settlements` CLI) fetches authoritative resolutions from the Gamma API and audits paper or shadow PnL against them.
+* Settled outcomes come from `markets.outcome`, which the backtester treats as settlement truth and refuses to guess when missing. See the Backtest Semantics section of [data-and-replay.md](./data-and-replay.md) for how replay handles settlement and outcomes.
+
+## Venue Timing
+
+Authoritative resolution lands roughly 40 seconds to 4 or more minutes after a window closes. The runtime must never block inline waiting for it. Resolution is fetched by a bounded retry worker, and any new gate that waits for resolution inside the decision path will stall the runtime.
+
+Separately, `market_discovery` surfaces the next slot about 3 to 5 minutes before its `start_time`. A discovered window is a future window, not a tradable one. It must only be activated as the current tradable window after its `start_time` has passed. Firing against a window that has not started yet books trades into the wrong window with the wrong settlement boundary and destroys PnL attribution.
+
+Enforced in code and config:
+
+* `bots/paint/src/market_discovery.rs` derives the next slot ahead of time and tracks known windows; activation of the current window is deferred until start time.
+* The bounded settlement and resolution worker, and the rule that the hot path must not await settlement fetches, are described in the Hot Path sections of [system-architecture.md](./system-architecture.md) and [strategy-and-risk.md](./strategy-and-risk.md).
+
+## Order-Book Liquidity
+
+Real depth on these 5-minute markets is thin and highly variable. The median USD available at the best ask is about 498 dollars. The mean is far higher (about 8,476 dollars) because the distribution is heavily right-skewed, so the mean is not a safe planning number. Depth also varies roughly 10x within a single window: it is thin at window open, peaks near the 1:30 to 2:00 mark as market makers post, then thins again before settlement as they pull liquidity.
+
+Sizing and backtests must model fills against the actual `ask_size` and clamp orders to book depth. Without that clamp, sweeps invent fictional multi-thousand-dollar fills and produce impossible PnL. The `$500` default hard cap is the safety rail behind realistic depth-aware sizing.
+
+Enforced in code and config:
+
+* `MAX_POSITION_USD` defaults to `500.0` in `bots/paint/src/config.rs` as the per-position hard cap.
+* Replay-grade capture preserves CLOB best bid, best ask, bid size, and ask size so fills can be modeled against real depth. See the CLOB Replay Blocks section of [data-and-replay.md](./data-and-replay.md).
+* Bankroll, exposure, and per-family sizing controls are described in the Bankroll And Exposure section of [strategy-and-risk.md](./strategy-and-risk.md).
+
+## Fees
+
+Since CLOB V2, fees apply at match time and are read live per market from the fee details on the market metadata (`fd.r` for the rate and `fd.e` for the exponent). The client no longer sets a fee rate on the order. The current crypto taker rate is `0.07` with exponent `1`.
+
+The per-share fee model is:
+
+```
+fee_per_share = price * feeRate * (price * (1 - price))^exponent
+```
+
+At an entry near `$0.50`, where the latency strategy tends to enter, this fee peaks.
+
+Enforced in code and config:
+
+* `bots/paint/src/fees.rs` resolves fee params (live market schedule first, then crypto defaults) and computes the fee with `compute_taker_fee`, which is the per-share model above multiplied by shares.
+* `bots/paint/src/config.rs` defaults `taker_fee_rate` to `0.07` and `taker_fee_exponent` to `1`. Any change to that constant is a numeric-sensitive operator decision.
+* The sidecar preflight fee-mismatch gate compares the live per-market rate (`fd.r`) against `POLYMARKET_EXPECTED_TAKER_FEE_RATE` (default `0.07`) and blocks arming when the observed rate exceeds it by more than `0.02`. The operational detail and the rest of the fee knobs live in [commands-and-config.md](./commands-and-config.md).
 
 ## Authentication Model
 
@@ -113,21 +182,6 @@ Before any funded trading, the deployment host must verify current BTC 5-minute 
 * collateral/account readiness
 
 Gamma discovery can identify BTC 5-minute windows, but CLOB market metadata is the authoritative trading-constraint surface when available. Local assumptions lose to production-safe readonly checks.
-
-## Geoblock And Host Reality
-
-Geoblock checks must run from the actual deployment host. A local laptop pass does not prove the AWS host is allowed, and an AWS pass does not prove a different region or provider is allowed.
-
-Future funded plans must record:
-
-* host geoblock result
-* sidecar health
-* account/preflight state
-* market metadata evidence
-* user-stream/activity state
-* replay-grade capture health
-
-If Gamma, CLOB, account, or user activity endpoints are blocked from the host, stop and resolve that before considering funded trading.
 
 ## Future Funded Posture
 

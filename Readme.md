@@ -2,7 +2,9 @@
 
 Buba is a trading system for short-horizon prediction markets. Its goal is to run a strategy from observation to execution with the same discipline expected of a small exchange-facing system: bounded decision latency, explicit risk limits, reproducible data capture, and enough evidence after a run to replay what the bot saw.
 
-The current implementation focuses on Polymarket BTC 5-minute Up/Down markets. It can run paper sessions, run authenticated readonly sessions against Polymarket, collect replay-grade market data, show an operator dashboard, and run offline backtests and parameter sweeps. Real-money trading is not part of the current operating posture. If it is resumed later, it must start from a fresh plan and pass the documented readiness gates.
+The current implementation focuses on Polymarket BTC 5-minute Up/Down markets. It can run paper sessions, run authenticated readonly sessions against Polymarket, collect replay-grade market data, show an operator dashboard, and run offline backtests and parameter sweeps. No real money has traded: the live-trading path is real-venue capable but ships disarmed and dry-run by default.
+
+Active effort: live-money readiness is in progress on the `live-readiness` branch. All phase code is complete and hardened and was reviewed SAFE FOR CANARY; the only remaining gate is an explicit operator GO, which then runs a final supervised dry-run rehearsal and one small real canary order. The live host is currently staged in the disarmed, dry-run canary stack, parked. Start from the "Current State And Handoff" block at the top of [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md).
 
 ## System Overview
 
@@ -32,7 +34,7 @@ The current remote profile is latency-only: `LATENCY_ARB_ENABLED=true`, `SPREAD_
 
 `live_readonly` adds authenticated sidecar account, preflight, market metadata, user activity, and reconciliation reads while continuing shadow paper trading. It does not submit venue orders.
 
-`live_trading` exists locally as a disarmed real-venue runtime. It has audited controls, live ledger tables, terminal halt state, and durable decision evidence. Remote arming is deferred.
+`live_trading` is a real-venue runtime that ships disarmed. It has audited controls, live ledger tables, terminal halt state, and durable decision evidence. It is currently staged on the live host in the disarmed, dry-run canary configuration; remote arming still requires an explicit operator GO. See [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md) and [CANARY_RUNBOOK.md](./CANARY_RUNBOOK.md).
 
 A running process is not an armed process. Sidecar write endpoints and dashboard controls are not permission to trade real money.
 

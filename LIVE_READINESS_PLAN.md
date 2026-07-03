@@ -1,5 +1,36 @@
 # Live Readiness Plan
 
+## Current State And Handoff (read this first)
+
+As of 2026-07-03. This is the live pickup point; the phase plan below is history.
+
+* All phase code is complete and hardened. The canary path was hardened against a
+  final pre-money audit (commits `98cb59d`, `9c0f4c2`) and independently reviewed
+  SAFE FOR CANARY. The only remaining gate is an explicit operator GO. On GO the
+  runbook runs a final supervised dry-run rehearsal (no venue call) and then the
+  single ~5 USD real canary order; both are downstream of the one GO decision.
+* Live pickup document: [CANARY_RUNBOOK.md](./CANARY_RUNBOOK.md). Reversible config:
+  [docs/canary-config.md](./docs/canary-config.md). New-machine setup:
+  [docs/environment-setup.md](./docs/environment-setup.md). Venue and operator
+  truths: [docs/polymarket-live-constraints.md](./docs/polymarket-live-constraints.md).
+* Actual deployed host state: the Ireland host `buba-paint` is staged in the
+  `live_trading` plus `LIVE_DRY_RUN=true` DISARMED canary stack on the locked images.
+  It is currently PARKED: the `paint` bot container runs a no-op sleep instead of the
+  live bot (via `docker-compose.parked.yml`, deployed with `deploy-docker.py --parked`)
+  so it captures nothing and the runtime DB cannot grow; `sidecar`, `agent`,
+  `dashboard`, and `caddy` are up. The sidecar authenticates on demand but reads
+  "not ready" while parked because the parked bot does not poll it; it becomes ready
+  when the bot runs at GO. Reverting to `live_readonly` is a redeploy.
+* Repository state: this work exists only on the unpushed `live-readiness` branch
+  (about 25 commits ahead of `origin/master`, which does not have the canary). On a
+  new machine, confirm you are on `live-readiness` before continuing; do not check out
+  `master` or re-clone expecting the canary artifacts. See
+  [docs/environment-setup.md](./docs/environment-setup.md) for the safe move procedure.
+* To go live at GO: redeploy without `--parked` and with
+  `--env-set LIVE_DRY_RUN=false` plus the data-chosen threshold and the live egress
+  pin, then arm per the runbook. Reducing the on-chain allowance is optional; the
+  layered software caps are the primary limit.
+
 ## Purpose And Status
 
 This is the fresh explicit live-money readiness plan that `CLAUDE.md` requires
@@ -22,9 +53,10 @@ through the SDK, holds collateral in pUSD, and reads fees live per market. The
 remaining work is a bounded set of safety, idempotency, and reconciliation gaps
 plus mandatory empirical confirmations and a canary.
 
-Operating posture stays unchanged until this plan completes and the operator
-gives an explicit go: `paint` and `sidecar` remain stopped, and no real order is
-sent except the single human-gated canary in Phase 6.
+The plan preparation is now complete (see the handoff block above): the hardened
+`live_trading` plus `LIVE_DRY_RUN=true` DISARMED canary stack is deployed and
+currently parked on the Ireland host. No real order is sent except the single
+human-gated canary in Phase 6, which still requires an explicit operator GO.
 
 ## How To Run This Plan
 
@@ -402,10 +434,9 @@ Items:
 * Disarmed would-submit dry-run (nice-to-have). Add a live-trading dry-run that
   exercises every live gate and builds the order intent but never calls the
   sidecar `/orders` endpoint, so the full armed path can be rehearsed without a
-  real order. Deferred: this is the one open Phase 5 item. It adds a new branch to
-  the live submission worker (the most safety-critical bot path) and is best built
-  immediately before the canary as part of Phase 6 rehearsal, with operator input
-  on exactly what to rehearse. It is a rehearsal convenience, not a safety blocker.
+  real order. Done (`LIVE_DRY_RUN`, commit `5a061e2`): the dry-run branch in the live
+  submission worker builds the full intent, marks it `dry_run`, and returns before any
+  venue call; it was rehearsed on the Ireland host and proven to place no venue order.
 * ExchangeV3 watch (nice-to-have). ExchangeV3 (EIP-712 domain version 3) is merged
   into the client but not in production. Add a startup assertion of the expected
   exchange domain version and a note to watch the changelog, so a future V3
@@ -496,8 +527,12 @@ autonomous execution.
 * [x] Phase 2 - Order idempotency and timeout safety
 * [x] Phase 3 - Settlement reconciliation, redemption, and restart windows
 * [x] Phase 4 - SDK currency and venue assumptions
-* [ ] Phase 5 - Observability and resilience
-* [ ] Phase 6 - Readiness validation and canary
+* [x] Phase 5 - Observability and resilience (dry-run plus one-order cap `5a061e2`; WS
+  staleness watchdog, clock-drift health, ExchangeV3 pin `21a2dea`)
+* [~] Phase 6 - Readiness validation and canary: preparation complete and hardened
+  (runbook, reversible overlay, caps, live-trading compose, published images, final
+  pre-money hardening reviewed SAFE FOR CANARY). Remaining: the operator-gated dry-run
+  rehearsal and the single real canary order, per [CANARY_RUNBOOK.md](./CANARY_RUNBOOK.md).
 
 ## Kickoff Goal Prompt
 

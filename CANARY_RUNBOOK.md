@@ -277,7 +277,7 @@ Abort channels, any one of which is sufficient:
 
 ## Failure Modes And Mitigations
 
-* Duplicate order: durable one-order-per-intent idempotency plus the 5 USD open
+* Duplicate order: durable one-order-per-intent idempotency plus the 7 USD open
   notional ceiling.
 * Phantom or short fill: post-fill on-chain reconciliation against the cumulative
   expected position, auto-halt on mismatch, and a startup refusal while any fill is
@@ -300,3 +300,10 @@ Abort channels, any one of which is sufficient:
   fee) under an ignored data path, not the repo root.
 * Update [LIVE_READINESS_PLAN.md](./LIVE_READINESS_PLAN.md) Phase 6 with the outcome
   and present the written go-or-no-go for sizing to the operator.
+* Do not leave the `live_trading` stack running after the supervised event. It
+  captures replay-grade feed data and grows the runtime DB by roughly 3.4 GB per day
+  with no auto-prune, and the small Ireland disk fills in about two days and wedges
+  the bot even though it never trades. Revert to `live_readonly` (`--mode
+  live-readonly`), or if you are holding for a later GO, park it (`--parked`) so the
+  bot sleeps and captures nothing. See the Parked Battle-Mode Staging section of
+  [docs/deployment-and-ops.md](./docs/deployment-and-ops.md).

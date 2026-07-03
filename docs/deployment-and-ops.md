@@ -6,7 +6,9 @@ This chapter describes how Buba is run locally and remotely. The preferred remot
 
 The normal remote mode is `live_readonly`: authenticated account and venue monitoring, replay-grade public feed capture, shadow paper trading, agent, and dashboard. It does not arm real money, place orders, cancel orders, or redeem positions.
 
-Real-money trading is deferred. Do not infer permission to trade from credentials, sidecar write endpoints, or dashboard controls.
+Real-money trading requires an explicit operator GO. Do not infer permission to trade from credentials, sidecar write endpoints, or dashboard controls.
+
+Current host state (2026-07-03): the `buba-paint` host is temporarily staged off `live_readonly` in the `live_trading` plus `LIVE_DRY_RUN=true` disarmed canary stack for the live-readiness effort. It is parked: the `paint` bot container sleeps instead of running the live bot (via the `docker-compose.parked.yml` overlay, deployed with `deploy-docker.py --parked`), so it captures nothing and the runtime DB cannot grow, while `sidecar`, `agent`, `dashboard`, and `caddy` run normally. No order is possible while parked and disarmed. Reverting to `live_readonly` is a redeploy with `--mode live-readonly`. See the Parked Battle-Mode Staging section below and the [LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md) handoff block.
 
 ## Remote Layout
 
@@ -105,6 +107,44 @@ with newlines. `LIVE_DRY_RUN` is seeded to true in `.env` for live-trading unles
 overridden. The exact canary overlay, the data-driven threshold method, and the
 revert steps live in [../docs/canary-config.md](../docs/canary-config.md) and
 [../CANARY_RUNBOOK.md](../CANARY_RUNBOOK.md).
+
+## Parked Battle-Mode Staging
+
+A staged `live_trading` stack captures replay-grade feed data. `live_trading`
+requires `FEED_EVENT_STORAGE_PROFILE=replay_grade` (bootstrap refuses `compact`),
+so a running dry-run stack grows the runtime DB by roughly 3.4 GB per day with no
+auto-prune. The `LIVE_RUNTIME_MAX_DB_BYTES` guard only blocks new trading when
+exceeded; it does not prune or stop capture. On the small Ireland host (29 GB disk)
+an unattended dry-run stack fills the disk in about two days and wedges the bot even
+though it never trades. The dashboard healthcheck only tests that `paint.db` and
+`paint.log` exist, so a disk-full wedged bot still shows healthy in `docker ps`.
+
+To hold the full stack ready for a canary GO without that growth, deploy parked:
+
+```bash
+python3 scripts/deploy-docker.py --host buba-paint --domain buba.toksaitov.com \
+  --mode live-trading --use-locked-images --parked
+```
+
+`--parked` adds the `docker-compose.parked.yml` overlay, which overrides the `paint`
+command to initialize an empty DB and then `sleep infinity` instead of running
+`buba-paint live`. The bot captures nothing and the DB cannot grow, while `sidecar`,
+`agent`, `dashboard`, and `caddy` run normally. The sidecar authenticates on demand
+but reads "not ready" while parked because the parked bot does not poll it; that is
+expected. To go live at GO, redeploy the same command without `--parked` so the bot
+runs again.
+
+Disk and teardown discipline for the canary:
+
+* Do not leave a non-parked `live_trading` dry-run stack staged for more than about a
+  day and a half on this host. For any unattended wait, park it or bring the live
+  stack up fresh right before the GO.
+* Each deploy creates a new `runtime/docker-<mode>-<stamp>/` directory and does not
+  remove old ones, so prior-deploy DBs accumulate. Superseded
+  `runtime/docker-live-trading-*` dry-run DBs are disposable (zero-trade; the canary
+  needs a fresh DB anyway) and safe to delete; then `sudo docker system prune -af`.
+* Preserve the `runtime/live-readonly-*` DBs (research capture) unless the operator
+  explicitly approves deleting the exact files.
 
 ## Local Stacks
 
