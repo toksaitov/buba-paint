@@ -42,3 +42,6 @@ data/experiments/research-manual-qa-*/
 # Generated local deployment and live-run safety evidence. Keep on disk, do not commit.
 data/experiments/docker-deploy-*/
 data/live-run-backups/
+
+# Slim transfer archive for moving the checkout between machines. Regenerable, do not commit.
+/buba-paint.zip

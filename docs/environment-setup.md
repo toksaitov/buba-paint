@@ -52,40 +52,61 @@ Install these first. Homebrew is the simplest source for most of them.
 The canary work is on `master` and pushed to `origin`, so a plain clone of
 `master` has everything (the canary, the `live_trading` compose, the hardened
 live bootstrap, and these handoff docs). The one thing git never carries is the
-gitignored `.secrets/` directory, which you must copy out-of-band on either
-path.
+gitignored `.secrets/` directory, which you must copy out-of-band on every path.
 
-Simplest path (fresh clone): follow the Clone And Per-Package Install section
-below, then copy `.secrets/buba-paint-live-sidecar.env` onto the new machine
-out-of-band (from a secure transfer or your password manager) and
-`chmod 600` it. This is enough to continue the work.
+Do not move the working directory as-is. A full checkout is tens of GB, almost
+all of which is regenerable or historic and should not travel:
 
-Byte-for-byte path (whole-directory copy): use this if you also want uncommitted
-local run evidence or your local Docker/runtime state to travel, or you just
-prefer an exact copy. Copy the whole directory including `.git` and `.secrets`,
-skipping only the large regenerable build outputs:
+* `target/` (build cache) and every nested `*/target/`: rebuilt by `cargo build`.
+* `node_modules/` and `dist/` in both Node packages: rebuilt by `npm ci` / `npm run build`.
+* `data/` (local run backups and experiment captures) and `runs/` (run evidence):
+  historic; the load-bearing conclusions are already distilled into
+  [polymarket-live-constraints.md](./polymarket-live-constraints.md), and the raw
+  blobs stay on the remote (LFS), fetchable later with `git lfs pull`.
+* `.git/lfs/` (the LFS blob store for `runs/` and `data`).
+
+Recommended path (slim clone). Gets the code and full git history but leaves the
+historic LFS blobs as tiny pointer stubs, so the checkout is a few hundred MB
+instead of tens of GB:
 
 ```bash
-rsync -aH --info=progress2 \
-  --exclude 'target/' \
-  --exclude 'node_modules/' \
-  --exclude 'dist/' \
-  --exclude '.docker/' \
-  /path/to/buba-paint/ new-machine:/Users/<you>/Desktop/buba-paint/
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/toksaitov/buba-paint.git
 ```
 
-`.secrets/` carries the live sidecar env, so keep the transfer secure. On the
-new machine, confirm the state before doing anything else:
+Then follow Clone And Per-Package Install below to rebuild `target/` and
+`node_modules/`, and copy `.secrets/buba-paint-live-sidecar.env` onto the new
+machine out-of-band (from a secure transfer or your password manager) and
+`chmod 600` it. That is enough to continue the work.
+
+Single-file path (slim archive or rsync). Use this when you would rather move one
+file (for example over a USB drive) or have no network on the new machine. Build
+a slim archive that excludes the same regenerable and historic paths, and always
+excludes the secret (carry it separately):
+
+```bash
+cd ~/Desktop   # the parent of the checkout
+zip -r -q /tmp/buba-paint.zip buba-paint \
+  -x '*/target/*' '*/node_modules/*' '*/dist/*' \
+     'buba-paint/data/*' 'buba-paint/runs/*' 'buba-paint/.git/lfs/*' \
+     'buba-paint/.secrets/*' '*/__pycache__/*' '*.DS_Store'
+```
+
+The archive keeps `.git` (history, so the unpacked copy is a real repo on
+`master`), all source, config, and docs. It drops the build cache, the Node
+dependencies, the historic `data/`/`runs` blobs, and the secret. Unpack it on the
+new machine, then reset the historic LFS-tracked files to pointer stubs so the
+tree is clean (this fetches nothing):
 
 ```bash
 cd buba-paint
+GIT_LFS_SKIP_SMUDGE=1 git checkout -- .
 git status                # expect: On branch master, working tree clean
 git log --oneline -3      # expect the latest canary/handoff commits
-chmod 600 .secrets/buba-paint-live-sidecar.env
 ```
 
-Then run the per-package install below to rebuild `target/` and `node_modules/`
-(intentionally not copied). Start context reconstruction from
+Copy `.secrets/buba-paint-live-sidecar.env` out-of-band, `chmod 600` it, then run
+the per-package install below to rebuild `target/` and `node_modules/`. Start
+context reconstruction from
 [LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md) (the handoff block at the top)
 and the read order in [CLAUDE.md](../CLAUDE.md).
 
