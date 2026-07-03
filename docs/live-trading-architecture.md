@@ -10,7 +10,7 @@ The mode boundary is `Config::execution_mode`.
 * `live_readonly`: authenticated venue/account reads plus the shared shadow paper runtime.
 * `live_trading`: local disarmed real-venue runtime with ledger, reconciliation, risk halt, sidecar write boundary, and audited controls.
 
-Remote operation should stay in `live_readonly` unless a fresh funded-run plan explicitly changes it.
+The design steady state for remote operation is `live_readonly`. The live host is currently staged off it in the disarmed, parked `live_trading` canary for the live-readiness effort; see the handoff block in [../LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md).
 
 ## Shared Decision Core
 
@@ -138,4 +138,4 @@ Current safe workflow:
 6. use `live-closeout` after terminal halt or funded-session shutdown
 7. validate replay, backtest input, and live fidelity offline before using funded data for research
 
-The architecture exposes real venue-action boundaries, but the current operating posture is still no-order `live_readonly`.
+The architecture exposes real venue-action boundaries. The design steady state remains no-order `live_readonly`, but the live host is currently staged in the disarmed, parked `live_trading` canary for the live-readiness effort; see [../LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md).

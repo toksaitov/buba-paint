@@ -1,12 +1,12 @@
 # Live Session Runbook
 
-This runbook describes the intended workflow for a future funded Polymarket pilot. It is not an instruction to arm real money. Current remote operation remains Docker/Caddy `live_readonly`.
+Superseded for the active canary. This chapter is background on the general funded-session workflow. The active live-money effort has its own current-truth procedure: read the "Current State And Handoff" block at the top of [../LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md), then [../CANARY_RUNBOOK.md](../CANARY_RUNBOOK.md) (the operative canary procedure) and [canary-config.md](./canary-config.md). Use this chapter only for the wider funded-session concepts it still describes. It is not an instruction to arm real money.
 
 ## Current Status
 
-The repository supports three modes: `paper`, `live_readonly`, and disarmed `live_trading`. The deployed path should use `live_readonly` unless a fresh funded-run plan explicitly changes it.
+The repository supports three modes: `paper`, `live_readonly`, and disarmed `live_trading`. The design steady state for the deployed path is `live_readonly`. For the current actual host state (staged in the disarmed, parked `live_trading` canary for the live-readiness effort), see the [../LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md) handoff block.
 
-Current safe uses:
+Steady-state safe uses:
 
 * paper research and dashboard work
 * authenticated readonly venue/account monitoring
@@ -14,12 +14,7 @@ Current safe uses:
 * shadow paper strategy evaluation during readonly sessions
 * local or mocked verification of live-control, ledger, halt, closeout, and sidecar write boundaries
 
-Current non-goals:
-
-* no deployed `live_trading`
-* no real-money arming
-* no venue order placement, cancellation, or redemption from the remote runtime
-* no current funded canary
+Guardrails that still hold: no real money has traded, the runtime always boots disarmed, and no venue order, cancellation, or redemption happens without an explicit operator GO followed by an arm command. The single supervised canary order is gated exactly that way in [../CANARY_RUNBOOK.md](../CANARY_RUNBOOK.md).
 
 ## Future Funded Prerequisites
 

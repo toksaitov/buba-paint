@@ -33,7 +33,7 @@ Paper and readonly runs follow the same core loop:
 
 `live_readonly` adds authenticated sidecar account, preflight, market metadata, user activity, and reconciliation reads. It still runs shadow paper trading and does not place venue orders.
 
-`live_trading` exists locally as a disarmed runtime. If armed in a local verification environment, live order submission goes through a submission worker that persists critical decision evidence and order intent before any sidecar venue call. Unknown order outcomes, capture failures, stale account truth, user-stream failure, or reconciliation-critical state block new risk.
+`live_trading` is a disarmed real-venue runtime, currently staged on the live host in the parked dry-run canary for the live-readiness effort (see [../LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md)). When armed, live order submission goes through a submission worker that persists critical decision evidence and order intent before any sidecar venue call. Unknown order outcomes, capture failures, stale account truth, user-stream failure, or reconciliation-critical state block new risk.
 
 ## Execution Modes
 
@@ -41,7 +41,7 @@ Paper and readonly runs follow the same core loop:
 
 `live_readonly` is the normal production-like remote mode. It authenticates against the sidecar, monitors account and venue state, captures replay-grade public feeds, and runs shadow paper strategies. It does not arm or write venue state.
 
-`live_trading` starts disarmed and requires audited local or admin dashboard live-control commands. It has ledger tables, risk halt state, reconciliation, and sidecar write support, but remote real-money arming is deferred.
+`live_trading` starts disarmed and requires audited local or admin dashboard live-control commands. It has ledger tables, risk halt state, reconciliation, and sidecar write support. Remote arming requires an explicit operator GO; the live host is currently staged in the disarmed, parked `live_trading` canary for the live-readiness effort. See the handoff block in [../LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md).
 
 Process state and trading state are separate. A running process is not an armed process.
 

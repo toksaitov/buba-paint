@@ -16,9 +16,9 @@ Research and readonly deployments use the same strategy engine. That is intentio
 
 `calm-persistence` looks for quiet late-window persistence where the currently winning side remains underpriced. It is research-capable but disabled in current remote operation.
 
-## Current Remote Profile
+## Remote Profile
 
-Current Docker `live_readonly` deployment uses a Run-012-style latency-only profile:
+The design steady-state Docker `live_readonly` deployment uses a Run-012-style latency-only profile (the live host is currently staged off this steady state in the disarmed, parked `live_trading` canary; see the [../LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md) handoff block):
 
 ```bash
 EXECUTION_MODE=live_readonly
@@ -78,7 +78,7 @@ Pending settlement is not spendable cash. For future funded sessions, only obser
 
 ## Live Risk Posture
 
-Real-money trading is not currently deployed or armed. If it resumes later, the first canary posture remains:
+Real money has not yet traded and the runtime ships disarmed. The first live-money canary is prepared and staged disarmed on the live host for the live-readiness effort (see [../LIVE_READINESS_PLAN.md](../LIVE_READINESS_PLAN.md)); on the operator GO its posture is:
 
 * latency-arb only
 * small bankroll around `$100`
